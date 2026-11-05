@@ -15,7 +15,7 @@ public object FlashRadioCopy {
         "Connect a handheld radio with KISS TNC over Bluetooth for off-grid chat"
     public const val VALUE_ON: String = "On"
     public const val VALUE_OFF: String = "Off"
-    public const val SCREEN_TITLE: String = "Radio gateway (beta)"
+    public const val SCREEN_TITLE: String = "Radio gateway"
 
     // --- Master Switch & Overview -------------------------------------------------------------------------
     public const val MASTER_SWITCH_TITLE: String = "Enable radio gateway"
@@ -31,11 +31,76 @@ public object FlashRadioCopy {
     public const val FACT_ADDRESS: String = "Address"
     public const val FACT_PROFILE: String = "Profile"
     public const val FACT_CALLSIGN: String = "Callsign"
+    public const val FACT_MODE: String = "Mode"
     public const val FACT_NONE: String = "Not set"
     public const val PROFILE_M_SHORT: String = "M · Encrypted"
     public const val PROFILE_A_SHORT: String = "A · Signed cleartext"
     public const val ACTION_SEND: String = "Send"
     public const val ACTION_AUTHORISE: String = "Authorise"
+
+    // --- Redesign v3: your radios, pairing sheet, settings sheet, talk bar -------------------------------
+    /** The small "Beta" marker beside the page title; the Settings row keeps "(beta)" in its own label. */
+    public const val BADGE_BETA: String = "Beta"
+    public const val SECTION_RADIO = "Radio audio"
+    public const val SECTION_RADIOS: String = "Your radios"
+    public const val RADIOS_NONE: String = "None paired yet"
+    public fun radiosCount(count: Int): String = if (count == 1) "1 radio" else "$count radios"
+    public const val CHIP_IN_USE: String = "In use"
+    public const val CHIP_LINK_LOST: String = "Link lost"
+    public const val CHIP_PAIRED: String = "Paired"
+
+    /** The one filled button on the page while nothing is connected. */
+    public const val ACTION_PAIR_NEW_RADIO: String = "Pair a new radio"
+
+    /** Shown when the pairing sheet's inquiry has been stopped. */
+    public const val SCAN_STOPPED: String = "Scanning stopped."
+
+    /** The pairing sheet: opened by the button above, and it starts the scan itself. */
+    public const val PAIR_SHEET_TITLE: String = "Pair a radio"
+    public const val PAIR_SHEET_SUBTITLE: String = "Nearby Bluetooth devices. Pick your radio."
+    public const val ACTION_CLOSE: String = "Close"
+
+    /** Readiness steps: expanded before anything is paired, a disclosure once a radio is set up. */
+    public const val READINESS_OFF_TITLE: String = "Before you turn it on"
+    public const val READINESS_PAIR_TITLE: String = "Before you pair"
+    public const val HELP_NOT_SHOWING: String = "Radio not showing up?"
+    public const val INTRO_TEXT: String =
+        "Connect a handheld radio with KISS TNC over Bluetooth, then send and receive chat where there is no " +
+            "network."
+
+    /** The radio settings sheet: the profile, the mode, the test frame and Forget live here, off the main page. */
+    public const val SETTINGS_SHEET_TITLE: String = "Radio settings"
+    public fun forgetConsequence(name: String): String = "Flash stops using $name. You can pair it again at any time."
+
+    /** The talk bar / audio panel. */
+    public const val AUDIO_OFF_NOTE: String = "Turn on listening to hear the radio and talk."
+    public const val AUDIO_LISTENING: String = "Listening"
+    public const val AUDIO_NEEDS_LINK: String = "Reconnect the radio to talk."
+    public const val AUDIO_NO_LINK: String = "No link"
+    public const val CHIP_ON_AIR: String = "On air"
+    public const val VALUE_TALKING: String = "Talking"
+    public const val VALUE_RECEIVING: String = "Receiving"
+    public const val VALUE_READY: String = "Ready"
+    public const val A11Y_OPEN_SETTINGS: String = "Radio settings"
+    public const val A11Y_PAIR_SHEET_CLOSE: String = "Close the pairing sheet"
+    public const val A11Y_SETTINGS_SHEET_CLOSE: String = "Close radio settings"
+    public const val A11Y_TALK: String = "Hold to talk through the radio"
+    public const val A11Y_LISTEN: String = "Listen to the radio switch"
+
+    /** "Bluetooth · 38:D2:…" — the link's own identity line under the station name. */
+    public const val FACT_BLUETOOTH: String = "Bluetooth"
+
+    public fun linkFacts(address: String): String = "$FACT_BLUETOOTH · $address"
+
+    /** The one filled action while the gateway is off. */
+    public const val ACTION_TURN_ON: String = "Turn on"
+
+    /** Confirmation before another radio takes over the gateway (a conversation may be running on the old one). */
+    public const val SWITCH_RADIO_TITLE: String = "Use another radio?"
+
+    /** Shelf and sheet labels added by redesign v3. */
+    public const val SECTION_THIS_RADIO: String = "This radio"
+    public const val ACTION_FORGET_RADIO: String = "Forget this radio"
 
     // --- Hardware Readiness Checklist --------------------------------------------------------------------
     public const val CHECKLIST_TITLE: String = "Is your radio ready?"
