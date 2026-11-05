@@ -8608,3 +8608,47 @@ resolver) was removed.
 ### Revisit
 When the capability/version registry lands, expose the tombstone in the Nearby row and consider an explicit "Un-revoke"
 action alongside Pair. A receiver reset frame is unrelated; this is local state.
+
+## ADR-354 - Chat screen redesign v2 is presentation-only and mock-first, and the wallpaper store is an open decision
+
+### Status
+PROPOSED (owner approval pending; nothing in `ui/chat` changed)
+
+### Decision
+1. The conversation screen is redesigned as: a 60dp header with three actions (call, video, more; search stays in the
+   conversation menu), three separated composer objects (44dp attach, 44dp pill at 22dp radius, one 44dp trailing
+   control that crossfades mic to send), a redrawn chat icon set at a 1.75dp stroke on the same 24dp grid, five
+   changeable chat wallpapers plus one custom colour, and a `Chat appearance` page that owns the choice.
+2. The change is **presentation only**: no wire, protocol, repository, callback or settings logic changes.
+3. The direction is built as a standalone web prototype (`design/chat-web`) and reviewed by the owner **before** any
+   Compose change. The prototype is the visual authority for the port.
+4. The wallpaper store is deliberately undecided. Options: (a) one app-wide setting in `FlashSettings` (Android and
+   desktop), (b) per-chat in Room (a schema step), (c) preview-only until a later change. Recommendation: (a) first,
+   then (b) if per-chat is asked for; the sheet already offers "This chat" and "All chats".
+
+### Context
+The owner asked for a chat screen that takes the separated send key, the pill text box and the changeable background
+from WhatsApp and Telegram, with redrawn icons and settings, and said "design not logic" and "I should see the mock
+first". The app already ships a custom design system, a 20dp bubble with an 8dp concave scoop (`FlashBubbleShape`), and
+a no-Material-text-field composer, so the redesign keeps those and changes layout, colour slots and the icon paths.
+
+### Alternatives considered
+- **Port to Compose first, review on a device.** Rejected: motion timing, the 8dp scoop and the wallpaper contrast
+  cannot be judged from a description, and a rejected direction would have touched the shipping UI.
+- **An invented visual world for chat (new colours, new type).** Rejected: `AGENTS.md` section 34 forbids replacing the
+  Flash design system; the Hub-tab prototype was rejected for the same reason (see the SUPERSEDED note in
+  `docs/ui/hub-web-atlas-prototype.md`).
+- **A third-party chat UI kit.** Rejected: ADR-003 and the premium UI rules.
+
+### Consequences
+- The port is a restyle of `FlashChatHeader`, `FlashComposer`, `FlashMessageList`, `FlashMessageBubble` and a new
+  appearance sheet; every parameter and callback stays.
+- Two token corrections are proposed: a darker tertiary text step for 12dp text outside bubbles (`graphite500` is
+  4.50:1 on white and 3.86:1 on `graphite100`), and `pulse800` for outgoing timestamps (4.24:1 -> 6.40:1).
+- `FlashConversationScreen`'s `Scaffold` has no `containerColor`, so overscroll currently reveals the Material scheme
+  rather than `backgroundChat`; the wallpaper work fixes that.
+- Nothing is device-verified. The owed checks are `CHATUI-01`..`CHATUI-07` in `docs/testing/TEST-BACKLOG.md`.
+
+### Revisit when
+- The owner rejects the direction (then the mock is revised before any Compose work).
+- Per-chat wallpapers are requested (then Room gains a step and the decision moves to (b)).

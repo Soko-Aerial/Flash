@@ -1,0 +1,131 @@
+/* =============================================================================
+   Flash chat redesign — tokens
+   Values copied from the Compose sources, not invented:
+     ui/theme/.../FlashColors.kt      (light() / dark(), FlashPalette)
+     ui/theme/.../FlashTypography.kt  (system family; 16/22 body, 14/20 caption, 12/16 meta)
+     ui/theme/.../FlashShapes.kt      (20dp bubble, 20dp composer pill, 8dp tail scoop)
+     ui/theme/.../FlashSpacing.kt     (4dp base, 8/12/16/20/24)
+     ui/theme/.../FlashMotion.kt      (120 / 200 / 320ms; Decelerate, Standard, Accelerate)
+   The review page chrome is the only thing here that is not in the app.
+   ========================================================================== */
+
+:root {
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* ---- app, light -------------------------------------------------------- */
+  --app-ground: #f5f6f8;      /* graphite50  */
+  --surface: #ffffff;         /* white       */
+  --surface-2: #f5f6f8;       /* graphite50  */
+  --surface-3: #ebedf2;       /* graphite100 */
+  --surface-4: #d8dce4;       /* graphite150 */
+  --ink: #171a22;             /* graphite900 */
+  --ink-2: #454c5c;           /* graphite700 */
+  --ink-3: #5c6475;           /* graphite500, darkened to hold 4.5:1 */
+  --line: #d8dce4;            /* graphite150 */
+  --line-soft: #ebedf2;       /* graphite100 */
+  --accent: #0d9488;          /* pulse500    */
+  --accent-strong: #0a7a70;   /* pulse600    */
+  --accent-soft: #c8f0ea;     /* pulse100    */
+  --accent-pale: #e8faf7;     /* pulse50     */
+  --accent-ink: #042f2b;      /* pulse900    */
+  --spark: #e8950a;           /* spark500    */
+  --danger: #d64545;          /* error500    */
+  --success: #1a9b52;         /* success500  */
+  --scrim: rgba(10, 12, 16, 0.32);
+
+  /* ---- bubbles, light ---------------------------------------------------- */
+  --bubble-in: #ffffff;
+  --bubble-out: #c8f0ea;
+  --bubble-in-line: #d8dce4;
+  --bubble-in-ink: #171a22;
+  --bubble-out-ink: #042f2b;
+  --bubble-meta: #6e778a;
+  --bubble-meta-out: #075c55;
+  --bubble-inset: rgba(23, 26, 34, 0.05);
+  --bubble-inset-strong: rgba(23, 26, 34, 0.09);
+
+  /* ---- chat wallpaper, light (default: Graphite) ------------------------- */
+  --chat-ground: #ebedf2;
+  --chat-pattern: none;
+  --chat-pattern-size: auto;
+  --chat-pattern-repeat: repeat;
+
+  /* ---- type (Compose FlashTypography) ------------------------------------ */
+  --t-display: 600 24px/32px var(--font);
+  --t-title: 600 20px/28px var(--font);
+  --t-heading: 600 16px/20px var(--font);
+  --t-body: 400 16px/22px var(--font);
+  --t-body-strong: 600 16px/22px var(--font);
+  --t-caption: 400 14px/20px var(--font);
+  --t-caption-strong: 600 14px/20px var(--font);
+  --t-meta: 400 12px/16px var(--font);
+  --t-meta-strong: 600 12px/16px var(--font);
+  --t-time: 400 11px/14px var(--font);
+
+  /* ---- geometry ---------------------------------------------------------- */
+  --r-bubble: 20px;
+  --r-bubble-tail: 8px;       /* FlashShapes.bubbleTailSize */
+  --r-pill: 22px;
+  --r-card: 16px;
+  --r-sheet: 24px;
+  --r-control: 12px;
+  --r-chip: 999px;
+
+  /* ---- motion (FlashMotion) ---------------------------------------------- */
+  --dur-fast: 120ms;
+  --dur-normal: 200ms;
+  --dur-slow: 320ms;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+[data-theme="dark"] {
+  --app-ground: #07080a;      /* void        */
+  --surface: #181c26;         /* surface1    */
+  --surface-2: #101218;       /* surface0    */
+  --surface-3: #222836;       /* surface2    */
+  --surface-4: #2c3244;       /* surface3    */
+  --ink: #f5f6f8;
+  --ink-2: #a8b0c0;           /* graphite300 */
+  --ink-3: #8b93a4;           /* lifted, 12px on a dark ground */
+  --line: #2c3244;
+  --line-soft: #222836;
+  --accent: #1fb8a6;          /* pulse400    */
+  --accent-strong: #4eccbe;   /* pulse300    */
+  --accent-soft: #0f3d38;     /* pulse800    */
+  --accent-pale: #0a2a27;
+  --accent-ink: #c8f0ea;
+  --spark: #ffb84d;
+  --danger: #f87171;
+  --success: #4ade80;
+  --scrim: rgba(0, 0, 0, 0.6);
+
+  --bubble-in: #222836;
+  --bubble-out: #085f58;
+  --bubble-in-line: #2c3244;
+  --bubble-in-ink: #f5f6f8;
+  --bubble-out-ink: #c8f0ea;
+  --bubble-meta: #a8b0c0;
+  --bubble-meta-out: #9fe0d6;
+  --bubble-inset: rgba(255, 255, 255, 0.06);
+  --bubble-inset-strong: rgba(255, 255, 255, 0.1);
+
+  --chat-ground: #101218;
+}
+
+/* --- critique corrections (Assessment B evidence) -------------------------- */
+:root {
+  --bubble-meta: #5c6475;      /* 5.94:1 on white, 5.07:1 on the file card */
+  --success-ink: #0f6b38;      /* success700 for 12px text, not success500 (3.59:1) */
+  --focus-ring: #0a7a70;       /* accent-strong: 4.9:1 on white, 3.27 -> 4.2 on the field */
+}
+[data-theme="dark"] {
+  --success-ink: #4ade80;
+  --focus-ring: #4eccbe;
+}
+
+/* fills that carry text or a glyph: pulse600 with white (5.3:1) / pulse400 with pulse900 (5.85:1) */
+:root { --accent-fill: #0a7a70; --accent-fill-strong: #075c55; --on-fill: #ffffff; }
+[data-theme="dark"] { --accent-fill: #1fb8a6; --accent-fill-strong: #4eccbe; --on-fill: #042f2b; }

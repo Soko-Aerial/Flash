@@ -16668,3 +16668,55 @@ Full messaging suites rerun as part of the gate. No device dependency.
 
 ### Status
 FIXED (host-tested).
+
+## ERROR-984 - A PowerShell Get-Content/Set-Content round trip corrupted UTF-8 in the chat mock sources
+
+### Date
+2026-11-05
+
+### Area
+Tooling / design prototype text encoding
+
+### Symptoms
+The review page rendered "senderâ€™s" and "Â·" where the source had a right single quote and a middle dot; Select-String
+also showed replacement characters. No command failed.
+
+### Environment
+- Windows 11, PowerShell 5.x
+- Node 24.19.0, npm 12.0.2, Vite 7.3.7
+- Target: design/chat-web (design prototype only; no Android or desktop build involved)
+
+### Error
+```text
+no exception - silent corruption: UTF-8 bytes were read as the ANSI code page and written back as UTF-8
+```
+
+### Root cause
+`Get-Content` without `-Encoding` decodes a UTF-8 file with the ANSI code page (cp1252) on this host, and
+`Set-Content -Encoding utf8` then writes those characters back as UTF-8. Every multi-byte sequence became
+double-encoded, and `Set-Content` also added a BOM. Two edits used that round trip: trimming App.tsx after deleting a
+component, and a `-replace` over data.ts and tokens.css.
+
+### Failed attempts
+1. Whole-file reverse (`text.encode("cp1252").decode("utf-8")`) - impossible: later editor writes had already inserted
+   correctly-encoded characters, and the reverse would corrupt those.
+2. A marker scan that reported 0 files - the script looked in `scripts/src` instead of `src`, so it never opened them.
+
+### Working fix
+`design/chat-web/scripts/repair-encoding.py` replaces the exact mojibake sequences (Â·, â€™, â€œ, â€<9d>, â†’, â€”, â€“)
+and strips the BOM. It is intentionally not a whole-file reverse and is safe to re-run. All later text edits use the
+editor tools, not PowerShell.
+
+### Verification
+`npm run typecheck` clean, production build clean, and the built preview renders the quote, middle dot, arrow and dash
+correctly in the screenshots. No U+00C2 / U+00E2 remains in `src`.
+
+### Related files
+- design/chat-web/src/App.tsx
+- design/chat-web/src/flash/data.ts
+- design/chat-web/src/flash/Shells.tsx
+- design/chat-web/src/styles/tokens.css
+- design/chat-web/scripts/repair-encoding.py
+
+### Status
+RESOLVED

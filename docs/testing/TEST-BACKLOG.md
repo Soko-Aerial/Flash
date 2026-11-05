@@ -7416,3 +7416,65 @@ default chunk size. These are the measurements still owed by the review's Wave 2
 - **Result 2026-11-05 (migration part):** the v23 debug APK installed over the Infinix X6882B's existing v22 data (`adb install -r` -> Success), the app started, and the chat list still showed `Flash Olive`/`final-check` and `Flash Gecko`/`w1session`. No `FATAL EXCEPTION`, `IllegalStateException`, `SQLiteException` or Room migration error appeared in the app's logcat; the migration is device-verified.
 - **Still owed:** the changed-source resume run (needs two phones; the Samsung left USB before this build) and the unchanged-file resume.
 - **Source:** `docs/audit/2026-11-03-nectarlink-comparative-review.md` item 3, ADR-352, `SourceIdentityTest`, `RealFlashTransferRepositoryTest` ("a changed source is refused..."), `FlashMigrationsChainTest`, `FlashJvmMigrationsTest`. **Status:** PARTIAL (migration device-verified; changed-file resume device run owed)
+---
+
+## 4zzzzzzzzzzzzzzzzzzzz Chat redesign v2 (CHATUI) - owed after the mock and the port
+
+Source: ADR-354, `design/chat-web/DESIGN.md`, `logs/progress.md` 2026-11-05. None of these have been run; the mock is
+not the app.
+
+### CHATUI-01 - Owner review of the web mock
+- **Setup:** `cd design/chat-web; npm install; npm run dev` -> http://localhost:5174 (or `npm run build && npm run preview`
+  -> :4174).
+- **Steps:** at 1440, 768 and 390: read the conversation, type in the composer until the mic becomes send, press the
+  kebab to open the wallpaper sheet, switch all five presets and the custom colour, switch light/dark, open Chat
+  appearance, press Replay in Motion, then turn Motion off and press Replay again.
+- **Pass:** the owner approves the direction (header, composer, wallpapers, icons, motion) or names the changes; the mic
+  and send never move the layout; every wallpaper keeps message text readable; reduced motion still changes state with no
+  travel.
+- **Status:** TODO
+
+### CHATUI-02 - Composer on a phone with the IME, 1 to 6 lines (after the port)
+- **Setup:** Android build with the ported composer, two paired phones.
+- **Steps:** type one line, then paste six lines; open and close the IME at the bottom of the thread; hold the mic and
+  slide to cancel; send a voice note; press Enter on a hardware keyboard.
+- **Pass:** the pill grows to six lines and stops; the composer stays above the IME with no jump; the trailing control
+  crossfades mic -> send in one slot with no width change; cancel discards and send sends; Enter sends and Shift+Enter
+  makes a new line.
+- **Status:** TODO
+
+### CHATUI-03 - Wallpaper, whichever store ADR-354 chooses
+- **Setup:** one phone (and the desktop if an app-wide setting is chosen).
+- **Steps:** set each of the five presets and one custom colour in a chat; kill and relaunch; switch theme; open a second
+  chat (per-chat option) or check every chat (app-wide option).
+- **Pass:** the chosen wallpaper survives the relaunch; its light and dark variants both apply; bubbles keep AA contrast
+  on every preset; the "This chat" / "All chats" scope behaves as labelled (if built).
+- **Status:** TODO
+
+### CHATUI-04 - Contrast and 200% font scale (after the port)
+- **Setup:** Android with large font / display size 200%, light and dark; a chat with incoming, outgoing, file, voice and
+  reply bubbles.
+- **Steps:** scroll the thread; open the wallpaper sheet; open Chat appearance.
+- **Pass:** no text is clipped; metadata still meets 4.5:1; the bubble tail does not clip text; the composer stays one
+  row at 200%.
+- **Status:** TODO
+
+### CHATUI-05 - RTL
+- **Setup:** Android set to an RTL locale (Arabic or Hebrew), two paired phones.
+- **Steps:** open a chat; send and receive; open the wallpaper sheet.
+- **Pass:** the bubble scoop mirrors to the sender's side, the header back arrow and the composer order mirror, no icon
+  is upside down, and the wallpaper sheet's tiles keep their labels.
+- **Status:** TODO
+
+### CHATUI-06 - Reduced motion on a LOW tier handset (after the port)
+- **Setup:** a low-end device or the performance tier set to LOW; Android "Remove animations" on.
+- **Steps:** type and send, open the wallpaper sheet, switch wallpaper.
+- **Pass:** no entrance travel, no scale pops, no sheet rise; state still changes instantly; nothing is left invisible.
+- **Status:** TODO
+
+### CHATUI-07 - Desktop window at 100/125/150% and the narrow minimum (after the port)
+- **Setup:** Windows desktop build, UI scale 100/125/150%, window at the 640x480 minimum and maximised.
+- **Steps:** open a chat in two panes, type six lines, open the wallpaper sheet.
+- **Pass:** the composer keeps its 820dp measure centred in a wide window; no horizontal scrollbar; the sheet fits
+  inside the conversation pane; the header keeps three actions with the name readable.
+- **Status:** TODO
