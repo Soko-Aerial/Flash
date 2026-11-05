@@ -5384,8 +5384,9 @@ says DELIVERED or HELD. In step 5 the first attempt is `path=radio` and about 25
 
 Interpretation if it fails: `path=hub` with `hub.online result=read count=0` means the order fix is not in the binary (old build);
 `path=hub` with `hub.online count>0` is correct behaviour — the hub really had a session for the peer, so look at the hub side, not
-the radio; `radio.path result=not_reachable gateway=true connected=true` means the desktop holds no radio key for that peer (re-pair
-for radio, `RADCHAT-DEV01`); `radio.path result=refused` is explained by the next line, `radio.send.fail reason=…`.
+the radio; `radio.path result=not_reachable` now carries `policy`, `pairKey`, `gateway` and `connected`: `policy=NEVER` is the
+per-chat choice, `pairKey=false` means no radio pairing key (re-pair for radio, `RADCHAT-DEV01`), and `connected=false` is the
+link (ADR-354); `radio.path result=refused` is explained by the next line, `radio.send.fail reason=…`.
 
 ### Source
 ADR-229 (`docs/decisions.md`), ERROR-869 round 3 (`logs/errors.md`), `docs/network/RADIO-BLUETOOTH-CHANNELS.md` §5 and §7.
@@ -7590,3 +7591,77 @@ tests and do not change the shipped console. Source: `docs/ui/hub-admin-console-
 - **Pass:** the shipped router, CSP-safe DOM, i18n, step-up, error boundaries and print rules still pass; no regression
   in the console web tests; the redesigned screens are browser-checked before merge.
 - **Source:** `docs/ui/hub-admin-console-redesign.md` section 10. **Status:** TODO (blocked on owner approval)
+
+---
+
+## RADIO-PATH-01 — Live-link, policy and LAN-dial behaviour on the two stations (2026-11-05)
+
+### Setup
+Two paired stations (Android phone + desktop) with the radio gateway connected on both, Profile M confirmed, and **Wi-Fi off on both**. The phone is on the current build containing ADR-354. The desktop may keep Wi-Fi on to use the hub; the phone's Wi-Fi stays off for steps 1-4.
+
+### Steps
+1. In the phone's direct chat details, set **Radio fallback** to **Automatic**. Send one short text from the phone. Confirm the desktop receives it and the phone's log has `radio.tx.text`, `radio.rx.ack`.
+2. Turn the radio off (or walk out of range) while leaving the gateway switch on. Send a second text from the phone. Watch the next 30 s.
+3. Turn the radio back on and let the link reconnect. Do not touch the phone's chat. Watch the outbox retry.
+4. In the details sheet set **Radio fallback** to **Never**. Send a third text with Wi-Fi still off. Then send a text from the desktop to the phone.
+5. Finally set it back to **Automatic** and send one more text.
+
+### Pass
+- Step 1: `radio.path peer=… message=… result=sent policy=AUTO pairKey=true gateway=true connected=true`, then `chat.path … path=radio`; exactly one `radio.tx.text` for the text (retry=false).
+- Step 2: the phone's log shows `radio.path … result=not_reachable policy=AUTO pairKey=true gateway=true connected=false`; the outbox does **not** show `radio.tx.text`; the LAN dial (`Auto-connect dialing` / `ensureSession`) is attempted on the next pass rather than being skipped. There is no ten-minute gap with `chat.path path=none` and no WS dial.
+- Step 3: once the link is back, the next retry emits `radio.tx.text` and the text arrives once; no duplicate bubble on the desktop.
+- Step 4: `radio.path … result=not_reachable policy=NEVER pairKey=true gateway=true connected=true`; **no** `radio.tx.text` from the phone for the third text; the inbound desktop->phone radio text still appears and is ACKed. The phone may deliver its own text by LAN/hub, but never by radio.
+- Step 5: radio is used again and the message arrives once.
+
+### Source
+ADR-354, ERROR-985, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` P-2.1, phone log 2026-11-03 18:34-18:39 and 2026-11-05 12:20-12:25.
+
+### Status
+TODO
+
+---
+
+## XFER-RETRY-01 — Retrying a restored 0-byte attachment must not kill the app (2026-11-05)
+
+### Setup
+The Infinix X6882B that produced `flash-log-1793881521325.txt`, with at least one Failed sending row whose source could not be read (the log had two `send refused … reason=unreadable` rows). The build contains ADR-354/ERROR-984.
+
+### Steps
+1. Open **Transfers**, find the Failed row that says the file could not be read (or create one by revoking access to a picked file before sending).
+2. Tap **Retry** once. Wait 5 s.
+3. Force-stop and reopen the app. Tap **Retry** on the same row again.
+4. Repeat once more with a genuinely empty file.
+
+### Pass
+- The app never disappears; no `E/CRASH … totalBytes must be > 0` in the log.
+- The row stays **Failed** with the same human sentence (`This file is empty…` or `Couldn't read the file…`), and no offer is sent to the peer.
+- A readable zero-size picker result (unknown size) that can be measured still sends normally.
+
+### Source
+ERROR-984, ADR-354, `core/transfer/.../RealFlashTransferRepository.kt` `relaunchSend`/`executeSend`, test `TransferRefusalAndWordingTest`.
+
+### Status
+TODO
+
+---
+
+## FGS-01 — Foreground service promotion on a cold start (2026-11-05)
+
+### Setup
+Infinix X6882B (Transsion/XOS), cold start from the launcher with the radio gateway and mesh enabled.
+
+### Steps
+1. Force-stop Flash, then launch it.
+2. Within 5 s check the notification shade and the log.
+3. Repeat with a transfer queued and with the radio gateway on.
+
+### Pass
+- No `RemoteServiceException$ForegroundServiceDidNotStartInTimeException` and no `E/CRASH: uncaught in thread main`.
+- The foreground notification appears; the service remains alive for at least 60 s.
+- If the device reports the audio keep-alive tier, the FGS type includes media playback where it did before (the later `startAsForeground(transfers)` call may add it).
+
+### Source
+ERROR-984 log (2026-10-26 10:29:53), `FlashBackgroundService.onCreate`, ADR-354 note.
+
+### Status
+TODO

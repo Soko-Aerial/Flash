@@ -559,6 +559,25 @@ public class RealFlashTransferRepository(
         runCatching { FlashLog.w("TRANSFER", "resume refused transferId=$transferId: $detail") }
     }
 
+    /**
+     * RADIO-PATH-01 follow-up (phone log 2026-11-03): a Failed send row with `bytesTotal = 0`
+     * reached `executeSend` and `FileMeta` threw `IllegalArgumentException` on a worker thread; the
+     * uncaught exception killed the process, and the peer's own RESUME could repeat it after every
+     * relaunch. A failed row is a normal state, so it is failed visibly here instead.
+     */
+    private suspend fun failSendRow(transferId: String, message: String) {
+        updateTransferState(transferId) {
+            it.copy(
+                state = FlashTransferState.Failed,
+                errorMessage = message,
+                speedBytesPerSec = 0L,
+                etaSeconds = 0L,
+            )
+        }
+        runCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
+        runCatching { FlashLog.w("TRANSFER", "send refused transferId=$transferId reason=$message") }
+    }
+
     private suspend fun executeSend(
         transferId: String,
         fileId: String,
@@ -569,6 +588,13 @@ public class RealFlashTransferRepository(
         peerDeviceId: String? = null,
         fileSha256Hex: String? = null,
     ) {
+        if (fileSize <= 0L) {
+            failSendRow(
+                transferId,
+                if (fileSize == 0L) TransferFailureText.EMPTY_FILE else TransferFailureText.UNREADABLE_FILE,
+            )
+            return
+        }
         val meta = FileMeta(
             transferId = transferId,
             fileId = fileId,
@@ -1045,16 +1071,31 @@ public class RealFlashTransferRepository(
             emitOutgoing(transferId, transfer.peerDeviceId, ACTION_RESUME)
         }
         val job = repositoryScope.launch(workerDispatcher) {
-            store?.setStatus(transferId, FlashTransferState.Queued.name)
+            // A retry of a row whose size was never known must measure the source again. Passing
+            // `bytesTotal = 0` straight to `executeSend` crashed the process on 2026-11-03; this
+            // path either recovers the real size or leaves a Failed row with a sentence.
+            val sourceUri = transfer.sourceUri ?: transfer.fileName
+            val measured = if (transfer.bytesTotal > 0L) transfer.bytesTotal else measureSourceBytes(sourceUri)
+            if (measured == null || measured <= 0L) {
+                failSendRow(
+                    transferId,
+                    if (measured == null) TransferFailureText.UNREADABLE_FILE else TransferFailureText.EMPTY_FILE,
+                )
+                return@launch
+            }
+            if (measured != transfer.bytesTotal) {
+                updateTransferState(transferId) { it.copy(bytesTotal = measured) }
+            }
+            runCatching { store?.setStatus(transferId, FlashTransferState.Queued.name) }
             executeSend(
                 transferId = transferId,
                 // Stable wire identity: the receiver's session is keyed on (transferId, fileId);
                 // a fresh fileId here would be rejected as SESSION_CONFLICT.
                 fileId = transfer.wireFileId ?: UuidIdGenerator.newId(),
                 // Resume MUST re-read the original source, not the display name.
-                fileUri = transfer.sourceUri ?: transfer.fileName,
+                fileUri = sourceUri,
                 displayName = transfer.fileName,
-                fileSize = transfer.bytesTotal,
+                fileSize = measured,
                 peerName = transfer.peerName,
                 peerDeviceId = transfer.peerDeviceId,
             )

@@ -1,6 +1,19 @@
 # Current Handoff
 
-> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` AND PUSHED (dev `d77b8261`); NOT DEVICE-VERIFIED.**
+> **2026-11-05 (latest) - RADIO PATH SWITCHING: FIXED IN CODE ON BRANCH `fix/radio-path-switching`, HOST-TESTED, NOT
+> COMMITTED TO `dev`, NOT DEVICE-VERIFIED.** The owner's phone log proved two separate defects. (1) `isRadioReachable`
+> checked only the pairing key, so with the gateway on and the link down the host skipped the LAN dial, the radio
+> refused `not_connected`, and the text had no path for 10 minutes; the 2026-11-05 log showed the same probe with
+> `connected=true` and inbound radio working, which means the per-chat policy was `NEVER` and the probe could not say
+> so. (2) A retry of a restored 0-byte transfer reached `FileMeta(0)` and killed the process (ERROR-984). Fixed:
+> gateway+link+key readiness, no radio-key skip of the LAN dial, policy read from the already-loaded conversation row,
+> `radio.path policy/pairKey/gateway/connected`, transient Profile-M refusal, retry re-measurement, and FGS promotion
+> before the Transsion keep-alive work. Tests: `RadioChatBridgeTest`, `RealFlashChatRepositoryTest` (105), transfer
+> refusal tests and `:core:radio:jvmTest` green. Owed device checks `RADIO-PATH-01`, `XFER-RETRY-01`, `FGS-01`.
+> Authority: `docs/decisions.md` ADR-354, `logs/errors.md` ERROR-984..986, `logs/progress.md` 2026-11-05 radio path.
+> **The phone was not connected; nothing here is device-verified.**
+>
+> **2026-11-05 - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` AND PUSHED (dev `d77b8261`); NOT DEVICE-VERIFIED.**
 > Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
 > (`:desktop:radioGatewayDemo`) and captured at 1180x820 and 900x820, with the settings sheet and the pair sheet opened:
 > evidence in `design/radio-v3/compose/`. The port was corrected against the screenshots (30 dp block rhythm, 780 dp

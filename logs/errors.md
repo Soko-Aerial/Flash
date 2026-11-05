@@ -16668,3 +16668,118 @@ Full messaging suites rerun as part of the gate. No device dependency.
 
 ### Status
 FIXED (host-tested).
+
+## ERROR-984 - A retry of a restored zero-byte transfer killed the Android process
+
+### Date
+2026-11-05
+
+### Area
+Transfers / retry
+
+### Symptoms
+The Infinix phone restarted on 2026-11-03 at 18:39:02 and again at 18:39:13. Both logs showed
+`E/CRASH: uncaught in thread DefaultDispatcher-worker-*` and
+`java.lang.IllegalArgumentException: totalBytes must be > 0, was 0` at `Chunker.kt:32`, reached from
+`RealFlashTransferRepository.executeSend` through `relaunchSend`.
+
+### Root cause
+`sendFileWithIdentity` deliberately stores a Failed row with `bytesTotal = 0` for an empty or unreadable
+source. `relaunchSend` passed that value straight to `FileMeta`, whose constructor requires a positive size.
+The throw happened before the send job's `try` block, so the coroutine exception was uncaught.
+
+### Working fix
+`relaunchSend` now re-measures a zero/unknown source with `measureSourceBytes`; a null or non-positive result
+leaves a Failed row with `UNREADABLE_FILE`/`EMPTY_FILE`. `executeSend` also refuses `fileSize <= 0` before
+constructing `FileMeta` as a second guard.
+
+### Verification
+`:core:transfer:testAndroidHostTest --tests TransferRefusalAndWordingTest` passes, including two new retry
+tests (empty and unreadable rows) that used to reach the crash path. Not device-verified.
+
+### Related files
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt`
+- `core/transfer/src/androidHostTest/kotlin/com/transfer/flash/core/transfer/TransferRefusalAndWordingTest.kt`
+
+### Status
+FIXED (host-tested).
+
+## ERROR-985 - A radio key was treated as a live path, so a text skipped the LAN and then had nowhere to go
+
+### Date
+2026-11-05
+
+### Area
+Radio / transport switching
+
+### Symptoms
+Phone log 2026-11-03 18:34-18:38: ten identical
+`radio.send.fail ... reason=not_connected`, `radio.path ... result=refused gateway=true connected=false`,
+`chat.path ... path=radio_refused`; no WS dial for 5.5 minutes; the peer's inbound LAN session came up only at
+18:39:12. Phone log 2026-11-05 12:22-12:24: `radio.path result=not_reachable gateway=true connected=true`
+while the same peer's inbound radio text was decrypted and ACKed; the text eventually went by the hub.
+
+### Root cause
+`isRadioReachable` checked only the 32-byte radio key, not `isGatewayEnabled`/`isConnected`. The host
+transport sink skipped the on-demand LAN dial when that key existed (`radioCanCarry`), and the radio then
+refused with `not_connected`; the message had no path until the hub recovered. On 2026-11-05 the link was up,
+so the remaining false term was the per-chat `NEVER` policy, which the `not_reachable` probe could not name.
+
+### Working fix
+`RadioOutboxPort.isRadioReachable` / `RadioChatBridge.canCarry` require gateway + connected + key. The host
+transport sink no longer skips `ensureSession` for a radio key. `radio.path` now prints `policy`, `pairKey`,
+`gateway` and `connected`. The send path reads the conversation policy once from the row already loaded by the
+outbox drain (the in-process override still wins), avoiding a second DB query.
+
+### Verification
+`:core:messaging:testAndroidHostTest --tests RealFlashChatRepositoryTest` (105 tests) and
+`:core:messaging:jvmTest --tests RadioChatBridgeTest` pass. New tests:
+`RADIO-PATH-01 a paired radio with the link down is not treated as a live path`,
+`RADIO-PATH-01 a chat set to Never never transmits even when the radio is ready`, and
+`testCanCarry_onlyReachablePairedPeers` now also asserts the disconnected case. Not device-verified.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/HostedRadioOutboxPort.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/RadioChatBridge.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+
+### Status
+FIXED (host-tested).
+
+## ERROR-986 - A temporary Profile-M refusal permanently failed the radio message and hid the hub fallback
+
+### Date
+2026-11-05
+
+### Area
+Radio / delivery state
+
+### Symptoms
+Phone log 2026-10-28 12:18:50: `radio.send.fail ... reason=authorisation attempt=1..4`, four rapid
+`radio.path result=refused`, then the same message was transmitted at 12:19:05 and ACKed with
+`rttMs=18425` (measured from composition, not transmit).
+
+### Root cause
+`RadioChatBridge` treated every `RadioSendResult.RefusedAuthorization` as permanent: it called
+`onMessageFailed` and set a failure note. The repository then set `radioRefusedForGood` and skipped the hub
+mailbox. A missing operator confirmation was therefore unrecoverable in that pass. `rttMs` used the message's
+creation time, so it measured queueing and refusals, not air time.
+
+### Working fix
+`RadioDeliveryNote.transient` marks a temporary refusal. `RefusedAuthorization` sets it, does not call
+`onMessageFailed`, and leaves the hub mailbox available. `PendingAckTable` records `txAtMs` when the
+transmitter finishes; `radio.rx.ack` reports `rttMs` from that point and `ageMs` from the original send.
+
+### Verification
+`RadioChatBridgeTest` (new transient-auth test) and `:core:radio:jvmTest` pass. Not device-verified.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/RadioChatBridge.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/RadioDeliveryNote.kt`
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/chat/PendingAckTable.kt`
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/chat/RadioChatEngine.kt`
+
+### Status
+FIXED (host-tested).

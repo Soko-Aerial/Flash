@@ -23,6 +23,8 @@ class RadioChatBridgeTest {
         val reachablePeers = mutableSetOf<String>()
 
         val sentMessages = mutableListOf<SentMessage>()
+        /** Forces one outcome instead of SentWaitingAck, for refusal-path tests. */
+        var forcedResult: RadioSendResult? = null
         val inboundFlow = MutableSharedFlow<RadioInboundMessage>(replay = 16)
         val receiptFlow = MutableSharedFlow<RadioDeliveryReceipt>(replay = 16)
 
@@ -57,6 +59,7 @@ class RadioChatBridgeTest {
         ): RadioSendResult {
             if (!isConnectedValue) return RadioSendResult.NotConnected("radio not connected")
             if (recipientDeviceId !in reachablePeers) return RadioSendResult.RefusedUnreachable("peer unreachable")
+            forcedResult?.let { return it }
             sentMessages += SentMessage(recipientDeviceId, messageId, text, sentAt, emergency)
             return RadioSendResult.SentWaitingAck
         }
@@ -77,6 +80,34 @@ class RadioChatBridgeTest {
 
         assertTrue(bridge.canCarry("peer-radio"))
         assertFalse(bridge.canCarry("peer-lan-only"))
+
+        // RADIO-PATH-01: a key is not a path. A gateway that is on while the link is down must
+        // not make a text skip the LAN dial.
+        port.isConnectedValue = false
+        assertFalse(bridge.canCarry("peer-radio"))
+    }
+
+    @Test
+    fun testRefusedAuthorization_isTransient_andDoesNotFailTheMessage() = runTest {
+        val port = FakeRadioOutboxPort()
+        port.reachablePeers += "peer-1"
+        port.forcedResult = RadioSendResult.RefusedAuthorization("Profile M unconfirmed")
+        var failed = false
+        val bridge = RadioChatBridge(
+            port = port,
+            scope = backgroundScope,
+            onInboundMessage = { _, _, _, _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
+            onMessageFailed = { failed = true },
+        )
+        val frame = MessageWireFrame.TextMessage("msg-auth", "conv-1", "me", "Me", "hello", 1000L)
+
+        assertFalse(bridge.sendDirect("peer-1", frame))
+        assertFalse(failed, "a temporary Profile-M refusal must not kill the row")
+        val note = bridge.notes.value["msg-auth"]
+        assertNotNull(note)
+        assertTrue(note.isFailure)
+        assertTrue(note.transient)
     }
 
     @Test

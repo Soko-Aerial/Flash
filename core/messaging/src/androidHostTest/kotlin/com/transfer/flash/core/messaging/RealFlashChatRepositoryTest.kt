@@ -401,7 +401,11 @@ class RealFlashChatRepositoryTest {
             kotlinx.coroutines.flow.MutableSharedFlow<com.transfer.flash.core.messaging.radio.RadioDeliveryReceipt>(replay = 16)
 
         override val isGatewayEnabled: Boolean = true
-        override val isConnected: Boolean = true
+
+        /** Set false to model a gateway that is on while the serial/Bluetooth link is down. */
+        @kotlin.concurrent.Volatile
+        var connected: Boolean = true
+        override val isConnected: Boolean get() = connected
         override val connectionStatus: MutableStateFlow<com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus> =
             MutableStateFlow(com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus.CONNECTED)
 
@@ -4407,6 +4411,42 @@ class RealFlashChatRepositoryTest {
 
         assertEquals(1, rig.relay.sent.size)
         assertTrue(radio.textSent.isEmpty())
+    }
+
+    @Test
+    fun `RADIO-PATH-01 a paired radio with the link down is not treated as a live path`() = runBlocking {
+        // 2026-11-03 phone log: gateway=true, connected=false, but isRadioReachable() only checked
+        // the key. The host skipped the LAN dial and the radio refused, leaving chat.path=none.
+        val radio = FakeRadioOutboxPort().apply {
+            reachable = true
+            connected = false
+        }
+        val rig = hubRig(lanUp = false, radio = radio)
+
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("link is down")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+
+        assertEquals("the hub mailbox, not the dead radio", 1, rig.relay.sent.size)
+        assertTrue(radio.textSent.isEmpty())
+    }
+
+    @Test
+    fun `RADIO-PATH-01 a chat set to Never never transmits even when the radio is ready`() = runBlocking {
+        val radio = FakeRadioOutboxPort()
+        val rig = hubRig(lanUp = false, radio = radio)
+        rig.repository.setRadioPolicy(
+            "colleague",
+            com.transfer.flash.core.common.model.FlashRadioPolicy.NEVER,
+        )
+
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("keep this off the air")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+        kotlinx.coroutines.delay(300)
+
+        assertEquals(1, rig.relay.sent.size)
+        assertTrue("NEVER is outbound-only", radio.textSent.isEmpty())
     }
 
     @Test

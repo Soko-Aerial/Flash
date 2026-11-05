@@ -217,11 +217,11 @@ internal class DatabaseTrimRegistration(
 /**
  * Slow-statement telemetry (OPT-O28-05).
  *
- * Room reports a statement through the query callback *before* it runs, so a duration can only be
- * derived from the gap to the next statement on the same thread. Suspend DAO queries and every
- * other statement run on the single `FlashDbQueryCallback` executor thread that [FlashDatabaseOpener.openEncrypted]
- * installs, which makes that gap the previous statement's runtime. Only statements at or above
- * [THRESHOLD_MS] are logged, so the log stays quiet during normal use.
+ * Room reports a statement through the query callback *before* it runs, so a duration cannot be
+ * measured here. The value below is the **idle gap to the next statement on the same callback
+ * thread**, including screen-off and OEM-freezer time; it is not the query's runtime. The old text
+ * called it `slow statement`, and a 70-minute gap was read as a 70-minute database lock in the
+ * 2026-11-05 phone log. The line is renamed so nobody repeats that diagnosis.
  */
 private object SlowQueryTelemetry {
     private const val THRESHOLD_MS = 100L
@@ -235,7 +235,7 @@ private object SlowQueryTelemetry {
         pending.get()?.let { previous ->
             val elapsedMs = (nowNs - previous.startedNs) / 1_000_000
             if (elapsedMs >= THRESHOLD_MS) {
-                FlashLog.w("DATABASE", "slow statement ${elapsedMs}ms: ${previous.sql.take(180)}")
+                FlashLog.w("DATABASE", "database idle gap ${elapsedMs}ms before: ${previous.sql.take(180)}")
             }
         }
         pending.set(Pending(sqlQuery, nowNs))
