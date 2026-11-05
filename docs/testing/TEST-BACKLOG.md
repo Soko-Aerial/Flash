@@ -2887,6 +2887,23 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-05 - Chat redesign port, first device pass (Infinix X6882B)
+
+Build: branch `design/chat-redesign`, arm64 debug APK from the port + fixes (`7442ef16`, `b1a8c2da`, `4e71680a`,
+plus the device-pass fixes in the next commit). Device: Infinix X6882B, Android 14, 1080x2460 @480dpi.
+
+Ran: CHATUI-13 PASS, CHATUI-14 PASS, CHATUI-15 PARTIAL, CHATUI-16 not run as a full walk. Wallpaper presets and the
+six named colours, Undo, persistence across force-stop, dark mode, the composer's mic-to-send crossfade with the IME
+open, the compact header lock and the profile sheet were exercised by hand.
+
+Found and fixed: **ERROR-985** (the wallpaper modifier dropped its receiver chain, so every preset swatch measured
+0dp and the preview lost its height/clip), the header encryption chip clipping to "En" (now the compact lock), a
+14-character header title truncating (17sp title + tighter paddings; 13 fits), and a PowerShell round trip that
+corrupted the `Applied ...` line (the ERROR-984 class; repaired, codepoint-checked).
+
+Still owed: the group info/settings re-layout, inline bubble time, a file bubble on the wallpaper, the full icon walk,
+the desktop half of every item above, and the wave of existing `CHATUI-01..12` mock checks.
+
 ### 2026-11-01 — Wave 4 repaired host verification (not a device/performance result)
 - **Code / commits:** E delivered 00a7a51f plus reviewed repairs committed as b2b61b92; K delivered 6d9c9227 plus
   reviewed repairs committed as 22a53994; both base baf77753. These targeted runs preceded the repair commits;
@@ -7530,7 +7547,12 @@ not the app.
 - **Pass:** every chat uses the chosen preset (app-wide); the choice survives a restart on both hosts; each preset has
   its light and its dark ground; message text and timestamps keep their contrast on all five; an unreadable/absent
   stored value falls back to Graphite instead of failing a launch.
-- **Status:** TODO
+- **Status:** PASS 2026-11-05 - Infinix X6882B (Android 14) on the port build. The chosen preset survived a
+  force-stop/relaunch and applied to every chat; light and dark grounds were seen (Signal, Sand, custom); `Undo`
+  returned to the value the sheet opened with; an unknown stored value still falls back to Graphite (unit test).
+  Desktop half not run.
+- **Evidence:** `docs/ui/chat-appearance-2026-11-05.png`, `chat-wallpaper-pulse-2026-11-05.png`,
+  `chat-wallpaper-dark-2026-11-05.png`.
 
 ### CHATUI-14 - Overflow menu and Chat appearance entry
 - **Setup:** a 1:1 chat and a v2 group, both hosts.
@@ -7539,7 +7561,11 @@ not the app.
 - **Pass:** the lists match `FlashConversationMenuMath` including Chat appearance; the popover is 252dp with 44dp rows;
   each item opens its surface; destructive items keep their confirmations; the menu is reachable with one thumb and
   dismisses with back/Escape.
-- **Status:** TODO
+- **Status:** PASS 2026-11-05 - 1:1 chat on the Infinix. The menu lists match `FlashConversationMenuMath` (View
+  profile, Search, Chat appearance, Revoke trust, Mark as unread, Clear conversation); Chat appearance opens the
+  sheet; View profile opens the peer sheet; the popover is 252dp wide with 52dp rows (4dp over the mock - Material's
+  minimum height kept, not forced); back dismisses it. Group menu and desktop not run.
+- **Evidence:** the session screenshots in the device folder (05, 07, 09).
 
 ### CHATUI-15 - Header and composer on a phone
 - **Setup:** Android phone, two paired chats; a hardware keyboard for the desktop step.
@@ -7548,7 +7574,12 @@ not the app.
 - **Pass:** the three header actions fit with the name and presence; the mic and send share one 44dp slot with a
   crossfade and never move the pill; the pill grows to 6 lines; the IME never overlaps the composer; the reply dock
   matches the design.
-- **Status:** TODO
+- **Status:** PARTIAL 2026-11-05 - Infinix, one 1:1 chat. The three header actions fit beside a 34dp avatar; the
+  compact lock no longer clips; a 13-character name fits ("Flash Gazelle"), 14 truncates ("Flash Hedgeh...") - the
+  mock's 40dp web buttons vs the app's 48dp touch targets; the send key replaces the mic in the same 44dp slot with
+  the IME open and no width jump; the pill focus ring and the 44dp attach disc are visible. Hold-to-record, slide to
+  cancel and the locked recording bar were **not** exercised. Desktop not run.
+- **Evidence:** `docs/ui/chat-composer-focus-2026-11-05.png`.
 
 ### CHATUI-16 - The full icon set at 24dp and 48dp
 - **Setup:** Android and Windows builds from the icon commit.
@@ -7557,4 +7588,5 @@ not the app.
 - **Pass:** no glyph reads as a different symbol from before; stroke weight is even next to the chat glyphs; nothing
   clips its frame at 48dp; `settings` still reads as a cog, `mic_off`/`video_off` have a clear slash, and the four nav
   glyphs match the chat hand.
-- **Status:** TODO
+- **Status:** TODO - icons were seen incidentally in the nav bar, chat list, header, composer and profile sheet and
+  read coherently at 24dp; the full screen walk (calls, radio, hub, transfers) at 24/48dp and large font is owed.

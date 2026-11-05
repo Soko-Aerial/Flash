@@ -216,10 +216,12 @@ own Motion switch both collapse every animation to 1ms.
 
 ## 9. Compose port plan (after the owner approves this mock)
 
-**Status 2026-11-05: approved and partially ported.** Done: the wallpaper store and painter, the appearance sheet, the
-menu item, the thread background/day chip/unread pill/run gaps, the composer, the header, the new tokens and all 67
-icons. Open: inline bubble time, the file card's flat form, the group info/settings re-layout, the swarm map's
-12-column form, the custom colour. Deviations are recorded in ADR-354 "Implementation".
+**Status 2026-11-05 (device pass): approved and largely ported.** Done: the wallpaper store and painter (five presets
+plus the custom colour, Undo, light/dark grounds), the appearance sheet, the menu item, the thread background/day
+chip/unread pill/run gaps, the composer, the header (17sp title, compact lock), the file block's flat form, the new
+tokens and all 67 icons. Open: inline bubble time, the group info/settings re-layout, the swarm map's 12-column form,
+and the desktop half. The sheet's one omission against the mock is its Light/Dark control (Flash's theme is one
+setting owned by Settings). Deviations are recorded in ADR-354 "Implementation".
 
 Presentation only; every parameter and callback of `FlashConversationScreen` stays as it is.
 
