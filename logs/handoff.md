@@ -11,6 +11,7 @@
 > the hub name returned by `/overview`. The relay strip is sampled by the open console because the hub keeps no history.
 > **Verification:** console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route
 > rendered in Chrome at 1440/768/390; sign-in and sign-out exercised. No Android device test is relevant to the admin UI.
+> **Port commit `adb26723`** (design commit `d3fb6c33`).
 > **Still owed:** owner browser checks `CONSOLE-D02..D07`; merge of `agent/console-redesign` into `dev` is the remaining
 > integration step (the branch has the port; merge only after checking the other agent's uncommitted work in the main
 > worktree). The app handoff below still applies to `dev`.

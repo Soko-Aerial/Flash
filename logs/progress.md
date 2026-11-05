@@ -38,6 +38,7 @@ and all existing tables/forms/drawers; only the visual/shell/Overview/auth layer
   document overflow; sign-out -> login and sign-in -> Overview exercised. Device, security, tab-select, request queue,
   Audit chain strip and auth pages inspected.
 - `:server:compileKotlin` green; no Kotlin/Android code changed.
+- **Committed as `adb26723`** on `agent/console-redesign` (design commit `d3fb6c33`).
 
 ### Remaining
 - Merge `agent/console-redesign` into `dev` (the main worktree has another agent's uncommitted edits; merge only if it
