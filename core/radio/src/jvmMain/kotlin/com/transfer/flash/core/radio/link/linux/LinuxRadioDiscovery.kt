@@ -14,12 +14,13 @@ import com.transfer.flash.core.radio.link.SerialPortCatalog
 import com.transfer.flash.core.radio.link.SerialSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * Linux implementation of [RadioDeviceDiscovery] (Plan R §6, ADR-188).
@@ -27,12 +28,20 @@ import kotlinx.coroutines.withContext
  * Discovers and connects to radio peripherals on Linux:
  * 1. Serial and USB radios (e.g. `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/rfcomm*`) via [SerialPortCatalog] (jSerialComm).
  * 2. Paired Bluetooth radios via BlueZ / `bluetoothctl devices`.
- * 3. Opening link: resolves serial ports or Bluetooth RFCOMM channels cleanly without Win32 DLLs or registry calls.
+ * 3. Live Bluetooth streaming discovery via `bluetoothctl scan on` with real-time `[NEW]` and `[CHG]` event parsing.
+ * 4. Automatic agent pairing (`NoInputNoOutput`) and auto-trust (`trust <mac>`) so connections are not rejected.
+ * 5. Direct user-space RFCOMM socket links (`AF_BLUETOOTH` / `BTPROTO_RFCOMM`) without root privileges or `/dev/rfcomm0`.
  */
 public class LinuxRadioDiscovery(
     private val serialPortCatalog: SerialPortCatalog = JvmSerialPortCatalog(),
     private val commandRunner: (List<String>) -> List<String> = ::defaultLinuxCommandRunner,
+    private val scriptRunner: (List<String>, String) -> List<String> = ::defaultLinuxScriptRunner,
+    private val liveScanner: LiveScanner = DefaultBlueZLiveScanner(),
 ) : RadioDeviceDiscovery {
+
+    public fun interface LiveScanner {
+        public suspend fun scan(timeoutSeconds: Long, onDeviceDiscovered: suspend (DiscoveredDevice) -> Unit)
+    }
 
     private val bluetoothDeviceRegex = Regex("""^Device\s+([0-9A-Fa-f:]{17})\s+(.*)$""")
 
@@ -78,25 +87,25 @@ public class LinuxRadioDiscovery(
     override fun scan(timeoutMs: Long): Flow<DiscoveredDevice> = flow {
         val seen = LinkedHashMap<String, DiscoveredDevice>()
 
-        suspend fun emitNew(devices: List<DiscoveredDevice>) {
-            for (d in devices) {
-                val key = d.bluetoothAddress.uppercase()
-                if (!seen.containsKey(key)) {
-                    seen[key] = d
-                    emit(d)
-                }
+        suspend fun emitDevice(d: DiscoveredDevice) {
+            val key = d.bluetoothAddress.uppercase()
+            val existing = seen[key]
+            if (existing == null || (existing.name != d.name && d.name != d.bluetoothAddress) || existing.category != d.category) {
+                val resolvedDevice = if (existing?.isPaired == true) d.copy(isPaired = true) else d
+                seen[key] = resolvedDevice
+                emit(resolvedDevice)
             }
         }
 
-        emitNew(pairedDevices())
+        // 1. Immediately emit already known/paired devices and serial/USB ports
+        for (dev in pairedDevices()) {
+            emitDevice(dev)
+        }
 
-        val pollIntervalMs = 1_000L
-        var elapsed = 0L
-        while (elapsed < timeoutMs) {
-            currentCoroutineContext().ensureActive()
-            delay(pollIntervalMs)
-            elapsed += pollIntervalMs
-            emitNew(pairedDevices())
+        // 2. Stream live discovered devices as they broadcast
+        val timeoutSeconds = (timeoutMs / 1000L).coerceAtLeast(1L)
+        liveScanner.scan(timeoutSeconds) { dev ->
+            emitDevice(dev)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -105,15 +114,27 @@ public class LinuxRadioDiscovery(
             return@withContext PairResult.Success
         }
 
-        val output = commandRunner(listOf("bluetoothctl", "pair", device.bluetoothAddress))
+        // Register default-agent with NoInputNoOutput so pairing proceeds without hanging on stdin prompts,
+        // then initiate pair and trust.
+        val script = listOf(
+            "agent NoInputNoOutput",
+            "default-agent",
+            "pair ${device.bluetoothAddress}",
+            "trust ${device.bluetoothAddress}",
+            "quit"
+        ).joinToString("\n") + "\n"
+
+        val output = scriptRunner(listOf("bluetoothctl"), script)
         val text = output.joinToString("\n")
         if (text.contains("successful", ignoreCase = true) || text.contains("AlreadyExists", ignoreCase = true)) {
+            runCatching { commandRunner(listOf("bluetoothctl", "trust", device.bluetoothAddress)) }
             PairResult.Success
         } else {
             val paired = readBluetoothCtlDevices().any {
                 it.bluetoothAddress.equals(device.bluetoothAddress, ignoreCase = true)
             }
             if (paired) {
+                runCatching { commandRunner(listOf("bluetoothctl", "trust", device.bluetoothAddress)) }
                 PairResult.Success
             } else {
                 PairResult.Failed(RadioConnectFailureReason.PAIRING_REFUSED)
@@ -155,22 +176,20 @@ public class LinuxRadioDiscovery(
             return@withContext serialPortCatalog.open(rfcommPort.systemName, SerialSettings(baud = 115200))
         }
 
-        // 4. If target is a Bluetooth MAC address, attempt 'rfcomm bind' if utility is present
+        // 4. If target is a Bluetooth MAC address: connect directly via user-space RFCOMM socket (no root needed)
         if (target.contains(":") && target.length == 17) {
-            runCatching {
-                commandRunner(listOf("rfcomm", "bind", "0", target))
-            }
-            val freshPorts = serialPortCatalog.listPorts()
-            val freshRfcomm = freshPorts.firstOrNull { it.systemName.contains("rfcomm0", ignoreCase = true) }
-            if (freshRfcomm != null) {
-                return@withContext serialPortCatalog.open(freshRfcomm.systemName, SerialSettings(baud = 115200))
+            val directSocket = runCatching {
+                LinuxRfcommSocket.open(target, channel = 1, description = "rfcomm $target")
+            }.getOrNull()
+            if (directSocket != null) {
+                return@withContext directSocket
             }
         }
 
         throw LinkException(
             "${RadioConnectFailureReason.RADIO_NOT_FOUND.sentence} " +
                 "Could not connect to radio '${remembered.displayName}' at $target. " +
-                "Ensure the radio is powered on, paired in Bluetooth settings, and connected via USB (/dev/ttyUSB*) or bound to an RFCOMM port (/dev/rfcomm0)."
+                "Ensure the radio is powered on, paired in Bluetooth settings, and in range."
         )
     }
 
@@ -212,29 +231,109 @@ public class LinuxRadioDiscovery(
         return Pair(kind, category)
     }
 
-    private fun classifyLinuxName(name: String): CandidateCategory = when {
-        isKnownRadioName(name) -> CandidateCategory.KNOWN_RADIO
-        isSerialSppName(name) -> CandidateCategory.SERIAL_CAPABLE
-        else -> CandidateCategory.OTHER
-    }
+    internal companion object {
+        fun classifyLinuxName(name: String): CandidateCategory = when {
+            isKnownRadioName(name) -> CandidateCategory.KNOWN_RADIO
+            isSerialSppName(name) -> CandidateCategory.SERIAL_CAPABLE
+            else -> CandidateCategory.OTHER
+        }
 
-    private fun isKnownRadioName(text: String): Boolean {
-        val lower = text.lowercase()
-        return KNOWN_RADIO_KEYWORDS.any { it in lower }
-    }
+        fun isKnownRadioName(text: String): Boolean {
+            val lower = text.lowercase()
+            return KNOWN_RADIO_KEYWORDS.any { it in lower }
+        }
 
-    private fun isSerialSppName(text: String): Boolean {
-        val lower = text.lowercase()
-        return SERIAL_SPP_KEYWORDS.any { it in lower }
-    }
+        fun isSerialSppName(text: String): Boolean {
+            val lower = text.lowercase()
+            return SERIAL_SPP_KEYWORDS.any { it in lower }
+        }
 
-    private companion object {
         val KNOWN_RADIO_KEYWORDS: List<String> = listOf(
             "vr-n76", "uv-pro", "btech", "kiss", "tnc", "aprs", "mobilinkd", "yaesu", "kenwood", "icom"
         )
         val SERIAL_SPP_KEYWORDS: List<String> = listOf(
             "serial", "spp", "cp210", "ftdi", "ch340", "uart"
         )
+    }
+}
+
+/**
+ * Default live scanner that runs `bluetoothctl scan on` with line-buffered streaming (`stdbuf -oL`).
+ */
+internal class DefaultBlueZLiveScanner(
+    private val commandPrefix: List<String> = defaultScanCommandPrefix(),
+) : LinuxRadioDiscovery.LiveScanner {
+
+    private val newDeviceRegex = Regex("""(?:\[\s*NEW\s*\]\s+Device|Device)\s+([0-9A-Fa-f:]{17})\s+(.*)""")
+    private val nameChangeRegex = Regex("""\[\s*CHG\s*\]\s+Device\s+([0-9A-Fa-f:]{17})\s+(?:Name|Alias):\s*(.*)""")
+
+    override suspend fun scan(timeoutSeconds: Long, onDeviceDiscovered: suspend (DiscoveredDevice) -> Unit) {
+        withContext(Dispatchers.IO) {
+            val cmd = commandPrefix + listOf("--timeout", timeoutSeconds.toString(), "scan", "on")
+            val process = runCatching {
+                ProcessBuilder(cmd)
+                    .redirectErrorStream(true)
+                    .start()
+            }.getOrNull() ?: return@withContext
+
+            try {
+                process.inputStream.bufferedReader().useLines { lines ->
+                    for (line in lines) {
+                        currentCoroutineContext().ensureActive()
+                        val mNew = newDeviceRegex.find(line)
+                        if (mNew != null) {
+                            val mac = mNew.groupValues[1]
+                            val name = mNew.groupValues[2].trim()
+                            val category = LinuxRadioDiscovery.classifyLinuxName(name)
+                            onDeviceDiscovered(
+                                DiscoveredDevice(
+                                    name = name.ifBlank { mac },
+                                    bluetoothAddress = mac,
+                                    isPaired = false,
+                                    kind = CandidateKind.BLUETOOTH_SERIAL,
+                                    category = category,
+                                )
+                            )
+                            continue
+                        }
+
+                        val mChg = nameChangeRegex.find(line)
+                        if (mChg != null) {
+                            val mac = mChg.groupValues[1]
+                            val name = mChg.groupValues[2].trim()
+                            if (name.isNotBlank()) {
+                                onDeviceDiscovered(
+                                    DiscoveredDevice(
+                                        name = name,
+                                        bluetoothAddress = mac,
+                                        isPaired = false,
+                                        kind = CandidateKind.BLUETOOTH_SERIAL,
+                                        category = LinuxRadioDiscovery.classifyLinuxName(name),
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            } finally {
+                runCatching { process.destroyForcibly() }
+                // Restore controller state to scan off
+                runCatching {
+                    ProcessBuilder("bluetoothctl", "scan", "off").start().waitFor(1, TimeUnit.SECONDS)
+                }
+            }
+        }
+    }
+
+    private companion object {
+        fun defaultScanCommandPrefix(): List<String> {
+            val hasStdbuf = File("/usr/bin/stdbuf").isFile
+            return if (hasStdbuf) {
+                listOf("stdbuf", "-oL", "bluetoothctl")
+            } else {
+                listOf("bluetoothctl")
+            }
+        }
     }
 }
 
@@ -245,6 +344,21 @@ private fun defaultLinuxCommandRunner(command: List<String>): List<String> {
             .start()
         val lines = process.inputStream.bufferedReader().use { it.readLines() }
         process.waitFor()
+        lines
+    }.getOrDefault(emptyList())
+}
+
+private fun defaultLinuxScriptRunner(command: List<String>, scriptInput: String): List<String> {
+    return runCatching {
+        val process = ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .start()
+        process.outputStream.bufferedWriter().use { writer ->
+            writer.write(scriptInput)
+            writer.flush()
+        }
+        val lines = process.inputStream.bufferedReader().use { it.readLines() }
+        process.waitFor(10, TimeUnit.SECONDS)
         lines
     }.getOrDefault(emptyList())
 }

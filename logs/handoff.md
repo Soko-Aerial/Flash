@@ -1,6 +1,13 @@
 # Current Handoff
 
-> **2026-11-05 (latest) — LINUX DESKTOP PARITY: BLUETOOTH/RADIO, XDG AUTOSTART, BAND DETECTION & FILE REVEAL IMPLEMENTED.**
+> **2026-11-05 (latest) — LINUX BLUETOOTH: LIVE SCANNING, AUTOMATED AGENT PAIRING & USER-SPACE RFCOMM IMPLEMENTED.**
+> Following user feedback regarding static scan results and pairing takeover:
+> 1. **Live Discovery:** Replaced static BlueZ cache checks in `LinuxRadioDiscovery.scan` with active real-time discovery (`stdbuf -oL bluetoothctl scan on`), streaming nearby devices immediately as they broadcast (`[NEW]` and `[CHG]`).
+> 2. **Automated Agent Pairing:** Script runner registers default agent with capability `NoInputNoOutput`, pairs, and executes `trust <mac>` so BlueZ does not reject future RFCOMM connections or block on unhandled stdin prompts.
+> 3. **User-Space RFCOMM Sockets:** Created [`LinuxRfcommSocket`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRfcommSocket.kt) using POSIX `AF_BLUETOOTH` (31) / `BTPROTO_RFCOMM` (3) sockets via standard `libc`. Bypasses the root-only `rfcomm bind` restriction and connects directly to Bluetooth SPP devices without `sudo` or `/dev/rfcomm0`.
+> Verification: `:core:radio:jvmTest` (7 suites green, including `LinuxRadioDiscoveryTest`), `:desktop:jvmTest` (all radio tests green).
+
+> **2026-11-05 — LINUX DESKTOP PARITY: BLUETOOTH/RADIO, XDG AUTOSTART, BAND DETECTION & FILE REVEAL IMPLEMENTED.**
 > Complete Linux parity audit and implementation across recent features:
 > 1. **Bluetooth & Radio Link Layer:** Implemented [`LinuxRadioDiscovery`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRadioDiscovery.kt)
 >    and [`DesktopRadioDiscovery`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/DesktopRadioDiscovery.kt) factory.
