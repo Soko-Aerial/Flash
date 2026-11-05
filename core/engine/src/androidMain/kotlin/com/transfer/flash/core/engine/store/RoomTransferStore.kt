@@ -4,6 +4,7 @@ import com.transfer.flash.core.persistence.db.dao.TransferChunkDao
 import com.transfer.flash.core.persistence.db.dao.TransferDao
 import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
 import com.transfer.flash.core.persistence.db.entity.TransferEntity
+import com.transfer.flash.core.transfer.SourceIdentity
 import com.transfer.flash.core.transfer.store.TransferStore
 
 /**
@@ -104,6 +105,24 @@ public class RoomTransferStore(
 
     override suspend fun setStatus(transferId: String, status: String) {
         transferDao.setStatus(transferId, status)
+    }
+
+    override suspend fun sourceIdentity(transferId: String): SourceIdentity? =
+        transferDao.sourceIdentity(transferId)?.let {
+            SourceIdentity(
+                sizeBytes = it.sizeBytes,
+                lastModifiedMs = it.lastModifiedMs,
+                prefixSha256Hex = it.prefixSha256Hex,
+            )
+        }
+
+    override suspend fun saveSourceIdentity(transferId: String, identity: SourceIdentity) {
+        transferDao.setSourceIdentity(
+            transferId = transferId,
+            sizeBytes = identity.sizeBytes,
+            lastModifiedMs = identity.lastModifiedMs,
+            prefixSha256Hex = identity.prefixSha256Hex,
+        )
     }
 
     override suspend fun doneChunks(transferId: String): List<Int> =

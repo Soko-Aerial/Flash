@@ -29,6 +29,10 @@ public data class TransferEntity(
     /** `Sending` or `Receiving` (the domain enum name); empty for a row from before schema 20. */
     @ColumnInfo(defaultValue = "''") val direction: String = "",
     val sourceUri: String? = null,
+    /** Source identity for resume (ADR-352): size, modification time and first-64-KiB SHA-256, each nullable. */
+    val sourceSizeBytes: Long? = null,
+    val sourceLastModifiedMs: Long? = null,
+    val sourcePrefixSha256: String? = null,
     val wireFileId: String? = null,
     val localPath: String? = null,
     val errorMessage: String? = null,

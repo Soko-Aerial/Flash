@@ -941,3 +941,18 @@ immediately ask for focus again. Thrashing focus makes the other app's playback 
   during which it falls back to the Bluetooth-scan or network-traffic shield, and clears the cooldown when the app is
   foregrounded (ADR-285). Residual, stated for the record: during that window the shield it would have used is spent, so a
   Transsion device may freeze — the right trade against interrupting the user's music, but not a free one.
+
+### 7. SAF document metadata for a verified resume (ADR-352) - **verified**
+https://developer.android.com/reference/android/provider/OpenableColumns (fetched 2026-11-05)
+https://developer.android.com/reference/android/provider/DocumentsContract.Document (fetched 2026-11-05)
+
+- `OpenableColumns.SIZE` is "The number of bytes in the file identified by the openable URI. Null if unknown."
+  Providers that serve openable URIs must support the column, but a null size is explicitly allowed.
+- `DocumentsContract.Document.COLUMN_LAST_MODIFIED` is required for document providers but "may be null if unknown";
+  `COLUMN_SIZE` is likewise nullable.
+- **Project implication:** `Wiring.readSourceIdentity` queries each column on its own inside `runCatching`, treats
+  absent/null/negative values as unknown, and always computes the first-64-KiB SHA-256 by opening the URI. The digest is
+  the content signal (ADR-352); size and modification time are also checked when both sides report them, and any
+  difference refuses the resume. A `file://` URI uses
+  `File.length()`/`lastModified()`. Querying the two optional columns together would let one unsupported column fail the
+  whole cursor and lose the other signal, so they are separate queries.
