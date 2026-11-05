@@ -1,5 +1,43 @@
 # Progress Log
 
+## 2026-11-05 - ADR-351 device-verified end to end; affected-module gate green
+
+### Worked on
+The phones came back (Infinix X6882B / Android 14 and Samsung SM-G986U1 / Android 13). Rebuilt `:app:assembleDebug`
+with the header fix (`1m 20s`), installed on both in place (same debug key; data preserved), and finished the device
+verification that the earlier run could not do.
+
+### Changed / observed
+- The existing **unpaired** chats on both phones read **Not paired** in the header (the fix), not "Connected".
+- Re-paired from the Samsung; the final pair was accepted on both (the earlier code 231 289 expired before the Infinix
+  accepted while it was in a chat; pairing works from Nearby).
+- Sent and delivered `final-check`; the Samsung header read **Connected**.
+- Revoked on the Infinix. The Samsung logged
+  `Flash Hippo no longer trusts you. Pair again to reconnect.` and its header flipped to **Not paired** (plus a
+  "Connecting…" banner for the unpaired session). The Infinix moved the peer from TRUSTED PEERS to DISCOVERED.
+- The Samsung chat title still falls back to the raw device id after the trust entry is gone (cosmetic).
+
+### Verification
+- Affected-module gate: `:core:security:(jvmTest|testAndroidHostTest)`, `:core:network:(jvmTest|testAndroidHostTest)`,
+  `:core:common:(jvmTest|testAndroidHostTest)`, `:ui:chat:(jvmTest|testAndroidHostTest)`,
+  `:app:testDebugUnitTest`, `:desktop:jvmTest` -> **BUILD SUCCESSFUL in 5m 19s**, exit 0; **3,166 tests, 0 failures,
+  0 errors** (summed from 398 JUnit XML suites).
+- Device: notice, header, trusted-list removal and DISCOVERED state all verified on the final build.
+
+### Problems / remaining
+- Outbox budget unchanged: the notice is not a delivery receipt, so a message queued after the revoke still retries
+  until the wall-clock budget. A negative ack is the next step.
+- A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It cannot deliver trusted content; refusing it
+  needs a revocation tombstone.
+- The raw-id chat title after revoke is cosmetic; the app should keep the conversation's stored name.
+- Resume identity (Room v22 -> v23) is still the one unimplemented Wave 1 item.
+- Branch `fix/wave1-safety` is not merged or pushed.
+
+### Next AI
+Read ADR-351, `ERROR-982`, `W1-REVOKE-02`, and this entry. Do not call the notice unfinished: it and the header are
+device-verified. The honest remaining halves are the outbox negative ack, the revocation tombstone, the raw-id title,
+and resume identity. Pick one as its own change.
+
 ## 2026-11-04 - ADR-351 `PAIR_REVOKE` implemented; notice device-verified, header unit-tested
 
 ### Worked on

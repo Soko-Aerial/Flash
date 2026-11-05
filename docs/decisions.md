@@ -8486,8 +8486,9 @@ revoke frame; the device test made it a user-visible data-loss illusion.
   sent and delivered a message, then revoked on the Infinix. The Samsung logged
   `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped the `paired_` and `session_key_`
   entries; the Infinix moved the peer from TRUSTED PEERS to DISCOVERED. The Samsung auto-redial re-added a **pin** for
-  the unpaired peer (see the last consequence). The header fix was **not** device-verified: the phones were disconnected
-  before the fixed APK could be installed. `W1-REVOKE-02`.
+  the unpaired peer (see the last consequence). The header fix was verified on 2026-11-05 on both phones: after the
+  revoke the Samsung header read **Not paired** while an unpaired session was up; the chat title still falls back to the
+  raw device id (cosmetic). `W1-REVOKE-02`.
 - Old-peer check: a build without `pr1` still connects; A's local Forget removes the pin and closes the session; the
   old peer cannot deliver content (the pre-ADR behaviour).
 
