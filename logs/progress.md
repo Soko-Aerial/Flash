@@ -33,9 +33,13 @@ NectarLink comparison item 3 found that `executeSend` loaded `doneChunks` and tr
 
 ### Remaining
 - The changed-source resume **device** run (`W1-RESUME-01`) needs two phones; the Samsung was not on USB for this build.
-- Merge `feature/resume-identity` into `dev` and push after the gate.
 - A same-size edit beyond the first 64 KiB that preserves mtime is not detected before sending; the receiver's whole-file
   hash is the backstop (ADR-352 "Known residual").
+
+### Merged
+Merged `feature/resume-identity` (tip `1dce564c`) into `dev` with `--no-ff` as **`cc195841`** and pushed
+(`82a3e2ee..cc195841 dev -> dev`). The gate and device results above describe the merged tree; the changed-source
+two-phone run remains `W1-RESUME-01` (owed).
 
 ### Next AI
 Do not claim a per-byte resume proof: the check is size + first 64 KiB + mtime. Run `W1-RESUME-01` with two phones, then
