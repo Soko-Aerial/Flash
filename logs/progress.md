@@ -1,5 +1,43 @@
 # Progress Log
 
+## 2026-11-05 (later) - ADR-351 negative ack; unit-tested, device run blocked
+
+### Worked on
+Closed the outbox half of `ERROR-982`: a revoked peer must stop retrying queued messages when it learns it is no longer
+trusted, instead of waiting for the wall-clock outbox budget.
+
+### Changed (commit `6a307e1d`)
+- `FlashInboundRouter`: when a `FLASH_SEC` frame arrives and no session key exists, the host is asked to resend the revoke
+  notice, at most once per 10 s per peer (`onUnreadableSecuredFrame`, `SyncMap` + `SystemTimeSource`).
+- `Flash.kt` and `DesktopEngine.kt` wire that callback: if the live session advertised `pr1`, send
+  `FLASH_PAIR t=revoke` on the existing connection. No new wire type and no protocol version bump.
+- `RealFlashChatRepository.failPendingToPeer(peerId, reason)`: reads the direct conversation, fails every outgoing row
+  that is not delivered/read/failed, and deletes those outbox rows. Called from the existing `onPeerRevoked` callbacks in
+  all three hosts (`Flash.kt`, `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`), so both a received revoke and a local
+  revoke stop the queue.
+- `FlashChatRepository` gets a default no-op for the new method (fakes and the empty repository stay source-compatible).
+- ADR-351 decision/consequences/verification, `docs/protocol.md` "Pairing revocation", `ERROR-982`, and
+  `docs/testing/TEST-BACKLOG.md` (`W1-REVOKE-02` updated, new `W1-NACK-01`).
+
+### Verification
+- `:core:engine:jvmTest --tests *FlashInboundRouterTest`: **55/55**, including the new
+  `aSecuredFrameWithNoKeyAsksForTheRevokeOncePerWindow` (callback fires once, second frame inside 10 s does not).
+- `:core:messaging:testAndroidHostTest --tests "*negative ack fails the queued message*"`: **1/1**; the queued message
+  becomes `FAILED` and the outbox row is gone.
+- `:app:assembleDebug` green (`BUILD SUCCESSFUL in 33s`); `:core:messaging:compileKotlinJvm` + `:desktop:compileKotlinJvm`
+  green (`BUILD SUCCESSFUL in 31s`). New APK (2026-11-05 06:16) installed on the Infinix X6882B.
+- Device run **blocked**: the Samsung SM-G986U1 left USB before the new APK installed, so the two-phone
+  queue-while-unreachable-then-revoke check is recorded as `W1-NACK-01` (TODO), not claimed.
+
+### Remaining
+- `W1-NACK-01` device check (new builds only; peers without `pr1` keep the budget path).
+- Revocation tombstone (auto-redial still re-adds a TOFU pin), raw-id chat title.
+- Resume identity (Room v22 -> v23) is still unimplemented.
+
+### Next AI
+Do not reopen the notice/header design; it is device-verified. Run `W1-NACK-01` when the Samsung is back, then implement
+resume identity as its own Room v23 change.
+
 ## 2026-11-05 - ADR-351 device-verified end to end; affected-module gate green
 
 ### Worked on

@@ -1,5 +1,14 @@
 # Current Handoff
 
+> **2026-11-05 (latest) — ADR-351 NEGATIVE ACK IS IMPLEMENTED (`6a307e1d`) AND UNIT-TESTED; DEVICE RUN BLOCKED.**
+> A receiver that drops a `FLASH_SEC` frame with no session key now resends `PAIR_REVOKE` at most once per 10 s
+> (`FlashInboundRouter.onUnreadableSecuredFrame`); the revoked side fails its queued messages to that peer
+> (`RealFlashChatRepository.failPendingToPeer`), so the outbox stops in seconds instead of the wall-clock budget. No new
+> wire type. Tests: `FlashInboundRouterTest` 55/55 (no-key resend + rate limit); `RealFlashChatRepositoryTest`
+> negative-ack 1/1; `:app:assembleDebug` and `:desktop:compileKotlinJvm` green. The new APK is installed on the Infinix
+> only — the Samsung left USB before install, so `W1-NACK-01` (queue while unreachable, then revoke) is still owed.
+> The notice/header device verification in the older entry still stands. **Next: resume identity (Room v22 -> v23),
+> then the TOFU tombstone and raw-id title.**
 > **2026-11-05 (later) — WAVE 1 IS MERGED INTO `dev` AS `239f8581` AND PUSHED.** The branch `fix/wave1-safety`
 > (tip `9765fde3`) was merged `--no-ff`; the affected gate is green (3,166 tests / 0 failures / 0 errors) and the
 > `PAIR_REVOKE` notice plus the **Not paired** header are device-verified. Remaining partials: outbox negative ack,
