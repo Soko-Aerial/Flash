@@ -173,12 +173,9 @@ fun FlashFileMessageCard(
         modifier = modifier
             .fillMaxWidth()
             .clip(FlashShapes.attachment)
-            .background(surfaceBg)
-            .border(
-                width = FlashDimensions.borderHairline,
-                color = colors.borderSubtle.copy(alpha = 0.5f),
-                shape = FlashShapes.attachment,
-            ),
+            // The file block is content on the message, not a card inside a card: the bubble's own
+            // surface shows through (approved chat design, ADR-354).
+            .background(Color.Transparent),
     ) {
         Row(
             modifier = Modifier
