@@ -148,6 +148,7 @@ export function mountAnnouncements(container, ctx) {
       subtitle: t('announcements.sub'),
       actions: [refreshBtn, newBtn],
     }),
+    banner({ tone: 'info', text: t('announcements.plaintext') }),
     filterGrid,
     h('div', { class: 'toolbar-row' }, resultLine),
     tableHost,

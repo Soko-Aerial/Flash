@@ -1,7 +1,10 @@
 # Flash Hub console — alternative design notes (2026-11-05)
 
-Status: **DESIGN PROPOSAL — prototype only.** Nothing here replaces
-`server/src/main/resources/admin-ui/` until the owner approves it.
+Status: **APPROVED AND PORTED 2026-11-05.** The owner approved this direction;
+the shipped console in `server/src/main/resources/admin-ui/` now uses it.
+This folder remains the design reference and the standalone review build.
+The fictional review world below (“Meridian Works”, “Production”) is not in
+the shipped console: the sidebar now shows the hub name from `/overview`.
 
 ## Direction dealt
 

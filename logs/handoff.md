@@ -1,20 +1,19 @@
 # Current Handoff
 
-> **2026-11-05 (design branch) - ALTERNATIVE SERVER DASHBOARD DESIGNED AND VERIFIED; PROPOSAL ONLY, SHIPPED CONSOLE UNTOUCHED.**
-> Worktree `E:/FlashWork/D-console`, branch `agent/console-redesign`, based on `dev` `a7ff5636`. The review build is
-> `design/server-console/`: dependency-free static prototype, `node scripts/serve.mjs` -> `http://localhost:5182/`.
-> Direction: achromatic ledger, seed 1682487600, Pulse/graphite, one hue on the live relay data, Flash 16/12/8 shapes.
-> Ten routes + drawer/dialogs/mobile More; dark is the review default and light is fully designed. Design record:
-> `docs/ui/hub-admin-console-redesign.md`; run/review: `design/server-console/README.md`; final shots:
-> `design/server-console/shots/final/`.
-> **Verification:** dual-agent Impeccable critique (A 26/40, one P0 fixed - Delegation/Trust overflow; select deep-link
-> bug, separator contrast, tiny-text and honesty gaps fixed); `inspect.mjs --app` Overview -> 0 FAIL / 1 WARN (12 px app
-> metadata defended); 54-page sweep -> 0 overflow, 0 unnamed controls, 0 console errors, 0 computed text-contrast
-> failures; reduced-motion verified. No Gradle/server/shipped asset changed. **Committed as `d3fb6c33` on
-> `agent/console-redesign`; the worktree is `E:/FlashWork/D-console`.**
-> **Next:** owner reviews the screenshots and chooses port / port-Overview-first / keep. The port plan is
-> `design/server-console/README.md` section 7; do not touch `server/src/main/resources/admin-ui/` before that choice.
-> The app handoff below still applies to `dev`; this banner is the isolated design branch.
+> **2026-11-05 (port) - OWNER APPROVED THE DESIGN; THE SHIPPED CONSOLE NOW USES IT.**
+> Worktree `E:/FlashWork/D-console`, branch `agent/console-redesign`, based on `dev` `a7ff5636`. Design review build and
+> record: `design/server-console/` and `docs/ui/hub-admin-console-redesign.md` (design commit `d3fb6c33`). The old
+> `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Current code:
+> `server/src/main/resources/admin-ui/css/redesign.css`, rewritten `js/ui/shell.js`, rebuilt `js/views/overview.js`,
+> redesigned `authFrame`, `#/requests` route, and the approved visual system applied to every existing screen.
+> **Preserved:** the real API, CSP-safe DOM, i18n, step-up, error boundaries, print rules and every existing feature.
+> **Removed from the product:** the review build's fictional "Meridian Works"/"Production" world; the sidebar now shows
+> the hub name returned by `/overview`. The relay strip is sampled by the open console because the hub keeps no history.
+> **Verification:** console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route
+> rendered in Chrome at 1440/768/390; sign-in and sign-out exercised. No Android device test is relevant to the admin UI.
+> **Still owed:** owner browser checks `CONSOLE-D02..D07`; merge of `agent/console-redesign` into `dev` is the remaining
+> integration step (the branch has the port; merge only after checking the other agent's uncommitted work in the main
+> worktree). The app handoff below still applies to `dev`.
 >
 > **2026-11-05 (latest) - RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
 > GREEN, MIGRATION DEVICE-VERIFIED.** `executeSend` now records and verifies size, modification time and the first-64-KiB

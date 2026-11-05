@@ -1,9 +1,13 @@
 # Flash Hub console — alternative design (review build)
 
-**Status: PROPOSAL — design prototype only. Only the owner can approve the port.**
-The shipped console in `server/src/main/resources/admin-ui/` has **not** been changed.
-This folder is a standalone, dependency-free design artifact for review at
-`http://localhost:5182/`.
+**Status: APPROVED AND PORTED (2026-11-05).** The owner approved this direction and the
+shipped console in `server/src/main/resources/admin-ui/` now uses it. This folder remains
+the standalone design reference and comparison build at `http://localhost:5182/`.
+
+The port keeps the real API, step-up, i18n, error boundaries and print rules. The
+fictional review world in this prototype (“Meridian Works”, “Production”, sample
+counts) is **not** in the shipped console: the sidebar shows the hub name returned
+by `/overview`, and there is no environment label.
 
 - Design direction and data: [`DESIGN-NOTES.md`](DESIGN-NOTES.md)
 - Design record / critique / port plan: [`docs/ui/hub-admin-console-redesign.md`](../../docs/ui/hub-admin-console-redesign.md)
@@ -212,6 +216,10 @@ the Delegation/Trust tabs), 0 unnamed icon buttons, 1 real contrast defect
 
 ## 6. Known limitations (do not overclaim)
 
+These describe **this review build**, not the shipped console. The shipped
+console uses the real API, step-up, persistence, QR/print and session/expiry
+behaviour; this folder is the visual reference.
+
 - **Not wired to the hub API.** All writes are in-memory; a reload resets.
 - **The step-up code is illustrative.** The checkbox models the phone gate;
   no ECDSA/WebCrypto or approver-phone transport exists in this prototype.
@@ -226,30 +234,40 @@ the Delegation/Trust tabs), 0 unnamed icon buttons, 1 real contrast defect
 
 ---
 
-## 7. If the owner approves: port plan
+## 7. Port record (approved 2026-11-05)
 
-Do **not** copy this folder wholesale into `server/`. The shipped console has
-a CSP-safe DOM layer, i18n, step-up, error boundaries and print rules that must
-survive. Port in this order:
+The shipped console kept its own architecture: one CSP-safe DOM layer, i18n,
+step-up, error boundaries and print rules. The port was done as a **new
+`css/redesign.css` loaded after the functional base styles** plus targeted
+rewrites of the shell, Overview, auth frame and route list, so the existing
+views keep their real features rather than being replaced by simplified
+prototype forms.
 
-1. **Tokens and shell** — map `css/tokens.css` values onto the existing
-   `tokens.css`; port the open-plane sidebar/mobilebar/bottom nav; keep the
-   existing router and landmarks.
-2. **Overview** — replace the current tiles/cards with the health panel, relay
-   strip (real metrics), decision queue and ledger; keep the existing 15 s poll
-   and partial-failure behaviour.
-3. **Tables and mobile** — apply the table type, column priorities, roving
-   focus and select fallbacks; keep windowing above 200 rows.
-4. **Dialogs and actions** — port the code-once invite dialog (no list copy),
-   invite revoke, pin/unpin, the approval gate and audit-entry refresh; wire
-   the real step-up.
-5. **Remaining screens** — Devices drawer, Security delegation/trust,
-   Settings tabs, About/shortcuts, Login.
-6. **Verification** — run the existing `:server:test` and console Node tests;
-   add the visual/manual checks in `docs/testing/TEST-BACKLOG.md`; then delete
-   this prototype or keep it as the design record.
+1. **Shell** — `js/ui/shell.js` now renders the open-plane 248 px sidebar, the
+   labelled groups, the mobile bar and the five-cell phone bar. The nav gained
+   **Join requests**; `Organization` no longer duplicates the queue as a tab,
+   and old `#/organization?tab=requests` links redirect to `#/requests`.
+   The sidebar shows the real hub name from `/overview`; no fictional org and
+   no `Production`.
+2. **Overview** — rebuilt with the health panel, relay strip, decision queue
+   and ledger from the real `/overview`, `/metrics`, `/devices`, `/invites`
+   and `/audit` endpoints. The relay strip is sampled by the open console
+   (`/metrics` keeps no history by design), and says so until it fills.
+3. **Auth** — `authFrame` uses the centred brand, hub line and card from the
+   design; the real sign-in, recovery-code, lockout, session-expiry and
+   sign-out flows are unchanged and were exercised. No sample org on the gate.
+4. **Every existing screen** — Devices, Invites, Join requests, Organization,
+   Announcements, Audit, Security and Settings keep their real tables, forms,
+   drawers and dialogs, now in the approved tokens, type, shapes and table
+   treatment. Devices gained the phone department/last-seen subline; Security
+   uses a labelled select when its six tabs do not fit; Audit gained the
+   chain-status strip.
+5. **Verification** — `server/admin-ui-tests/*.test.mjs` 83/83; the shipped
+   `AdminConsoleWebTest` 15/15 and `AdminConsoleApiTest` 10/10; browser passes
+   at 1440/768/390 for every route (mock API for visual review), sign-in and
+   sign-out exercised.
 
-Files to carry: `css/tokens.css`, `css/shell.css`, the screen classes in
-`css/screens.css`, `js/app.js` shell helpers, `js/views/common.js`,
-`js/views/overview.js`, and the route-level markup. Do not carry the sample
-`data.js` or the Playwright scripts into product code.
+The prototype's simplified right-hand invite form and announcement composer
+were **not** copied over the shipped flows: the shipped console's create/bulk/
+print/revoke and announcement editor carry more real features. The layout keeps
+the design system; the full feature geometry is preserved.

@@ -1,6 +1,6 @@
 # Hub admin console — alternative design record (2026-11-05)
 
-**Status: PROPOSAL. The shipped console is unchanged. Owner approval is required before any port.**
+**Status: APPROVED AND PORTED on 2026-11-05. The shipped console now uses this design.**
 
 This record exists because the owner asked for an alternative to
 `server/src/main/resources/admin-ui/` that conforms to the Flash app, and asked
@@ -10,7 +10,7 @@ for the current implementation to stay untouched until the design is approved.
 - Build notes and data: [`DESIGN-NOTES.md`](../../design/server-console/DESIGN-NOTES.md)
 - Run and review: [`README.md`](../../design/server-console/README.md)
 - Final screenshots: [`shots/final/`](../../design/server-console/shots/final/)
-- Shipped console record (authority, unchanged): [`hub-admin-console.md`](hub-admin-console.md)
+- Old console record (historical, superseded): [`hub-admin-console.md`](hub-admin-console.md)
 
 ---
 
@@ -193,18 +193,37 @@ This is a design prototype, not a release candidate:
 - Chrome only (no Safari/Firefox);
 - no Gradle, server or shipped asset changes.
 
-## 10. Decision for the owner
+## 10. Port (approved 2026-11-05)
 
-Approve one of:
+The owner approved the design. The shipped console now uses it. The port was
+deliberately **not** a wholesale copy of the prototype:
 
-1. **Port it** — follow `design/server-console/README.md` §7 in the isolated
-   branch, keeping the shipped router, CSP-safe DOM, i18n, step-up, error
-   boundaries and print rules.
-2. **Port the overview first** — the health strip, relay strip, decision queue
-   and ledger, leaving the other pages for a second pass.
-3. **Keep the shipped console** — this document and the prototype stay as the
-   design record, and the owner states what to keep from it.
+- **New `css/redesign.css`** loads after the functional base styles. The real
+  `components.css`/`pages.css` stay underneath for the feature classes; the
+  redesign supplies the palette, type, shapes, shell, auth and Overview.
+- **`js/ui/shell.js`** was rewritten to the open-plane sidebar / mobile bar /
+  bottom bar. It keeps `createShell`'s full API (`setActive`, `setBadge`,
+  `setHub`, `setUser`, `setCountdown`, `refreshTheme`), the real theme cycle,
+  help, session countdown, sign-out and the route table.
+- **`js/views/overview.js`** was rebuilt against the real endpoints. The relay
+  strip is built from live console samples because the hub deliberately keeps
+  no history (`MetricsDto` and the old console both state this); it says so
+  until the strip fills. No fabricated bars.
+- **`js/views/login.js` `authFrame`** carries the approved brand/hub line/card;
+  the real password, authenticator, recovery, lockout, expired-session and
+  sign-out paths are untouched and were exercised.
+- **Join requests** became `#/requests` (the real join-request screen); the
+  Organization page now only has Departments and Groups. Old
+  `#/organization?tab=requests` links redirect.
+- **All other screens keep their real tables/forms/drawers/step-up.** The
+  design system applies; the prototype’s simplified invite form and
+  announcement composer were not allowed to remove existing features.
+- **No fictional org/environment:** the sidebar shows the name from
+  `/overview`. “Meridian Works” and “Production” were review data and are not
+  in the shipped console.
+- **Verification:** console Node tests 83/83; `AdminConsoleWebTest` 15/15;
+  `AdminConsoleApiTest` 10/10; browser review at 1440/768/390 across the
+  routes; sign-in and sign-out exercised.
 
-Do not change `server/src/main/resources/admin-ui/` before an explicit choice.
-The test/design checks are listed in `docs/testing/TEST-BACKLOG.md` as
-`CONSOLE-*`.
+Owed owner/browser checks remain in `docs/testing/TEST-BACKLOG.md` as
+`CONSOLE-D02..D07`.

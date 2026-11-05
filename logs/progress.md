@@ -1,5 +1,56 @@
 # Progress Log
 
+## 2026-11-05 (port) - approved server dashboard design ported into the shipped console; merge pending
+
+### Worked on
+The owner approved the alternative hub console design (`d3fb6c33`) and asked for it to replace the shipped console with
+every feature wired. The port keeps the real console's API, CSP-safe DOM, i18n, step-up, error boundaries, print rules
+and all existing tables/forms/drawers; only the visual/shell/Overview/auth layer was replaced.
+
+### Changed
+- `server/src/main/resources/admin-ui/css/redesign.css` (new, loaded after the functional CSS): approved tokens, type,
+  shapes, shell, Overview, auth and component treatment. The real feature CSS remains underneath for feature classes.
+- `js/ui/shell.js`: open-plane 248 px sidebar with Hub/People/Trust groups, real hub name, session countdown, user row,
+  theme/help, five-cell phone bar and More sheet. API preserved (`setActive`, `setBadge`, `setHub`, `setUser`,
+  `setCountdown`, `refreshTheme`).
+- `js/main.js`: `#/requests` route, request badge/active state, display name, redirect `#/organization?tab=requests` ->
+  `#/requests`.
+- `js/views/overview.js`: real `/overview` + `/metrics` + `/devices` + `/invites` + `/audit` composition. Health/
+  waiting/ledger are partial-safe; the relay strip is browser-sampled and says the hub keeps no history. Department
+  admins get the device quota instead of org-only uptime/metrics.
+- `js/views/login.js` `authFrame`: approved brand/hub-line/card; the real sign-in/recovery/lockout/expiry/sign-out
+  behaviour untouched.
+- `js/views/organization.js`: Organization now only Departments/Groups; the real join-request queue is `#/requests`.
+- `js/ui/widgets.js` tabs: labelled select fallback when more than three tabs do not fit on phone (Security).
+- `js/views/devices.js`: dynamic active/online/revoked/enrolled lede and the phone department/last-seen subline.
+- `js/views/audit.js`: chain-status strip and primary Verify action.
+- `js/views/announcements.js`: plaintext banner, no ADR reference in user copy.
+- `js/views/fonts`/`strings`: role short labels, requests/group labels, new Overview/audit copy.
+- No fictional org/environment: the shell uses the hub name from `/overview`. The review world remains only in
+  `design/server-console/`.
+- Docs: old console record marked SUPERSEDED; design record updated to approved/ported; review README updated;
+  `CONSOLE-D01` PASS and a Results-log entry; handoff banner updated.
+
+### Verification
+- `server/admin-ui-tests/*.test.mjs`: **83/83 pass**.
+- `:server:test --tests "*AdminConsole*"`: `AdminConsoleWebTest` **15/15**, `AdminConsoleApiTest` **10/10**.
+- Browser review harness (real assets + mock API): every route rendered at 1440, 768 and 390 with no page errors or
+  document overflow; sign-out -> login and sign-in -> Overview exercised. Device, security, tab-select, request queue,
+  Audit chain strip and auth pages inspected.
+- `:server:compileKotlin` green; no Kotlin/Android code changed.
+
+### Remaining
+- Merge `agent/console-redesign` into `dev` (the main worktree has another agent's uncommitted edits; merge only if it
+  does not overlap, and do not push unless asked).
+- Owner browser checks `CONSOLE-D02..D07` (desktop/tablet/phone, dialogs, sign-in/out, contrast/touch).
+- The relay strip fills only while a console is open; if the owner wants a full last-hour chart on first load, add a
+  server-side relay history as a separate, tested feature (the hub currently keeps none by design).
+
+### Next AI
+Read `docs/ui/hub-admin-console-redesign.md` and the top handoff banner. The shipped console is the implementation; the
+`design/server-console/` folder is the visual reference and must not be deployed as the product. Do not reintroduce a
+fictional hub name/environment; use `/overview.hubName`. Preserve the real step-up/i18n/API and the console tests.
+
 ## 2026-11-05 (later) - server dashboard alternative designed and verified; proposal only, shipped console untouched
 
 ### Worked on

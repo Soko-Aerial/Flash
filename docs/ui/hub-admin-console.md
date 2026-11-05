@@ -4,11 +4,12 @@ Status: DESIGNED 2026-10-13, implemented the same day (Phase 3, UI agent). Not d
 Decision record: ADR-125 (`docs/decisions.md`). Security notes: `docs/security.md` "Hub admin console". API contract: `docs/protocol.md` "Hub administration".
 Code: `server/src/main/resources/admin-ui/` (static, no build step), served by `server/.../admin/AdminConsoleWeb.kt`.
 
-> **Redesign proposal (2026-11-05):** an alternative console in the Flash app's
-> design system lives in [`design/server-console/`](../../design/server-console/)
-> and is recorded in [`hub-admin-console-redesign.md`](hub-admin-console-redesign.md).
-> It is a **proposal only**; the shipped console described below is unchanged
-> pending the owner's approval. Do not port it without an explicit choice.
+> **SUPERSEDED (2026-11-05):** the owner approved the alternative console and the
+> shipped console was replaced with it. Read
+> [`hub-admin-console-redesign.md`](hub-admin-console-redesign.md) for the current
+> design and the port record; this file is kept as the historical record of the
+> 2026-10-13 console (ADR-125), not as the current design authority. The review
+> build remains in [`design/server-console/`](../../design/server-console/).
 
 The old server-rendered HTML console (`AdminUiHtml.kt`, `AdminDashboardRoutes.kt`) was read once only to list behaviours that must survive (setup, login,
 dashboard, departments, groups, invites, audit). Nothing of its layout, colours, markup, wording or structure was reused. The old routes are deleted.

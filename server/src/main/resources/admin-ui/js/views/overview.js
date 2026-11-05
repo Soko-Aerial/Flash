@@ -1,238 +1,322 @@
-// Overview: what an administrator needs at a glance and what needs attention. Each card loads on its own, so one failing call never
-// blanks the page. Metrics refresh every 15 s while the page is visible; the throughput sparkline is built in this browser from those
-// samples (the hub keeps no history), so it starts empty and says so.
+// Overview: the hub's health, the decision queue, and the last observed relay samples. The hub keeps no history, so the
+// strip is built in this browser and says so; every figure otherwise comes from /overview or /metrics.
 
-import { h, mount } from '../dom.js';
+import { h } from '../dom.js';
+import { icon } from '../icons.js';
 import { t } from '../i18n.js';
 import { api } from '../app.js';
-import { formatNumber, formatBytes, formatDuration, relativeTime } from '../format.js';
-import { pageHeader, card, stat, badge, button, banner, emptyState, segmentedBar, sparkline, timeEl, dl, withBusy } from '../ui/widgets.js';
+import { formatNumber, formatBytes, formatDuration, formatDate, relativeTime } from '../format.js';
 import { loadInto } from '../ui/boundary.js';
-import { delegationBody, delegationTone, delegationBadge } from './delegation.js';
-import { toast, toastError } from '../ui/toast.js';
-import { icon } from '../icons.js';
 
 const POLL_MS = 15000;
+const SAMPLE_LIMIT = 60;
+
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return ((parts[0] || '?')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
+
+function clockLabel(ms) {
+  try {
+    return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(ms));
+  } catch (e) {
+    return '';
+  }
+}
+
+function healthCell({ label, value, hint, lead = false, unit = null }) {
+  return h(
+    'div',
+    { class: ['fx-health-cell', lead ? 'is-lead' : ''] },
+    h('div', { class: 'fx-health-label', text: label }),
+    h('div', { class: 'fx-health-value' }, value, unit ? h('span', { class: 'fx-health-unit', text: unit }) : null),
+    h('div', { class: 'fx-health-hint', text: hint }),
+  );
+}
+
+function waitRow({ glyph, title, sub, value, href, warn = false }) {
+  return h(
+    'a',
+    { class: 'fx-wait-row', href },
+    h('span', { class: 'fx-wait-icon' }, icon(glyph, { size: 17 })),
+    h('span', { class: 'fx-wait-text' }, h('span', { class: 'fx-wait-title', text: title }), h('span', { class: 'fx-wait-sub', text: sub })),
+    h('span', { class: ['fx-wait-value', warn ? 'is-warn' : ''], text: value }),
+    h('span', { class: 'fx-wait-chevron' }, icon('chevronRight', { size: 15 })),
+  );
+}
+
+function ledgerHead(title, linkLabel, href) {
+  return h(
+    'div',
+    { class: 'fx-ledger-head' },
+    h('h2', { class: 'fx-ledger-title', text: title }),
+    h('a', { class: 'fx-panel-link', href, text: linkLabel }),
+  );
+}
+
+function deviceRow(device) {
+  return h(
+    'a',
+    { class: 'fx-mini-row', href: '#/devices' },
+    h('span', { class: 'fx-avatar', text: initials(device.name) }),
+    h(
+      'span',
+      { class: 'fx-mini-main' },
+      h('span', { class: 'fx-mini-title', text: device.name }),
+      h('span', { class: 'fx-mini-sub', text: device.department || t('devices.noDepartment') }),
+    ),
+    h('span', { class: 'fx-mini-end' }, h('span', { class: ['dot', device.online ? 'fx-dot-ok' : 'fx-dot-off'] }), device.online ? t('devices.online') : relativeTime(device.lastSeenAt)),
+  );
+}
+
+function inviteRow(invite) {
+  return h(
+    'a',
+    { class: 'fx-mini-row', href: '#/invites' },
+    h(
+      'span',
+      { class: 'fx-mini-main' },
+      h('span', { class: 'fx-mini-title', text: invite.note || t('overview.new.untitledInvite') }),
+      h('span', { class: 'fx-mini-sub', text: [invite.department, t('role.' + String(invite.role || '').toLowerCase())].filter(Boolean).join(' · ') }),
+    ),
+    h('span', { class: 'badge badge-neutral', text: t('overview.new.waitingState') }),
+  );
+}
+
+const ACTIVITY_LABELS = {
+  'device.revoke': 'overview.action.deviceRevoke',
+  'join.approve': 'overview.action.joinApprove',
+  'join.decline': 'overview.action.joinDecline',
+  'admin.session.start': 'overview.action.adminSessionStart',
+  'delegation.verify': 'overview.action.delegationVerify',
+  'invite.create': 'overview.action.inviteCreate',
+  'device.enroll': 'overview.action.deviceEnroll',
+};
+
+function activityRow(entry) {
+  const key = ACTIVITY_LABELS[entry.action];
+  return h(
+    'a',
+    { class: 'fx-mini-row', href: '#/audit' },
+    h('span', { class: 'fx-mini-main' }, h('span', { class: 'fx-mini-title', text: key ? t(key) : entry.action }), h('span', { class: 'fx-mini-sub', text: entry.details || entry.actor || '' })),
+    h('span', { class: 'fx-mini-end', text: relativeTime(entry.timestampMs) }),
+  );
+}
 
 export function mountOverview(container, ctx) {
   let stopped = false;
-  const samples = []; // {t, bytes}
-  const rates = [];
+  const samples = [];
+  let lastMetrics = null;
+  let overviewPromise = null;
+  let metricsPromise = null;
 
-  const head = pageHeader({
-    title: t('overview.title'),
-    subtitle: t('overview.sub'),
-    actions: button({ label: t('common.refresh'), icon: 'refresh', on: { click: () => reload() } }),
-  });
-  const alerts = h('div', { class: 'stack' });
-  const tiles = h('div', { class: 'tiles' });
-  const grid = h('div', { class: 'grid grid-2' });
-  const healthBody = h('div');
-  const devicesBody = h('div');
-  const invitesBody = h('div');
-  const relayBody = h('div', { class: 'stack' });
-  const eventsBody = h('div');
-  const delegationHost = h('div');
-  const requestsHost = h('div');
-  grid.append(
-    card({ title: t('overview.card.health'), id: 'ov-health' }, healthBody),
-    card({ title: t('overview.card.relay'), subtitle: t('overview.relay.sub'), id: 'ov-relay' }, relayBody),
-    card({ title: t('overview.card.devices'), id: 'ov-devices' }, devicesBody),
-    card({ title: t('overview.card.invites'), id: 'ov-invites' }, invitesBody),
+  const title = h('h1', { class: 'page-title', id: 'page-title', tabindex: '-1', text: t('overview.title') });
+  const lede = h('p', { class: 'page-sub fx-lede', text: t('common.loading') });
+  const reviewLabel = h('span', { class: 'btn-label', text: t('overview.new.reviewAll') });
+  const review = h('a', { class: 'btn btn-primary', href: '#/requests' }, reviewLabel, icon('chevronRight', { size: 15 }));
+  const create = h('a', { class: 'btn btn-secondary', href: '#/invites' }, icon('plus', { size: 15 }), h('span', { class: 'btn-label', text: t('overview.new.createInvite') }));
+  const head = h(
+    'div',
+    { class: 'page-head' },
+    h('div', { class: 'page-titles' }, title, lede),
+    h('div', { class: 'page-actions' }, create, review),
   );
-  const eventsCard = card({ title: t('overview.card.events'), subtitle: t('overview.events.sub'), id: 'ov-events', actions: h('a', { class: 'btn btn-ghost btn-sm', href: '#/audit' }, t('overview.events.all')) }, eventsBody);
-  mount(container, head, alerts, delegationHost, tiles, requestsHost, grid, eventsCard);
 
-  let overview = null;
+  const healthHost = h('div', { class: 'fx-health' });
+  const health = h('section', { class: 'fx-panel', 'aria-label': t('overview.card.health') }, healthHost);
+  const relayHost = h('div');
+  const relay = h('section', { class: 'fx-panel fx-relay', 'aria-labelledby': 'fx-relay-title' }, relayHost);
+  const waitingHost = h('div');
+  const waiting = h('section', { class: 'fx-panel fx-waiting', 'aria-labelledby': 'fx-waiting-title' }, waitingHost);
 
-  async function loadOverview(quiet) {
-    await loadInto(tiles, {
-      quiet,
-      skeleton: 'tiles',
-      rows: 6,
-      load: () => api.get('/overview'),
-      render: (o) => {
-        overview = o;
+  const devicesHost = h('div');
+  const invitesHost = h('div');
+  const activityHost = h('div');
+  const ledger = h(
+    'section',
+    { class: 'fx-panel fx-ledger', 'aria-label': t('overview.new.activity') },
+    h('div', { class: 'fx-ledger-col' }, ledgerHead(t('overview.new.devices'), t('overview.new.viewAll'), '#/devices'), devicesHost),
+    h('div', { class: 'fx-ledger-col' }, ledgerHead(t('overview.new.invites'), t('nav.invites'), '#/invites'), invitesHost),
+    h('div', { class: 'fx-ledger-col' }, ledgerHead(t('overview.new.activity'), t('overview.new.audit'), '#/audit'), activityHost),
+  );
+
+  container.append(head, health, h('div', { class: 'fx-overview-grid' }, relay, waiting, ledger));
+
+  function updateHead(o) {
+    const active = o.devicesByStatus?.ACTIVE || 0;
+    const online = o.onlineDevices || 0;
+    const waitingCount = o.pendingJoinRequests || 0;
+    lede.replaceChildren(
+      h('span', { class: 'fx-inline' }, h('span', { class: 'dot fx-dot-ok' }), h('span', { text: t('overview.new.online', { online, active }) })),
+      h('span', { class: 'fx-finding' }, h('strong', { text: t('overview.new.waiting', { n: waitingCount }) })),
+    );
+    reviewLabel.textContent = waitingCount ? t('overview.new.review', { n: waitingCount }) : t('overview.new.reviewAll');
+  }
+
+  function overview() {
+    if (!overviewPromise) {
+      overviewPromise = api.get('/overview').then((o) => {
         ctx.onOverview(o);
-        renderOverview(o);
-        return renderTiles(o);
-      },
-    });
+        updateHead(o);
+        return o;
+      });
+    }
+    return overviewPromise;
   }
 
-  function renderTiles(o) {
-    const active = o.devicesByStatus.ACTIVE || 0;
-    const revoked = o.devicesByStatus.REVOKED || 0;
-    const d = o.delegation;
+  function metrics() {
+    if (!metricsPromise) metricsPromise = api.get('/metrics');
+    return metricsPromise;
+  }
+
+  function live() {
+    return Promise.all([overview(), metrics()]);
+  }
+
+  function renderHealth(o, m) {
+    const active = o.devicesByStatus?.ACTIVE || 0;
+    const revoked = o.devicesByStatus?.REVOKED || 0;
+    const unenrolled = o.devicesByStatus?.UNENROLLED || 0;
+    const uptime = m ? formatDuration((m.uptimeSeconds || 0) * 1000) : null;
     return [
-      stat({ label: t('overview.tile.devices'), value: formatNumber(active), hint: t('overview.tile.devices.hint', { n: revoked }), href: '#/devices' }),
-      stat({ label: t('overview.tile.online'), value: formatNumber(o.onlineDevices), hint: t('overview.tile.online.hint'), tone: o.onlineDevices > 0 ? 'ok' : undefined }),
-      stat({ label: t('overview.tile.invites'), value: formatNumber(o.invites.pending), hint: t('overview.tile.invites.hint', { n: o.invites.used }), href: '#/invites' }),
-      stat({ label: t('overview.tile.requests'), value: formatNumber(o.pendingJoinRequests), hint: o.pendingJoinRequests ? t('overview.tile.requests.act') : t('overview.tile.requests.none'), tone: o.pendingJoinRequests ? 'warn' : undefined, href: '#/organization?tab=requests' }),
-      stat({ label: t('overview.tile.queue'), value: formatNumber(o.queueDepth), hint: t('overview.tile.queue.hint', { size: formatBytes(o.queueBytes) }) }),
-      stat({
-        label: t('overview.tile.delegation'),
-        value: d.status === 'AWAITING' ? t('overview.tile.delegation.waiting') : d.daysLeft !== null && d.daysLeft !== undefined ? t('overview.tile.delegation.days', { n: d.daysLeft }) : '–',
-        hint: d.status === 'AWAITING' ? t('overview.tile.delegation.waiting.hint') : t('overview.tile.delegation.hint'),
-        tone: delegationTone(d) === 'ok' ? undefined : delegationTone(d),
-        href: '#/security?tab=delegation',
-      }),
+      healthCell({ label: t('overview.tile.online'), value: formatNumber(o.onlineDevices || 0), hint: t('overview.new.ofActive', { n: formatNumber(active) }), lead: true }),
+      healthCell({ label: t('overview.new.activeDevices'), value: formatNumber(active), hint: t('overview.new.revoked', { revoked: formatNumber(revoked), unenrolled: formatNumber(unenrolled) }) }),
+      healthCell({ label: t('overview.new.relayQueue'), value: formatNumber(o.queueDepth || 0), hint: o.queueBytes ? formatBytes(o.queueBytes) : t('overview.new.queueHint') }),
+      uptime
+        ? healthCell({ label: t('overview.new.uptime'), value: uptime, hint: t('overview.new.uptimeHint') })
+        : healthCell({ label: t('overview.health.quota'), value: o.deviceQuota ? formatNumber(active) : '–', hint: o.deviceQuota ? t('overview.health.quota.v', { used: formatNumber(active), quota: formatNumber(o.deviceQuota) }) : t('overview.health.revocations.none') }),
     ];
-  }
-
-  function renderOverview(o) {
-    mount(alerts);
-    if (o.delegation.status === 'AWAITING') {
-      mount(delegationHost, card({ title: t('overview.delegation.title'), className: 'card-attention', id: 'ov-del' }, delegationBody(o.delegation, { compact: true, onChanged: () => reload() })), h('p', { class: 'muted small', text: t('overview.delegation.more') }));
-    } else if (o.delegation.warning) {
-      mount(delegationHost, banner({ tone: delegationTone(o.delegation) === 'bad' ? 'bad' : 'warn', title: t('overview.delegation.expiring'), text: o.delegation.warning, actions: h('a', { class: 'btn btn-secondary btn-sm', href: '#/security?tab=delegation' }, t('overview.delegation.manage')) }));
-    } else mount(delegationHost);
-    if (o.pendingJoinRequests > 0) {
-      mount(requestsHost, banner({ tone: 'info', title: t('overview.requests.title', { n: o.pendingJoinRequests }), text: t('overview.requests.text'), actions: h('a', { class: 'btn btn-primary btn-sm', href: '#/organization?tab=requests' }, t('overview.requests.review')) }));
-    } else mount(requestsHost);
-    renderHealth(o);
-    renderDevices(o);
-    renderInvites(o);
-  }
-
-  function renderHealth(o) {
-    const d = o.delegation;
-    const rev = o.revocations;
-    const chain = h('span', { class: 'muted', text: t('overview.health.chain.unchecked') });
-    const verify = button({ label: t('overview.health.verify'), size: 'sm', icon: 'check' });
-    verify.addEventListener('click', () =>
-      withBusy(verify, async () => {
-        try {
-          const v = await api.get('/audit/verify');
-          mount(chain, v.ok ? badge(t('overview.health.chain.ok', { n: v.entries }), 'ok') : badge(t('overview.health.chain.broken', { n: v.firstBadIndex ?? '?' }), 'bad'));
-          if (!v.ok) toast(t('audit.verify.brokenToast'), { kind: 'error' });
-        } catch (e) {
-          toastError(e);
-        }
-      }),
-    );
-    mount(
-      healthBody,
-      dl([
-        [t('overview.health.hub'), h('span', {}, o.hubName)],
-        [t('overview.health.delegation'), delegationBadge(d)],
-        [t('overview.health.revocations'), rev ? h('span', {}, t('overview.health.revocations.v', { version: rev.listVersion, serials: rev.revokedSerials + rev.revokedDeviceIds }), rev.unpublishedChanges ? ' ' : null, rev.unpublishedChanges ? badge(t('overview.health.unpublished'), 'warn') : null) : h('span', { class: 'muted', text: t('overview.health.revocations.none') })],
-        [t('overview.health.audit'), h('span', {}, t('overview.health.audit.n', { n: o.audit.entries }))],
-        [t('overview.health.chain'), h('span', { class: 'inline' }, chain, verify)],
-        [t('overview.health.quota'), h('span', {}, t('overview.health.quota.v', { used: (o.devicesByStatus.ACTIVE || 0), quota: o.deviceQuota }))],
-        [t('overview.health.structure'), h('span', {}, t('overview.health.structure.v', { departments: o.departments, groups: o.groups }))],
-      ]),
-    );
-  }
-
-  function renderDevices(o) {
-    const s = o.devicesByStatus;
-    const total = (s.ACTIVE || 0) + (s.REVOKED || 0) + (s.UNENROLLED || 0);
-    if (total === 0) {
-      mount(devicesBody, emptyState({ title: t('overview.devices.empty.title'), text: t('overview.devices.empty.text'), glyph: 'devices', action: h('a', { class: 'btn btn-primary', href: '#/invites' }, t('overview.devices.empty.action')) }));
-      return;
-    }
-    mount(
-      devicesBody,
-      segmentedBar([
-        { label: t('status.active'), value: s.ACTIVE || 0, tone: 'ok' },
-        { label: t('status.revoked'), value: s.REVOKED || 0, tone: 'bad' },
-        { label: t('status.unenrolled'), value: s.UNENROLLED || 0, tone: 'warn' },
-      ]),
-      h('ul', { class: 'legend' }, [
-        ['ok', t('status.active'), s.ACTIVE || 0],
-        ['bad', t('status.revoked'), s.REVOKED || 0],
-        ['warn', t('status.unenrolled'), s.UNENROLLED || 0],
-      ].map(([tone, label, n]) => h('li', {}, h('span', { class: 'swatch swatch-' + tone, 'aria-hidden': 'true' }), h('span', { text: label }), h('span', { class: 'num strong', text: formatNumber(n) })))),
-    );
-  }
-
-  function renderInvites(o) {
-    const i = o.invites;
-    const total = i.pending + i.used + i.expired + i.revoked;
-    if (total === 0) {
-      mount(invitesBody, emptyState({ title: t('overview.invites.empty.title'), text: t('overview.invites.empty.text'), glyph: 'invites', action: h('a', { class: 'btn btn-primary', href: '#/invites' }, t('overview.invites.empty.action')) }));
-      return;
-    }
-    mount(
-      invitesBody,
-      segmentedBar([
-        { label: t('invite.state.pending'), value: i.pending, tone: 'accent' },
-        { label: t('invite.state.used'), value: i.used, tone: 'ok' },
-        { label: t('invite.state.expired'), value: i.expired, tone: 'warn' },
-        { label: t('invite.state.revoked'), value: i.revoked, tone: 'bad' },
-      ]),
-      h('ul', { class: 'legend' }, [
-        ['accent', t('invite.state.pending'), i.pending],
-        ['ok', t('invite.state.used'), i.used],
-        ['warn', t('invite.state.expired'), i.expired],
-        ['bad', t('invite.state.revoked'), i.revoked],
-      ].map(([tone, label, n]) => h('li', {}, h('span', { class: 'swatch swatch-' + tone, 'aria-hidden': 'true' }), h('span', { text: label }), h('span', { class: 'num strong', text: formatNumber(n) })))),
-    );
   }
 
   function renderRelay(m) {
     const now = m.serverTimeMs;
-    const bytes = m.bytesIn + m.bytesOut;
-    const last = samples[samples.length - 1];
-    if (!last || last.t !== now) {
-      if (last && now > last.t && bytes >= last.bytes) rates.push(((bytes - last.bytes) / (now - last.t)) * 1000);
-      samples.push({ t: now, bytes });
-      if (samples.length > 80) samples.shift();
-      if (rates.length > 79) rates.shift();
+    if (lastMetrics && now > lastMetrics.t && m.messagesDelivered >= lastMetrics.delivered) {
+      const minutes = (now - lastMetrics.t) / 60000;
+      const rate = minutes > 0 ? (m.messagesDelivered - lastMetrics.delivered) / minutes : 0;
+      samples.push({ t: now, value: rate });
+      if (samples.length > SAMPLE_LIMIT) samples.shift();
     }
-    const rate = rates.length ? rates[rates.length - 1] : null;
-    mount(
-      relayBody,
+    lastMetrics = { t: now, delivered: m.messagesDelivered };
+
+    const filled = samples.slice(-SAMPLE_LIMIT);
+    const maxValue = Math.max(10, ...filled.map((s) => s.value));
+    const yMax = Math.max(10, Math.ceil(maxValue / 10) * 10);
+    const bars = [];
+    for (let i = 0; i < SAMPLE_LIMIT; i += 1) {
+      const sample = filled[i - (SAMPLE_LIMIT - filled.length)];
+      const height = sample ? Math.max(sample.value > 0 ? 2 : 0, (sample.value / yMax) * 100) : 0;
+      bars.push(
+        h('span', {
+          class: ['fx-pulse-bar', sample ? '' : 'is-empty'],
+          vars: { h: height + '%' },
+          title: sample ? `${formatNumber(Math.round(sample.value))} / min · ${clockLabel(sample.t)}` : '',
+        }),
+      );
+    }
+    const labels = filled.length
+      ? [filled[0].t, filled[Math.floor(filled.length / 4)]?.t, filled[Math.floor(filled.length / 2)]?.t, filled[Math.floor((filled.length * 3) / 4)]?.t, filled[filled.length - 1].t].map(clockLabel)
+      : ['', '', '', '', ''];
+
+    return [
       h(
         'div',
-        { class: 'relay-top' },
-        h('div', {}, h('div', { class: 'stat-label', text: t('overview.relay.rate') }), h('div', { class: 'stat-value num', text: rate === null ? '–' : formatBytes(rate) + '/s' })),
-        sparkline(rates, { width: 220, height: 48, label: t('overview.relay.spark') }),
+        { class: 'fx-relay-head' },
+        h('div', {}, h('h2', { class: 'fx-panel-title', id: 'fx-relay-title', text: t('overview.new.relayTitle') }), h('p', { class: 'fx-panel-sub', text: t('overview.new.relaySub') })),
+        h('span', { class: 'fx-live' }, h('span', { class: 'dot' }), h('span', { text: 'Live · ' + clockLabel(now) })),
       ),
-      rates.length < 2 ? h('p', { class: 'muted small', text: t('overview.relay.collecting') }) : null,
-      dl([
-        [t('overview.relay.delivered'), h('span', { class: 'num', text: formatNumber(m.messagesDelivered) })],
-        [t('overview.relay.queued'), h('span', { class: 'num', text: formatNumber(m.messagesQueued) })],
-        [t('overview.relay.rejected'), h('span', { class: 'num', text: formatNumber(m.messagesRejected) })],
-        [t('overview.relay.oldest'), m.oldestWaitingMs !== null && m.oldestWaitingMs !== undefined ? h('span', { class: 'num', text: formatDuration(m.oldestWaitingMs) }) : h('span', { class: 'muted', text: t('overview.relay.nothingWaiting') })],
-        [t('overview.relay.uptime'), h('span', { class: 'num', text: formatDuration(m.uptimeSeconds * 1000) })],
-        [t('overview.relay.handshakes'), h('span', { class: 'num', text: t('overview.relay.handshakes.v', { ok: formatNumber(m.handshakesOk), refused: formatNumber(m.handshakesRefused) }) })],
-      ]),
-    );
+      h('div', { class: 'fx-relay-figure' }, formatNumber(m.messagesDelivered || 0), h('span', { class: 'unit', text: t('overview.new.deliveredTotal') })),
+      h(
+        'div',
+        { class: 'fx-pulse-wrap' },
+        h(
+          'div',
+          { class: 'fx-pulse-chart', role: 'img', 'aria-label': t('overview.new.chart') },
+          h('div', { class: 'fx-pulse-axis', 'aria-hidden': 'true' }, [yMax, Math.round(yMax / 2), 0].map((v) => h('span', { text: formatNumber(v) }))),
+          h(
+            'div',
+            { class: 'fx-pulse-plot' },
+            h('div', { class: 'fx-pulse-grid', 'aria-hidden': 'true' }, [0, 50, 100].map((top) => h('span', { class: 'fx-pulse-gridline', vars: { top: top + '%' } }))),
+            h('div', { class: 'fx-pulse-bars' }, bars),
+            h('div', { class: 'fx-pulse-x', 'aria-hidden': 'true' }, labels.map((text) => h('span', { text }))),
+          ),
+        ),
+        samples.length ? h('p', { class: 'fx-pulse-empty', text: t('overview.new.sampleNote') }) : h('p', { class: 'fx-pulse-empty', text: t('overview.new.collecting') }),
+      ),
+      h(
+        'div',
+        { class: 'fx-relay-facts' },
+        h('div', { class: 'fx-relay-fact' }, h('div', { class: 'fx-relay-fact-label', text: t('overview.new.queuedNow') }), h('div', { class: 'fx-relay-fact-value' }, formatNumber(m.queueDepth || 0))),
+        h('div', { class: 'fx-relay-fact' }, h('div', { class: 'fx-relay-fact-label', text: t('overview.new.rejected') }), h('div', { class: 'fx-relay-fact-value' }, formatNumber(m.messagesRejected || 0))),
+        h('div', { class: 'fx-relay-fact' }, h('div', { class: 'fx-relay-fact-label', text: t('overview.new.oldest') }), h('div', { class: 'fx-relay-fact-value' }, m.oldestWaitingMs ? formatDuration(m.oldestWaitingMs) : t('overview.new.nothingWaiting'))),
+      ),
+    ];
   }
 
-  async function loadMetrics(quiet) {
-    await loadInto(relayBody, { quiet, load: () => api.get('/metrics'), render: (m) => { renderRelay(m); return Array.from(relayBody.childNodes); }, rows: 4 });
+  function renderWaiting(o) {
+    const d = o.delegation || {};
+    const days = d.daysLeft;
+    const delegationValue = d.status === 'AWAITING' ? t('overview.tile.delegation.waiting') : days !== null && days !== undefined ? t('overview.tile.delegation.days', { n: days }) : '–';
+    const delegationSub = d.status === 'AWAITING' ? t('overview.tile.delegation.waiting.hint') : d.validTo ? t('overview.new.delegationSub', { date: formatDate(d.validTo) }) : t('overview.tile.delegation.hint');
+    return [
+      h(
+        'div',
+        { class: 'fx-panel-head' },
+        h('div', {}, h('h2', { class: 'fx-panel-title', id: 'fx-waiting-title', text: t('overview.new.waitingTitle') }), h('p', { class: 'fx-panel-sub', text: t('overview.new.waitingSub') })),
+      ),
+      h(
+        'div',
+        { class: 'fx-waiting-rows' },
+        waitRow({ glyph: 'requests', title: t('overview.tile.requests'), sub: t('overview.new.joinSub'), value: formatNumber(o.pendingJoinRequests || 0), href: '#/requests' }),
+        waitRow({ glyph: 'lock', title: t('overview.tile.delegation'), sub: delegationSub, value: delegationValue, warn: d.status !== 'ACTIVE' || (days !== null && days !== undefined && days < 14), href: '#/security?tab=delegation' }),
+        waitRow({ glyph: 'audit', title: t('overview.health.chain'), sub: t('overview.new.auditSub'), value: t('overview.new.check'), href: '#/audit' }),
+      ),
+      h('p', { class: 'fx-wait-note', text: t('overview.new.waitNote') }),
+    ];
   }
 
-  async function loadEvents(quiet) {
-    await loadInto(eventsBody, {
+  function renderDevices(rows) {
+    const online = (rows || []).filter((d) => d.online).slice(0, 3);
+    if (!online.length) return h('p', { class: 'fx-empty', text: t('overview.new.noDevices') });
+    return online.map(deviceRow);
+  }
+
+  function renderInvites(rows) {
+    const pending = (rows || []).filter((i) => i.state === 'PENDING').slice(0, 3);
+    if (!pending.length) return h('p', { class: 'fx-empty', text: t('overview.new.noInvites') });
+    return pending.map(inviteRow);
+  }
+
+  function renderActivity(page) {
+    const entries = (page && page.entries) || [];
+    if (!entries.length) return h('p', { class: 'fx-empty', text: t('overview.new.noActivity') });
+    return entries.slice(0, 3).map(activityRow);
+  }
+
+  function loadAll(quiet = false) {
+    loadInto(healthHost, {
       quiet,
-      rows: 5,
-      load: () => api.get('/audit', { query: { order: 'desc', limit: 10 } }),
-      render: (page) => {
-        if (!page.entries.length) return emptyState({ title: t('overview.events.empty.title'), text: t('overview.events.empty.text'), glyph: 'audit' });
-        return h('ul', { class: 'event-list' }, page.entries.map((e) => h('li', {}, h('span', { class: 'event-action' }, auditTone(e.action), h('span', { text: e.action })), h('span', { class: 'event-detail', text: e.actor + (e.details ? ' · ' + e.details : '') }), h('span', { class: 'event-time' }, timeEl(e.timestampMs)))));
-      },
+      skeleton: 'tiles',
+      rows: 4,
+      load: async () => ({ o: await overview(), m: await metrics().catch(() => null) }),
+      render: ({ o, m }) => renderHealth(o, m),
     });
+    loadInto(relayHost, { quiet, rows: 4, load: live, render: ([, m]) => renderRelay(m) });
+    loadInto(waitingHost, { quiet, rows: 3, load: overview, render: (o) => renderWaiting(o) });
+    loadInto(devicesHost, { quiet, rows: 3, load: () => api.get('/devices', { query: { limit: 24 } }), render: renderDevices });
+    loadInto(invitesHost, { quiet, rows: 3, load: () => api.get('/invites', { query: { limit: 100 } }), render: renderInvites });
+    loadInto(activityHost, { quiet, rows: 3, load: () => api.get('/audit', { query: { order: 'desc', limit: 3 } }), render: renderActivity });
   }
 
-  function auditTone(action) {
-    if (/failed|locked|refused|revoke|disable|reset/.test(action)) return h('span', { class: 'event-flag' }, icon('warning', { size: 16 }), h('span', { class: 'sr-only', text: t('overview.events.attention') }));
-    return null;
-  }
-
-  async function reload(quiet = false) {
-    await Promise.all([loadOverview(quiet), loadMetrics(quiet), loadEvents(quiet)]);
+  function reload(quiet = false) {
+    overviewPromise = null;
+    metricsPromise = null;
+    loadAll(quiet);
   }
 
   reload();
   const timer = setInterval(() => {
     if (stopped || globalThis.document.hidden) return;
-    if (tiles.contains(globalThis.document.activeElement)) return;
-    loadOverview(true);
-    loadMetrics(true);
+    reload(true);
   }, POLL_MS);
   return () => {
     stopped = true;
