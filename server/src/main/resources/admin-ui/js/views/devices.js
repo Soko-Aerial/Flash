@@ -75,7 +75,19 @@ export function mountDevices(container, ctx) {
 
   // ------------------------------------------------------------------ table
   const columns = [
-    { key: 'name', label: t('devices.col.name'), sortable: true, primary: true, render: (d) => h('span', { class: 'cell-stack' }, h('span', { class: 'cell-title', text: d.name || t('devices.unnamed') }), h('span', { class: 'cell-sub mono', text: shortId(d.deviceId, 10, 4) })) },
+    {
+      key: 'name',
+      label: t('devices.col.name'),
+      sortable: true,
+      primary: true,
+      render: (d) => h(
+        'span',
+        { class: 'cell-stack' },
+        h('span', { class: 'cell-title', text: d.name || t('devices.unnamed') }),
+        h('span', { class: 'cell-sub mono fx-id-sub', text: shortId(d.deviceId, 10, 4) }),
+        h('span', { class: 'cell-sub fx-mobile-sub' }, d.department || t('devices.noDepartment'), ' · ', d.online ? t('devices.online') : timeEl(d.lastSeenAt)),
+      ),
+    },
     { key: 'status', label: t('devices.col.status'), sortable: true, render: (d) => statusBadge(d.status) },
     { key: 'department', label: t('devices.col.department'), sortable: true, className: 'hide-sm', render: (d) => d.department || h('span', { class: 'muted', text: t('devices.noDepartment') }) },
     { key: 'role', label: t('devices.col.role'), sortable: true, className: 'hide-md', render: (d) => t('role.' + d.role) },
@@ -107,7 +119,9 @@ export function mountDevices(container, ctx) {
   }
 
   const tableHost = h('div', { class: 'table-host' });
-  mount(container, pageHeader({ title: t('devices.title'), subtitle: t('devices.sub'), actions: [refreshBtn, exportBtn] }), toolbar, resultLine, bulkBar, tableHost);
+  const head = pageHeader({ title: t('devices.title'), subtitle: t('devices.sub'), actions: [refreshBtn, exportBtn] });
+  const pageSub = head.querySelector('.page-sub');
+  mount(container, head, toolbar, resultLine, bulkBar, tableHost);
   mount(tableHost, skeleton('table', 8));
 
   // ------------------------------------------------------------------ data
@@ -122,6 +136,13 @@ export function mountDevices(container, ctx) {
   let view = [];
 
   function apply() {
+    if (all.length) {
+      const active = all.filter((d) => d.status === 'ACTIVE').length;
+      const online = all.filter((d) => d.online).length;
+      const revoked = all.filter((d) => d.status === 'REVOKED').length;
+      const unenrolled = all.filter((d) => d.status !== 'ACTIVE' && d.status !== 'REVOKED').length;
+      pageSub.textContent = t('devices.lede.counts', { active, online, revoked, unenrolled });
+    }
     const predicates = [];
     if (state.status) predicates.push((d) => d.status === state.status);
     if (state.department) predicates.push((d) => (state.department === '__none' ? !d.department : d.department === state.department));

@@ -2887,7 +2887,14 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
-### 2026-11-01 — Wave 4 repaired host verification (not a device/performance result)
+### 2026-11-05 - Hub console redesign approved and ported
+- **Code / commits:** `agent/console-redesign` / `d3fb6c33` (design) and the port commit on the same branch; base `dev` `a7ff5636`.
+- **Environment:** Windows, Chrome 1440/768/390 against the design build and a mock-API review of the shipped console; no physical device needed for the admin console.
+- **Tests run:** `design/server-console` review build (final screenshots); console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route rendered without console errors/overflow in the review harness; sign-in and sign-out exercised.
+- **Result:** owner approved the direction; the shipped console now uses the approved shell, Overview, auth frame and visual system. The design record and prototype remain in `design/server-console/`. `CONSOLE-D02..D07` remain for owner/browser verification; `CONSOLE-D07` code side passed and its owner confirmation is owed.
+- **Notes:** no fictional "Meridian Works"/"Production" in the shipped build; the hub name comes from `/overview`. The relay strip is sampled by the open console because the hub keeps no history by design.
+
+### 2026-11-01 - Wave 4 repaired host verification (not a device/performance result)
 - **Code / commits:** E delivered 00a7a51f plus reviewed repairs committed as b2b61b92; K delivered 6d9c9227 plus
   reviewed repairs committed as 22a53994; both base baf77753. These targeted runs preceded the repair commits;
   E had no later source change, K only a later KDoc clarification. Expanded merged-tree gates not yet run at this entry.
@@ -7381,13 +7388,14 @@ These are review checks for the standalone design proposal in `design/server-con
 tests and do not change the shipped console. Source: `docs/ui/hub-admin-console-redesign.md`,
 `design/server-console/README.md`.
 
-### CONSOLE-D01 — Owner reviews the direction
+### CONSOLE-D01 - Owner reviews the direction
 - **Setup:** `cd design/server-console; node scripts/serve.mjs`, open `http://localhost:5182/#/overview` at 1440.
 - **Steps:** read the Overview in dark and light; open Devices, Security -> Delegation, Settings, Login; open
   `design/server-console/shots/final/`.
 - **Pass:** the owner can say whether the direction is approved, needs changes, or is rejected; no shipped console file
   was changed while reviewing.
-- **Source:** `docs/ui/hub-admin-console-redesign.md` sections 2-4. **Status:** TODO
+- **Source:** `docs/ui/hub-admin-console-redesign.md` sections 2-4. **Status:** PASS (owner approved the direction on
+  2026-11-05; ported the same day; the fictional review org/environment was removed from the shipped build).
 
 ### CONSOLE-D02 — Desktop composition at 1440
 - **Steps:** at 1440x900 inspect Overview, Devices, Invites, Join requests, Organization, Announcements, Audit,
