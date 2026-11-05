@@ -1,5 +1,13 @@
 # Current Handoff
 
+> **2026-11-05 (latest, owner device pass) - RADIO TEXT WORKS BIDIRECTIONALLY.** After setting the phone chat's
+> **Radio fallback** to **Automatic**, Android→desktop and desktop→Android short texts work on the Infinix + Windows
+> radios. The one-way failure was exactly the phone's `policy=NEVER`; power-cycling the radios restored the receive
+> direction. `ERROR-985` is device-confirmed, `ERROR-988` is resolved for this session. `RADIO-PATH-01` is PASS for the
+> core bidirectional case; its link-down/Never-banner steps and `RADIO-PROFILE-A-01` were not separately reported and stay
+> TODO. **Not pushed.** The duplicate RFCOMM open/session-redial shape stays open as P2-4. Authority:
+> `docs/testing/TEST-BACKLOG.md` Results log 2026-11-05, `logs/errors.md` ERROR-985/988, `logs/progress.md`.
+>
 > **2026-11-05 (profile A) - Profile A is no longer selectable in the Radio settings sheet.** It was a trap: outbound chat
 > refused it (`RadioChatEngine.sendText`) and inbound signed frames could not be verified because `RadioChatWiring` has only
 > the peer fingerprint, not its full identity public key (`RadioSession.ingestSigned` -> `SIGNED_NOT_ENABLED`). The row is

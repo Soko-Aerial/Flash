@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-11-05 (device pass) - Radio text works in both directions
+
+### Result
+Owner report: after setting the phone chat's **Radio fallback** to **Automatic**, Android→desktop and desktop→Android
+short texts work on the Infinix X6882B + Windows radios. Power-cycling the radios restored the receive direction.
+The one-way failure was exactly the phone's persisted `policy=NEVER`; the desktop was never the failing side.
+
+### Recorded
+- `docs/testing/TEST-BACKLOG.md`: `RADIO-PATH-01` PASS for the core bidirectional case; Results log entry added. The
+  link-down/Never-banner steps and `RADIO-PROFILE-A-01` were not separately reported and stay TODO.
+- `logs/errors.md`: `ERROR-985` device-confirmed; `ERROR-988` resolved for this session (radio power-cycle + policy).
+  The duplicate RFCOMM open/session-redial shape stays open as P2-4.
+- `logs/handoff.md`/`AGENTS.md` current state updated.
+
+### Next
+See the "what next" recommendation in this session: close the P2-4 duplicate-open/session-churn reliability item, then
+start Wave 3's **version range + capability registry**. The Profile A peer-key exchange remains a feature, not a toggle.
+
 ## 2026-11-05 (profile A) - Profile A is now visibly unavailable instead of a trap
 
 ### Changed
