@@ -18,11 +18,12 @@
 > one-tint avatars. Records: **ADR-354 (PROPOSED, with its scope extension)**, `ERROR-984` (PowerShell UTF-8
 > corruption, repaired), `logs/progress.md` 2026-11-05, `CHATUI-01..12`.
 > **Open decision:** wallpaper persistence - (a) app-wide `FlashSettings`, (b) per-chat Room step, (c) preview-only.
-> Recommendation: (a) then (b). **Committed as `<hash pending>`** on branch `design/chat-redesign`
-> (worktree `E:\FlashWork\chat-redesign`); nothing pushed, nothing merged. **Next:** owner reviews the new screens; only
-> then the Compose port (icon XML paths, header, composer, message-list wallpaper, menu item, profile sheet, group
-> info/settings, piece map, appearance sheet), keeping every `FlashConversationScreen` parameter, every callback and
-> `FlashBubbleShape` unchanged. Nothing is device-verified; no phone was used.
+> Recommendation: (a) then (b). **Committed as `b1e2d97a`** (round 2; round 1 was `2865e811`) on branch
+> `design/chat-redesign` (worktree `E:\FlashWork\chat-redesign`); nothing pushed, nothing merged. **Next:** owner
+> reviews the new screens; only then the Compose port (icon XML paths, header, composer, message-list wallpaper,
+> menu item, profile sheet, group info/settings, piece map, appearance sheet), keeping every
+> `FlashConversationScreen` parameter, every callback and `FlashBubbleShape` unchanged. Nothing is device-verified;
+> no phone was used.
 
 > **2026-11-05 (latest) - ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone
