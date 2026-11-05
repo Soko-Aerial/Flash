@@ -19,7 +19,10 @@
 >   `docs/ui/chat-icon-set.md`; AAPT + compile green; no device render yet (`CHATUI-16`).
 > **Verified:** `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` **BUILD SUCCESSFUL**; `:ui:chat:jvmTest`,
 > `:ui:theme:jvmTest`, `:app:testDebugUnitTest` **green**; new wallpaper settings tests green on both hosts.
-> **Not device-verified; no phone was attached.** **Known deviations** (ADR-354 "Implementation"): compact bottom-right
+> **Not device-verified; no phone is attached.** The debug APKs are built and waiting:
+> `app/build/outputs/apk/debug/app-universal-debug.apk` (install this on any handset) and
+> `app-arm64-v8a-debug.apk` (the Infinix/Samsung route). Install with `adb install -r <apk>` once the owner
+> attaches a device, then run `CHATUI-13..16`. **Known deviations** (ADR-354 "Implementation"): compact bottom-right
 > bubble time instead of inline text; the file card keeps its tested surface; group info/settings keep their shipped
 > structure with the new tokens; the swarm map keeps its tested 16-column drawing; no custom colour. Owed:
 > `CHATUI-01..16` (13-16 cover the port), a second visual pass for the group sheets/file card/inline time, and the icon
