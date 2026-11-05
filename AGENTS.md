@@ -925,7 +925,12 @@ same treatment on every existing screen. The real API, CSP-safe DOM, i18n, step-
 existing features are preserved. The review world's fictional “Meridian Works”/“Production” is removed from the product;
 the sidebar shows `/overview.hubName`. The relay strip is sampled by the open console because the hub keeps no history.
 Verification: console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route rendered in
-Chrome at 1440/768/390; sign-in and sign-out exercised. Owner browser checks `CONSOLE-D02..D07` remain. The old
+Chrome at 1440/768/390; sign-in and sign-out exercised. Owner browser checks `CONSOLE-D02..D07` remain. A two-agent
+post-merge wiring audit (2026-11-05, `docs/audit/2026-11-05-server-console-wiring-review.md`) found **no P0** and no
+broken API calls, but four open P1 product gaps (department-head client scope/provisioning, multi-department paging,
+revocation-list installer) and a set of new-Overview/shell regressions (audit-chain verify removed, dead retry, wrong
+activity labels, missing `dept_head` role key, display-name refresh, mobile identity, ledger caps, help list). No code was
+changed by the audit; fix the port regressions first. The old
 `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Merge conflicts in the two shared logs were resolved by keeping both
 sides; the other agent's Wave 2/tombstone entries are intact. Authority: `logs/handoff.md`, `logs/progress.md`.
 

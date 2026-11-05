@@ -1,5 +1,19 @@
 # Current Handoff
 
+> **2026-11-05 (audit) - TWO-AGENT WIRING REVIEW COMPLETE; NO P0; P1 GAPS AND PORT REGRESSIONS OPEN; NO CODE CHANGED.**
+> Two read-only subagents reviewed the merged console: frame/auth/Overview/requests/shared UI, and every feature
+> screen with its UI -> API -> server route/DTO. **No P0 and no privilege escalation**; all controls reach real
+> endpoints; CSRF, step-up, role gates, CSP-safe DOM, i18n and print are intact. **P1s:** no client-side department-head
+> scope (org-only screens/actions 403, sometimes after step-up); multi-department heads filtered after `LIMIT/OFFSET`;
+> no revocation-list installer despite `POST /revocations/install`; department-head admin provisioning missing despite
+> the server APIs. **Port regressions to fix first:** Overview audit-chain verification removed; `/overview`/`/metrics`
+> retry dead (cached rejection); wrong “Latest activity” action labels; missing `role.short.dept_head`; display name
+> reverts to username; phone/tablet hide user/session; ledger false “No devices/invites”; help missing `g r`/`g n`;
+> 15-minute strip documented as 60. Join approval is one click while the design/README/`CONSOLE-D06` promise a
+> phone-code gate — owner decision needed. Full record and fix order:
+> `docs/audit/2026-11-05-server-console-wiring-review.md`. Node 83/83; no Gradle/browser/device by the agents; no code
+> changed. The port/merge banner below still describes the shipped state.
+
 > **2026-11-05 (port) - OWNER APPROVED THE DESIGN; THE SHIPPED CONSOLE NOW USES IT AND IS MERGED INTO `dev` AS
 > `ec6c3724` (LOCAL, NOT PUSHED).**
 > Design review build and record: `design/server-console/` and `docs/ui/hub-admin-console-redesign.md` (design commit

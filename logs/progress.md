@@ -1,5 +1,46 @@
 # Progress Log
 
+## 2026-11-05 (review) - two-agent wiring audit of the merged console; no P0, findings open, no code changed
+
+### Worked on
+Two independent, read-only `general` subagents reviewed the merged `dev` console (`e1bc495b`, merge `ec6c3724`):
+one on the frame/auth/Overview/Join-requests/shared-UI wiring, one on every feature screen and its
+UI -> API -> server route/DTO contract. Neither changed files, ran Gradle, a browser or a device. The parent
+spot-checked the P1s and the new-Overview regressions.
+
+### Result
+- **No P0 and no privilege escalation.** Every audited control reaches a real server route with the correct
+  method/path/body; CSRF, step-up action/target strings, role gates, CSP-safe DOM, i18n and print rules are intact.
+  No sample-data mutation remains in the shipped console; “Meridian Works”/“Production” is only in the design prototype.
+- **4 P1 product gaps:** no client-side department-head scope (org-only screens/actions 403, sometimes after step-up);
+  multi-department heads are filtered after `LIMIT/OFFSET` in Devices/Invites/Announcements; the revocation-list
+  installer has no UI despite `POST /revocations/install`; department-head admin accounts cannot be created/re-scoped
+  from Administrators despite the server APIs.
+- **Port regressions to fix first:** Overview no longer verifies the audit chain; `/overview`/`/metrics` retry is dead
+  because the rejected promise is cached; “Latest activity” maps wrong action keys (`join.decline`/`admin.session.start`/
+  `delegation.verify` vs the real `join.reject`/`admin.login`/`delegation.install`); `role.short.dept_head` is missing;
+  display name reverts to username on session refresh; phone/tablet lose the user/session; ledger says “No devices
+  online”/“No invites waiting” from capped newest pages; help omits `g r`/`g n`; the 60-minute strip is 15 minutes.
+- **Design/feature gap:** join approval is one click, while the approved design/README/`CONSOLE-D06` promise a phone-code
+  confirmation gate. Needs an owner decision: implement step-up + confirmation, or correct the record and keep one click.
+- Other P2/P3: announcement paging/total, stale invite-group selections, announcement delete/conflict body empty
+  (`text:` vs `message:`), department IDs shown as names, Settings health caps online at 500, cold deep links lost,
+  logout/expiry edge cases, hardcoded About version, and smaller copy/a11y items.
+
+### Verification
+- Both agents re-ran `node --test server/admin-ui-tests/*.test.mjs`: **83/83 pass**.
+- The merged tree previously passed `AdminConsoleWebTest` **15/15** and `AdminConsoleApiTest` **10/10**.
+- No code was changed in this audit.
+
+### Remaining
+- Fix the port regressions R1-R9 first (small, testable). Decide the join-approval gate. Then do department-head
+  scope/provisioning + multi-department queries as one server+console feature, followed by the revocation installer.
+- Owner browser checks `CONSOLE-D02..D07` remain.
+
+### Next AI
+Read `docs/audit/2026-11-05-server-console-wiring-review.md` before touching the console. Start with R1-R9; do not
+re-audit from scratch. The P1 head work needs server query/paging changes and a head login browser test, not just CSS.
+
 ## 2026-11-05 (port) - approved server dashboard design ported into the shipped console; merged as ec6c3724
 
 ### Worked on
