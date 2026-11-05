@@ -8435,11 +8435,14 @@ scale conversion per frame, a covered one starts none, and re-binding still work
 
 ### Decision
 When a device forgets a paired peer, it sends one authenticated, best-effort `FLASH_PAIR t=revoke` line on the live
-session **before** removing its local trust. A receiver that understands it does four things:
+session **before** removing its local trust. A receiver that understands it does five things:
 1. removes the sender's pin, pairing and stored session key (the same local operation as Forget);
 2. closes the live session;
 3. stops treating the sender as trusted/online in the UI;
-4. shows "<name> no longer trusts you. Pair again to reconnect." (or the generic sentence when the name is unknown).
+4. shows "<name> no longer trusts you. Pair again to reconnect." (or the generic sentence when the name is unknown);
+5. fails its own queued outgoing messages to that peer, so the outbox stops retrying immediately. If a sealed
+   frame arrives later with no session key (the first notice was lost, or the peer reconnected), the receiver
+   resends this notice at most once per 10 s - the negative acknowledgement.
 
 The frame is idempotent: a repeated or late `revoke` from the same peer is a no-op after the first. It carries no
 request id and no payload beyond the type. It is advertised as the `pr1` capability in the `caps` HELLO field; a sender
@@ -8464,8 +8467,9 @@ revoke frame; the device test made it a user-visible data-loss illusion.
 
 ### Consequences
 - A revoked peer learns immediately; its UI stops claiming "Connected" and reads "Not paired" while an unpaired
-  transport session is up. Unsent messages still follow the existing outbox budget until a negative acknowledgement
-  exists: the notice is **not** a delivery receipt.
+  transport session is up. Unsent messages are failed when the notice arrives (or when a no-key sealed frame triggers
+  the rate-limited resend), so the outbox stops in seconds. Peers that do not advertise `pr1` never receive the notice
+  and keep the old wall-clock budget; that is the only remaining gap.
 - Old peers see no change (unknown `FLASH_PAIR` types are ignored by the codec); they still need a re-pair and still
   retry until their own session/retry policy gives up. This is no worse than today and does not block the change.
 - The frame is a statement about the sender's own trust. A malicious peer can only make the receiver forget the
@@ -8481,7 +8485,9 @@ revoke frame; the device test made it a user-visible data-loss illusion.
 - Unit: `PairingWireCodecTest` (5) round-trips `revoke` and still ignores unknown `t`; `FlashPairingCoordinatorTest` (11)
   proves a received `revoke` removes the peer, emits the sentence, and calls the close callback; the sender emits one
   frame when `pr1` is advertised. `FlashChatHeaderLabelTest` (2) proves the header reads "Not paired" for an untrusted
-  peer even while presence is Online.
+  peer even while presence is Online. `FlashInboundRouterTest` (55) proves a no-key sealed frame invokes the resend
+  callback once per 10 s window; `RealFlashChatRepositoryTest` proves a queued message becomes Failed and leaves the
+  outbox when the notice arrives.
 - Device, 2026-11-04 (Infinix X6882B / Android 14 and Samsung SM-G986U1 / Android 13, both this debug build): paired,
   sent and delivered a message, then revoked on the Infinix. The Samsung logged
   `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped the `paired_` and `session_key_`

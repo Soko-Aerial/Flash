@@ -2,8 +2,10 @@
 
 package com.transfer.flash.core.engine
 
+import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.messaging.protocol.DirectChatFamily
@@ -71,6 +73,10 @@ public fun RealFlashChatRepository.asInboundSink(): InboundChatSink {
  */
 public object FlashInboundRouter {
 
+    /** ADR-351 negative ack: at most one revoke resend per peer inside this window. */
+    private const val UNREADABLE_NACK_INTERVAL_MS: Long = 10_000L
+    private val lastUnreadableNackAt = SyncMap<String, Long>()
+
     public const val CALL_PREFIX: String = "FLASH_CALL"
     public const val PAIR_PREFIX: String = "FLASH_PAIR"
     public const val XFER_PREFIX: String = "FLASH_XFER"
@@ -129,10 +135,12 @@ public object FlashInboundRouter {
         customHandler: (suspend (peerDeviceId: String, text: String) -> Boolean)? = null,
         chatSink: InboundChatSink? = chatRepository?.asInboundSink(),
         incomingOwners: Map<String, String>? = null,
+        /** ADR-351: called (rate-limited) when a sealed frame arrives with no key, so the host can resend the revoke. */
+        onUnreadableSecuredFrame: ((peerDeviceId: String) -> Unit)? = null,
     ): Boolean = try {
         routeText(
             peerDeviceId, text, callHandler, presenceHandler, modeHandler, pttProvider, pairingHandler,
-            sessionKeyLookup, chatSink, transferRepository, customHandler, incomingOwners,
+            sessionKeyLookup, chatSink, transferRepository, customHandler, incomingOwners, onUnreadableSecuredFrame,
         )
     } catch (t: Throwable) {
         if (t is CancellationException) throw t
@@ -153,6 +161,7 @@ public object FlashInboundRouter {
         transferRepository: RealFlashTransferRepository?,
         customHandler: (suspend (peerDeviceId: String, text: String) -> Boolean)?,
         incomingOwners: Map<String, String>?,
+        onUnreadableSecuredFrame: ((peerDeviceId: String) -> Unit)?,
     ): Boolean {
         // 1. Calling signaling (ADR-025): most latency-sensitive frame class
         if (isCallFrameText(text)) {
@@ -201,6 +210,15 @@ public object FlashInboundRouter {
                 }
             } else {
                 FlashLog.w(TAG, "Received FLASH_SEC from $peerDeviceId with no stored session key; dropping")
+                // ADR-351 negative ack: the sender is still retrying a message this device cannot
+                // open. Resend the revoke notice (rate-limited) so its outbox fails immediately
+                // instead of waiting for the wall-clock give-up budget.
+                val now = SystemTimeSource.nowMs()
+                val last = lastUnreadableNackAt[peerDeviceId] ?: 0L
+                if (now - last >= UNREADABLE_NACK_INTERVAL_MS) {
+                    lastUnreadableNackAt[peerDeviceId] = now
+                    onUnreadableSecuredFrame?.invoke(peerDeviceId)
+                }
                 return true
             }
         } else {

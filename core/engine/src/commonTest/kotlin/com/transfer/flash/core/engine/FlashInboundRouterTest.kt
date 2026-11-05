@@ -259,6 +259,34 @@ class FlashInboundRouterTest {
     }
 
     @Test
+    fun aSecuredFrameWithNoKeyAsksForTheRevokeOncePerWindow() = runTest {
+        val sink = RecordingChatSink()
+        val wire = E2eFrameCodec.encryptToWireFrame(plainChatText("peerNack", "secret"), key)
+        var nacks = 0
+
+        assertTrue(
+            FlashInboundRouter.routeInboundText(
+                peerDeviceId = "peerNack",
+                text = wire,
+                sessionKeyLookup = { null },
+                chatSink = sink,
+                onUnreadableSecuredFrame = { nacks++ },
+            ),
+        )
+        assertTrue(
+            FlashInboundRouter.routeInboundText(
+                peerDeviceId = "peerNack",
+                text = wire,
+                sessionKeyLookup = { null },
+                chatSink = sink,
+                onUnreadableSecuredFrame = { nacks++ },
+            ),
+        )
+        assertEquals(1, nacks, "the resend is rate-limited inside the window")
+        assertTrue(sink.direct.isEmpty())
+    }
+
+    @Test
     fun throwingChatSinkDoesNotEscapeTheTextRouter() = runTest {
         val handled = FlashInboundRouter.routeInboundText(
             peerDeviceId = "peerT",

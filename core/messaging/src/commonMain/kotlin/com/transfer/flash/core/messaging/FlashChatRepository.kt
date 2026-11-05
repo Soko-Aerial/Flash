@@ -60,6 +60,12 @@ public interface FlashChatRepository {
     public fun stopRadioRetry(localId: String) {}
 
     /**
+     * ADR-351 negative ack: [peerDeviceId] says it no longer trusts this device. Fail and remove
+     * every queued outgoing message to it so the outbox stops retrying; the bubbles stay Failed.
+     */
+    public fun failPendingToPeer(peerDeviceId: String, reason: String) {}
+
+    /**
      * Starts or returns an existing 1:1 conversation with a company colleague [deviceId] (Plan B, ADR-134).
      *
      * Validates that:

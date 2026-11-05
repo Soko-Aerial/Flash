@@ -192,6 +192,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
@@ -6748,6 +6749,33 @@ public class RealFlashChatRepository(
     public fun notifyPeerSessionDown(peerDeviceId: String) {
         currentConnectedPeers.remove(peerDeviceId)
         groupProofSessions?.onSessionDown(peerDeviceId)
+    }
+
+    /**
+     * ADR-351 negative ack: the peer no longer trusts us. Fail its queued messages now instead of
+     * waiting for [OUTBOX_GIVE_UP_AFTER_MS], and stop treating it as online. A direct conversation's
+     * id is the peer device id, so the conversation read is the pending set.
+     */
+    override fun failPendingToPeer(peerDeviceId: String, reason: String) {
+        currentConnectedPeers.remove(peerDeviceId)
+        groupProofSessions?.onSessionDown(peerDeviceId)
+        scope.launch {
+            val pending = runCatching {
+                messageDao.observeConversation(peerDeviceId).first()
+                    .filter {
+                        it.conversationId == peerDeviceId && it.senderId == localDeviceId &&
+                            it.status != "DELIVERED" && it.status != "READ" && it.status != "FAILED"
+                    }
+                    .map { it.localId }
+            }.getOrDefault(emptyList())
+            for (localId in pending) {
+                messageDao.updateStatusIfUnacknowledged(localId, "FAILED")
+                outboxDao.delete(localId)
+            }
+            if (pending.isNotEmpty()) {
+                FlashLog.w("CHAT", "Failed ${pending.size} queued message(s) to $peerDeviceId: $reason")
+            }
+        }
     }
 
     override fun openAttachmentPicker() {}

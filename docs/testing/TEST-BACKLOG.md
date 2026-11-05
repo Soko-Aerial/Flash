@@ -7325,8 +7325,8 @@ even be written without one.
 
 ## 5.W1. Wave 1 safety fixes (2026-11-03; device checks owed)
 
-Four fixes are on branch `fix/wave1-safety` (commits `c75862b4`, `8780e40`, `5ab9c9f7`, `25b6b762`); unit tests are green.
-These are the two-device checks that still gate a merge.
+The Wave 1 fixes (`c75862b4`, `8780e40`, `5ab9c9f7`, `25b6b762`) and ADR-351 (`1ce825d2`) are on `dev`; unit tests are
+green. These are the two-device checks that still gate confidence.
 
 ### W1-TLS-01 — Forget a peer without restarting the app
 - **Setup:** two phones, paired, both apps open and connected; a live session. (Run 2026-11-04: Infinix X6882B / Android 14 + TECNO SPARK 40 / Android 15, both on the Infinix hotspot, same `fix/wave1-safety` debug APK.)
@@ -7341,7 +7341,14 @@ These are the two-device checks that still gate a merge.
 - **Steps:** toggle B's Wi-Fi, send from B, watch both UIs and logs for two minutes.
 - **Pass:** B stops showing "Connected" and either marks the message failed with a reason or removes the peer from trusted; the outbox stops retrying; A closes the session or refuses it with a typed reason; no `FLASH_SEC` retry loop remains.
 - **Result 2026-11-05 (ADR-351):** PASS for the notice and header: the Samsung logged the sentence and its chat header flipped from **Connected** to **Not paired**; the Infinix moved the peer to DISCOVERED. **Partial:** the outbox still follows the wall-clock budget (the notice is not a receipt), an outbound first-use dial can re-add a TOFU pin for the now-unpaired peer, and the chat title falls back to the raw device id.
-- **Source:** `ERROR-982`, ADR-351. **Status:** PARTIAL (notice+header pass; outbox/tombstone/title owed)
+- **Negative ack (2026-11-05):** implemented: a receiver that drops a `FLASH_SEC` with no session key resends `PAIR_REVOKE` at most once per 10 s, and the revoked side fails its queued messages (`failPendingToPeer`). Unit-tested; the device run is `W1-NACK-01` below. Old peers without `pr1` keep the budget path.
+- **Source:** `ERROR-982`, ADR-351. **Status:** PARTIAL (notice+header pass; negative ack unit-tested, device owed; old-peer budget/tombstone/title owed)
+
+### W1-NACK-01 — A queued message fails as soon as the revoke is seen
+- **Setup:** two paired phones running the negative-ack build; A paired with B.
+- **Steps:** force-stop A (or turn its Wi-Fi off) so B has no live session; on B send `queued-nack` (it stays queued); start A; on A, Nearby -> Revoke B. Repeat once with the first revoke frame effectively lost (force-stop A's app between the revoke and B's reconnect) to exercise the no-session-key resend.
+- **Pass:** B's queued message becomes **Failed** within seconds, not after the wall-clock budget; B's log carries `CHAT: Failed 1 queued message(s) to <id>: The other device no longer trusts you. Pair again to reconnect.`; B's header reads **Not paired**; A's log carries `Received FLASH_SEC from <id> with no stored session key; dropping`; the resend is limited to one per 10 s per peer.
+- **Source:** ADR-351, `ERROR-982`, `FlashInboundRouter.onUnreadableSecuredFrame`, `RealFlashChatRepository.failPendingToPeer`. **Status:** TODO — unit tests pass (`FlashInboundRouterTest` 55/55 including the no-key resend; `RealFlashChatRepositoryTest` negative ack 1/1), but the device run was blocked on 2026-11-05 because the Samsung left USB before the new APK was installed (only the Infinix has it).
 
 ### W1-FRAME-01 — Malformed HELLO
 - **Setup:** a test harness (desktop CLI or a small client) that can send a raw `FLASH_WS_HELLO` to the phone.

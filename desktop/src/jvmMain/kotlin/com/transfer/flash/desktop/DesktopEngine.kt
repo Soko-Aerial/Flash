@@ -27,6 +27,8 @@ import com.transfer.flash.core.discovery.jmdns.JmdnsTransport
 import com.transfer.flash.core.discovery.multicast.JvmMulticastSocketFactory
 import com.transfer.flash.core.discovery.multicast.MulticastTransport
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
+import com.transfer.flash.core.security.pairing.FlashPairingFrame
+import com.transfer.flash.core.security.pairing.PairingWireCodec
 import com.transfer.flash.core.messaging.EmptyFlashChatRepository
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.messaging.RealFlashChatRepository
@@ -386,6 +388,10 @@ public class DesktopEngine(
                 networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId))?.peer?.features.orEmpty()
             },
             onPeerRevoked = { peerId ->
+                chatImpl?.failPendingToPeer(
+                    peerId,
+                    "The other device no longer trusts you. Pair again to reconnect.",
+                )
                 scope.launch { networkImpl?.disconnect(FlashDeviceId(peerId)) }
             },
             sendToPeer = { peerId, text ->
@@ -2380,6 +2386,14 @@ public class DesktopEngine(
             chatRepository = chatImpl,
             transferRepository = transferImpl,
             incomingOwners = incomingOwners,
+            onUnreadableSecuredFrame = { peerId ->
+                val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
+                if (session != null && PairingWireCodec.FEATURE_PAIR_REVOKE in session.peer.features) {
+                    session.connection.sendTextAsync(
+                        PairingWireCodec.encode(FlashPairingFrame.PairRevoke()),
+                    )
+                }
+            },
         )
     }
 

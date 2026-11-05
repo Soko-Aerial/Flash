@@ -798,6 +798,10 @@ FLASH_PAIR t=revoke
   sender's `pin_`, `paired_` and `session_key_` entries, closes the session, drops the sender from trusted/online, and
   shows "<name> no longer trusts you. Pair again to reconnect." It must not send a revoke back.
 - Idempotent: a repeated or late revoke from the same peer is a no-op after the first.
+- **Negative acknowledgement.** A receiver that drops a `FLASH_SEC` because it has no session key resends
+  `FLASH_PAIR t=revoke` at most once per 10 s. The sender applies it idempotently and fails its queued messages to that
+  peer, so a lost initial revoke does not leave the outbox retrying until its wall-clock budget. The resend is sent only
+  when the peer advertised `pr1`; a peer that did not is unchanged (budget path).
 - A peer can only revoke **itself**; the frame carries no third-party id. A malicious peer therefore cannot make the
   receiver forget anyone but the malicious peer.
 - Unknown `t` values, including `revoke` on a build that predates it, are consumed and ignored by the pairing codec.
