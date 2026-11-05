@@ -72,10 +72,13 @@ public class RadioChatBridge(
     }
 
     /**
-     * Checks if [recipientId] is a paired peer known to be radio-reachable.
+     * Checks if [recipientId] can be keyed **now**: gateway on, link connected, and a paired peer
+     * key present. A key alone is not a path; the old check returned true with the radio switched
+     * off or the link down, which made the host skip its LAN dial and left texts with no path
+     * (RADIO-PATH-01, phone log 2026-11-03).
      */
     public fun canCarry(recipientId: String): Boolean =
-        port.isRadioReachable(recipientId)
+        port.isGatewayEnabled && port.isConnected && port.isRadioReachable(recipientId)
 
     /**
      * Records [note] for [messageId], keeping the map bounded.
@@ -169,9 +172,15 @@ public class RadioChatBridge(
                 false
             }
             is RadioSendResult.RefusedAuthorization -> {
-                putNote(messageId, RadioDeliveryNote("Profile M unconfirmed: ${result.reason}", isFailure = true))
+                // The only input is the operator's Profile-M confirmation (or the radio's profile
+                // switch). Marking the row permanently Failed here, as the old code did, meant a
+                // temporary refusal killed the message and stopped the hub-mailbox fallback. Keep
+                // the red sentence, keep retrying (RADIO-PATH-01).
+                putNote(
+                    messageId,
+                    RadioDeliveryNote("Profile M unconfirmed: ${result.reason}", isFailure = true, transient = true),
+                )
                 probeFailure(messageId, "authorisation", currentAttempt)
-                onMessageFailed(messageId)
                 false
             }
             is RadioSendResult.RefusedUnreachable -> {

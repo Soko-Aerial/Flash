@@ -956,3 +956,14 @@ https://developer.android.com/reference/android/provider/DocumentsContract.Docum
   difference refuses the resume. A `file://` URI uses
   `File.length()`/`lastModified()`. Querying the two optional columns together would let one unsupported column fail the
   whole cursor and lose the other signal, so they are separate queries.
+
+### 8. Foreground-service start deadline (API 26+) - **verified**
+https://developer.android.com/reference/android/content/Context#startForegroundService(android.content.Intent) (fetched 2026-11-05)
+https://developer.android.com/develop/background-work/services/fgs (fetched 2026-11-05)
+
+- `Context.startForegroundService()` requires the service to call `startForeground()` within five seconds. If it does not, the
+  system throws `android.app.RemoteServiceException$ForegroundServiceDidNotStartInTimeException` on the main thread; the process
+  is killed, not merely warned.
+- **Project implication:** `FlashBackgroundService.onCreate` now promotes first, before constructing or starting
+  `TranssionHiberKeepAlive`; the keep-alive start is dispatched to `Dispatchers.Default`. This is a platform deadline, not a
+  device-specific workaround. The 2026-10-26 Infinix log is the evidence (`ERROR-984` bundle).

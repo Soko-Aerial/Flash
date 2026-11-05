@@ -52,4 +52,15 @@ class PendingAckTableTest {
         assertNull(table.remove(42, nowMs = 0))
         assertEquals(0, table.size)
     }
+
+    @Test
+    fun keepsTheTransmitTimeSeparateFromTheComposeTimeForTheRtt() {
+        // RADIO-PATH-01: the user may have waited minutes in the outbox; rttMs must start at TX.
+        val table = PendingAckTable()
+        table.put(9, "m9", "peer-b", sentAtMs = 1_000, nowMs = 5_000, txAtMs = 4_800)
+        val entry = table.remove(9, nowMs = 5_100)
+        assertNotNull(entry)
+        assertEquals(1_000, entry.sentAtMs)
+        assertEquals(4_800, entry.txAtMs)
+    }
 }

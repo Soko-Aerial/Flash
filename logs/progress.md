@@ -38,6 +38,60 @@ services on the host were left running.
 Do not treat the local mock as the test hub; `myserver` is the live test hub. Do not print or commit the setup token.
 If the new build needs a rollback, `app.prev`/`data.bak` are on the host; the tunnel URL is unchanged.
 
+## 2026-11-05 (radio path) - Live-link gate, policy-aware probe, transfer retry crash, FGS promotion order
+
+### Worked on
+The owner reported that sending from the Android phone through the radio hung, that transport switching felt wrong,
+and supplied an 11-day phone log (`flash-log-1793881521325.txt`, 4.7 MB) plus the desktop run log. A read-only
+subagent indexed the phone log and correlated it with the code; the parent session fixed the code and re-tested it.
+
+### Changed
+- **Radio readiness** (`HostedRadioOutboxPort`, `RadioChatBridge`): `isRadioReachable`/`canCarry` now require the
+  gateway enabled, the link connected **and** the 32-byte pairing key. A key alone is no longer a path.
+- **Transport sink** (Android `DiscoveryEngineHolder`, desktop `DesktopEngine`): removed the optimization that
+  skipped `ensureSession` when a radio key existed. It ignored `radioPolicy=NEVER` and left a `NEVER` chat (or a
+  link-down radio) with no LAN attempt and no radio send. The one-second on-demand dial runs again.
+- **Policy read** (`RealFlashChatRepository`): the outbox drain reads the policy from the conversation row it
+  already loaded; the in-process `radioPolicyNow` still wins. This removes a second `SELECT conversations` from
+  the send path (the phone log showed those queries waiting 0.3-15 s).
+- **Probe** (`radio.path`): added `policy`, `pairKey`, `gateway`, `connected`. `not_reachable` no longer conflates
+  "Never", "no key" and "link down".
+- **Temporary auth refusal** (`RadioDeliveryNote.transient`): Profile-M unconfirmed is no longer permanent, no
+  longer calls `onMessageFailed`, and leaves the hub mailbox available. `radio.rx.ack` now reports `rttMs` from
+  transmitter completion and `ageMs` from composition.
+- **0-byte retry crash** (`RealFlashTransferRepository`): `relaunchSend` re-measures a 0/unknown source and
+  leaves a visible Failed row; `executeSend` refuses `<= 0` before `FileMeta`. This fixes the 2026-11-03
+  process deaths (ERROR-984).
+- **Android FGS start** (`FlashBackgroundService`): `startForeground` now runs first, before the Transsion
+  keep-alive constructor/binder work; the keep-alive start is on `Dispatchers.Default`. Fixes the 2026-10-26
+  `ForegroundServiceDidNotStartInTimeException` (the log's third crash).
+- **DB telemetry wording** (`FlashDatabaseOpener`): renamed the misleading `slow statement` line to
+  `database idle gap`, because it measures the gap to the next callback, not query duration.
+
+### Verification
+- Compile green: `:core:messaging:compileKotlinJvm`, `:core:radio:compileKotlinJvm`, `:core:transfer:compileKotlinJvm`,
+  `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`.
+- `:core:radio:jvmTest` green.
+- `:core:transfer:testAndroidHostTest --tests TransferRefusalAndWordingTest` green, including two new retry tests.
+- `:core:messaging:testAndroidHostTest --tests RealFlashChatRepositoryTest` green on the rerun (105 tests; the first
+  run had one `TimeoutCancellationException` in an unrelated delete-for-everyone test, which passed alone and on
+  the class rerun).
+- `:core:messaging:jvmTest --tests RadioChatBridgeTest` green, including the new transient-auth and disconnected
+  `canCarry` cases.
+- **Not device-verified.** The phone was not connected.
+
+### Remaining
+- `RADIO-PATH-01` device run: Wi-Fi off, gateway on, link up, policy Automatic -> `radio.path` should show
+  `policy=AUTO pairKey=true gateway=true connected=true result=sent`, then `chat.path path=radio`. Link down -> the
+  LAN dial is attempted; `radio.path` shows `connected=false`. Policy Never -> `policy=NEVER` and no `radio.tx.text`.
+- `XFER-RETRY-01`: Retry a "couldn't read the file" card on the phone; the app must stay alive and the row must
+  keep the sentence.
+- `FGS-01`: cold-start on the Infinix; no `ForegroundServiceDidNotStartInTimeException`.
+- The 2026-11-03 and 2026-11-05 logs also showed `session.down` + immediate redial storms (one host dialled 40
+  times in 6 minutes), a second RFCOMM open at 12:20:35, a chat-list "Radio only" badge for a `NEVER` chat (the
+  open header is policy-aware), and remembered-route dialling while the hub/radio already carries. These are
+  separate open items; none was changed in this fix.
+
 ## 2026-11-05 (merge) - Radio gateway redesign v3 merged into `dev` as `e76edc71` and pushed (dev `d77b8261`)
 
 ### Worked on

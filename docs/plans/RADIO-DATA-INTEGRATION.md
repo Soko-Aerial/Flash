@@ -161,6 +161,7 @@ Both logs then showed three defects (ERROR-869, details there):
 | `radio.rx.ack rttMs=3833/4185/9338` | ACKs arrived, but after the LAN-speed retry (1.4 s, 2.6 s) | a radio-carried message re-arms after 25 s |
 | ten `radio.rx.dropped reason=SIGNED_NOT_ENABLED` on the desktop after the phone restarted | the phone was back on Profile A, which a Flash peer must drop | Profile A chat is refused with a sentence |
 | no `radio.tx.text` for the desktop's own send | the send never reached the radio (or was outside the capture) | new `radio.path` probe names the reason |
+| 2026-11-03/05: `radio.path result=not_reachable gateway=true connected=false`, then `connected=true` with inbound radio working | a key was treated as a path; the host skipped the LAN dial. Later the only false term was the per-chat `NEVER` policy, which the old line could not name | ADR-354: reachability requires gateway + link + key; `radio.path` also prints `policy` and `pairKey`; the transport sink no longer skips the LAN dial for a radio key |
 
 **The pass criteria for the next run are stricter than before:**
 
