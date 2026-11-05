@@ -168,6 +168,15 @@ public object FlashRadioMath {
         RadioGatewayMode.WALKIE_TALKIE_BRIDGE -> FlashRadioCopy.MODE_5_TITLE
     }
 
+    /** The short name of a mode for a fact row ("Field Companion", not "Mode 1: Field Companion"). */
+    public fun modeShortName(mode: RadioGatewayMode): String = when (mode) {
+        RadioGatewayMode.FIELD_COMPANION -> FlashRadioCopy.MODE_1_SHORT
+        RadioGatewayMode.BASE_STATION_RELAY -> FlashRadioCopy.MODE_2_SHORT
+        RadioGatewayMode.TACTICAL_RADAR -> FlashRadioCopy.MODE_4_SHORT
+        RadioGatewayMode.ALL_IN_ONE -> FlashRadioCopy.MODE_5_SHORT
+        RadioGatewayMode.WALKIE_TALKIE_BRIDGE -> FlashRadioCopy.MODE_5_SHORT
+    }
+
     /** The sentence under a mode row's title. */
     public fun modeSubtitle(mode: RadioGatewayMode): String = when (mode) {
         RadioGatewayMode.FIELD_COMPANION -> FlashRadioCopy.MODE_1_SUBTITLE

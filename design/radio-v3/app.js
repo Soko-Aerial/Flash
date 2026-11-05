@@ -33,9 +33,9 @@ const COPY = {
   intro: 'Connect a handheld radio with KISS TNC over Bluetooth, then send and receive chat where there is no network.',
   readyTitleOff: 'Before you turn it on',
   readyTitleEmpty: 'Before you pair',
-  step1: 'Turn the radio on and check the battery is charged.',
+  step1: 'Turn the radio on and check the battery is charged (over 50%).',
   step2: 'In the radio menu: General Settings → KISS TNC → Enable.',
-  step3: 'Bluetooth is on for this phone, and the radio is discoverable.',
+  step3: 'Bluetooth is on for this device, and the radio is discoverable.',
   batteryNote: 'Scanning uses extra battery and slows active links.',
   pairTitle: 'Pair a radio',
   pairSub: 'Nearby Bluetooth devices. Pick your radio.',
@@ -77,7 +77,7 @@ const COPY = {
   listening: 'Listening',
   holdToTalk: 'Hold to talk',
   talking: 'Talking…',
-  stationNote: 'Voice goes out as ordinary audio, not encrypted. Say your callsign as your licence requires.',
+  stationNote: 'Talking keys the transmitter and goes out as clear audio. Say your callsign as your licence requires.',
 };
 
 const RADIO = { name: 'VR-N76', address: '38:D2:00:01:35:B5', profile: 'M · Encrypted' };

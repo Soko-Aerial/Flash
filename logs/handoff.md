@@ -1,23 +1,18 @@
 # Current Handoff
 
-> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: DESIGNED, BUILT ON A BRANCH, NOT DEVICE-VERIFIED, NOT MERGED.**
-> Branch `design/radio-gateway-v3` in the worktree `E:\FlashWork\radio-ui-v3`, implementation commit `ead3480a` (the main tree's `dev` was in use by
-> another agent). The owner's brief - turning the gateway on shows the paired radios and offers pairing, the pair
-> action opens a sheet that scans, security profile and operational mode move into settings, and hold-to-talk gets a
-> sensible home - is implemented as: station plate (with a full-width **Turn on** while off) -> **Your radios** with one
-> "Pair a new radio" -> **pair sheet** (opens with `controller.startScan()`, closes with `stopScan()`) -> readiness steps
-> -> **This link** -> **the talk bar** (listen switch, five-bar level, hold-to-talk), docked above the shell's bottom bar
-> below 900 dp and in the page flow on a wide window. Security profile, operational mode, the RF test frame and Forget
-> live in the **Radio settings sheet** behind the header gear. Design-only: `RadioGatewayController` and
-> `RadioGatewayUiState` are untouched; `FlashRadioMath` gained three pure label helpers; the fake controller gained
-> demo-only voice support so previews and the debug demo show the talk bar. The review page is `design/radio-v3/`
-> (`node design/radio-v3/serve.mjs 5191`, `?state=off|empty|connected|lost|permission|candidate|scan|settings`); it
-> passes taste-skill lint and inspect at 390/768/1440 for all eight states. Impeccable critique ran as two isolated
-> assessments (A 26/40, B one automated finding) and its top problems were fixed: a lost link can no longer be keyed, the
-> PTT turns warm with "Talking..." while on air, one filled control per state, switching radios asks first, the switch
-> track and radio ring meet non-text contrast, and the PTT holds on Space/Enter. Owed: `RADUI-DEV02` (phone),
-> `RADUI-DEV03` (Windows), `RADUI-DEV04` (screen reader / keyboard transmit). Records: `docs/ui/radio-gateway.md`
-> "Redesign v3", `logs/progress.md` 2026-11-05, `docs/testing/TEST-BACKLOG.md`.
+> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: DESIGNED, BUILT ON A BRANCH, RENDERED AND MATCHED TO THE DESIGN,
+> NOT DEVICE-VERIFIED, NOT MERGED.** Branch `design/radio-gateway-v3` in the worktree `E:\FlashWork\radio-ui-v3` (the main
+> tree's `dev` was in use by another agent). The Compose screen was launched (`:desktop:radioGatewayDemo`) and captured at
+> 1180x820 and 900x820, with the settings sheet and the pair sheet opened: evidence in `design/radio-v3/compose/`. The port
+> was then corrected against the screenshots (30 dp block rhythm, 780 dp column, hairline under the active radio row, the
+> pairing action as a raised pill that is filled only while nothing is paired, neutral "In use" / warm "Link lost" chips,
+> the state and the talk control sharing a row on a wide window and stacking in the dock, the short mode name and the
+> Authorised chip in "This link", numbered steps, and the test-message line's real states). The owner's brief -
+> turning the gateway on shows the paired radios and offers pairing, the pair action opens a sheet that scans, security
+> profile and operational mode moved into settings, and hold-to-talk lives in a dock above the shell bar - is implemented;
+> `RadioGatewayController` and `RadioGatewayUiState` are untouched. Owed: `RADUI-DEV02` (phone), `RADUI-DEV03` (Windows),
+> `RADUI-DEV04` (screen reader / keyboard transmit). Records: `docs/ui/radio-gateway.md` "Redesign v3" and "Compose port
+> verified on screen", `logs/progress.md` 2026-11-05, `docs/testing/TEST-BACKLOG.md`.
 
 > **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone

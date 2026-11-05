@@ -580,3 +580,51 @@ demo fake gained voice support; no product path gained logic.
   verified only in the review page until `RADUI-DEV02`/`03` run on a device.
 - **Device checks owed:** `RADUI-DEV02` (Android, the whole flow with a real radio), `RADUI-DEV03` (desktop),
   `RADUI-DEV04` (screen-reader and keyboard transmit) in `docs/testing/TEST-BACKLOG.md`.
+
+---
+
+## Redesign v3 — Compose port verified on screen (2026-11-05, later)
+
+The first port was written from the review page; this pass opened the **real** screen and fixed what only a screenshot
+shows. Evidence: `design/radio-v3/compose/` (`compose-wide.png`, `compose-narrow.png`, `compose-settings.png`,
+`compose-pair-sheet.png`).
+
+### How it was rendered
+
+`powershell -File tools\flash-gradle.ps1 :desktop:radioGatewayDemo` (the demo now opens on a connected VR-N76 with
+UV-Pro paired and the audio listening, the same state the review page opens on), then the window was captured at
+1180x820 (wide) and 900x820 (narrow, which crosses the 900 dp break and shows the dock), the settings sheet was opened
+with the header gear, and the pair sheet with "Pair a new radio".
+
+### What the screenshots changed
+
+| Seen on screen | Fixed in Compose |
+|---|---|
+| The audio panel had a speaker icon the design does not have | removed; the head is the title and the switch |
+| Radio rows had no separator | 1 dp hairline under the active row when another radio follows (the design's rule) |
+| "Pair a new radio" used the Hub's near-invisible secondary | a local button: 50 dp, accent when it is the one primary, `backgroundSurfaceStrong` once a radio exists, a 232 dp pill on a wide window and full width on a phone |
+| The talk state and the PTT stacked on every width | they share one row on a wide window and stack only in the phone dock; the PTT is 64 dp tall on a wide window |
+| The plate darkened when the gateway was off | always `backgroundSurface`, as drawn |
+| Blocks were 24 dp apart | 30 dp, matching the review page |
+| The column was 720 dp | 780 dp, matching the review page |
+| "In use" was a teal chip and anything not connected read "Link lost" (including a stopped gateway) | neutral chip for **In use**, warm chip for **Link lost** only when the link actually failed, no chip otherwise |
+| "This link" showed the full mode title and no authorisation | short mode name ("Field Companion"), and the Profile row carries the **Authorised** chip |
+| The steps rendered a check icon *and* the "1." that is inside the copy | the copy no longer carries the number; the number is drawn in the accent, as designed |
+| The test-message row always said "needs a live link" | reflects sending / sent / failed / the RF warning, like the old diagnostics card |
+
+### Differences kept on purpose
+
+- **Sheets are centred overlays on Windows, bottom sheets on Android.** That is the `FlashSheetHost` seam every other
+  sheet in the app uses; forcing a bottom sheet on desktop would make the radio page the odd one out.
+- **Text actions are 16 sp**, the app's `FlashHubTextAction`, where the review page drew 14 px.
+- **Icons**: `FlashIcons` has no handheld-radio glyph, so the plate and rows use the available Device/Bluetooth marks.
+- **The switch carries a 1 dp capsule outline** so its boundary clears WCAG 1.4.11 on both surfaces (the review page's
+  switch measured ~1.1:1).
+- The demo seeds only UV-Pro in the scan list, because `FakeRadioGatewayController.startScan()` keeps a non-empty
+  device list; a real scan shows everything.
+
+### Verification
+
+`:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` -> 44 tests, 0 failures; `:ui:chat:compileKotlinJvm`,
+`:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` -> BUILD SUCCESSFUL. Interaction on a real phone (the listen
+switch, PTT hold, pairing with a radio, the sheets' dismiss behaviour) is still owed: `RADUI-DEV02`..`04`.

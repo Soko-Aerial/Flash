@@ -1,5 +1,48 @@
 # Progress Log
 
+## 2026-11-05 (later) - Radio gateway redesign v3: the Compose port driven to screen parity
+
+### Worked on
+The design was approved; this pass opened the REAL Compose screen (not the review page), compared it with the approved
+design, and fixed every difference the screenshots exposed. Same branch `design/radio-gateway-v3`, worktree
+`E:\FlashWork\radio-ui-v3`.
+
+### Changed
+- `FlashRadioGatewayScreen.kt`: blocks are 30 dp apart; the column is 780 dp (matches the review page); the phone dock
+  gets `stacked = true` so the state line and the talk control stack there while they share one row on a wide window;
+  the radios section receives `fillWidth = dense` for the pairing pill.
+- `FlashRadioGatewayComponents.kt`: the plate is always `backgroundSurface` (it darkened when off); the state sentence is
+  13/18; radio rows carry the design's hairline under the active row; "Pair a new radio" is a local 50 dp button (accent
+  primary only while nothing is paired, `backgroundSurfaceStrong` after, 232 dp pill on a wide window and full width on a
+  phone); row chips are neutral "In use" and warm "Link lost" and appear only when the link is actually connected or lost
+  (a stopped gateway no longer claims "Link lost"); "This link" shows the short mode name and an **Authorised** chip on the
+  profile row; the readiness steps draw their own accent number (the copy no longer carries "1."); the test-message row
+  reflects sending / sent / failed / the RF warning.
+- `FlashRadioAudioPanel.kt`: no speaker icon in the head (the design has none); a shared `RadioAudioStateRow`; the state
+  and the PTT share a row on a wide window and stack in the dock; the PTT is 64 dp tall on a wide window, 56 in the dock.
+- `FlashRadioMath.kt` / `FlashRadioCopy.kt`: `modeShortName` and the four short mode names.
+- `DesktopRadioGatewayDemoApp.kt`: opens on the designed state (connected VR-N76, UV-Pro paired, audio listening) and
+  carries no broken em dash in its title.
+- Evidence: `design/radio-v3/compose/*.png` (wide, narrow/dock, settings sheet, pair sheet), captured from the running app.
+
+### Verification
+- `:desktop:radioGatewayDemo` launched and captured at 1180x820 and 900x820; the settings sheet opened from the header
+  gear, the pair sheet from "Pair a new radio" and the scan started by itself.
+- `:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` -> **44 tests, 0 failures** (9 suites);
+  `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` -> **BUILD SUCCESSFUL**.
+
+### Remaining
+- Interaction on hardware: the listen switch/PTT against a real radio, the sheets' dismiss behaviour, and the screen
+  reader path (`RADUI-DEV02`..`04`).
+- The desktop sheet is a centred overlay (the app's `FlashSheetHost` seam), the phone a bottom sheet; the review page still
+  draws a bottom sheet at both widths.
+- `FlashIcons` has no handheld-radio glyph, so the plate and rows use Device/Bluetooth marks.
+
+### Next AI
+Read the "Redesign v3 - Compose port verified on screen" section of `docs/ui/radio-gateway.md` before editing: it lists the
+exact dp/sp values and the differences kept on purpose. The demo (`:desktop:radioGatewayDemo`) is the fastest way to see
+the screen without a radio; it is not the shipped host (no radio voice there), so the panel only appears in the demo
+because the fake reports `available = true`.
 ## 2026-11-05 (later) - Radio gateway redesign v3: your radios, pair sheet, settings sheet, talk bar (design + build)
 
 ### Worked on

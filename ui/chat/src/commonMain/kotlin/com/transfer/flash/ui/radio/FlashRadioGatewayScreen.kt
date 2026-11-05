@@ -220,7 +220,7 @@ public fun FlashRadioGatewayScreen(
                         top = FlashSpacing.space4,
                         bottom = FlashSpacing.space24,
                     ),
-                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space24),
+                    verticalArrangement = Arrangement.spacedBy(30.dp),
                 ) {
                     item(key = "station") {
                         FlashRadioStationBlock(
@@ -289,6 +289,7 @@ public fun FlashRadioGatewayScreen(
                                     if (device != null) pendingSwitch = device else controller.pair(id)
                                 },
                                 onPairNew = { sheet = FlashRadioOverlay.PAIR },
+                                fillWidth = dense,
                             )
                         }
 
@@ -331,6 +332,7 @@ public fun FlashRadioGatewayScreen(
                         onAllowMicrophone = { controller.requestMicrophonePermission() },
                         modifier = Modifier.widthIn(max = PAGE_MAX_WIDTH),
                         dense = dense,
+                        stacked = true,
                     )
                 }
             }
@@ -388,4 +390,4 @@ private val WIDE_LAYOUT_WIDTH = 900.dp
 private val COMPACT_LAYOUT_WIDTH = 600.dp
 
 /** One column at every size, capped; nothing is stretched across a 1400 dp pane. */
-private val PAGE_MAX_WIDTH = 720.dp
+private val PAGE_MAX_WIDTH = 780.dp
