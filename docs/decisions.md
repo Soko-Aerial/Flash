@@ -8559,3 +8559,52 @@ therefore send old and new chunks in one transfer; only the receiver's final has
 ### Revisit
 Add a receiver reset control frame if in-place restarts are wanted, and move the check to a capability (`si1`) so an old
 peer can be told why. A desktop transfer store would make the same check apply there.
+
+## ADR-353 - A revoke leaves a local tombstone; a direct chat keeps its last known name
+
+### Decision
+1. **Revocation tombstone.** A deliberate `revokeTrust` writes a local tombstone: `revoked_<deviceId> = timestamp` in
+   Android's `flash_ws_pairing` preferences, `revoked.<deviceId>` in the desktop `trust.properties`. `trustPeer` (a new
+   pairing or another deliberate trust grant) removes it. While the tombstone is present:
+   - `savePin` is a silent success that stores nothing, so TOFU, the organisation directory and any other automatic path
+     cannot recreate the pin;
+   - the auto-connector filters the device out of its sightings, so discovery, presence tips and remembered routes do not
+     auto-dial it; the device stays visible in Nearby so a person can start a manual Pair;
+   - the pin is not trust. Even before this ADR a pin alone could not open sealed content; the tombstone makes the local
+     "Forgot" state stick instead of being half-undone by the next handshake.
+2. **Direct chat title.** One helper chooses it: the live name resolver, then the conversation's stored title, then
+   **"Unknown device"**. A raw device id is never used as a title. The stored title survives revoke/unpair; a conversation
+   created while the peer is unknown stores the neutral placeholder and is upgraded when a name is later resolved. A small
+   in-memory cache seeds the header synchronously; the chat list, open header, hub notice and search results all use the
+   same fallback.
+
+### Context
+The 2026-11-05 device run of ADR-351 (`ERROR-982`) found two residuals. After the Infinix revoked the Samsung, the
+Samsung's auto-redial completed an unpaired TLS session and the TOFU path re-saved the Infinix's fingerprint as a pin. The
+pairing and session key stayed gone and no trusted content was delivered, but "Forget" no longer looked forgotten. The
+same run showed the Samsung chat title falling back to the raw UUID once the trust entry (and therefore the name
+resolver) was removed.
+
+### Alternatives considered
+- **A permanent blocklist.** Rejected: it would also block a deliberate new pairing, and revocation is not a ban.
+- **Clear the tombstone on first sighting.** Rejected: that is the bug, just earlier.
+- **Only a UI "Revoked" label.** Rejected: it does not stop the automatic re-pin.
+- **A database table for tombstones.** Not needed: the trust store already owns local identity policy and has a durable
+  key-value surface on both hosts; a new Room schema would make a security-state change depend on a migration.
+- **Keeping the UUID title.** Rejected: it is an internal identifier, not a name, and it is what a person sees.
+
+### Consequences
+- New `FlashTrustStore` methods (`isRevoked`, `revokedAt`, `clearRevocation`) with defaults, so test/lightweight stores
+  keep compiling. Android and desktop real stores implement them; no schema migration.
+- A blocked `savePin` does not publish a trust change, so a revoked peer that keeps reconnecting cannot churn the TLS
+  cache. `revokeTrust` publishes once, as before.
+- A vouched pin may remain after `revokeTrust` (group membership is a separate trust source); the tombstone blocks only
+  automatic re-pinning, not the existing vouch. `trustPeer` is the deliberate exit.
+- The tombstone is local and never synced to the hub. It is not the hub's device revocation list.
+- A display name is presentation, not trust; keeping the last known name grants nothing.
+- Device checks: `W1-REVOKE-03` (auto-redial cannot re-pin; manual Pair clears the tombstone) and `W1-TITLE-01` (the chat
+  list/header keep the name through a revoke; an unknown peer reads "Unknown device").
+
+### Revisit
+When the capability/version registry lands, expose the tombstone in the Nearby row and consider an explicit "Un-revoke"
+action alongside Pair. A receiver reset frame is unrelated; this is local state.

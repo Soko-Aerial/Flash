@@ -1884,23 +1884,64 @@ class RealFlashChatRepositoryTest {
     @Test
     fun `opening a second conversation never shows the first one's content`() = runBlocking {
         val messageDao = FakeMessageDao()
-        val repository = newRepository(messageDao = messageDao)
+        val conversationDao = FakeConversationDao()
+        conversationDao.upsert(ConversationEntity(id = "conv-a", title = "Chat A", isGroup = false, sortOrder = 1))
+        conversationDao.upsert(ConversationEntity(id = "conv-b", title = "Chat B", isGroup = false, sortOrder = 2))
+        val repository = newRepository(messageDao = messageDao, conversationDao = conversationDao)
 
         messageDao.insert(msg("m-a", "conv-a", "message in thread A"))
         repository.openConversation("conv-a")
-        kotlinx.coroutines.delay(100)
-        assertEquals("conv-a", repository.conversationState.value.header.title)
+        kotlinx.coroutines.delay(150)
+        assertEquals("Chat A", repository.conversationState.value.header.title)
         assertTrue(
             "thread A must have loaded, or this test proves nothing",
             repository.conversationState.value.messages.isNotEmpty(),
         )
 
         repository.openConversation("conv-b")
-        // Synchronously, in the same turn: B's identity, and no leftover rows.
+        // Synchronously, in the same turn: no leftover rows, and A's identity is not reused. The seed may be the
+        // neutral placeholder until the Room combine runs, but it must never show "Chat A" under B.
         val afterOpen = repository.conversationState.value
-        assertEquals("conv-b", afterOpen.header.title)
+        assertFalse("A's title must not appear under B", afterOpen.header.title == "Chat A")
         assertTrue("A's messages must not appear under B", afterOpen.messages.isEmpty())
         assertEquals("", afterOpen.draftText)
+        kotlinx.coroutines.delay(150)
+        assertEquals("Chat B", repository.conversationState.value.header.title)
+    }
+
+    @Test
+    fun `a direct peer with no name keeps its stored title and never shows the raw id`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val conversationDao = FakeConversationDao()
+        conversationDao.upsert(
+            ConversationEntity(id = "peer-device-id", title = "Flash Olive", isGroup = false, sortOrder = 1),
+        )
+        val repository = newRepository(
+            messageDao = messageDao,
+            conversationDao = conversationDao,
+            peerNameResolver = { null },
+        )
+        messageDao.insert(msg("m-title", "peer-device-id", "hello"))
+
+        repository.openConversation("peer-device-id")
+        kotlinx.coroutines.delay(150)
+        assertEquals("Flash Olive", repository.conversationState.value.header.title)
+
+        val list = kotlinx.coroutines.withTimeout(5_000) {
+            repository.chatListState.first { state ->
+                state.items.any { it.id == "peer-device-id" }
+            }
+        }
+        assertEquals("Flash Olive", list.items.first { it.id == "peer-device-id" }.title)
+
+        // The neutral fallback, not the UUID, when no name was ever stored.
+        val anonymous = newRepository(
+            messageDao = FakeMessageDao().also { it.insert(msg("m-anon", "peer-anon", "hi")) },
+            peerNameResolver = { null },
+        )
+        anonymous.openConversation("peer-anon")
+        kotlinx.coroutines.delay(150)
+        assertEquals("Unknown device", anonymous.conversationState.value.header.title)
     }
 
     /**
@@ -4006,6 +4047,7 @@ class RealFlashChatRepositoryTest {
         groupDeliveryDao: GroupDeliveryDao? = null,
         messagePinDao: MessagePinDao? = null,
         trustedPeers: Set<String> = emptySet(),
+        peerNameResolver: (String) -> String? = { null },
         onlinePeerIds: Flow<Set<String>> = MutableStateFlow(trustedPeers + setOf("peer-a", "peer-b", "peer-c", "dev-a", "dev-b", "dev-c")),
         groupSink: (suspend (String, GroupWireFrame) -> Boolean)? = null,
         runInTransaction: suspend (block: suspend () -> Unit) -> Unit = { it() },
@@ -4030,6 +4072,7 @@ class RealFlashChatRepositoryTest {
         groupMemberDao = groupMemberDao,
         groupDeliveryDao = groupDeliveryDao,
         messagePinDao = messagePinDao,
+        peerNameResolver = peerNameResolver,
         isTrustedPeer = { it in trustedPeers || it == localDeviceId },
         groupTransportSink = groupSink?.let { sink -> GroupTransportSink { target, frame -> sink(target, frame) } },
         transportSink = MessageTransportSink { target, frame -> messageSink(target, frame) },

@@ -1,5 +1,48 @@
 # Progress Log
 
+## 2026-11-05 (later) - ADR-353 revocation tombstone and stable direct-chat title
+
+### Worked on
+Two residuals from the ADR-351 device run (`ERROR-982`): a revoked peer's auto-redial re-added a TOFU pin, and the direct
+chat title fell back to the raw device UUID after the trust entry disappeared. No phones were available, so this round is
+implementation + host/unit tests only.
+
+### Changed
+- `FlashTrustStore`: `isRevoked`, `revokedAt`, `clearRevocation` (defaults for lightweight stores). Android and desktop
+  real stores write `revoked_<id>`/`revoked.<id>` on `revokeTrust`, clear it in `trustPeer`, and make `savePin` a silent
+  no-op while the tombstone is present. The pin is not deleted when a group vouch still owns it.
+- Auto-connector sightings in `Flash.kt`, `DiscoveryEngineHolder.kt` and `DesktopEngine.kt` filter tombstoned peers, so
+  discovery/presence/remembered routes do not auto-dial. The peer stays in Nearby for a manual Pair; pairing uses
+  `connectManual`, not the auto-connector.
+- `RealFlashChatRepository`: one `directChatTitle` helper (resolver -> stored conversation title -> "Unknown device");
+  used by the chat list, open header, seed, touch/upsert, hub notice and search. A raw device id is never a title. A
+  `directTitleCache` seeds the header synchronously; stored names survive revoke/unpair.
+- ADR-353, `ERROR-982`, `W1-REVOKE-03` and `W1-TITLE-01`.
+
+### Verification
+- `FlashTrustStoreTest`: **10/10** (tombstone write, blocked re-pin, trust clears it, publish count corrected).
+- `DesktopTrustStoreTest`: **6/6** (tombstone survives restart, blocks re-pin, clears on trust).
+- `RealFlashChatRepositoryTest` filtered title tests: **2/2** (stored "Flash Olive" through no resolver; "Unknown device"
+  for a never-named peer; no leaked previous title).
+- Compilation: security/messaging common+Android, engine Android, app debug, desktop JVM.
+- First affected-module gate: failed only in `:core:messaging`:
+  - `ConversationReadStateTest` expected the old raw-id title; updated to ADR-353's **Unknown device** (the fixture's
+    sender name is the id itself).
+  - `HubFileFrameCodecTest` U13/U21 exposed `ERROR-983`: W1 percent-escapes C0 controls and `unescape` deliberately leaves
+    them literal, so `%00`/`%0A` looked printable to the codec. `HubFileFrameCodec.hasControlEscape` now refuses those
+    escapes in ids/names/mime/meta/group fields. Codec tests 10/10 on JVM and Android host after the fix.
+- Full messaging rerun: **BUILD SUCCESSFUL in 6m 40s**, 690 Android-host + 382 JVM, 0 failures. All other gate tasks
+  (security 270 + 175, engine 129 + 176, enterprise 165 + 276, app 90, desktop 260) were green in the first run.
+  **Affected total: 2,613 tests, 0 failures, 0 errors.**
+
+### Remaining
+- Device checks owed: `W1-REVOKE-03`, `W1-TITLE-01` (and the earlier `W1-NACK-01`/`W1-RESUME-01`).
+- Old-peer outbox budget (pre-`pr1`).
+
+### Next AI
+If the gate is green, merge this branch into `dev` and push. Then start Wave 2 with the code-only item that needs no
+device: hash-on-receive (remove the second full read after a receive) and its tests; measurements remain owed.
+
 ## 2026-11-05 (later) - resume identity (ADR-352, Room v23); unit/migration green, device migration verified
 
 ### Worked on

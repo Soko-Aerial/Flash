@@ -7350,6 +7350,18 @@ green. These are the two-device checks that still gate confidence.
 - **Pass:** B's queued message becomes **Failed** within seconds, not after the wall-clock budget; B's log carries `CHAT: Failed 1 queued message(s) to <id>: The other device no longer trusts you. Pair again to reconnect.`; B's header reads **Not paired**; A's log carries `Received FLASH_SEC from <id> with no stored session key; dropping`; the resend is limited to one per 10 s per peer.
 - **Source:** ADR-351, `ERROR-982`, `FlashInboundRouter.onUnreadableSecuredFrame`, `RealFlashChatRepository.failPendingToPeer`. **Status:** TODO — unit tests pass (`FlashInboundRouterTest` 55/55 including the no-key resend; `RealFlashChatRepositoryTest` negative ack 1/1), but the device run was blocked on 2026-11-05 because the Samsung left USB before the new APK was installed (only the Infinix has it).
 
+### W1-REVOKE-03 — A revoke stays forgotten: no automatic re-pin, manual Pair still works
+- **Setup:** two paired phones on the same network; A paired with B.
+- **Steps:** on A, Revoke B. Leave both phones running (or toggle B's Wi-Fi) so B's discovery/auto-connect sees A again. Inspect B's prefs for `revoked_<A>`/`pin_<A>`; then on B tap Pair on A, complete the code pairing, and send a message.
+- **Pass:** after the revoke, B's prefs contain `revoked_<A>` and **no** `pin_<A>`; B's auto-connect does not dial/pin A (no `Auto-connect dialing peer=...A...` followed by a pin write); A still appears in B's Nearby with Pair. After a successful manual Pair, `revoked_<A>` is gone, the pin is saved, and the message is delivered. A manual Pair must not be blocked by the tombstone.
+- **Source:** ADR-353, `FlashTrustStore.isRevoked`/`revokedAt`, `savePin` gate, auto-connector sightings filter. **Status:** TODO (unit tests on Android and desktop pass; two-phone run owed).
+
+### W1-TITLE-01 — A revoke never turns a chat title into a raw device id
+- **Setup:** two paired phones with a delivered message, so the chat has a known name.
+- **Steps:** on A, Revoke B. On B, open the chat list and then the conversation with A; repeat after restarting B. Also open a conversation whose peer was never named.
+- **Pass:** the list row and header keep the last known name (e.g. "Flash Olive") before and after the revoke/restart; the raw UUID is never shown. A never-named peer reads **Unknown device**, not its device id. The name is presentation only; the header still says **Not paired**.
+- **Source:** ADR-353, `RealFlashChatRepository.directChatTitle`/`directTitleCache`, `RealFlashChatRepositoryTest` title tests. **Status:** TODO (unit tests pass; device run owed).
+
 ### W1-FRAME-01 — Malformed HELLO
 - **Setup:** a test harness (desktop CLI or a small client) that can send a raw `FLASH_WS_HELLO` to the phone.
 - **Steps:** send a HELLO with a blank `deviceId`, then one whose `name` contains a raw CR/LF, then a well-formed HELLO.

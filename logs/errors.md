@@ -16604,11 +16604,15 @@ Negative ack:
 - A receiver that drops a `FLASH_SEC` with no session key resends `PAIR_REVOKE` at most once per 10 s (`FlashInboundRouter`); the revoked side fails its queued messages to that peer (`RealFlashChatRepository.failPendingToPeer`), so the outbox stops in seconds instead of waiting for the budget.
 - The resend is capability-gated on `pr1`; peers without it keep the old budget path.
 - The header fix was verified on 2026-11-05 on both phones: the Samsung header read **Not paired** after the revoke
-  while an unpaired session was up. The chat title still falls back to the raw device id (cosmetic).
+  while an unpaired session was up.
+- **ADR-353 (2026-11-05, code):** `revokeTrust` now writes a local tombstone; `savePin` is a no-op while it is present, and
+  the auto-connector filters a revoked peer's sightings. A deliberate `trustPeer` clears it. The direct-chat title now uses
+  the stored name before "Unknown device", so a revoke no longer surfaces the raw UUID.
 
 Still owed:
 - Old peers without `pr1` still use the outbox budget.
-- A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It did not restore the pairing and cannot deliver trusted content; refusing it needs a revocation tombstone.
+- Device runs: `W1-NACK-01` (queued message fails), `W1-REVOKE-03` (auto-redial cannot re-pin; manual Pair clears the
+  tombstone) and `W1-TITLE-01` (the name survives a revoke; an unknown peer reads "Unknown device").
 
 ### Verification
 First device run (2026-11-04, Infinix X6882B + TECNO SPARK 40): security half passed (no pin/pairing/session key on A; all `FLASH_SEC` dropped; A's chat never got `afterrevoke`); UX half failed (B Connected/sent, retry loop) — this is the report.
@@ -16629,3 +16633,38 @@ Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-pai
 
 ### Status
 FIXED FOR THE NOTICE, THE HEADER LABEL AND THE NEGATIVE ACK (device run for the ack still owed); **PARTIAL**: old-peer budget and TOFU re-pin remain.
+
+## ERROR-983 - W1 control escaping let a hub file name/group id carry a literal control escape
+
+### Date
+2026-11-05
+
+### Area
+Messaging / hub file frame codec / W1 text framing
+
+### Symptoms
+`HubFileFrameCodecTest` `HUBFILE-U13` and `HUBFILE-P4-U21` failed in the affected gate: `with("name", "x\u0000.pdf")` and
+`with("groupId", "g2\u0000x")` decoded as `Result.Frame` instead of `Result.Invalid`.
+
+### Root cause
+W1 commit `8780e400` percent-escapes C0/DEL on send, and `FlashTextFraming.unescape` deliberately leaves control escapes
+literal (`%00`, `%0A`) so a peer cannot reintroduce a control. `HubFileFrameCodec` checked only actual
+`Char.isISOControl`, so the printable escaped spelling passed validation. This is a real interaction between two merged
+security changes, not a flake.
+
+### Working fix
+`HubFileFrameCodec.hasControlEscape` refuses a value containing `%XX` where `XX` is below `0x20` or is `0x7F`; it is
+applied to `localId`, `senderId`, `senderName`, `name`, `mime`, `meta`, `groupId` and `groupSig`. The transport still
+never decodes a control escape.
+
+### Verification
+`HubFileFrameCodecTest` 10/10 on both `:core:messaging:jvmTest` and `:core:messaging:testAndroidHostTest` after the fix.
+Full messaging suites rerun as part of the gate. No device dependency.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/HubFileFrameCodec.kt`
+- `core/common/src/commonMain/kotlin/com/transfer/flash/core/common/protocol/FlashTextFraming.kt`
+- `core/messaging/src/commonTest/kotlin/com/transfer/flash/core/messaging/protocol/HubFileFrameCodecTest.kt`
+
+### Status
+FIXED (host-tested).

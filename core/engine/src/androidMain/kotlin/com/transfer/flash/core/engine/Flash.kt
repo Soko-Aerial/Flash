@@ -485,9 +485,10 @@ private class Wiring(
                 override fun hasSessionAtHost(host: String) = networkImpl.hasSessionAtHost(host)
             },
             sightings = {
-                engine.discoveredEndpoints.value.map { ep ->
+                val all = engine.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
                 } + presence.tipSightings() + remembered.sightings()
+                all.filterNot { trustStore.isRevoked(FlashDeviceId(it.deviceId)) }
             },
             // A presence tip or a remembered route is dialed with its device named, so TLS checks
             // that device's pin. A tip outranks a route: it is fresher.
