@@ -1,12 +1,13 @@
 # Current Handoff
 
-> **2026-11-05 (latest) — RESUME IDENTITY IS IMPLEMENTED ON `feature/resume-identity` (ADR-352, Room v23); UNIT/MIGRATION
+> **2026-11-05 (latest) — RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
 > GREEN, MIGRATION DEVICE-VERIFIED.** `executeSend` now records and verifies size, modification time and the first-64-KiB
 > SHA-256 before using persisted chunks; a changed file fails with `The file changed while it was being sent. Try sending
 > it again.`, clears the sender's chunks and sends a cancel. A pre-v23 row with confirmed chunks fails as unverifiable. The
 > check also runs when a live paused sender is unpaused. Infinix X6882B upgraded its real v22 database to v23 with all
 > chats intact. Tests: transfer 242 + 141, migration chain 2, JVM migrations 21 (both green). The changed-source two-phone
-> run (`W1-RESUME-01`) is still owed (the Samsung was not on USB), and the affected-module gate/merge are next.
+> run (`W1-RESUME-01`) is still owed (the Samsung was not on USB). The affected-module gate is green (1,176 tests /
+> 0 failures / 0 errors).
 
 > **2026-11-05 (latest) — ADR-351 NEGATIVE ACK IS IMPLEMENTED (`6a307e1d`) AND UNIT-TESTED; DEVICE RUN BLOCKED.**
 > A receiver that drops a `FLASH_SEC` frame with no session key now resends `PAIR_REVOKE` at most once per 10 s

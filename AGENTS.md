@@ -917,6 +917,15 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-05 — Wave 1 safety is on `dev` (merged `239f8581`) and pushed; ADR-351 negative ack (`6a307e1d`) and ADR-352
+resume identity (Room v23, merged `cc195841`) are also pushed.** The negative ack resends `PAIR_REVOKE` when a
+`FLASH_SEC` arrives with no session key and fails the revoked side's queued messages; its two-phone run is `W1-NACK-01`
+(owed). Resume identity stores size, modification time and the first-64-KiB SHA-256, refuses a changed file, clears the
+sender's chunks and sends cancel; the v22 -> v23 upgrade was device-verified on the Infinix X6882B, while the
+changed-source two-phone run is `W1-RESUME-01` (owed). Affected gate: 1,176 tests / 0 failures / 0 errors. Remaining
+partials: old-peer outbox budget, revocation tombstone, raw-id chat title. Authority: `logs/handoff.md`,
+`logs/progress.md`, ADR-351 and ADR-352.
+
 **Optimization programme Wave 4 merged and being gate-verified (2026-11-02):** both streams are now ON `dev` - desktop E
 `b2b61b92` (**merged `c5d825f9`**) and kernel K `22a53994` (**merged `bec221d2`**) - from actual base `baf77753`.
 Canonical reviewed records: `f9b1fba0`; the green kernel-gate record is `2e4ab027`. First expanded JVM/compile gate on
