@@ -1,6 +1,6 @@
 # Hub admin console — alternative design record (2026-11-05)
 
-**Status: APPROVED AND PORTED on 2026-11-05. The shipped console now uses this design.**
+**Status: APPROVED, PORTED AND MERGED on 2026-11-05 (`dev`, merge `ec6c3724`; local, not pushed). The shipped console now uses this design.**
 
 This record exists because the owner asked for an alternative to
 `server/src/main/resources/admin-ui/` that conforms to the Flash app, and asked
