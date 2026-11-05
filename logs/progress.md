@@ -1,5 +1,34 @@
 # Progress Log
 
+## 2026-11-05 (two-phone backlog) - FGS, 0-byte retry and Profile A UI pass; radio rows blocked
+
+### Worked on
+The owner connected two phones and handed them over for a device-test session: Infinix X6882B (Android 14,
+`13114704AP002141`) and Samsung SM-G986U1 (Android 13, `R5CN21CNJAF`). The current debug APK was installed with
+`adb install -r` on both (data preserved; no uninstall/clear). The phones joined the same Wi-Fi LAN and established a
+session.
+
+### Results
+- `FGS-01` **PASS**: Infinix cold start; `FlashBackgroundService` `isForeground=true foregroundId=41`; no
+  `ForegroundServiceDidNotStartInTimeException`.
+- `XFER-RETRY-01` **PASS (empty case)**: a 0-byte `Download/empty-flash-test.txt` produced the visible Failed row
+  `This file is empty (0 bytes), so there is nothing to send. (Tap to retry)`. Retrying twice, then force-stopping,
+  relaunching and retrying again left the row Failed and the process alive; no `totalBytes`/FATAL crash.
+- `RADIO-PROFILE-A-01` **PASS (UI)**: Profile M selected; Profile A dimmed with **Not supported**, the red sentence
+  "Profile A cannot carry Flash chat. Select Profile M; your radio stays connected.", and tapping A does not select it.
+  The transmit step was blocked (remembered VR-N76 `Link lost`; Bluetooth was off at the start and the radio did not
+  reconnect after enabling it).
+- `RADIO-PATH-01` core is already PASS from the owner report. The composer **Never** banner was not observed because the
+  peer stayed `Online` through the hub when the other phone's Wi-Fi was turned off; the chat was restored to Automatic.
+
+### Blocked
+`RADMOVE-01..03`, `RADCONL-01..05`, `RADCHAT-DEV02..07`, `RADCHAT-POLICY-01`, `RADCHAT-STOP-01`, `RADUI-DEV04` require the
+physical radio powered/paired. The Infinix has the remembered VR-N76 but `radio.link` is down; no radio test was inferred.
+
+### Device state left
+Both phones were reinstalled with data preserved, Wi-Fi restored (if briefly disabled), and the Infinix chat's Radio
+fallback restored to **Automatic**. No app data or pairing was cleared.
+
 ## 2026-11-05 (device pass) - Radio text works in both directions
 
 ### Result

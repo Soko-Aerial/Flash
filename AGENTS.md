@@ -921,7 +921,9 @@ This section must be updated by the AI as implementation progresses.
 path is now owner-confirmed on the Infinix + Windows radios.** After setting the phone chat's **Radio fallback** to
 **Automatic**, both directions send and acknowledge; the one-way case was `policy=NEVER`, and power-cycling the radios
 restored receive. `ERROR-985` is device-confirmed, `ERROR-988` resolved for this session; `RADIO-PATH-01` is PASS for the
-core case, while its link-down/Never-banner steps and `RADIO-PROFILE-A-01` remain owed. Not pushed. The phone log's two
+core case, while its link-down/Never-banner steps and `RADIO-PROFILE-A-01` remain owed. A two-phone session on
+2026-11-05 (Infinix + Samsung, data-preserving reinstall) passed `FGS-01`, `XFER-RETRY-01` (empty-file case) and
+`RADIO-PROFILE-A-01` (UI); the remaining radio tests are BLOCKED on physical radio hardware. Not pushed. The phone log's two
 defects are fixed: `isRadioReachable` now requires gateway + connected + key (a
 key with the link down used to make the host skip the LAN dial, after which the radio refused), the host sink no longer
 skips `ensureSession` for a radio key, the per-chat `NEVER` policy is read from the already-loaded conversation row and

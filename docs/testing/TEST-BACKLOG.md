@@ -2887,6 +2887,17 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-05 - Two-phone device backlog session (Infinix + Samsung)
+- **Code / build:** `dev` `b07cc61f`; debug APK installed with `adb install -r` on both phones (data preserved; first-install dates unchanged: Infinix 2026-10-22, Samsung 2026-09-02).
+- **Devices:** Infinix X6882B (Android 14) `13114704AP002141`; Samsung SM-G986U1 (Android 13) `R5CN21CNJAF`; same Wi-Fi LAN (`Ayaata Wifi_5G`, 192.168.0.199 / .107).
+- **Tests run:**
+  - `FGS-01`: PASS on the Infinix cold start: app/service started, `dumpsys activity services` shows `isForeground=true foregroundId=41`, no `ForegroundServiceDidNotStartInTimeException`.
+  - `XFER-RETRY-01`: PASS for the empty-file case. An empty `Download/empty-flash-test.txt` produced the visible Failed row `This file is empty (0 bytes), so there is nothing to send. (Tap to retry)`; tapping Retry twice, and again after force-stop/relaunch, left the row Failed and the process alive (`pidof` stable, no `totalBytes`/FATAL exception). The unreadable-source variant was not separately created.
+  - `RADIO-PROFILE-A-01`: PASS for the UI/selection check: Radio → Settings shows Profile M selected, Profile A dimmed with **Not supported** and the red sentence "Profile A cannot carry Flash chat. Select Profile M; your radio stays connected."; tapping Profile A does not select it. The transmit step was not run because the radio link was `Link lost`.
+  - `RADIO-PATH-01`: core case already PASS (owner report above). Link-down/Never-banner steps were not fully run; with the peer reachable through the hub the composer banner correctly did not claim the peer was offline. The phones were left with the Infinix chat restored to **Automatic**.
+- **Blocked:** `RADMOVE-01..03`, `RADCONL-01..05`, `RADCHAT-DEV02..07`, `RADCHAT-POLICY-01`, `RADCHAT-STOP-01`, `RADUI-DEV04` need the physical radio powered/paired; the Infinix remembered VR-N76 shows `Link lost` and the radio path logs `Bluetooth_is_off`/no link. No radio test was marked pass by inference.
+- **Notes:** This was an automated/ADB-assisted UI run, not a human visual/audio pass. No app data was cleared or uninstalled.
+
 ### 2026-11-05 - Radio path switching works on hardware (owner report)
 - **Code / commits:** `dev` `2b22ca9e` (radio gate merge `bfe2c943`; Profile-A UI `b17152a2`; composer policy notice `16b36570`); the phone build that produced `flash-log-1793885189795.txt` carried the `policy`/`pairKey` probes.
 - **Devices:** Infinix X6882B (Android 14) + Windows desktop, both radio gateways connected over their VR-N76/COM serial links, Profile M.
@@ -7648,7 +7659,7 @@ The Infinix X6882B that produced `flash-log-1793881521325.txt`, with at least on
 ERROR-984, ADR-354, `core/transfer/.../RealFlashTransferRepository.kt` `relaunchSend`/`executeSend`, test `TransferRefusalAndWordingTest`.
 
 ### Status
-TODO
+PASS (owner devices, 2026-11-05; empty-file retry before and after process restart; unreadable-source variant not separately created).
 
 ---
 
@@ -7671,7 +7682,7 @@ Infinix X6882B (Transsion/XOS), cold start from the launcher with the radio gate
 ERROR-984 log (2026-10-26 10:29:53), `FlashBackgroundService.onCreate`, ADR-354 note.
 
 ### Status
-TODO
+PASS (Infinix cold start, 2026-11-05: foreground service `foregroundId=41`, no FGS exception; transfer-queued variant not repeated).
 
 ---
 
@@ -7696,4 +7707,4 @@ Current Android app and radio gateway connected, on the Radio screen. A legacy i
 `RadioChatEngine.sendText` Profile-A refusal; `RadioSession.ingestSigned` `SIGNED_NOT_ENABLED`; `RadioChatWiring` has only the peer fingerprint; 2026-11-05 owner report.
 
 ### Status
-TODO
+PASS (UI/selection, Infinix 2026-11-05; Profile A dimmed, Not supported, tap does not select; transmit step blocked because the remembered radio was Link lost).

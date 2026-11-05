@@ -1,6 +1,15 @@
 # Current Handoff
 
-> **2026-11-05 (latest, owner device pass) - RADIO TEXT WORKS BIDIRECTIONALLY.** After setting the phone chat's
+> **2026-11-05 (latest, two-phone test session) - FGS-01, XFER-RETRY-01 (empty case) and RADIO-PROFILE-A-01 (UI) PASS.**
+> Infinix X6882B + Samsung SM-G986U1, current debug APK installed with `adb install -r` (data preserved). The phone pair
+> is on the same Wi-Fi and has a session. `FGS-01`: foreground service `foregroundId=41`, no FGS crash. `XFER-RETRY-01`:
+> 0-byte file shows the visible Failed row, retry before/after a process restart does not crash. `RADIO-PROFILE-A-01`:
+> Profile A is dimmed with **Not supported** and cannot be selected; transmit step was blocked by `Link lost` (radio not
+> powered/connected). The remaining radio TODOs are **BLOCKED on physical radio hardware**, not code. No data or pairings
+> were cleared; the Infinix chat is back on **Automatic**. Authority: `docs/testing/TEST-BACKLOG.md` Results log and
+> `logs/progress.md` 2026-11-05 two-phone entry.
+>
+> **2026-11-05 (owner device pass) - RADIO TEXT WORKS BIDIRECTIONALLY.** After setting the phone chat's
 > **Radio fallback** to **Automatic**, Android→desktop and desktop→Android short texts work on the Infinix + Windows
 > radios. The one-way failure was exactly the phone's `policy=NEVER`; power-cycling the radios restored the receive
 > direction. `ERROR-985` is device-confirmed, `ERROR-988` is resolved for this session. `RADIO-PATH-01` is PASS for the
