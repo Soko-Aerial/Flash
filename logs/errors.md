@@ -16736,7 +16736,7 @@ outbox drain (the in-process override still wins), avoiding a second DB query.
 `:core:messaging:jvmTest --tests RadioChatBridgeTest` pass. New tests:
 `RADIO-PATH-01 a paired radio with the link down is not treated as a live path`,
 `RADIO-PATH-01 a chat set to Never never transmits even when the radio is ready`, and
-`testCanCarry_onlyReachablePairedPeers` now also asserts the disconnected case. Not device-verified.
+`testCanCarry_onlyReachablePairedPeers` now also asserts the disconnected case. **Device-confirmed 2026-11-05:** owner report of bidirectional radio text after setting the phone chat to `Radio fallback: Automatic`; the failing one-way case had printed `policy=NEVER`.
 
 ### Related files
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/HostedRadioOutboxPort.kt`
@@ -16809,6 +16809,9 @@ UNPROVEN. The app's ACK layer is below this symptom: the phone did not decode an
 ### Next
 Power-cycle both radios; confirm both are on the same channel, KISS TNC mode, and not showing a red/keyed LED; reconnect the radio on both apps; set the phone chat's **Radio fallback** to **Automatic**; send one text from each side. Capture both logs. If the phone still logs no `radio.rx.text`/`radio.rx.dropped`, the fault is below the app's protocol.
 
+### Result (owner, 2026-11-05)
+Power-cycling the radios restored the receive direction, and setting the phone chat to **Radio fallback: Automatic** restored phone→desktop; bidirectional text now works. The one-way half was therefore the policy, not the ACK layer. The duplicate RFCOMM open/session-redial shape remains a separate reliability item (P2-4) and is not claimed fixed here.
+
 ### Related files
 - `core/radio/src/commonMain/.../driver/KissTncDriver.kt`
 - `core/radio/src/androidMain/.../link/AndroidRadioDiscovery.kt`
@@ -16816,4 +16819,4 @@ Power-cycle both radios; confirm both are on the same channel, KISS TNC mode, an
 - `logs/progress.md` 2026-11-05 entries; phone log `flash-log-1793885189795.txt`
 
 ### Status
-OPEN (not reproducible without the radios; no code change claimed).
+RESOLVED for the observed session (radio power-cycle + per-chat policy). The duplicate-open investigation stays open as P2-4.

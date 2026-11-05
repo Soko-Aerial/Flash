@@ -2887,6 +2887,13 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-05 - Radio path switching works on hardware (owner report)
+- **Code / commits:** `dev` `2b22ca9e` (radio gate merge `bfe2c943`; Profile-A UI `b17152a2`; composer policy notice `16b36570`); the phone build that produced `flash-log-1793885189795.txt` carried the `policy`/`pairKey` probes.
+- **Devices:** Infinix X6882B (Android 14) + Windows desktop, both radio gateways connected over their VR-N76/COM serial links, Profile M.
+- **Tests run:** Owner set the phone chat's **Radio fallback** to **Automatic**; bidirectional short texts work. The earlier one-way failure was the phone's `policy=NEVER`; turning both radios off/on restored receive, and `RADIO-PATH-01`'s core Android→desktop case then passed. The phone log had shown `radio.path … policy=NEVER pairKey=true gateway=true connected=true`.
+- **Result:** **PASS for the core radio path** (bidirectional text). The `Never` composer banner, the link-down/LAN-dial step and `RADIO-PROFILE-A-01` were not separately reported and stay TODO in their test entries. `ERROR-985` is device-confirmed; `ERROR-988` is resolved by the radio power-cycle plus the policy change (RX had no app-side ACK defect).
+- **Notes:** Profile A remains unsupported and is now visibly unavailable. The second RFCOMM open / session-redial shape in the log is still a separate open reliability item (P2-4), not required for this pass.
+
 ### 2026-11-05 - Hub console redesign approved and ported
 - **Code / commits:** `agent/console-redesign` / `d3fb6c33` (design) and the port commit on the same branch; base `dev` `a7ff5636`.
 - **Environment:** Windows, Chrome 1440/768/390 against the design build and a mock-API review of the shipped console; no physical device needed for the admin console.
@@ -7617,7 +7624,7 @@ Two paired stations (Android phone + desktop) with the radio gateway connected o
 ADR-354, ERROR-985, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` P-2.1, phone log 2026-11-03 18:34-18:39 and 2026-11-05 12:20-12:25.
 
 ### Status
-TODO
+PASS (owner, 2026-11-05; core bidirectional text after setting Automatic. Link-down, Never banner and Profile-A UI steps were not separately reported; see Results log.)
 
 ---
 
