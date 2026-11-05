@@ -1,6 +1,6 @@
 # Current Handoff
 
-> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` (LOCAL, NOT PUSHED); NOT DEVICE-VERIFIED.**
+> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` AND PUSHED (dev `d77b8261`); NOT DEVICE-VERIFIED.**
 > Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
 > (`:desktop:radioGatewayDemo`) and captured at 1180x820 and 900x820, with the settings sheet and the pair sheet opened:
 > evidence in `design/radio-v3/compose/`. The port was corrected against the screenshots (30 dp block rhythm, 780 dp
@@ -29,7 +29,7 @@
 > changed. The port/merge banner below still describes the shipped state.
 
 > **2026-11-05 (port) - OWNER APPROVED THE DESIGN; THE SHIPPED CONSOLE NOW USES IT AND IS MERGED INTO `dev` AS
-> `ec6c3724` (LOCAL, NOT PUSHED).**
+> `ec6c3724` (NOW PUSHED IN dev `d77b8261`).**
 > Design review build and record: `design/server-console/` and `docs/ui/hub-admin-console-redesign.md` (design commit
 > `d3fb6c33`). The old `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Current code:
 > `server/src/main/resources/admin-ui/css/redesign.css`, rewritten `js/ui/shell.js`, rebuilt `js/views/overview.js`,
@@ -39,9 +39,9 @@
 > the hub name returned by `/overview`. The relay strip is sampled by the open console because the hub keeps no history.
 > **Verification:** console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route
 > rendered in Chrome at 1440/768/390; sign-in and sign-out exercised. No Android device test is relevant to the admin UI.
-> **Port commit `adb26723`** (design commit `d3fb6c33`); **merge commit `ec6c3724`** on `dev` (local only). The app
-> handoff below still applies to `dev`.
-> **Still owed:** owner browser checks `CONSOLE-D02..D07`; push is deliberately not done. The other agent's Wave 2/tombstone
+> **Port commit `adb26723`** (design commit `d3fb6c33`); **merge commit `ec6c3724`** on `dev` (pushed in `d77b8261`). The
+> app handoff below still applies to `dev`.
+> **Still owed:** owner browser checks `CONSOLE-D02..D07`; push completed in `d77b8261`. The other agent's Wave 2/tombstone
 > entries are preserved below; the console merge did not touch their files.
 >
 > **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO

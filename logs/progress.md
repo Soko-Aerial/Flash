@@ -1,6 +1,6 @@
 # Progress Log
 
-## 2026-11-05 (merge) - Radio gateway redesign v3 merged into `dev` as `e76edc71` (local, not pushed)
+## 2026-11-05 (merge) - Radio gateway redesign v3 merged into `dev` as `e76edc71` and pushed (dev `d77b8261`)
 
 ### Worked on
 Merged the radio gateway redesign v3 branch from worktree `E:\FlashWork\radio-ui-v3` (`design/radio-gateway-v3`, tip
@@ -26,8 +26,8 @@ since advanced with the local console design merge (`ec6c3724`), the port record
 - Owner/device checks above.
 - Channel/frequency/busy/refused states need `RadioGatewayUiState`/controller work first (critique P1).
 - Latch, elapsed on-air, haptics and a slop-tolerant hold are voice-engine work.
-- **Not pushed:** local `dev` also contains the console design merge (`ec6c3724`) that was deliberately left unpublished;
-  pushing would publish both. The owner must decide when to push.
+- **Pushed (2026-11-05):** the console design merge (`ec6c3724`) and this radio merge were published together as `dev`
+  `d77b8261`; the owner approved the push. `origin/dev` now matches local `dev` (plus the docs follow-up).
 
 ### Next AI
 Read `docs/ui/radio-gateway.md` "Redesign v3" and the `RADUI-DEV02..04` entries before touching the page. The wiring is
