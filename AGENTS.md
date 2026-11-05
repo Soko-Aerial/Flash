@@ -917,15 +917,14 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**2026-11-05 - Radio gateway redesign v3 is merged into local `dev` as `e76edc71` (NOT PUSHED).** Branch
+**2026-11-05 - Radio gateway redesign v3 is merged into `dev` as `e76edc71` and pushed (dev `d77b8261`).** Branch
 `design/radio-gateway-v3` from `E:\FlashWork\radio-ui-v3`, based on the pushed `efc23ae8`; the merge kept the console
 audit/port entries and the radio entries. The Compose port, the review page `design/radio-v3/`, the demos and the docs are
 in; the wiring (`RadioGatewayController`/`RadioGatewayUiState`) is untouched. Verification: radio JVM 44/44, Android-host
 28/28, app/desktop compile. **Device checks `RADUI-DEV02` (phone), `RADUI-DEV03` (Windows) and `RADUI-DEV04` (screen
-reader/keyboard transmit) are owed.** Do not push: local `dev` also contains the console design merge below, which was
-deliberately unpublished.
+reader/keyboard transmit) are owed.** The console design merge below was published in the same push.
 
-**2026-11-05 - Hub admin console redesign merged into `dev` as `ec6c3724` (local, not pushed).** The owner approved the
+**2026-11-05 - Hub admin console redesign merged into `dev` as `ec6c3724` and now pushed (dev `d77b8261`).** The owner approved the
 alternative console designed in `design/server-console/` and recorded in `docs/ui/hub-admin-console-redesign.md`. The
 shipped `server/src/main/resources/admin-ui/` now uses the approved shell, Overview, auth frame and visual system:
 `css/redesign.css` plus a rewritten `js/ui/shell.js`, rebuilt `js/views/overview.js`, a real `#/requests` route, and the
