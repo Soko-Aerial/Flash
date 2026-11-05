@@ -6,6 +6,7 @@
 - The Radio settings sheet no longer offers **Profile A (Signed cleartext)** as a selectable mode; it is dimmed with a "Not supported" badge, and a selected legacy Profile A shows a red sentence telling the operator to select Profile M.
 - The reason is cryptographic, not a UI preference: a signed frame carries a 4-byte tag derived from the sender's identity key, while Flash pairing stores only the fingerprint and `RadioChatWiring` never calls `RadioSession.addBroadcastSender`. A receiver therefore has no full public key to verify the signature; inbound signed frames are dropped as `SIGNED_NOT_ENABLED`. Outbound chat already refused Profile A, so the old row only produced waiting messages.
 - Making Profile A work needs a real peer identity public-key exchange (pairing field or a new wire field) and a send/ACK design for mixed profiles; it is not a one-line switch. Tracked as a follow-up, not claimed.
+- When a direct chat is set to **Radio fallback: Never** and the peer is offline, the composer now says **"Radio fallback is off for this chat."** with a one-tap **Turn on**. The 2026-11-05 phone log showed `policy=NEVER` while the operator was trying to send by radio; this makes the state visible where it is used, instead of only in the details sheet.
 
 ### Verification
 `:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` green; `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green.

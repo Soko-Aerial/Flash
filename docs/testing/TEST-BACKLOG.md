@@ -7610,7 +7610,7 @@ Two paired stations (Android phone + desktop) with the radio gateway connected o
 - Step 1: `radio.path peer=… message=… result=sent policy=AUTO pairKey=true gateway=true connected=true`, then `chat.path … path=radio`; exactly one `radio.tx.text` for the text (retry=false).
 - Step 2: the phone's log shows `radio.path … result=not_reachable policy=AUTO pairKey=true gateway=true connected=false`; the outbox does **not** show `radio.tx.text`; the send path does not skip the on-demand LAN attempt (with a remembered route that is an `Auto-connect dialing` line; with no known route `ensureSession` returns at once). There is no ten-minute gap with `chat.path path=none` and no path attempt.
 - Step 3: once the link is back, the next retry emits `radio.tx.text` and the text arrives once; no duplicate bubble on the desktop.
-- Step 4: `radio.path … result=not_reachable policy=NEVER pairKey=true gateway=true connected=true`; **no** `radio.tx.text` from the phone for the third text; the inbound desktop->phone radio text still appears and is ACKed. The phone may deliver its own text by LAN/hub, but never by radio.
+- Step 4: `radio.path … result=not_reachable policy=NEVER pairKey=true gateway=true connected=true`; **no** `radio.tx.text` from the phone for the third text; the inbound desktop->phone radio text still appears and is ACKed. The phone may deliver its own text by LAN/hub, but never by radio. With the peer offline, the composer shows **"Radio fallback is off for this chat."** and tapping **Turn on** leaves `Never` and returns the policy to Automatic.
 - Step 5: radio is used again and the message arrives once.
 
 ### Source

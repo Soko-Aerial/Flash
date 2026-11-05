@@ -3,8 +3,11 @@
 > **2026-11-05 (profile A) - Profile A is no longer selectable in the Radio settings sheet.** It was a trap: outbound chat
 > refused it (`RadioChatEngine.sendText`) and inbound signed frames could not be verified because `RadioChatWiring` has only
 > the peer fingerprint, not its full identity public key (`RadioSession.ingestSigned` -> `SIGNED_NOT_ENABLED`). The row is
-> dimmed with "Not supported" and a legacy selection shows a red instruction to choose Profile M. Device check
-> `RADIO-PROFILE-A-01`. Leading Profile A work needs a peer identity-key exchange, not a toggle.
+> dimmed with "Not supported" and a legacy selection shows a red instruction to choose Profile M. When a direct chat
+> is set to **Never** and the peer is offline, the composer now shows **"Radio fallback is off for this chat."** with a
+> one-tap **Turn on**; the 2026-11-05 phone log's `policy=NEVER` was the reason Android→desktop radio sent nothing.
+> Device checks `RADIO-PROFILE-A-01` and the updated `RADIO-PATH-01`. Making Profile A work needs a peer identity-key
+> exchange, not a toggle.
 
 
 > **2026-11-05 (test hub) - `myserver` UPDATED TO THE MERGED CONSOLE BUILD AND RESET FOR FIRST-RUN SETUP.**
