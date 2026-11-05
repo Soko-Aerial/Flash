@@ -917,7 +917,19 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**2026-11-05 — Wave 1 safety is on `dev` (merged `239f8581`) and pushed; ADR-351 negative ack (`6a307e1d`) and ADR-352
+**2026-11-05 - Hub admin console redesign merged into `dev` as `ec6c3724` (local, not pushed).** The owner approved the
+alternative console designed in `design/server-console/` and recorded in `docs/ui/hub-admin-console-redesign.md`. The
+shipped `server/src/main/resources/admin-ui/` now uses the approved shell, Overview, auth frame and visual system:
+`css/redesign.css` plus a rewritten `js/ui/shell.js`, rebuilt `js/views/overview.js`, a real `#/requests` route, and the
+same treatment on every existing screen. The real API, CSP-safe DOM, i18n, step-up, error boundaries, print rules and all
+existing features are preserved. The review world's fictional “Meridian Works”/“Production” is removed from the product;
+the sidebar shows `/overview.hubName`. The relay strip is sampled by the open console because the hub keeps no history.
+Verification: console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route rendered in
+Chrome at 1440/768/390; sign-in and sign-out exercised. Owner browser checks `CONSOLE-D02..D07` remain. The old
+`docs/ui/hub-admin-console.md` is marked SUPERSEDED. Merge conflicts in the two shared logs were resolved by keeping both
+sides; the other agent's Wave 2/tombstone entries are intact. Authority: `logs/handoff.md`, `logs/progress.md`.
+
+**2026-11-05 - Wave 1 safety is on `dev` (merged `239f8581`) and pushed; ADR-351 negative ack (`6a307e1d`) and ADR-352
 resume identity (Room v23, merged `cc195841`) are also pushed.** The negative ack resends `PAIR_REVOKE` when a
 `FLASH_SEC` arrives with no session key and fails the revoked side's queued messages; its two-phone run is `W1-NACK-01`
 (owed). Resume identity stores size, modification time and the first-64-KiB SHA-256, refuses a changed file, clears the

@@ -1,9 +1,9 @@
 # Current Handoff
 
-> **2026-11-05 (port) - OWNER APPROVED THE DESIGN; THE SHIPPED CONSOLE NOW USES IT.**
-> Worktree `E:/FlashWork/D-console`, branch `agent/console-redesign`, based on `dev` `a7ff5636`. Design review build and
-> record: `design/server-console/` and `docs/ui/hub-admin-console-redesign.md` (design commit `d3fb6c33`). The old
-> `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Current code:
+> **2026-11-05 (port) - OWNER APPROVED THE DESIGN; THE SHIPPED CONSOLE NOW USES IT AND IS MERGED INTO `dev` AS
+> `ec6c3724` (LOCAL, NOT PUSHED).**
+> Design review build and record: `design/server-console/` and `docs/ui/hub-admin-console-redesign.md` (design commit
+> `d3fb6c33`). The old `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Current code:
 > `server/src/main/resources/admin-ui/css/redesign.css`, rewritten `js/ui/shell.js`, rebuilt `js/views/overview.js`,
 > redesigned `authFrame`, `#/requests` route, and the approved visual system applied to every existing screen.
 > **Preserved:** the real API, CSP-safe DOM, i18n, step-up, error boundaries, print rules and every existing feature.
@@ -11,10 +11,10 @@
 > the hub name returned by `/overview`. The relay strip is sampled by the open console because the hub keeps no history.
 > **Verification:** console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route
 > rendered in Chrome at 1440/768/390; sign-in and sign-out exercised. No Android device test is relevant to the admin UI.
-> **Port commit `adb26723`** (design commit `d3fb6c33`).
-> **Still owed:** owner browser checks `CONSOLE-D02..D07`; merge of `agent/console-redesign` into `dev` is the remaining
-> integration step (the branch has the port; merge only after checking the other agent's uncommitted work in the main
-> worktree). The app handoff below still applies to `dev`.
+> **Port commit `adb26723`** (design commit `d3fb6c33`); **merge commit `ec6c3724`** on `dev` (local only). The app
+> handoff below still applies to `dev`.
+> **Still owed:** owner browser checks `CONSOLE-D02..D07`; push is deliberately not done. The other agent's Wave 2/tombstone
+> entries are preserved below; the console merge did not touch their files.
 >
 > **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone

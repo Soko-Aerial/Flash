@@ -1,6 +1,6 @@
 # Progress Log
 
-## 2026-11-05 (port) - approved server dashboard design ported into the shipped console; merge pending
+## 2026-11-05 (port) - approved server dashboard design ported into the shipped console; merged as ec6c3724
 
 ### Worked on
 The owner approved the alternative hub console design (`d3fb6c33`) and asked for it to replace the shipped console with
@@ -41,8 +41,8 @@ and all existing tables/forms/drawers; only the visual/shell/Overview/auth layer
 - **Committed as `adb26723`** on `agent/console-redesign` (design commit `d3fb6c33`).
 
 ### Remaining
-- Merge `agent/console-redesign` into `dev` (the main worktree has another agent's uncommitted edits; merge only if it
-  does not overlap, and do not push unless asked).
+- **Merged** `agent/console-redesign` into `dev` as **`ec6c3724`** (`--no-ff`; local `dev` ahead of `origin/dev`, not
+  pushed). The only merge conflicts were `logs/handoff.md` and `logs/progress.md`; both sides' entries were kept.
 - Owner browser checks `CONSOLE-D02..D07` (desktop/tablet/phone, dialogs, sign-in/out, contrast/touch).
 - The relay strip fills only while a console is open; if the owner wants a full last-hour chart on first load, add a
   server-side relay history as a separate, tested feature (the hub currently keeps none by design).
