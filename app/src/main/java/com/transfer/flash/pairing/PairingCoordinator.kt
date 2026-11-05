@@ -14,6 +14,7 @@ import com.transfer.flash.core.security.crypto.FlashEcKeyPair
 import com.transfer.flash.core.security.pairing.DefaultFlashPairingProtocol
 import com.transfer.flash.core.security.pairing.FlashPairingEvent
 import com.transfer.flash.core.security.pairing.FlashPairingFrame
+import com.transfer.flash.core.security.pairing.PairingAttemptLimiter
 import com.transfer.flash.core.security.pairing.PairingPhase
 import com.transfer.flash.core.security.pairing.PairingSessionState
 import com.transfer.flash.core.security.pairing.PairingWireCodec
@@ -89,6 +90,10 @@ class PairingCoordinator(
     private val ephemeralKeyPair: FlashEcKeyPair? = null,
     /** The key an unpinned inbound connection presented (ObservedPeerPins); consulted when there is no pin. */
     private val observedPeerPin: (peerId: String) -> String? = { null },
+    /** Feature tokens advertised by [peerId]'s current session, used to gate `pr1` (ADR-351). */
+    private val peerFeatures: (peerId: String) -> Set<String> = { emptySet() },
+    /** Host hook after a revoke; close the session and stop queued sends for [peerId]. */
+    private val onPeerRevoked: (peerId: String) -> Unit = {},
 ) {
     private val _pairing = MutableStateFlow<PairingUiModel?>(null)
     val pairing: StateFlow<PairingUiModel?> = _pairing.asStateFlow()
@@ -171,8 +176,14 @@ class PairingCoordinator(
                     scope.launch { beginIfPeerSupportsV2(pending.first, pending.second, inbound.fingerprintHex) }
                 }
             }
-            is PairingWireCodec.Inbound.Frame ->
-                scope.launch { protocol.onFrame(inbound.frame) }
+            is PairingWireCodec.Inbound.Frame -> {
+                val frame = inbound.frame
+                if (frame is FlashPairingFrame.PairRevoke) {
+                    handlePeerRevoked(peerId)
+                } else {
+                    scope.launch { protocol.onFrame(frame) }
+                }
+            }
             null -> Unit
         }
     }
@@ -250,10 +261,29 @@ class PairingCoordinator(
         return true
     }
 
-    /** Forget a trusted peer (persisted). */
+    /** Forget a trusted peer, tell it when it speaks `pr1`, then drop the session (ADR-351). */
     fun revoke(peerId: String) {
+        if (PairingWireCodec.FEATURE_PAIR_REVOKE in peerFeatures(peerId)) {
+            sendToPeer(peerId, PairingWireCodec.encode(FlashPairingFrame.PairRevoke()))
+        }
         trustStore.revokeTrust(FlashDeviceId(peerId))
         _trustedPeers.value = loadTrusted()
+        if (protocol.session.value.peerDeviceId == peerId) resetProtocol()
+        // Give the notice a moment to leave the writer before the host closes the socket.
+        scope.launch {
+            delay(PAIR_REVOKE_FLUSH_MS)
+            onPeerRevoked(peerId)
+        }
+    }
+
+    /** A peer told us it forgot us: remove its trust, close the session and say so (ADR-351). */
+    private fun handlePeerRevoked(peerId: String) {
+        val name = trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
+        trustStore.revokeTrust(FlashDeviceId(peerId))
+        _trustedPeers.value = loadTrusted()
+        if (protocol.session.value.peerDeviceId == peerId) resetProtocol()
+        emitMessage("${name ?: "The other device"} no longer trusts you. Pair again to reconnect.")
+        onPeerRevoked(peerId)
     }
 
     /** Retrieve the cached peer identity fingerprint (hex) if known. */
@@ -445,6 +475,8 @@ class PairingCoordinator(
         "identity-mismatch", "commit-mismatch", "paired-material-mismatch", "code-hash-mismatch" ->
             "Pairing stopped: the security check failed. If this keeps happening, something may be " +
                 "interfering with the connection."
+        PairingAttemptLimiter.REASON_TOO_MANY_ATTEMPTS ->
+            "Too many pairing attempts. Wait five minutes, then try again."
         else -> null
     }
 
@@ -462,6 +494,8 @@ class PairingCoordinator(
         const val TICK_MS = 1000L
         const val FINGERPRINT_WAIT_MS = 3000L
         const val FINGERPRINT_POLL_MS = 100L
+        /** Time for a best-effort `PAIR_REVOKE` to leave the writer before the host closes the socket. */
+        const val PAIR_REVOKE_FLUSH_MS = 250L
 
         /**
          * Re-ask cadence inside [FINGERPRINT_WAIT_MS]: at most 8 asks, each answered at most once.

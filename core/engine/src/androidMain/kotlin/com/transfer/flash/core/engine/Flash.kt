@@ -48,6 +48,7 @@ import com.transfer.flash.core.network.tls.TransportSecurityUnavailableException
 import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
+import com.transfer.flash.core.security.pairing.PairingWireCodec
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
@@ -303,7 +304,13 @@ private class Wiring(
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): keepalive and redial pacing follow the discovery mode (ECO / BOOST).
             transportProfile = { connectionPolicy(engine).transport },
-            localFeatures = { if (facade?.swarm != null) setOf("sw1", "gs1", "cv1") else setOf("gs1", "cv1") }, // cv1 = FEATURE_VIDEO_UPGRADE (ADR-078)
+            localFeatures = {
+            if (facade?.swarm != null) {
+                setOf("sw1", "gs1", "cv1", PairingWireCodec.FEATURE_PAIR_REVOKE)
+            } else {
+                setOf("gs1", "cv1", PairingWireCodec.FEATURE_PAIR_REVOKE)
+            }
+        }, // cv1 = FEATURE_VIDEO_UPGRADE (ADR-078); pr1 = PAIR_REVOKE (ADR-351)
             onUsableNetwork = {
                 networkRestartJob?.cancel()
                 networkRestartJob = scope.launch {
@@ -648,6 +655,12 @@ private class Wiring(
             crypto = crypto,
             ephemeralKeyPair = ephemeralKeyPair,
             observedPeerPin = observedPeerPins::get,
+            peerFeatures = { peerId ->
+                networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty()
+            },
+            onPeerRevoked = { peerId ->
+                scope.launch { networkImpl.disconnect(FlashDeviceId(peerId)) }
+            },
         )
         this.pairingRef = pairingCoordinator
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->

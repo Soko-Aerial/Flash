@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.security.pairing
 
 import com.transfer.flash.core.common.model.FlashDeviceId
@@ -7,6 +9,7 @@ import com.transfer.flash.core.security.trust.VouchVerdict
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
@@ -88,10 +91,15 @@ class FlashPairingCoordinatorTest {
         fpB: String = FP_B,
         /** False: the connection was inbound, so no pin was stored; the key sits only in the observed table. */
         pinned: Boolean = true,
+        /** True: both sides advertise `pr1`, so a local revoke sends the ADR-351 notice. */
+        pr1: Boolean = false,
     ) {
         val trustA = RecordingTrustStore()
         val trustB = RecordingTrustStore()
         val messagesA = mutableListOf<String>()
+        val messagesB = mutableListOf<String>()
+        val revokedA = mutableListOf<String>()
+        val revokedB = mutableListOf<String>()
 
         /** Flip to simulate "there is no live session in that direction". */
         var deliverable = true
@@ -118,6 +126,8 @@ class FlashPairingCoordinatorTest {
                 trustStore = trustA,
                 scope = scope,
                 observedPeerPin = { id -> fpB.takeIf { !pinned && id == ID_B } },
+                peerFeatures = { if (pr1) setOf(PairingWireCodec.FEATURE_PAIR_REVOKE) else emptySet() },
+                onPeerRevoked = { revokedA += it },
                 sendToPeer = { _, text ->
                     if (deliverable) {
                         b.onInbound(ID_A, text)
@@ -136,13 +146,34 @@ class FlashPairingCoordinatorTest {
                 trustStore = trustB,
                 scope = scope,
                 observedPeerPin = { id -> fpA.takeIf { !pinned && id == ID_A } },
+                peerFeatures = { if (pr1) setOf(PairingWireCodec.FEATURE_PAIR_REVOKE) else emptySet() },
+                onPeerRevoked = { revokedB += it },
                 sendToPeer = { _, text ->
                     a.onInbound(ID_B, text)
                     true
                 },
             )
             scope.launch { a.messages.collect { messagesA += it } }
+            scope.launch { b.messages.collect { messagesB += it } }
         }
+    }
+
+    @Test
+    fun aRevokeNoticeRemovesThePeerOnTheOtherSide() = runBlocking {
+        val pair = Pair(pr1 = true)
+        pair.trustB.trustPeer(FlashDeviceId(ID_A), "Harness A")
+
+        pair.a.revoke(ID_B)
+
+        waitUntil("B must receive the revoke notice") { pair.revokedB.contains(ID_A) }
+        assertFalse(
+            pair.trustB.isTrusted(FlashDeviceId(ID_A)),
+            "the revoked peer must lose its pairing on its own side",
+        )
+        assertTrue(
+            pair.messagesB.any { it.contains("no longer trusts you") },
+            "B must be told; messages=${pair.messagesB}",
+        )
     }
 
     @Test

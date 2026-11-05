@@ -47,6 +47,7 @@ public class AndroidPreferencesTrustStore(
         // for this key, the pin stays (its source becomes VOUCHED).
         if (vouchingGroups(deviceId).isEmpty()) edit.remove(pinKeyFor(deviceId.value))
         edit.apply()
+        TrustChangeHub.publish(deviceId.value)
         return FlashResult.Success(Unit)
     }
 
@@ -69,6 +70,7 @@ public class AndroidPreferencesTrustStore(
             .putString(pinKeyFor(deviceId.value), fingerprint)
             .putString(vouchKeyFor(deviceId.value), (kept + groupId).joinToString(VOUCH_SEPARATOR))
             .apply()
+        TrustChangeHub.publish(deviceId.value)
         return verdict
     }
 
@@ -83,6 +85,7 @@ public class AndroidPreferencesTrustStore(
             edit.putString(vouchKeyFor(deviceId.value), remaining.joinToString(VOUCH_SEPARATOR))
         }
         edit.apply()
+        TrustChangeHub.publish(deviceId.value)
     }
 
     override fun saveSessionKey(deviceId: FlashDeviceId, key: ByteArray): FlashResult<Unit> {
@@ -119,6 +122,7 @@ public class AndroidPreferencesTrustStore(
 
     override fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> {
         preferences.edit().putString(pinKeyFor(deviceId.value), fingerprintHex.uppercase()).apply()
+        TrustChangeHub.publish(deviceId.value)
         return FlashResult.Success(Unit)
     }
 

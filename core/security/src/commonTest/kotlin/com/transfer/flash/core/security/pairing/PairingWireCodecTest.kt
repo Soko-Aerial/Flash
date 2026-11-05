@@ -32,6 +32,7 @@ class PairingWireCodecTest {
             FlashPairingFrame.PairAccept("rid"),
             FlashPairingFrame.PairConfirm("rid", "abcdef"),
             FlashPairingFrame.Paired("rid", "cc:dd", epk),
+            FlashPairingFrame.PairRevoke(),
         )
         frames.forEach { assertEquals(it, roundTrip(it)) }
     }

@@ -1,5 +1,41 @@
 # Current Handoff
 
+> **2026-11-05 — ADR-351 IS DEVICE-VERIFIED END TO END AND THE AFFECTED GATE IS GREEN.** Rebuilt and installed the
+> header-fix APK on the Infinix X6882B (Android 14) and Samsung SM-G986U1 (Android 13). Existing unpaired chats read
+> **Not paired**; re-paired, delivered `final-check`, revoked on the Infinix. The Samsung logged
+> `Flash Hippo no longer trusts you. Pair again to reconnect.`, its header flipped from **Connected** to **Not paired**,
+> and the Infinix moved the peer to DISCOVERED. Gate: security/network/common/chat (JVM + Android host), app unit tests
+> and desktop JVM -> **BUILD SUCCESSFUL 5m 19s**, exit 0, **3,166 tests / 0 failures / 0 errors** (398 suites).
+> **Still partial:** outbox wall-clock budget (no negative ack), TOFU pin re-added by auto-redial (no tombstone), the
+> chat title falls back to the raw device id, and resume identity is unimplemented. Branch not merged/pushed.
+>
+> **2026-11-04 (later) — ADR-351 `PAIR_REVOKE` IS IMPLEMENTED (`1ce825d2`); THE NOTICE IS DEVICE-VERIFIED; THE HEADER
+> FIX IS UNIT-TESTED, NOT DEVICE-VERIFIED.** On local Forget the sender now emits `FLASH_PAIR t=revoke` (cap `pr1`) before
+> removing trust and closing the session; the receiver removes the pairing/session key, closes, and shows
+> "<name> no longer trusts you. Pair again to reconnect." The chat header reads **Not paired** for an untrusted peer.
+> Device run: Infinix X6882B + Samsung SM-G986U1, paired 417 319, message delivered, revoke -> Samsung logged the sentence,
+> both stores dropped `paired_`/`session_key_`, Infinix moved the peer to DISCOVERED. **Still owed:** header device check
+> (phones disconnected before install), outbox negative ack (the budget still applies), revocation tombstone (auto-redial
+> re-added a TOFU pin for the unpaired peer), and resume identity. Unit tests: codec 5, coordinator 11, header 2; app +
+> desktop compile. Records: ADR-351, `ERROR-982`, `W1-REVOKE-02`.
+>
+> **2026-11-04 — WAVE 1 IS DEVICE-TESTED: SECURITY PASS, SENDER UX FAIL.** Installed the branch APK on an
+> Infinix X6882B (Android 14) and a TECNO SPARK 40 (Android 15), paired them over the Infinix hotspot
+> (code 261 811), delivered a message, then revoked on the Infinix without restarting it. A's prefs lost
+> the peer's pin/pairing/session key and every post-revoke `FLASH_SEC` frame was dropped. **B still showed
+> Connected and the message as sent, and retried every 2-16 s** — `ERROR-982`; the missing `PAIR_REVOKE`.
+> `W1-TLS-01` is PARTIAL (security pass, sender notification missing); `W1-REVOKE-02` added. Resume identity
+> (Room v22 -> v23) is still unimplemented. Do not merge as "revoked peers cannot connect"; the correct
+> claim is "revoked peers cannot deliver trusted content".
+>
+> **2026-11-03 — WAVE 1 SAFETY IS ON A BRANCH, NOT MERGED.** `fix/wave1-safety` has four of the five Wave 1 fixes:
+> TLS session eviction (`c75862b4`), framing/blank-id (`8780e40`), pairing throttle (`5ab9c9f7`), protocol banners
+> (`25b6b762`). Gate: security + common tests, both network targets, app + desktop compile -> **BUILD SUCCESSFUL 1m 17s**,
+> exit 0. **Resume identity is NOT implemented** (it needs Room v22 -> v23); the four `W1-*` device checks in
+> `docs/testing/TEST-BACKLOG.md` are owed. Baseline is `EXP-140` (Infinix X6882B, cold 3.0-4.0 s, warm 219-427 ms,
+> PSS ~238 MB; battery NOT measured because the phone was on AC). Next: `W1-TLS-01`, then resume identity as its own
+> change, then merge. Full record: `logs/progress.md` 2026-11-03.
+>
 > **2026-11-02 — STREAM C (calls) IS MERGED AS `5e3a1822`; gates running. All four streams (E, K, R, S, C) are now in
 > `dev`.** C came in as 13 commits + a merge of `dev`. **9 findings delivered, 1 no longer reproduces (`O11-07` — the ladder
 > already caps four watchers), 4 honestly BLOCKED (`O11-01`/`O11-03` need a live camera and two phones, `O11-03` also an ADR;

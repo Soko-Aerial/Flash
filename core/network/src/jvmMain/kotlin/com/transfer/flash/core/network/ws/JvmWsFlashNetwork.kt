@@ -865,7 +865,16 @@ public class JvmWsFlashNetwork(
 
         val parsedFields = FlashTextFraming.parseFields(text, HELLO_PREFIX)
         if (parsedFields != null) {
-            val peerDeviceId = parsedFields["deviceId"] ?: "unknown"
+            val peerDeviceId = parsedFields["deviceId"]?.trim().orEmpty()
+            if (peerDeviceId.isBlank() || peerDeviceId == "unknown") {
+                // A HELLO without an identity cannot be pinned, dialled back or attributed; the old
+                // "unknown" fallback let several such peers share one fake id in the session registry.
+                pendingHandshakes[connection]?.completeExceptionally(
+                    IllegalStateException("HELLO without a deviceId"),
+                )
+                connection.close("HELLO without a deviceId")
+                return
+            }
             val peerName = parsedFields["name"] ?: "Peer"
             val peerVersion = parsedFields["version"]?.toIntOrNull() ?: 1
 

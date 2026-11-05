@@ -221,6 +221,17 @@ public class DefaultFlashPairingProtocol(
     override suspend fun onFrame(frame: FlashPairingFrame) {
         when (frame) {
             is FlashPairingFrame.PairRequest -> {
+                // Per-peer throttle: a failed code ends its session, but an attacker can open a new
+                // request immediately. Five failures inside ten minutes lock the peer out for five.
+                if (!PairingAttemptLimiter.allow(frame.senderDeviceId, timeSource.nowMs())) {
+                    emit(
+                        FlashPairingEvent.Failed(
+                            frame.requestId,
+                            PairingAttemptLimiter.REASON_TOO_MANY_ATTEMPTS,
+                        ),
+                    )
+                    return
+                }
                 val before = _session.value
                 val localEpk = ephemeralPublicKeyProvider()
                 val nonce = PairingV2.newNonce()
@@ -253,8 +264,12 @@ public class DefaultFlashPairingProtocol(
                                 nonce = nonce,
                             ),
                         )
-                    s.phase == PairingPhase.Failed ->
+                    s.phase == PairingPhase.Failed -> {
+                        s.peerDeviceId?.let {
+                            PairingAttemptLimiter.recordFailure(it, timeSource.nowMs())
+                        }
                         emit(FlashPairingEvent.Failed(frame.requestId, s.failureReason ?: "request-rejected"))
+                    }
                 }
             }
 
@@ -313,6 +328,9 @@ public class DefaultFlashPairingProtocol(
                         sendPairedAndEmit(rid)
                     }
                 } else if (after.phase == PairingPhase.Failed && before.phase != PairingPhase.Failed) {
+                    after.peerDeviceId?.let {
+                        PairingAttemptLimiter.recordFailure(it, timeSource.nowMs())
+                    }
                     emit(
                         FlashPairingEvent.Failed(
                             after.requestId,
@@ -332,6 +350,7 @@ public class DefaultFlashPairingProtocol(
                 )
                 val after = _session.value
                 if (after.phase == PairingPhase.Confirmed && before.phase != PairingPhase.Confirmed) {
+                    after.peerDeviceId?.let { PairingAttemptLimiter.recordSuccess(it) }
                     after.requestId?.let { rid ->
                         emit(
                             FlashPairingEvent.Confirmed(
@@ -345,6 +364,10 @@ public class DefaultFlashPairingProtocol(
                     emitIfNewlyFailed(before, after)
                 }
             }
+
+            // ADR-351: the coordinator handles revocation before it reaches the protocol; if one
+            // arrives here anyway it is not a pairing event.
+            is FlashPairingFrame.PairRevoke -> Unit
         }
     }
 
@@ -373,11 +396,15 @@ public class DefaultFlashPairingProtocol(
                 phase = PairingPhase.Failed,
                 failureReason = "paired-send-failed",
             )
+            confirmed.peerDeviceId?.let {
+                PairingAttemptLimiter.recordFailure(it, timeSource.nowMs())
+            }
             emit(
                 FlashPairingEvent.Failed(requestId, reason.message ?: "paired-send-failed"),
             )
             return
         }
+        confirmed.peerDeviceId?.let { PairingAttemptLimiter.recordSuccess(it) }
         emit(
             FlashPairingEvent.Confirmed(
                 requestId = requestId,
@@ -388,15 +415,21 @@ public class DefaultFlashPairingProtocol(
     }
 
     /** Sends [frame]; a send failure fails the session rather than leaving it waiting forever. */
-    private fun sendOrFail(frame: FlashPairingFrame) {
+    private suspend fun sendOrFail(frame: FlashPairingFrame) {
         runCatching { sendFrame(frame) }.onFailure { reason ->
             _session.value = _session.value.copy(phase = PairingPhase.Failed, failureReason = "send-failed")
+            _session.value.peerDeviceId?.let {
+                PairingAttemptLimiter.recordFailure(it, timeSource.nowMs())
+            }
             emit(FlashPairingEvent.Failed(frame.requestId, reason.message ?: "send-failed"))
         }
     }
 
-    private fun emitIfNewlyFailed(before: PairingSessionState, after: PairingSessionState) {
+    private suspend fun emitIfNewlyFailed(before: PairingSessionState, after: PairingSessionState) {
         if (after.phase == PairingPhase.Failed && before.phase != PairingPhase.Failed) {
+            after.peerDeviceId?.let {
+                PairingAttemptLimiter.recordFailure(it, timeSource.nowMs())
+            }
             emit(FlashPairingEvent.Failed(after.requestId, after.failureReason ?: "protocol-error"))
         }
     }

@@ -16557,3 +16557,71 @@ Unit-level: the compile of `:webrtc-kmp:webrtc-kmp` and every consumer. **Device
 
 ### Status
 RESOLVED IN CODE, NOT DEVICE-VERIFIED (see `PERF-C01`).
+
+## ERROR-982 - A revoked peer keeps "Connected" and its message looks sent while every frame is dropped
+
+### Date
+2026-11-04
+
+### Area
+Pairing/revocation, transport acknowledgement, chat outbox.
+
+### Symptoms
+After A revokes B (Nearby -> Revoke, no app restart), B still shows "Connected" and a newly sent message appears in the chat with no failure. A's chat never receives it. A's log repeats `Received FLASH_SEC frame ... with no stored session key; dropping` every 2-16 s. B never learns it was revoked.
+
+### Environment
+- A: Infinix X6882B, Android 14 (SDK 34), Flash debug build from `fix/wave1-safety`, installed over the debug 2.1.0 build (data preserved).
+- B: TECNO SPARK 40 (KM5), Android 15 (SDK 35), same debug APK, fresh install.
+- Network: Infinix hotspot (`ap0` 10.246.114.2); B on `wlan0` 10.246.114.89; laptop on the same hotspot.
+- Pairing code 261 811. Pre-revoke message `w1session` delivered.
+
+### Error
+```text
+05:21:02 I/WS    Session up peer=Flash Gecko id=cfc5089d-... - sending pairing hello
+05:21:02 W/CHAT  Received FLASH_SEC frame from cfc5089d-... with no stored session key; dropping
+05:21:03 W/CHAT  Received FLASH_SEC frame ... dropping
+... every 2-16 s ...
+```
+A's prefs after revoke contain **no** `paired_cfc5089d`, `pin_cfc5089d` or `session_key_cfc5089d`; B's prefs still contain A's pin, session key and pairing.
+
+### Root cause
+1. `revokeTrust` removes the local pin/pairing/session key and (with the Wave 1 fix) clears the TLS context cache, but it does not close the live session or tell the peer.
+2. A deliberately accepts an **unpaired** transport session so a new device can pair; B's reconnect is therefore admitted at the transport layer.
+3. B's app still trusts A and sends sealed frames; A's app layer drops them because the session key is gone.
+4. The transport ACK still covers the frame, so B's outbox has no negative result; the UI shows the message as sent/Connected and retries.
+5. There is no `PAIR_REVOKE` (the review's item 8) and no typed app-level refusal for frames from an untrusted peer.
+
+### Failed attempts
+None tried in this run; the test was diagnostic only.
+
+### Working fix
+Implemented as **ADR-351** (`PAIR_REVOKE`, capability `pr1`):
+- The sender sends one best-effort `FLASH_PAIR t=revoke` on the live session before removing its local trust, then closes the session (250 ms flush window).
+- The receiver authenticates it by the session peer id, removes the sender's pairing/session key (and the pin at that moment), closes the session, emits `"<name> no longer trusts you. Pair again to reconnect."`, and the chat header reads **Not paired** while an unpaired transport session is up.
+- The frame is ignored by older peers because unknown `FLASH_PAIR` types decode to null; `pr1` is advertised in HELLO.
+
+Still owed:
+- The **outbox budget** is unchanged: a message queued after the revoke retries until the existing wall-clock budget, because the notice is not a delivery receipt. A negative ack is the next step.
+- A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It did not restore the pairing and cannot deliver trusted content; refusing it needs a revocation tombstone.
+- The header fix was verified on 2026-11-05 on both phones: the Samsung header read **Not paired** after the revoke
+  while an unpaired session was up. The chat title still falls back to the raw device id (cosmetic).
+
+### Verification
+First device run (2026-11-04, Infinix X6882B + TECNO SPARK 40): security half passed (no pin/pairing/session key on A; all `FLASH_SEC` dropped; A's chat never got `afterrevoke`); UX half failed (B Connected/sent, retry loop) — this is the report.
+
+Second run after ADR-351 (2026-11-04, Infinix X6882B / Android 14 + Samsung SM-G986U1 / Android 13, same debug build): paired (417 319), sent and delivered `before-revoke`, revoked on the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped `paired_`/`session_key_`; the Infinix moved the peer to DISCOVERED with Pair.
+
+Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-paired, sent and delivered `final-check`, revoked on the Infinix. The Samsung logged the same sentence and its chat header flipped from **Connected** to **Not paired**; the Infinix showed the peer under DISCOVERED with Pair. Unit tests: `PairingWireCodecTest` 5/5, `FlashPairingCoordinatorTest` 11/11 (including `aRevokeNoticeRemovesThePeerOnTheOtherSide`), `FlashChatHeaderLabelTest` 2/2. Affected-module gate: **3,166 tests, 0 failures, 0 errors** (5m 19s).
+
+### Related files
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/FlashPairingFrames.kt`
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/PairingWireCodec.kt`
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/FlashPairingCoordinator.kt`
+- `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatHeader.kt`
+- `docs/decisions.md` ADR-351
+- `docs/protocol.md` "Pairing revocation"
+- `docs/testing/TEST-BACKLOG.md` `W1-REVOKE-02`
+
+### Status
+FIXED FOR THE NOTICE AND THE HEADER LABEL (both device-verified); **PARTIAL**: outbox budget and TOFU re-pin remain.
