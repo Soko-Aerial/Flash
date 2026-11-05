@@ -1,5 +1,5 @@
-// The application frame: navigation rail (icons only on small laptops, a bottom bar on phones), top bar with the session countdown,
-// theme toggle, help and sign out, and the single <main> landmark every page renders into.
+// The application frame: a labelled sidebar on the page ground (no second top bar), a compact bar and
+// bottom navigation on narrower screens, and the one <main> landmark every page renders into.
 
 import { h, mount } from '../dom.js';
 import { icon } from '../icons.js';
@@ -12,6 +12,7 @@ export const NAV = [
   { id: 'overview', glyph: 'overview', key: 'o' },
   { id: 'devices', glyph: 'devices', key: 'd' },
   { id: 'invites', glyph: 'invites', key: 'i' },
+  { id: 'requests', glyph: 'requests', key: 'r' },
   { id: 'organization', glyph: 'org', key: 'g' },
   { id: 'announcements', glyph: 'announcements', key: 'n' },
   { id: 'audit', glyph: 'audit', key: 'a' },
@@ -19,27 +20,41 @@ export const NAV = [
   { id: 'settings', glyph: 'settings', key: 't' },
 ];
 
-const BOTTOM = ['overview', 'devices', 'invites', 'organization'];
+const GROUPS = [
+  { label: 'nav.group.hub', ids: ['overview', 'devices', 'invites'] },
+  { label: 'nav.group.people', ids: ['requests', 'organization', 'announcements'] },
+  { label: 'nav.group.trust', ids: ['audit', 'security'] },
+];
+const BOTTOM = ['overview', 'devices', 'invites', 'requests'];
 
 function themeGlyph() {
   return { light: 'sun', dark: 'moon', system: 'monitor' }[getTheme()];
 }
 
-/**
- * @param {{onLogout: () => void, onHelp: () => void}} o
- */
-export function createShell({ onLogout, onHelp }) {
-  const badges = new Map(); // id -> [elements]
-  let active = 'overview';
-  const links = new Map(); // id -> [anchors]
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  return ((parts[0] || '?')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
 
-  function navLink(item, { compact = false } = {}) {
-    const badge = h('span', { class: 'nav-badge num', hidden: true, 'aria-hidden': 'true' });
+const byId = (id) => NAV.find((item) => item.id === id);
+
+export function createShell({ onLogout, onHelp }) {
+  const links = new Map(); // id -> [anchors]
+  const badges = new Map(); // id -> [badge elements]
+  let active = 'overview';
+
+  function navLink(item, { bottom = false } = {}) {
+    const badge = h('span', { class: bottom ? 'fx-bottom-badge' : 'fx-nav-badge', hidden: true, 'aria-hidden': 'true' });
     const a = h(
       'a',
-      { class: ['nav-item', compact ? 'nav-item-compact' : ''], href: '#/' + item.id, 'data-nav': item.id, title: t('nav.' + item.id) },
-      icon(item.glyph, { size: 22 }),
-      h('span', { class: 'nav-label', text: compact ? t('nav.short.' + item.id) : t('nav.' + item.id) }),
+      {
+        class: bottom ? 'fx-bottom-item' : 'fx-nav-item',
+        href: '#/' + item.id,
+        'data-nav': item.id,
+        title: t('nav.' + item.id),
+      },
+      icon(item.glyph, { size: bottom ? 20 : 18, className: 'fx-nav-glyph' }),
+      h('span', { text: bottom ? t('nav.short.' + item.id) : t('nav.' + item.id) }),
       badge,
     );
     if (!links.has(item.id)) links.set(item.id, []);
@@ -49,63 +64,156 @@ export function createShell({ onLogout, onHelp }) {
     return a;
   }
 
-  const rail = h(
-    'nav',
-    { class: 'rail', 'aria-label': t('nav.main') },
-    h('div', { class: 'brand' }, icon('bolt', { size: 26, className: 'brand-bolt' }), h('span', { class: 'brand-name', text: t('app.name') })),
-    h('ul', { class: 'nav' }, NAV.map((item) => h('li', {}, navLink(item)))),
+  const groups = GROUPS.map((group) =>
+    h(
+      'div',
+      { class: 'fx-nav-group' },
+      h('span', { class: 'fx-nav-label', text: t(group.label) }),
+      h('ul', { class: 'fx-nav', role: 'list' }, group.ids.map((id) => h('li', {}, navLink(byId(id))))),
+    ),
   );
 
-  const hubName = h('span', { class: 'hub-name', text: '' });
-  const countdown = h('span', { class: 'session-chip num', role: 'timer', title: t('session.countdown.title'), text: '' });
-  const themeBtn = h('button', { class: 'icon-btn', type: 'button', on: { click: () => { cycleTheme(); refreshTheme(); } } }, icon(themeGlyph()));
-  const helpBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': t('help.open'), title: t('help.open'), on: { click: onHelp } }, icon('keyboard'));
-  const userLabel = h('span', { class: 'user-label', text: '' });
-  const logoutBtn = h('button', { class: 'btn btn-ghost btn-sm', type: 'button', on: { click: onLogout } }, icon('logout', { size: 18 }), h('span', { class: 'btn-label', text: t('auth.logout') }));
+  const settingsLink = navLink(byId('settings'));
+  const brandHub = h('div', { class: 'fx-brand-hub', text: '' });
+  const mobileHub = h('div', { class: 'fx-brand-hub', text: '' });
+  const brand = (compact = false) =>
+    h(
+      'div',
+      { class: 'fx-brand' },
+      h('span', { class: 'fx-brand-mark' }, icon('bolt', { size: compact ? 20 : 22 })),
+      h(
+        'div',
+        { class: 'fx-brand-text' },
+        h('div', { class: 'fx-brand-name', text: t('app.name') }),
+        compact ? mobileHub : brandHub,
+      ),
+    );
 
-  function refreshTheme() {
-    const mode = getTheme();
-    themeBtn.setAttribute('aria-label', t('theme.toggle', { mode: t('theme.' + mode) }));
-    themeBtn.title = t('theme.toggle', { mode: t('theme.' + mode) });
-    mount(themeBtn, icon(themeGlyph()));
-  }
-  refreshTheme();
+  const hubLine = h('div', { class: 'fx-hub-line', 'aria-hidden': 'true' });
 
-  const topbar = h(
-    'header',
-    { class: 'topbar' },
-    h('div', { class: 'topbar-left' }, icon('bolt', { size: 20, className: 'brand-bolt topbar-bolt' }), hubName),
-    h('div', { class: 'topbar-right' }, countdown, userLabel, themeBtn, helpBtn, logoutBtn),
+  const helpBtn = h(
+    'button',
+    { class: 'icon-btn', type: 'button', 'aria-label': t('help.open'), title: t('help.open'), on: { click: onHelp } },
+    icon('keyboard'),
+  );
+  const themeBtn = h(
+    'button',
+    { class: 'icon-btn', type: 'button', 'aria-label': t('theme.cycle'), title: t('theme.cycle'), on: { click: () => { cycleTheme(); refreshTheme(); } } },
+    icon(themeGlyph()),
+  );
+  const utilRow = h('div', { class: 'fx-util-row' }, helpBtn, themeBtn);
+
+  const sessionTime = h('span', { class: 'fx-session-time', text: '' });
+  const sessionRow = h(
+    'div',
+    { class: 'fx-session', title: t('session.countdown.title') },
+    icon('clock', { size: 14 }),
+    h('span', { text: t('session.endsIn') }),
+    sessionTime,
   );
 
-  const main = h('main', { class: 'main', id: 'main', tabindex: '-1' });
+  const userAvatar = h('span', { class: 'fx-avatar', text: '?' });
+  const userName = h('div', { class: 'fx-user-name', text: '' });
+  const userRole = h('div', { class: 'fx-user-role', text: '' });
+  const logoutBtn = h(
+    'button',
+    { class: 'icon-btn', type: 'button', 'aria-label': t('auth.logout'), title: t('auth.logout'), on: { click: onLogout } },
+    icon('logout', { size: 16 }),
+  );
+  const userRow = h('div', { class: 'fx-user' }, userAvatar, h('div', { class: 'fx-user-text' }, userName, userRole), logoutBtn);
 
-  const moreBtn = h('button', { class: 'nav-item nav-item-compact', type: 'button', title: t('nav.more'), on: { click: openMore } }, icon('menu', { size: 22 }), h('span', { class: 'nav-label', text: t('nav.more') }));
-  const bottom = h(
-    'nav',
-    { class: 'bottom-nav', 'aria-label': t('nav.main') },
-    NAV.filter((i) => BOTTOM.includes(i.id)).map((i) => navLink(i, { compact: true })),
-    moreBtn,
+  const sidebar = h(
+    'aside',
+    { class: 'fx-sidebar' },
+    brand(),
+    hubLine,
+    h('nav', { 'aria-label': t('nav.main') }, groups),
+    h('div', { class: 'fx-sidebar-spacer' }),
+    h('div', { class: 'fx-sidebar-foot' }, settingsLink, utilRow, sessionRow, userRow),
   );
 
-  function openMore() {
-    const list = h('ul', { class: 'nav nav-more' }, NAV.map((item) => h('li', {}, moreLink(item))));
-    const dlg = openDrawer({ title: t('nav.more'), body: list });
-    list.addEventListener('click', (ev) => {
-      if (ev.target.closest('a')) dlg.close();
-    });
-  }
-  function moreLink(item) {
-    return h('a', { class: ['nav-item', item.id === active ? 'is-active' : ''], href: '#/' + item.id, 'aria-current': item.id === active ? 'page' : null }, icon(item.glyph, { size: 22 }), h('span', { class: 'nav-label', text: t('nav.' + item.id) }));
-  }
+  const crumb = h('span', { class: 'fx-crumb' });
+  const mobileTheme = h(
+    'button',
+    { class: 'icon-btn', type: 'button', 'aria-label': t('theme.cycle'), title: t('theme.cycle'), on: { click: () => { cycleTheme(); refreshTheme(); } } },
+    icon(themeGlyph()),
+  );
+  const menuBtn = h(
+    'button',
+    { class: 'icon-btn fx-menu-btn', type: 'button', 'aria-label': t('nav.more'), title: t('nav.more'), on: { click: openMore } },
+    icon('menu'),
+  );
+  const mobilebar = h(
+    'div',
+    { class: 'fx-mobilebar' },
+    brand(true),
+    crumb,
+    h('div', { class: 'fx-bar-actions' }, mobileTheme, menuBtn),
+  );
 
+  const main = h('main', { class: 'fx-main', id: 'main', tabindex: '-1' });
   const skip = h('a', { class: 'skip-link', href: '#main', text: t('a11y.skip') });
   skip.addEventListener('click', (ev) => {
     ev.preventDefault();
     main.focus();
   });
 
-  const el = h('div', { class: 'shell' }, skip, rail, h('div', { class: 'main-col' }, topbar, main), bottom);
+  const bottomItems = BOTTOM.map((id) => navLink(byId(id), { bottom: true }));
+  const moreBtn = h(
+    'button',
+    { class: 'fx-bottom-item', type: 'button', on: { click: openMore } },
+    icon('more', { size: 20, className: 'fx-nav-glyph' }),
+    h('span', { text: t('nav.more') }),
+  );
+  const bottom = h('nav', { class: 'fx-bottom-nav', 'aria-label': t('nav.main') }, bottomItems, moreBtn);
+
+  function sheetLink(item) {
+    return h(
+      'a',
+      { class: 'fx-nav-item', href: '#/' + item.id, 'aria-current': active === item.id ? 'page' : null },
+      icon(item.glyph, { size: 20, className: 'fx-nav-glyph' }),
+      h('span', { text: t('nav.' + item.id) }),
+      item.id === 'requests' && badgeCount('requests') ? h('span', { class: 'fx-nav-badge', text: String(badgeCount('requests')) }) : null,
+    );
+  }
+
+  function openMore() {
+    const body = h('nav', { class: 'fx-sheet-nav', 'aria-label': t('nav.main') });
+    for (const group of GROUPS) {
+      body.append(h('div', { class: 'fx-sheet-label', text: t(group.label) }));
+      for (const id of group.ids) body.append(sheetLink(byId(id)));
+    }
+    body.append(h('div', { class: 'fx-sheet-label', text: t('nav.settings') }), sheetLink(byId('settings')));
+    const drawer = openDrawer({
+      title: t('nav.more'),
+      body,
+      actions: [
+        h('button', { class: 'btn btn-ghost', type: 'button', on: { click: () => { drawer.close(); onHelp(); } } }, icon('keyboard', { size: 18 }), h('span', { text: t('help.open') })),
+        h('button', { class: 'btn btn-ghost', type: 'button', on: { click: () => { drawer.close(); onLogout(); } } }, icon('logout', { size: 18 }), h('span', { text: t('auth.logout') })),
+      ],
+    });
+    body.addEventListener('click', (ev) => {
+      if (ev.target.closest('a')) drawer.close();
+    });
+  }
+
+  function refreshTheme() {
+    const mode = getTheme();
+    const label = t('theme.toggle', { mode: t('theme.' + mode) });
+    for (const button of [themeBtn, mobileTheme]) {
+      button.setAttribute('aria-label', label);
+      button.title = label;
+      mount(button, icon(themeGlyph()));
+    }
+  }
+  refreshTheme();
+
+  function badgeCount(id) {
+    const entry = (badges.get(id) || [])[0];
+    return entry && !entry.el.hidden ? entry.el.textContent : '';
+  }
+
+  const el = h('div', { class: 'fx-shell' }, skip, sidebar, h('div', { class: 'fx-main-col' }, mobilebar, main), bottom);
 
   return {
     el,
@@ -120,7 +228,9 @@ export function createShell({ onLogout, onHelp }) {
           else a.removeAttribute('aria-current');
         }
       }
-      moreBtn.classList.toggle('is-active', !BOTTOM.includes(id) && NAV.some((n) => n.id === id));
+      if (id && !BOTTOM.includes(id)) moreBtn.setAttribute('aria-current', 'page');
+      else moreBtn.removeAttribute('aria-current');
+      crumb.replaceChildren(h('span', { text: id ? t('nav.' + id) : t('app.name') }));
     },
     setBadge(id, n) {
       for (const { el: b, anchor } of badges.get(id) || []) {
@@ -131,15 +241,23 @@ export function createShell({ onLogout, onHelp }) {
       }
     },
     setHub(name) {
-      hubName.textContent = name;
+      const text = name || '';
+      brandHub.textContent = text;
+      brandHub.hidden = !text;
+      mobileHub.textContent = text;
+      mobileHub.hidden = !text;
     },
     setUser(name, role) {
-      userLabel.textContent = name + ' · ' + t('role.' + String(role || 'org_admin').toLowerCase());
+      const display = name || '';
+      userName.textContent = display;
+      userAvatar.textContent = initials(display);
+      const roleKey = String(role || 'org_admin').toLowerCase();
+      userRole.textContent = t('role.short.' + roleKey);
     },
     setCountdown(ms, tone) {
-      countdown.textContent = formatClock(ms);
-      countdown.classList.toggle('is-warn', tone === 'warn');
-      countdown.setAttribute('aria-label', t('session.countdown.label', { time: formatClock(ms) }));
+      sessionTime.textContent = formatClock(ms);
+      sessionRow.classList.toggle('is-warn', tone === 'warn');
+      sessionRow.setAttribute('aria-label', t('session.countdown.label', { time: formatClock(ms) }));
     },
     refreshTheme,
   };

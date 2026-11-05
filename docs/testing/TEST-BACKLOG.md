@@ -2887,7 +2887,14 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
-### 2026-11-01 — Wave 4 repaired host verification (not a device/performance result)
+### 2026-11-05 - Hub console redesign approved and ported
+- **Code / commits:** `agent/console-redesign` / `d3fb6c33` (design) and the port commit on the same branch; base `dev` `a7ff5636`.
+- **Environment:** Windows, Chrome 1440/768/390 against the design build and a mock-API review of the shipped console; no physical device needed for the admin console.
+- **Tests run:** `design/server-console` review build (final screenshots); console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route rendered without console errors/overflow in the review harness; sign-in and sign-out exercised.
+- **Result:** owner approved the direction; the shipped console now uses the approved shell, Overview, auth frame and visual system. The design record and prototype remain in `design/server-console/`. `CONSOLE-D02..D07` remain for owner/browser verification; `CONSOLE-D07` code side passed and its owner confirmation is owed.
+- **Notes:** no fictional "Meridian Works"/"Production" in the shipped build; the hub name comes from `/overview`. The relay strip is sampled by the open console because the hub keeps no history by design.
+
+### 2026-11-01 - Wave 4 repaired host verification (not a device/performance result)
 - **Code / commits:** E delivered 00a7a51f plus reviewed repairs committed as b2b61b92; K delivered 6d9c9227 plus
   reviewed repairs committed as 22a53994; both base baf77753. These targeted runs preceded the repair commits;
   E had no later source change, K only a later KDoc clarification. Expanded merged-tree gates not yet run at this entry.
@@ -5478,6 +5485,110 @@ its own window on Windows means `AlertDialog` came back instead of `FlashConfirm
 
 ### Source
 `docs/ui/radio-gateway.md` "Redesign v2" (2026-10-28); ADR-226/227/228/229 unchanged (wiring untouched).
+
+---
+
+## RADUI-DEV02 - Redesign v3 on a phone (2026-11-05)
+
+### Setup
+Android app built from `design/radio-gateway-v3` and installed on the usual handset. One handheld radio (VR-N76 or
+UV-Pro) for the live steps; steps 1-6 also work with the debug demo (Settings -> Radio gateway opens on a connected
+VR-N76 with UV-Pro listed and audio listening).
+
+### Steps
+1. Settings -> "Radio gateway (beta)". With the gateway **off**: the plate reads "No radio paired" / "Radio gateway is
+   off.", a full-width **Turn on** button sits under the sentence, the intro sentence follows, then the three steps under
+   "Before you turn it on". No security/mode/scan sections are visible.
+2. Tap **Turn on** (and separately the switch). The plate reads "Radio gateway is on."; "Your radios" shows
+   "None paired yet" with the **filled** "Pair a new radio" button.
+3. Tap **Pair a new radio**. A sheet opens **and the scan starts by itself** ("Scanning for nearby radios…" plus
+   "Stop (N s)"); devices appear ranked with a RADIO / SERIAL SPP / OTHER chip and dBm. Close the sheet -> the scan stops.
+4. Pair the radio. The sheet closes; the plate shows the radio name with "Connecting…"/"Connected to <name>."; the talk bar
+   appears above the bottom bar (radio audio switch + level + hold-to-talk).
+5. "Your radios" shows the radio with an **In use** chip, and "Pair a new radio" is now a **quiet outlined** button, not a
+   second filled one.
+6. Gear -> **Radio settings**: Security profile (M / A), Operational mode (1 / 2 / 4 / 5 with Active / Coming later), This
+   radio (name, address, callsign), Send a test message, Forget this radio. Tapping Profile M without authorisation opens
+   the authorisation sheet; Forget returns to "No radio paired".
+7. Talk bar with the link up: turn Listen on -> "Listening" and level bars; **hold** Hold to talk -> the control turns
+   **warm** and reads "Talking…", "Talking" and an "On air" chip appear, the radio keys and audio goes out. Release -> back
+   to Listening.
+8. Switch the radio off (link down). The plate shows the lost sentence and Reconnect; the talk bar reads "No link" and its
+   control says "Reconnect the radio to talk." and **does not key anything**.
+9. With a second paired radio in the list, tap **Use** -> "Use another radio?" appears; Cancel keeps the current radio,
+   confirm switches.
+10. Scroll to the end of the page: the last row ("This link" / mode) must be fully readable above the talk bar, never
+    hidden behind it.
+
+### Pass Line
+```text
+PASS: the off state offers Turn on; turning it on shows the paired radios and one filled "Pair a new radio"; that button
+opens a sheet that starts scanning and stops when it is closed; security profile and operational mode live only in the
+settings sheet; the talk bar sits above the bottom bar with hold-to-talk, turns warm with "Talking…" while keyed, and is
+disabled with a reason when the link is down; no row is covered by the talk bar at the end of the scroll; no inline
+colour, no stock Material control.
+```
+
+Interpretation if it fails: a second filled button means the `primary = state.rememberedRadioName == null` rule was lost;
+a live PTT while disconnected means `linkLive` is not wired; a scan that does not start means the sheet's `LaunchedEffect`
+was removed; a talk bar that covers content means the dock was moved back into the scroll area.
+
+### Source
+`docs/ui/radio-gateway.md` "Redesign v3" (2026-11-05).
+
+---
+
+## RADUI-DEV03 - Redesign v3 on Windows (2026-11-05)
+
+### Setup
+Desktop app from `design/radio-gateway-v3`, window at 1440x900 and then maximised; Windows scaling 100 %, 125 % and 150 %.
+
+### Steps
+1. Open the radio page (desktop demo entry or Settings -> Radio gateway). The column is centred and no wider than 720 dp.
+2. Confirm the **audio panel is not docked** on a wide window: it sits in the flow directly under the station plate and is
+   visible without scrolling. On a window narrower than 900 dp it becomes the bottom dock instead.
+3. Desktop hosts report no radio voice, so the audio panel must be **absent** and leave no empty gap.
+4. Gear -> Radio settings and "Pair a new radio" must both open inside the window (no separate native window) and Esc must
+   close them.
+5. Keyboard: Tab to "Hold to talk" (when audio is available), hold **Space** -> talking, release -> stops; auto-repeat must
+   not restart the transmission. Arrow keys move between the radio choices in each settings group.
+6. Repeat at 125 % and 150 % scaling: nothing clipped, no horizontal scrollbar.
+
+### Pass Line
+```text
+PASS: wide window shows plate -> audio panel -> radios -> help -> This link in one centred column; the panel is absent
+where the host has no voice; both sheets stay inside the window; Space holds and releases the PTT; scaling does not clip.
+```
+
+### Source
+`docs/ui/radio-gateway.md` "Redesign v3".
+
+---
+
+## RADUI-DEV04 - Screen reader and keyboard transmit (2026-11-05)
+
+### Setup
+Android with TalkBack (and Switch Access if available); desktop with NVDA or Narrator. Radio connected and listening.
+
+### Steps
+1. TalkBack: focus the station state. It should be announced when it changes (polite live region), not only when focused.
+2. TalkBack: focus the talk control. The name is "Hold to talk through the radio"; the state reads Ready / Talking. Note
+   **whether a double-tap transmits** — the hold gesture is not reachable for a screen reader, and this must not silently
+   key the radio.
+3. Keyboard (desktop): Space/Enter press-and-hold transmits while held; releasing stops; holding the key down must not
+   re-trigger and must not get stuck transmitting.
+4. Switch Access: record whether the talk control can be activated at all.
+5. Report the result even if the only finding is "screen readers cannot hold a PTT" — that is the current limitation.
+
+### Pass Line
+```text
+PASS: state changes are announced; the talk control has a name and a state; the keyboard holds and releases cleanly and
+never sticks; the screen-reader limitation is recorded rather than hidden.
+```
+
+### Source
+`docs/ui/radio-gateway.md` "Redesign v3" (Impeccable Assessment B, WCAG 2.1.1 / 4.1.3).
+
 `FlashRadioGatewayComponents.kt`, `FlashRadioGatewayScreen.kt`, `FlashRadioVoiceCard.kt`.
 
 ### Status
@@ -7416,3 +7527,66 @@ default chunk size. These are the measurements still owed by the review's Wave 2
 - **Result 2026-11-05 (migration part):** the v23 debug APK installed over the Infinix X6882B's existing v22 data (`adb install -r` -> Success), the app started, and the chat list still showed `Flash Olive`/`final-check` and `Flash Gecko`/`w1session`. No `FATAL EXCEPTION`, `IllegalStateException`, `SQLiteException` or Room migration error appeared in the app's logcat; the migration is device-verified.
 - **Still owed:** the changed-source resume run (needs two phones; the Samsung left USB before this build) and the unchanged-file resume.
 - **Source:** `docs/audit/2026-11-03-nectarlink-comparative-review.md` item 3, ADR-352, `SourceIdentityTest`, `RealFlashTransferRepositoryTest` ("a changed source is refused..."), `FlashMigrationsChainTest`, `FlashJvmMigrationsTest`. **Status:** PARTIAL (migration device-verified; changed-file resume device run owed)
+
+---
+
+## 5zzz Design review ? alternative hub admin console (2026-11-05)
+
+These are review checks for the standalone design proposal in `design/server-console/`; they are not product device
+tests and do not change the shipped console. Source: `docs/ui/hub-admin-console-redesign.md`,
+`design/server-console/README.md`.
+
+### CONSOLE-D01 - Owner reviews the direction
+- **Setup:** `cd design/server-console; node scripts/serve.mjs`, open `http://localhost:5182/#/overview` at 1440.
+- **Steps:** read the Overview in dark and light; open Devices, Security -> Delegation, Settings, Login; open
+  `design/server-console/shots/final/`.
+- **Pass:** the owner can say whether the direction is approved, needs changes, or is rejected; no shipped console file
+  was changed while reviewing.
+- **Source:** `docs/ui/hub-admin-console-redesign.md` sections 2-4. **Status:** PASS (owner approved the direction on
+  2026-11-05; ported the same day; the fictional review org/environment was removed from the shipped build).
+
+### CONSOLE-D02 — Desktop composition at 1440
+- **Steps:** at 1440x900 inspect Overview, Devices, Invites, Join requests, Organization, Announcements, Audit,
+  Security (all tabs), Settings (all tabs), Login.
+- **Pass:** the Overview answers its question in the lede; the filled primary is Review 5 requests; all blocks share
+  the 1128 px canvas; no card ends short or is stretched over a blank band; Delegation/Trust do not scroll horizontally.
+- **Source:** `design/server-console/README.md` section 5. **Status:** TODO
+
+### CONSOLE-D03 — Tablet and phone
+- **Setup:** 768x1024 and 390x844, dark and light.
+- **Steps:** navigate every route; open the mobile More sheet; deep-link `#/security?tab=delegation` and
+  `#/settings?tab=files`; use the Devices status select; scroll the Devices and Audit tables.
+- **Pass:** the select shows the active view on a deep link; Production is visible in the mobile brand; the bottom nav
+  marks the current page or More; no page-level horizontal scroll; key fields remain on the row subline or in the
+  drawer; toasts clear the bottom nav.
+- **Source:** `design/server-console/README.md` section 5. **Status:** TODO
+
+### CONSOLE-D04 — Overlays, keyboard and focus
+- **Steps:** open the device drawer, approve dialog, invite-created dialog and More sheet; press `g` then
+  `o/d/i/r/a/s/t`, `/`, `?`, `j/k`, Enter on a row, Esc on a dialog; check reduced motion in the OS.
+- **Pass:** focus is visible and trapped in dialogs; Esc closes; the shortcuts do what the help says; one Tab enters a
+  table and j/k moves between rows; with reduced motion the dialog closes immediately and no transition runs.
+- **Source:** `design/server-console/README.md` sections 3 and 5. **Status:** TODO
+
+### CONSOLE-D05 — Contrast, type and touch
+- **Steps:** inspect text and controls in dark and light; use a 200% browser zoom; measure the smallest supporting text
+  and the phone targets.
+- **Pass:** normal text is >=4.5:1, large text >=3:1, control outlines >=3:1; no body copy under 12 px; phone actions
+  are 40 px (row micro-actions may be 32 px); no truncation at 200%.
+- **Source:** `design/server-console/README.md` section 5; Impeccable critique. **Status:** TODO
+
+### CONSOLE-D06 — Prototype actions are honest
+- **Steps:** approve a request; check the phone-code box; verify the audit chain; revoke a pending invite; pin/unpin an
+  announcement; sign out a session; revoke a device; return to Overview and Audit.
+- **Pass:** the approve primary is disabled until the phone-code box is checked; the request disappears; the audit gains
+  a matching row and the total increases; a pending invite can be revoked and disappears from Waiting; pin/unpin moves
+  the update; the Sessions tab count drops after sign-out; the Overview totals follow the revocation.
+- **Source:** `design/server-console/README.md` section 3; `docs/ui/hub-admin-console-redesign.md` section 7.
+  **Status:** TODO
+
+### CONSOLE-D07 — Port regression (only after approval)
+- **Steps:** port per `design/server-console/README.md` section 7 in an isolated branch; run the existing
+  `:server:test` and console Node tests; repeat the existing `HUBU-*` checks that apply.
+- **Pass:** the shipped router, CSP-safe DOM, i18n, step-up, error boundaries and print rules still pass; no regression
+  in the console web tests; the redesigned screens are browser-checked before merge.
+- **Source:** `docs/ui/hub-admin-console-redesign.md` section 10. **Status:** TODO (blocked on owner approval)

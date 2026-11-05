@@ -15,12 +15,18 @@ export function authFrame({ title, subtitle, children, wide = false }) {
     'div',
     { class: 'auth-page' },
     h(
-      'main',
-      { class: ['auth-card', wide ? 'auth-wide' : ''], id: 'main', tabindex: '-1' },
+      'div',
+      { class: 'auth-wrap' },
       h('div', { class: 'auth-brand' }, icon('bolt', { size: 30, className: 'brand-bolt' }), h('span', { class: 'brand-name', text: t('app.name') })),
-      h('h1', { class: 'auth-title', id: 'page-title', tabindex: '-1', text: title }),
-      subtitle ? h('p', { class: 'auth-sub', text: subtitle }) : null,
-      children,
+      h('div', { class: 'auth-hub-line', 'aria-hidden': 'true' }),
+      h(
+        'main',
+        { class: ['auth-card', wide ? 'auth-wide' : ''], id: 'main', tabindex: '-1' },
+        h('h1', { class: 'auth-title', id: 'page-title', tabindex: '-1', text: title }),
+        subtitle ? h('p', { class: 'auth-sub', text: subtitle }) : null,
+        children,
+      ),
+      h('p', { class: 'auth-note', text: t('auth.offline') }),
     ),
     h('button', { class: 'auth-theme icon-btn', type: 'button', 'aria-label': t('theme.cycle'), title: t('theme.cycle'), on: { click: () => cycleTheme() } }, icon('sun')),
   );

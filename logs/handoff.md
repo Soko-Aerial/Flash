@@ -31,7 +31,51 @@
 > POM batch and configuration cache failed on unverified Linux Compose desktop POM metadata. Verified: `:desktop:compileKotlinJvm`
 > (1m 45s), `:desktop:exportLibraryDefinitionsJvm` (2s), `:desktop:jvmTest` (2m 48s, green), `:desktop:run -m` (3s).
 
-> **2026-11-05 — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
+> **2026-11-05 - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` AND PUSHED (dev `d77b8261`); NOT DEVICE-VERIFIED.**
+> Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
+> (`:desktop:radioGatewayDemo`) and captured at 1180x820 and 900x820, with the settings sheet and the pair sheet opened:
+> evidence in `design/radio-v3/compose/`. The port was corrected against the screenshots (30 dp block rhythm, 780 dp
+> column, hairline under the active radio row, the pairing action as a raised pill that is filled only while nothing is
+> paired, neutral "In use" / warm "Link lost" chips, the state and the talk control sharing a row on a wide window and
+> stacking in the dock, the short mode name and the Authorised chip in "This link", numbered steps, and the test-message
+> line's real states). The owner's brief - turning the gateway on shows the paired radios and offers pairing, the pair
+> action opens a sheet that scans, security profile and operational mode moved into settings, and hold-to-talk lives in a
+> dock above the shell bar - is implemented; `RadioGatewayController` and `RadioGatewayUiState` are untouched. Owed:
+> `RADUI-DEV02` (phone), `RADUI-DEV03` (Windows), `RADUI-DEV04` (screen reader / keyboard transmit). Records:
+> `docs/ui/radio-gateway.md` "Redesign v3" and "Compose port verified on screen", `logs/progress.md` 2026-11-05,
+> `docs/testing/TEST-BACKLOG.md`.
+
+> **2026-11-05 (audit) - TWO-AGENT WIRING REVIEW COMPLETE; NO P0; P1 GAPS AND PORT REGRESSIONS OPEN; NO CODE CHANGED.**
+> Two read-only subagents reviewed the merged console: frame/auth/Overview/requests/shared UI, and every feature
+> screen with its UI -> API -> server route/DTO. **No P0 and no privilege escalation**; all controls reach real
+> endpoints; CSRF, step-up, role gates, CSP-safe DOM, i18n and print are intact. **P1s:** no client-side department-head
+> scope (org-only screens/actions 403, sometimes after step-up); multi-department heads filtered after `LIMIT/OFFSET`;
+> no revocation-list installer despite `POST /revocations/install`; department-head admin provisioning missing despite
+> the server APIs. **Port regressions to fix first:** Overview audit-chain verification removed; `/overview`/`/metrics`
+> retry dead (cached rejection); wrong “Latest activity” action labels; missing `role.short.dept_head`; display name
+> reverts to username; phone/tablet hide user/session; ledger false “No devices/invites”; help missing `g r`/`g n`;
+> 15-minute strip documented as 60. Join approval is one click while the design/README/`CONSOLE-D06` promise a
+> phone-code gate — owner decision needed. Full record and fix order:
+> `docs/audit/2026-11-05-server-console-wiring-review.md`. Node 83/83; no Gradle/browser/device by the agents; no code
+> changed. The port/merge banner below still describes the shipped state.
+
+> **2026-11-05 (port) - OWNER APPROVED THE DESIGN; THE SHIPPED CONSOLE NOW USES IT AND IS MERGED INTO `dev` AS
+> `ec6c3724` (NOW PUSHED IN dev `d77b8261`).**
+> Design review build and record: `design/server-console/` and `docs/ui/hub-admin-console-redesign.md` (design commit
+> `d3fb6c33`). The old `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Current code:
+> `server/src/main/resources/admin-ui/css/redesign.css`, rewritten `js/ui/shell.js`, rebuilt `js/views/overview.js`,
+> redesigned `authFrame`, `#/requests` route, and the approved visual system applied to every existing screen.
+> **Preserved:** the real API, CSP-safe DOM, i18n, step-up, error boundaries, print rules and every existing feature.
+> **Removed from the product:** the review build's fictional "Meridian Works"/"Production" world; the sidebar now shows
+> the hub name returned by `/overview`. The relay strip is sampled by the open console because the hub keeps no history.
+> **Verification:** console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route
+> rendered in Chrome at 1440/768/390; sign-in and sign-out exercised. No Android device test is relevant to the admin UI.
+> **Port commit `adb26723`** (design commit `d3fb6c33`); **merge commit `ec6c3724`** on `dev` (pushed in `d77b8261`). The
+> app handoff below still applies to `dev`.
+> **Still owed:** owner browser checks `CONSOLE-D02..D07`; push completed in `d77b8261`. The other agent's Wave 2/tombstone
+> entries are preserved below; the console merge did not touch their files.
+
+> **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone
 > (`revoked_<id>` / desktop `revoked.<id>`), `savePin` is a silent no-op while it is present, auto-dial filters the peer,
 > and `trustPeer` clears it. Chat titles use resolver -> stored name -> **Unknown device**, never the raw UUID. Tests:
@@ -42,7 +86,7 @@
 > 515 MB; no chunk-size change is justified. `W2-XFER-01` (4 GiB, 5 GHz/hotspot), `W2-AND-01` (1 h battery) and
 > `W2-DESK-01` (JFR/tray) are owed.
 
-> **2026-11-05 (latest) — RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
+> **2026-11-05 (latest) - RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
 > GREEN, MIGRATION DEVICE-VERIFIED.** `executeSend` now records and verifies size, modification time and the first-64-KiB
 > SHA-256 before using persisted chunks; a changed file fails with `The file changed while it was being sent. Try sending
 > it again.`, clears the sender's chunks and sends a cancel. A pre-v23 row with confirmed chunks fails as unverifiable. The
