@@ -14,18 +14,37 @@ public interface FlashTrustStore {
     /** Convenience overload checking trust by raw string device ID. */
     public fun isTrusted(deviceId: String): Boolean = isTrusted(FlashDeviceId(deviceId))
 
-    /** Persists [deviceId] with its known [friendlyName] as a trusted peer. */
+    /**
+     * Persists [deviceId] with its known [friendlyName] as a trusted peer. A deliberate trust grant also clears a
+     * revocation tombstone, so only an explicit new pairing/trust decision can undo a revoke.
+     */
     public fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit>
 
     /** Convenience overload trusting peer by raw string device ID. */
     public fun trustPeer(deviceId: String, friendlyName: String): FlashResult<Unit> =
         trustPeer(FlashDeviceId(deviceId), friendlyName)
 
-    /** Revokes trust from [deviceId], requiring a new pairing step on next connection. */
+    /**
+     * Revokes trust from [deviceId], requiring a new pairing step on next connection. Implementations also write a
+     * local revocation tombstone (ADR-353): discovery/auto-dial and the TOFU pin path must not quietly recreate the
+     * peer's pin and make a revoked device look known again. The tombstone is cleared by [trustPeer].
+     */
     public fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit>
 
     /** Convenience overload revoking trust by raw string device ID. */
     public fun revokeTrust(deviceId: String): FlashResult<Unit> = revokeTrust(FlashDeviceId(deviceId))
+
+    /**
+     * True while [deviceId] carries a revocation tombstone: it was deliberately forgotten and has not been paired
+     * again. Defaults to false so a test/lightweight store keeps the pre-ADR behaviour without implementing it.
+     */
+    public fun isRevoked(deviceId: FlashDeviceId): Boolean = false
+
+    /** When [deviceId] was revoked, or null when it has no tombstone. Diagnostics only. */
+    public fun revokedAt(deviceId: FlashDeviceId): Long? = null
+
+    /** Clears [deviceId]'s tombstone without granting trust; [trustPeer] is the normal caller path. */
+    public fun clearRevocation(deviceId: FlashDeviceId) {}
 
     /** Returns all currently trusted peers mapped by device ID to friendly name. */
     public fun getTrustedPeers(): Map<FlashDeviceId, String>

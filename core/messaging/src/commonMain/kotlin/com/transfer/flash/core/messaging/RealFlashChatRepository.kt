@@ -232,6 +232,9 @@ public fun interface GroupTransportSink {
  * - **Delivery & Read Receipts (C6.3):** Emits and absorbs delivery receipts to update status flags.
  * - **Ephemeral Typing & Presence (C6.6):** Memory-only TTL state for live typing indicators.
  */
+/** Shown when a direct peer has no known name; a raw device id is never used as a chat title (ADR-353). */
+private const val UNKNOWN_DEVICE_TITLE = "Unknown device"
+
 public class RealFlashChatRepository(
     private val localDeviceId: String,
     localDisplayName: String,
@@ -766,6 +769,12 @@ public class RealFlashChatRepository(
      */
     private val groupTitleCache = SyncMap<String, String>()
 
+    /**
+     * Last known direct-chat title (ADR-353). After a revoke the name resolver has no entry, but the conversation's
+     * stored title still does; the seed and the chat list use this cache so a raw device id never flashes or sticks.
+     */
+    private val directTitleCache = SyncMap<String, String>()
+
     /** GM-4: Active accepted invite group IDs providing charter trust roots. */
     private val acceptedInviteGroupIds = SyncSet<String>()
 
@@ -1001,7 +1010,13 @@ public class RealFlashChatRepository(
             isGroup = isGroup,
             groupLinkedToHub = isGroup && enterpriseTrustStore?.isGroupLinkedToHub(conversationId) == true,
             contentViaHub = hubContentViaHub(),
-            peerName = if (isGroup) "" else peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId,
+            peerName = if (isGroup) {
+                ""
+            } else {
+                peerNameResolver(conversationId)?.ifBlank { null }
+                    ?: directTitleCache[conversationId]
+                    ?: UNKNOWN_DEVICE_TITLE
+            },
             peerOnline = peerOnline,
             waiting = inputs.waiting[conversationId],
             changedKey = inputs.changed[conversationId],
@@ -1236,8 +1251,8 @@ public class RealFlashChatRepository(
                     val displayTitle = if (entity.isGroup) {
                         entity.title.ifBlank { entity.id }
                     } else {
-                        peerNameResolver(entity.id)?.ifBlank { null }
-                            ?: entity.title.ifBlank { entity.id }
+                        directChatTitle(entity.id, entity.title, peerNameResolver(entity.id))
+                            .also { directTitleCache[entity.id] = it }
                     }
                     val presence: FlashPeerPresence
                     val groupOnlineCount: Int
@@ -1512,7 +1527,7 @@ public class RealFlashChatRepository(
                 stateVersion = ++conversationStateVersion,
             )
         } else {
-            val seedTitle = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
+            val seedTitle = directTitleCache[conversationId] ?: UNKNOWN_DEVICE_TITLE
             val isColleaguePeer = !isTrustedPeer(conversationId) &&
                 (orgPeerResolver?.isKnownColleague(conversationId) == true || effectiveIsOrgPeer(conversationId))
             val orgName = if (isColleaguePeer) enterpriseTrustStore?.getCredentials()?.hubName else null
@@ -1784,6 +1799,7 @@ public class RealFlashChatRepository(
                         conversationId,
                         radioPolicyNow.value[conversationId]
                             ?: FlashRadioPolicy.fromStorage(conversationEntity?.radioPolicy),
+                        conversationEntity?.title,
                     )
                         .copy(hubNotice = hubNoticeFor(conversationId, false, conversationId in peers.online, syncAndHub.hub))
                         .let { it to Pair(content.newestMessageId, content.newestInboundId) }
@@ -1897,6 +1913,21 @@ public class RealFlashChatRepository(
     }
 
     /**
+     * ADR-353: the one place a direct chat's title is chosen. A resolver answer wins; otherwise the stored title (kept
+     * across revoke/unpair); a raw device id is never shown, and a peer with no known name reads "Unknown device".
+     */
+    private fun directChatTitle(
+        conversationId: String,
+        storedTitle: String?,
+        resolvedName: String?,
+    ): String {
+        val resolved = resolvedName?.trim()?.takeIf { it.isNotEmpty() && it != conversationId }
+        if (resolved != null) return resolved
+        val stored = storedTitle?.trim()?.takeIf { it.isNotEmpty() && it != conversationId }
+        return stored ?: UNKNOWN_DEVICE_TITLE
+    }
+
+    /**
      * The direct-chat header derivation, byte-identical to the pre-group combine body (group
      * Phase A only branched it out). conversationId is the peer's device id; show the friendly
      * name, not the UUID.
@@ -1907,8 +1938,10 @@ public class RealFlashChatRepository(
         typingByConversation: Map<String, List<String>>,
         conversationId: String,
         radioPolicy: FlashRadioPolicy,
+        storedTitle: String?,
     ): FlashConversationUiState {
-        val title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
+        val title = directChatTitle(conversationId, storedTitle, peerNameResolver(conversationId))
+        directTitleCache[conversationId] = title
         // A chat set to NEVER must not advertise a radio route it will refuse to use. This changes
         // presentation only; it does not affect the global radio pairing state or inbound frames.
         val effectivePeers = if (radioPolicy == FlashRadioPolicy.NEVER) {
@@ -6819,9 +6852,7 @@ public class RealFlashChatRepository(
                 val title = if (entity?.isGroup == true) {
                     entity.title.ifBlank { conversationId }
                 } else {
-                    peerNameResolver(conversationId)?.ifBlank { null }
-                        ?: entity?.title?.ifBlank { null }
-                        ?: conversationId
+                    directChatTitle(conversationId, entity?.title, peerNameResolver(conversationId))
                 }
                 titles[conversationId] = title
                 return title
@@ -7032,17 +7063,22 @@ public class RealFlashChatRepository(
         now: Long,
         directFallbackTitle: String? = null,
     ) {
+        val resolved = (directFallbackTitle ?: peerNameResolver(conversationId))
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && it != conversationId }
         val existing = conversationDao.get(conversationId)
         if (existing != null) {
-            conversationDao.upsert(existing.copy(sortOrder = now, archived = false))
+            // ADR-353: keep a known name through a revoke; replace only a blank/raw/placeholder title. A resolver
+            // answer is fresh and wins, so a rename is reflected.
+            val stored = existing.title.trim().takeIf { it.isNotEmpty() && it != conversationId }
+            val title = resolved ?: stored ?: UNKNOWN_DEVICE_TITLE
+            conversationDao.upsert(existing.copy(title = title, sortOrder = now, archived = false))
             return
         }
         conversationDao.upsert(
             ConversationEntity(
                 id = conversationId,
-                title = directFallbackTitle
-                    ?: peerNameResolver(conversationId)?.ifBlank { null }
-                    ?: conversationId,
+                title = resolved ?: UNKNOWN_DEVICE_TITLE,
                 isGroup = false,
                 sortOrder = now,
                 archived = false,
@@ -7061,10 +7097,28 @@ public class RealFlashChatRepository(
      */
     private suspend fun upsertDirectConversation(conversationId: String, title: String?, sortOrder: Long) {
         val existing = conversationDao.get(conversationId)
-        conversationDao.upsert(
-            existing?.copy(title = title ?: existing.title, sortOrder = sortOrder, archived = false)
-                ?: ConversationEntity(id = conversationId, title = title ?: conversationId, isGroup = false, sortOrder = sortOrder),
-        )
+        val resolved = title?.trim()?.takeIf { it.isNotEmpty() && it != conversationId }
+        if (existing != null) {
+            // ADR-353: a revoke clears the name resolver, not the stored name. A known title survives; a raw/blank
+            // one is replaced by the new answer or by the neutral placeholder, never by the UUID.
+            val stored = existing.title.trim().takeIf { it.isNotEmpty() && it != conversationId }
+            conversationDao.upsert(
+                existing.copy(
+                    title = resolved ?: stored ?: UNKNOWN_DEVICE_TITLE,
+                    sortOrder = sortOrder,
+                    archived = false,
+                ),
+            )
+        } else {
+            conversationDao.upsert(
+                ConversationEntity(
+                    id = conversationId,
+                    title = resolved ?: UNKNOWN_DEVICE_TITLE,
+                    isGroup = false,
+                    sortOrder = sortOrder,
+                ),
+            )
+        }
     }
 
     /**

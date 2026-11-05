@@ -55,11 +55,40 @@ class FlashTrustStoreTest {
         TrustChangeHub.addListener(listener)
         try {
             store.revokeTrust(peerId)
+            // ADR-353: a revoked peer must not be re-pinned by an automatic path. The blocked save changes nothing,
+            // so it publishes nothing; the revoke is the only trust change.
             store.savePin(peerId, "AABB")
-            assertEquals(2, seen.count { it == peerId.value })
+            assertEquals(1, seen.count { it == peerId.value })
         } finally {
             TrustChangeHub.removeListener(listener)
         }
+    }
+
+    @Test
+    fun revokeWritesATombstoneAndBlocksRePinUntilANewTrustGrant() {
+        val prefs = FakeSharedPreferences()
+        val store = AndroidPreferencesTrustStore(prefs)
+        val peer = FlashDeviceId("peer-tofu-tombstone")
+
+        store.trustPeer(peer, "Flash Olive")
+        store.savePin(peer, "AABB")
+        assertEquals("AABB", store.getPin(peer))
+
+        store.revokeTrust(peer)
+        assertTrue("revoke must leave a tombstone", store.isRevoked(peer))
+        assertTrue("the tombstone carries a timestamp", (store.revokedAt(peer) ?: 0L) > 0L)
+        assertTrue(prefs.contains(AndroidPreferencesTrustStore.REVOKED_PREFIX + peer.value))
+        org.junit.Assert.assertNull("revoke removes the unvouched pin", store.getPin(peer))
+
+        // The exact bug from the device run: an automatic TOFU/directory save must not recreate the pin.
+        store.savePin(peer, "CCDD")
+        org.junit.Assert.assertNull(store.getPin(peer))
+
+        // A deliberate new pairing/trust grant clears the tombstone and lets the pairing path pin again.
+        store.trustPeer(peer, "Flash Olive")
+        assertFalse(store.isRevoked(peer))
+        store.savePin(peer, "CCDD")
+        assertEquals("CCDD", store.getPin(peer))
     }
 
     @Test

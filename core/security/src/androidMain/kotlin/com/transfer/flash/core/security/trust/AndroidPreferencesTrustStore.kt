@@ -34,7 +34,10 @@ public class AndroidPreferencesTrustStore(
     }
 
     override fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit> {
-        preferences.edit().putString(keyFor(deviceId.value), friendlyName).apply()
+        preferences.edit()
+            .putString(keyFor(deviceId.value), friendlyName)
+            .remove(revokedKeyFor(deviceId.value))
+            .apply()
         return FlashResult.Success(Unit)
     }
 
@@ -43,6 +46,7 @@ public class AndroidPreferencesTrustStore(
             .remove(keyFor(deviceId.value))
             .remove(sessionKeyFor(deviceId.value))
             .remove(verifiedKeyFor(deviceId.value))
+            .putLong(revokedKeyFor(deviceId.value), System.currentTimeMillis())
         // Unpairing must not strand a member of a group behind a first-use pin: while a group still vouches
         // for this key, the pin stays (its source becomes VOUCHED).
         if (vouchingGroups(deviceId).isEmpty()) edit.remove(pinKeyFor(deviceId.value))
@@ -121,6 +125,9 @@ public class AndroidPreferencesTrustStore(
     }
 
     override fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> {
+        // ADR-353: a revoked device must not be re-pinned by TOFU, the org directory or any other automatic path.
+        // trustPeer (a deliberate new pairing) clears the tombstone, and the pairing success path saves the pin then.
+        if (isRevoked(deviceId)) return FlashResult.Success(Unit)
         preferences.edit().putString(pinKeyFor(deviceId.value), fingerprintHex.uppercase()).apply()
         TrustChangeHub.publish(deviceId.value)
         return FlashResult.Success(Unit)
@@ -128,6 +135,19 @@ public class AndroidPreferencesTrustStore(
 
     override fun getPin(deviceId: FlashDeviceId): String? {
         return preferences.getString(pinKeyFor(deviceId.value), null)
+    }
+
+    override fun isRevoked(deviceId: FlashDeviceId): Boolean =
+        preferences.contains(revokedKeyFor(deviceId.value))
+
+    override fun revokedAt(deviceId: FlashDeviceId): Long? {
+        val key = revokedKeyFor(deviceId.value)
+        if (!preferences.contains(key)) return null
+        return preferences.getLong(key, 0L).takeIf { it > 0L }
+    }
+
+    override fun clearRevocation(deviceId: FlashDeviceId) {
+        preferences.edit().remove(revokedKeyFor(deviceId.value)).apply()
     }
 
     override fun getTrustedPeers(): Map<FlashDeviceId, String> {
@@ -156,6 +176,7 @@ public class AndroidPreferencesTrustStore(
     private fun pinKeyFor(deviceId: String): String = "$PIN_PREFIX$deviceId"
     private fun verifiedKeyFor(deviceId: String): String = "$VERIFIED_PREFIX$deviceId"
     private fun vouchKeyFor(deviceId: String): String = "$VOUCH_PREFIX$deviceId"
+    private fun revokedKeyFor(deviceId: String): String = "$REVOKED_PREFIX$deviceId"
 
     public companion object {
         public const val PREFERENCES_NAME: String = "flash_ws_pairing"
@@ -168,6 +189,9 @@ public class AndroidPreferencesTrustStore(
 
         /** Comma-joined ids of the groups vouching a device's pin (ADR-044 V2). Group ids never contain a comma. */
         public const val VOUCH_PREFIX: String = "vouch_"
+
+        /** Erasure timestamp of a deliberate revoke; present means the peer must be paired again (ADR-353). */
+        public const val REVOKED_PREFIX: String = "revoked_"
         private const val VOUCH_SEPARATOR: String = ","
 
         /** Marks a sealed session-key value; anything without it is a legacy plaintext entry. */

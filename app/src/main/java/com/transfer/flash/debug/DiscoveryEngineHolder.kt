@@ -2292,9 +2292,10 @@ object DiscoveryEngineHolder {
                 override fun hasSessionAtHost(host: String) = networkImpl.hasSessionAtHost(host)
             },
             sightings = {
-                engine.discoveredEndpoints.value.map { ep ->
+                val all = engine.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
                 } + presence.tipSightings() + remembered.sightings()
+                all.filterNot { trustStore.isRevoked(FlashDeviceId(it.deviceId)) }
             },
             // A presence tip (PC4) or a remembered route (DR1) is dialed with its device named, so
             // the TLS handshake checks that device's pin and a forged or stale address fails before
