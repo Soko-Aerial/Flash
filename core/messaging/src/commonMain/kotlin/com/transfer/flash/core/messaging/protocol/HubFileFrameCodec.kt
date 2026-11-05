@@ -104,11 +104,15 @@ public object HubFileFrameCodec {
         val f = FlashTextFraming.parseFields(text, PREFIX) ?: return null
         if (f["v"]?.toIntOrNull() != VERSION) return Result.Invalid("version")
 
-        val localId = f["localId"]?.takeIf { it.isNotBlank() && it.length <= MAX_ID_CHARS && it.none(Char::isISOControl) }
-            ?: return Result.Invalid("localId")
-        val senderId = f["senderId"]?.takeIf { it.isNotBlank() && it.length <= MAX_ID_CHARS && it.none(Char::isISOControl) }
-            ?: return Result.Invalid("senderId")
-        val senderName = (f["senderName"] ?: "").takeIf { it.length <= MAX_NAME_CHARS } ?: return Result.Invalid("senderName")
+        val localId = f["localId"]?.takeIf {
+            it.isNotBlank() && it.length <= MAX_ID_CHARS && it.none(Char::isISOControl) && !hasControlEscape(it)
+        } ?: return Result.Invalid("localId")
+        val senderId = f["senderId"]?.takeIf {
+            it.isNotBlank() && it.length <= MAX_ID_CHARS && it.none(Char::isISOControl) && !hasControlEscape(it)
+        } ?: return Result.Invalid("senderId")
+        val senderName = (f["senderName"] ?: "").takeIf {
+            it.length <= MAX_NAME_CHARS && !hasControlEscape(it)
+        } ?: return Result.Invalid("senderName")
         val sentAt = f["sentAt"]?.toLongOrNull()?.takeIf { it >= 0L } ?: return Result.Invalid("sentAt")
 
         val fileId = f["fileId"]?.takeIf(HubFileIds::isFileId) ?: return Result.Invalid("fileId")
@@ -123,17 +127,24 @@ public object HubFileFrameCodec {
 
         val name = f["name"]?.takeIf(::isSafeName) ?: return Result.Invalid("name")
         val mime = (f["mime"] ?: "").ifBlank { DEFAULT_MIME }
-            .takeIf { it.length <= MAX_MIME_CHARS && it.none(Char::isISOControl) }
+            .takeIf { it.length <= MAX_MIME_CHARS && it.none(Char::isISOControl) && !hasControlEscape(it) }
             ?: return Result.Invalid("mime")
-        val meta = (f["meta"] ?: "").takeIf { it.length <= MAX_META_CHARS } ?: return Result.Invalid("meta")
+        val meta = (f["meta"] ?: "").takeIf { it.length <= MAX_META_CHARS && !hasControlEscape(it) }
+            ?: return Result.Invalid("meta")
         // Both optional. A signature without a group is meaningless, and a P3 build that sees `groupId` refuses the frame
         // by name, which is the safe direction: it never files a group's file under a one-to-one chat.
         val groupId = f["groupId"]?.let { id ->
-            id.takeIf { it.isNotBlank() && it.length <= MAX_ID_CHARS && it.none(Char::isISOControl) } ?: return Result.Invalid("groupId")
+            id.takeIf {
+                it.isNotBlank() && it.length <= MAX_ID_CHARS &&
+                    it.none(Char::isISOControl) && !hasControlEscape(it)
+            } ?: return Result.Invalid("groupId")
         }
         val groupSig = f["groupSig"]?.let { sig ->
             if (groupId == null) return Result.Invalid("groupSig")
-            sig.takeIf { it.isNotBlank() && it.length <= MAX_SIGNATURE_CHARS && it.none(Char::isISOControl) } ?: return Result.Invalid("groupSig")
+            sig.takeIf {
+                it.isNotBlank() && it.length <= MAX_SIGNATURE_CHARS &&
+                    it.none(Char::isISOControl) && !hasControlEscape(it)
+            } ?: return Result.Invalid("groupSig")
         }
 
         return Result.Frame(
@@ -165,7 +176,25 @@ public object HubFileFrameCodec {
         name.isNotBlank() &&
             name.length <= MAX_NAME_CHARS &&
             name.trim() != "." && name.trim() != ".." &&
+            !hasControlEscape(name) &&
             name.none { it == '/' || it == '\\' || it.isISOControl() || SpoofingCharacters.isSpoofing(it) }
+
+    /**
+     * W1 framing (commit `8780e400`) escapes C0/DEL as literal `%XX` and deliberately does not decode control escapes,
+     * so `unescape` cannot put a newline back into a name. A value that still carries one of those escapes is a
+     * control-shaped input and is refused here; otherwise the escaped spelling would look printable and pass the codec.
+     */
+    private fun hasControlEscape(value: String): Boolean {
+        var index = 0
+        while (index + 2 < value.length) {
+            if (value[index] == '%') {
+                val code = value.substring(index + 1, index + 3).toIntOrNull(16)
+                if (code != null && (code < 0x20 || code == 0x7F)) return true
+            }
+            index++
+        }
+        return false
+    }
 
     private const val DEFAULT_MIME = "application/octet-stream"
 }

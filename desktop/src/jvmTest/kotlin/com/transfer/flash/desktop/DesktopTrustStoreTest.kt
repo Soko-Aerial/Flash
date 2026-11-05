@@ -3,6 +3,8 @@
 package com.transfer.flash.desktop
 
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertContentEquals
 import com.transfer.flash.core.security.identity.IdentityKeyVault
 import com.transfer.flash.core.common.protocol.Base64
@@ -69,6 +71,34 @@ class DesktopTrustStoreTest {
         val afterRestart = DesktopTrustStore(stateDir)
         assertTrue(!afterRestart.isTrusted(peer), "a revoked peer must not come back trusted")
         assertTrue(afterRestart.getTrustedPeers().isEmpty(), "and must not linger in the list")
+    }
+
+    @Test
+    fun `a revocation tombstone survives a restart and blocks automatic re-pinning`() {
+        val stateDir = dir()
+        val peer = FlashDeviceId("revoked-tofu-peer")
+
+        val store = DesktopTrustStore(stateDir)
+        store.trustPeer(peer, "Flash Olive")
+        store.revokeTrust(peer)
+        assertTrue(store.isRevoked(peer))
+        assertNotNull(store.revokedAt(peer))
+
+        // The automatic path after a revoke: no pin may be recreated.
+        store.savePin(peer, "AABB")
+        assertNull(store.getPin(peer))
+
+        val afterRestart = DesktopTrustStore(stateDir)
+        assertTrue(afterRestart.isRevoked(peer), "the tombstone must survive a restart")
+        assertNotNull(afterRestart.revokedAt(peer))
+        afterRestart.savePin(peer, "CCDD")
+        assertNull(afterRestart.getPin(peer))
+
+        // A deliberate pairing clears it and allows the pin again.
+        afterRestart.trustPeer(peer, "Flash Olive")
+        assertFalse(afterRestart.isRevoked(peer))
+        afterRestart.savePin(peer, "CCDD")
+        assertEquals("CCDD", afterRestart.getPin(peer))
     }
 
     // --- Audit S4: session keys sealed at rest ------------------------------------------------------

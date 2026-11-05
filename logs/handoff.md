@@ -1,5 +1,14 @@
 # Current Handoff
 
+> **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, IMPLEMENTED ON
+> `feature/tofu-tombstone-title`; AFFECTED GATE GREEN, MERGE NEXT.** `revokeTrust` writes a local tombstone
+> (`revoked_<id>` / desktop `revoked.<id>`), `savePin` is a silent no-op while it is present, auto-dial filters the peer,
+> and `trustPeer` clears it. Chat titles use resolver -> stored name -> **Unknown device**, never the raw UUID. Tests:
+> `FlashTrustStoreTest` 10/10, `DesktopTrustStoreTest` 6/6, title tests 2/2, codec tests 10/10; affected gate 2,613
+> tests / 0 failures / 0 errors. `ERROR-983` (W1 control-escape interaction) fixed on the way. Device checks
+> `W1-REVOKE-03` and `W1-TITLE-01` are owed (no phones). Next after merge: Wave 2 hash-on-receive (code-only) and the
+> measurement backlog.
+
 > **2026-11-05 (latest) — RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
 > GREEN, MIGRATION DEVICE-VERIFIED.** `executeSend` now records and verifies size, modification time and the first-64-KiB
 > SHA-256 before using persisted chunks; a changed file fails with `The file changed while it was being sent. Try sending

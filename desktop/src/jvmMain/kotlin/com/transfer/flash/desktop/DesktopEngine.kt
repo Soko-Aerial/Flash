@@ -2074,9 +2074,10 @@ public class DesktopEngine(
                 override fun hasSessionAtHost(host: String) = network.hasSessionAtHost(host)
             },
             sightings = {
-                discovery.discoveredEndpoints.value.map { ep ->
+                val all = discovery.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
                 } + presence.tipSightings() + remembered.sightings()
+                all.filterNot { trustStore.isRevoked(FlashDeviceId(it.deviceId)) }
             },
             // A presence tip or a remembered route is dialed with its device named, so TLS checks
             // that device's pin during the handshake. A tip outranks a route: it is fresher.
