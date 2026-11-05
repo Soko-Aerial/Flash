@@ -25,6 +25,9 @@ port slice; the mock remains the visual authority (`design/chat-web/DESIGN.md`).
   menu, which already carried it.
 - **Tokens.** `accentFill`/`onAccentFill` (pulse600+white 5.21:1 light, pulse400+pulse900 5.85:1 dark), composer input
   moved to `graphite50`/`surface0`, `FlashShapes.composerInput` at 22dp, `FlashSpacing.space10/space14/space44`.
+- **Fidelity pass on the bubble and composer.** The attach key now has the mock's surface-2 disc; the file block drops
+  its inner fill and border so it reads as content on the message (no card inside a card); bubble bottom inset is 9dp.
+  Compile green. The debug APK for the device pass is built with this state.
 - **Icons.** All **67** `flash_ic_*.xml` drawables rewritten at 24dp/1.75dp/round: 28 copied byte-for-byte from the
   approved mock, 39 redrawn. A second pass fitted every redrawn glyph to an 18.0dp longest axis (anchor median ink
   17.10 x 17.65dp), re-drew `settings` as an open counter with eight flat teeth, deepened `flag`, turned `camera_flip`
