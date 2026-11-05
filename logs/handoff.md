@@ -1,5 +1,21 @@
 # Current Handoff
 
+> **2026-11-05 (port) - OWNER APPROVED THE DESIGN; THE SHIPPED CONSOLE NOW USES IT.**
+> Worktree `E:/FlashWork/D-console`, branch `agent/console-redesign`, based on `dev` `a7ff5636`. Design review build and
+> record: `design/server-console/` and `docs/ui/hub-admin-console-redesign.md` (design commit `d3fb6c33`). The old
+> `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Current code:
+> `server/src/main/resources/admin-ui/css/redesign.css`, rewritten `js/ui/shell.js`, rebuilt `js/views/overview.js`,
+> redesigned `authFrame`, `#/requests` route, and the approved visual system applied to every existing screen.
+> **Preserved:** the real API, CSP-safe DOM, i18n, step-up, error boundaries, print rules and every existing feature.
+> **Removed from the product:** the review build's fictional "Meridian Works"/"Production" world; the sidebar now shows
+> the hub name returned by `/overview`. The relay strip is sampled by the open console because the hub keeps no history.
+> **Verification:** console Node tests 83/83; `AdminConsoleWebTest` 15/15; `AdminConsoleApiTest` 10/10; every route
+> rendered in Chrome at 1440/768/390; sign-in and sign-out exercised. No Android device test is relevant to the admin UI.
+> **Port commit `adb26723`** (design commit `d3fb6c33`).
+> **Still owed:** owner browser checks `CONSOLE-D02..D07`; merge of `agent/console-redesign` into `dev` is the remaining
+> integration step (the branch has the port; merge only after checking the other agent's uncommitted work in the main
+> worktree). The app handoff below still applies to `dev`.
+>
 > **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone
 > (`revoked_<id>` / desktop `revoked.<id>`), `savePin` is a silent no-op while it is present, auto-dial filters the peer,
@@ -11,7 +27,7 @@
 > 515 MB; no chunk-size change is justified. `W2-XFER-01` (4 GiB, 5 GHz/hotspot), `W2-AND-01` (1 h battery) and
 > `W2-DESK-01` (JFR/tray) are owed.
 
-> **2026-11-05 (latest) — RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
+> **2026-11-05 (latest) - RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
 > GREEN, MIGRATION DEVICE-VERIFIED.** `executeSend` now records and verifies size, modification time and the first-64-KiB
 > SHA-256 before using persisted chunks; a changed file fails with `The file changed while it was being sent. Try sending
 > it again.`, clears the sender's chunks and sends a cancel. A pre-v23 row with confirmed chunks fails as unverifiable. The
