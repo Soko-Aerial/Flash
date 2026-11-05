@@ -22,8 +22,10 @@ internal class PendingAckTable(
     internal class PendingOutbound(
         val messageId: String,
         val recipientId: String,
-        /** When the message was submitted, for the round-trip figure in the `radio.rx.ack` probe. */
+        /** When the message was submitted, for the age figure in the `radio.rx.ack` probe. */
         val sentAtMs: Long,
+        /** When the frame actually left the transmitter; the round-trip figure is measured from here. */
+        val txAtMs: Long,
         /** When this entry was recorded, for the TTL (a retry carries the original [sentAtMs]). */
         val recordedAtMs: Long,
     )
@@ -34,12 +36,19 @@ internal class PendingAckTable(
     val size: Int get() = entries.size
 
     /** Records that the text sent as [counter] is waiting for its ACK; forgets expired entries and the oldest first. */
-    fun put(counter: Long, messageId: String, recipientId: String, sentAtMs: Long, nowMs: Long) {
+    fun put(
+        counter: Long,
+        messageId: String,
+        recipientId: String,
+        sentAtMs: Long,
+        nowMs: Long,
+        txAtMs: Long = nowMs,
+    ) {
         expire(nowMs)
         // An update keeps the original insertion position; a re-send of the same counter is a new entry with a new
         // TTL, so remove first and re-insert at the end.
         entries.remove(counter)
-        entries[counter] = PendingOutbound(messageId, recipientId, sentAtMs, nowMs)
+        entries[counter] = PendingOutbound(messageId, recipientId, sentAtMs, txAtMs, nowMs)
         // `removeEldestEntry` is the obvious tool here, but an anonymous LinkedHashMap subclass trips a Kotlin 2.x
         // K2 backend bug ("No override for IR_EXTERNAL_JAVA_DECLARATION_STUB name:get"), so the cap is applied here.
         while (entries.size > maxEntries) {

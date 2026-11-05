@@ -11,6 +11,11 @@ public data class RadioDeliveryNote(
     public val isFailure: Boolean = false,
     /** True if cryptographic delivery has been confirmed by an inbound ACK frame. */
     public val isDelivered: Boolean = false,
+    /**
+     * True when this refusal is temporary: the outbox must keep retrying and the hub mailbox remains
+     * available. `isFailure` still colours the line red for the operator, but it is not terminal.
+     */
+    public val transient: Boolean = false,
 ) {
     public companion object {
         public const val STATE_SENT_WAITING: String = "sent by radio, waiting"

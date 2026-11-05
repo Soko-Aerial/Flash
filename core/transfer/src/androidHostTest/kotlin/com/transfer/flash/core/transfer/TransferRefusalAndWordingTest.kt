@@ -280,4 +280,34 @@ class TransferRefusalAndWordingTest {
         assertEquals(TransferFailureText.UNREADABLE_FILE, row.errorMessage)
         Unit
     }
+
+    @Test(timeout = 60_000)
+    fun `retrying a zero-byte failed row fails visibly instead of throwing on the worker`() = runBlocking {
+        // Phone log 2026-11-03: a retry of this row reached FileMeta(0) on a worker and killed the
+        // process. The retry must re-measure, then leave the same visible Failed row.
+        val repository = repo(opener = FileSourceOpener { Buffer() })
+        val id = (repository.sendFile(peer, "content://x/restored-empty.bin", "restored.bin", 0L) as FlashResult.Success).value
+
+        assertTrue(repository.resumeTransfer(id) is FlashResult.Success)
+
+        Thread.sleep(500)
+        val row = repository.row(id.value)
+        assertEquals(FlashTransferState.Failed, row.state)
+        assertEquals(TransferFailureText.EMPTY_FILE, row.errorMessage)
+        Unit
+    }
+
+    @Test(timeout = 60_000)
+    fun `retrying an unreadable zero-byte failed row keeps the unreadable sentence`() = runBlocking {
+        val repository = repo(opener = FileSourceOpener { throw IOException("no such file") })
+        val id = (repository.sendFile(peer, "content://x/restored-gone.bin", "gone.bin", 0L) as FlashResult.Success).value
+
+        assertTrue(repository.resumeTransfer(id) is FlashResult.Success)
+
+        Thread.sleep(500)
+        val row = repository.row(id.value)
+        assertEquals(FlashTransferState.Failed, row.state)
+        assertEquals(TransferFailureText.UNREADABLE_FILE, row.errorMessage)
+        Unit
+    }
 }

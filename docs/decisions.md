@@ -8608,3 +8608,45 @@ resolver) was removed.
 ### Revisit
 When the capability/version registry lands, expose the tombstone in the Nearby row and consider an explicit "Un-revoke"
 action alongside Pair. A receiver reset frame is unrelated; this is local state.
+
+## ADR-354 - A radio path requires a live link, and "Radio fallback: Never" must not suppress the LAN dial
+
+### Decision
+1. `RadioOutboxPort.isRadioReachable()` and `RadioChatBridge.canCarry()` mean **can key the transmitter now**:
+   the gateway is enabled, the serial/Bluetooth link is connected, and the peer's 32-byte radio key is present.
+   A key without a link is not a path.
+2. The host transport sink always makes its one-second on-demand LAN dial before path selection. It must not
+   skip that dial merely because a radio key exists.
+3. The per-chat radio policy is read from the conversation row already loaded by the outbox drain (with the
+   in-process `radioPolicyNow` override winning), never by a second `SELECT conversations` in the send path.
+4. `radio.path` carries `policy`, `pairKey`, `gateway` and `connected`, so `not_reachable` no longer conflates
+   "Never", "no key" and "link down".
+5. A `RefusedAuthorization` (Profile M unconfirmed) is a **transient** radio refusal: the red sentence remains,
+   the row is not marked Failed, retries continue, and the hub mailbox is still allowed.
+
+### Context
+The 2026-11-03 phone log showed `radio.path result=not_reachable gateway=true connected=false` ten times while
+the LAN was demonstrably reachable (`session.up` at 18:39:12). The old reachability check only asked whether a
+pairing key existed, so the transport sink skipped `ensureSession`; the radio then refused with
+`not_connected`, and the message had no path for ten minutes. The 2026-11-05 log showed the same probe with
+`gateway=true connected=true` while inbound radio from the same peer was decrypted and ACKed; that is the
+per-chat `NEVER` policy, which the probe could not name. The old host skip also applied to `NEVER` chats,
+because it did not know the policy.
+
+### Consequences
+- A text to a radio-only peer now spends at most the `AutoConnector.DIAL_ON_DEMAND_BUDGET_MS` (1 s) on a LAN
+  attempt when a remembered route exists; that is the price of never stranding a `NEVER` chat.
+- A link drop makes the radio step report `not_reachable` with `pairKey=true`, `connected=false`; the path
+  continues to the hub mailbox, and the LAN dial is attempted on the next pass.
+- `never` still accepts inbound radio; only outbound is blocked. The chat header keeps its existing
+  policy-aware suppression for the open conversation.
+
+### Tests
+`RADIO-PATH-01` (repository: link down is not a path; `NEVER` never transmits), `RadioChatBridgeTest`
+(auth refusal is transient; `canCarry` is false with the link down), and the transfer retry test
+`retrying a zero-byte failed row fails visibly...` (same phone log).
+
+### Revisit
+The auto-connect sweep still redials remembered routes while the hub is online or the radio is carrying; that
+is a separate presentation/planner question (`PRESENCE-CONNECTIONS-PLAN` P-2.1) and needs a policy-aware
+`Links` hook, not a blanket suppression.
