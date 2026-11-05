@@ -37,7 +37,10 @@ the current branch, with the shipped implementation left untouched. Approval is 
   `design/server-console/README.md` section 7.
 - The prototype's writes are in-memory, the step-up code is illustrative, and there is no real API/WebCrypto/QR/print/
   persistence or lockout state. Do not treat the prototype as a release candidate.
-- The design worktree is uncommitted at the time of this entry; commit the review build and docs together.
+
+### Committed
+`d3fb6c33` on `agent/console-redesign` (worktree `E:/FlashWork/D-console`): the review build, design docs, screenshots,
+progress/handoff and the `CONSOLE-*` checks. No shipped console file was touched.
 
 ### Next AI
 Read `design/server-console/README.md` and `docs/ui/hub-admin-console-redesign.md` before touching the console. If the owner
