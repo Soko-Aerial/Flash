@@ -1,5 +1,10 @@
 # Current Handoff
 
+> **2026-11-05 (later) — WAVE 1 IS MERGED INTO `dev` AS `239f8581` AND PUSHED.** The branch `fix/wave1-safety`
+> (tip `9765fde3`) was merged `--no-ff`; the affected gate is green (3,166 tests / 0 failures / 0 errors) and the
+> `PAIR_REVOKE` notice plus the **Not paired** header are device-verified. Remaining partials: outbox negative ack,
+> revocation tombstone, raw-id chat title; **resume identity** (Room v22 -> v23) is the next Wave 1 item.
+>
 > **2026-11-05 — ADR-351 IS DEVICE-VERIFIED END TO END AND THE AFFECTED GATE IS GREEN.** Rebuilt and installed the
 > header-fix APK on the Infinix X6882B (Android 14) and Samsung SM-G986U1 (Android 13). Existing unpaired chats read
 > **Not paired**; re-paired, delivered `final-check`, revoked on the Infinix. The Samsung logged
