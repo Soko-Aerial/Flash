@@ -1,5 +1,19 @@
 # Current Handoff
 
+> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` LOCALLY (NOT PUSHED); NOT DEVICE-VERIFIED.**
+> Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
+> (`:desktop:radioGatewayDemo`) and captured at 1180x820 and 900x820, with the settings sheet and the pair sheet opened:
+> evidence in `design/radio-v3/compose/`. The port was corrected against the screenshots (30 dp block rhythm, 780 dp
+> column, hairline under the active radio row, the pairing action as a raised pill that is filled only while nothing is
+> paired, neutral "In use" / warm "Link lost" chips, the state and the talk control sharing a row on a wide window and
+> stacking in the dock, the short mode name and the Authorised chip in "This link", numbered steps, and the test-message
+> line's real states). The owner's brief - turning the gateway on shows the paired radios and offers pairing, the pair
+> action opens a sheet that scans, security profile and operational mode moved into settings, and hold-to-talk lives in a
+> dock above the shell bar - is implemented; `RadioGatewayController` and `RadioGatewayUiState` are untouched. Owed:
+> `RADUI-DEV02` (phone), `RADUI-DEV03` (Windows), `RADUI-DEV04` (screen reader / keyboard transmit). Records:
+> `docs/ui/radio-gateway.md` "Redesign v3" and "Compose port verified on screen", `logs/progress.md` 2026-11-05,
+> `docs/testing/TEST-BACKLOG.md`.
+
 > **2026-11-05 (audit) - TWO-AGENT WIRING REVIEW COMPLETE; NO P0; P1 GAPS AND PORT REGRESSIONS OPEN; NO CODE CHANGED.**
 > Two read-only subagents reviewed the merged console: frame/auth/Overview/requests/shared UI, and every feature
 > screen with its UI -> API -> server route/DTO. **No P0 and no privilege escalation**; all controls reach real

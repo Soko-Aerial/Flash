@@ -1,6 +1,7 @@
 # Component Research & Design Document â€” Radio Gateway (UI-070..UI-074)
 
-**Status:** DESIGNED (2026-10-16) Â· **visual redesign v2 IMPLEMENTED 2026-10-28** (see â€œRedesign v2â€ at the end; the behaviour sections below still hold)  
+**Status:** DESIGNED (2026-10-16) Â· **visual redesign v2 IMPLEMENTED 2026-10-28** Â· **visual redesign v3 DESIGNED
+2026-11-05** (see â€œRedesign v3â€ at the end; v2 is superseded by v3, the behaviour sections below still hold)  
 **Component IDs:**  
 - **UI-070**: Radio gateway settings entry, checklist, and overview  
 - **UI-071**: Find my radio: candidate detection, live nearby scan list, in-app pairing  
@@ -343,3 +344,287 @@ purely visual, as the owner asked.
 (`FlashRadioNoDeadActionsTest`, `FlashRadioCopyA11ySourceTest`, `FlashRadioMathTest`,
 `RadioGatewayUiMapperTest`, `FlashRadioSettingsEntryTest`). **Not device-verified**: `RADUI-DEV01` in
 `docs/testing/TEST-BACKLOG.md` covers the phone and desktop walk-through.
+
+---
+
+## Redesign v3 — “your radios, then the talk bar” (2026-11-05, DESIGNED)
+
+**Status:** DESIGNED. No Compose code changed yet in this round; the HTML design review lives in
+`design/radio-v3/`.
+
+### Why (the owner's brief, verbatim in spirit)
+
+> When the radio is turned on it should show paired devices and ask whether to pair, or a button to pair a new
+> device. Clicking that opens a dialog and starts scanning. Security profile and operational mode belong in
+> settings. Find an intuitive place for hold-to-talk.
+
+That is the owner's read of the page after v2, and it is right about one thing v2 did not solve: v2 answered
+“what is the state of the gateway?” but never answered **“which radios do I have, and how do I add one?”** It
+also kept five peer sections (security, mode, voice, diagnostics, checklist) on the same scroll as the hardware,
+so the page was still a list of features rather than a device page.
+
+### The question this screen answers
+
+> **“Can I talk on this radio right now — and if not, what is the one thing I do?”**
+
+One finding: the link state and the next step, in the station plate. Everything else on the page is either a
+radio you own or a place to add one.
+
+### The idea
+
+> On this page, **the handheld's own front panel** becomes the page's device: one station plate that carries the
+> link state, and the **push-to-talk bar** where a handheld's PTT sits — under the thumb, always in reach.
+
+The competitor test holds: a generic Bluetooth-settings page would list adapters; a generic device page would not
+put a keyed-transmitter control at the bottom edge with a level meter beside it.
+
+### Art direction
+
+Dealt with `draw.mjs --app --kind devtools --screens settings,detail --theme dark --keep palette,type`
+(**`true-black-flat`**, seed 363242947), then adapted:
+
+- **Kept** — elevation by lightness alone (no borders or shadows on the station plate: `backgroundSurface` on
+  `backgroundApp`), the label going to full ink when selected, and colour confined to data/status plus **one**
+  control per state.
+- **Redrawn (stated reason)** — the sheet's *shell* (210–240 dp sidebar + 64 dp top bar) does not apply: this is
+  a sub-screen inside the existing Flash shell on both hosts, so the kept shell is the app's own header row.
+  The sheet's *settings-with-usage* screen pattern does not apply either (there is no usage to report); the
+  settings surface is the app's own `FlashSheetHost` sheet.
+- **The face taken from the brief** — the radio's *name and address* are the identity, set at 20/600 in ink with
+  the address in tabular digits, and the state dot carries the only hue in the plate.
+- **The signature element** — the **talk bar** (see “Hold-to-talk”).
+
+### Composition (one column, 720 dp cap, centred; 16 dp gutters on a phone, 24 dp on desktop)
+
+| # | Block | Answers |
+|---|---|---|
+| 1 | Header: back, “Radio gateway”, settings gear | where am I, where are the less-used controls |
+| 2 | **Station plate** — name / “No radio paired”, state dot + sentence, facts line (Bluetooth · address · profile), master switch, “Reconnect” when the link is down | can I talk now, and what is wrong |
+| 3 | **Attention strip** — permission (only when blocked) or “Paired radio found — use this radio?” (only when a candidate exists) | the two things that need an answer |
+| 4 | **Your radios** — paired radios as rows (active one carries a `Connected` chip; the others a `Use` action), then the one filled primary: **Pair a new radio** | which radios do I own, how do I add one |
+| 5 | **Radio not showing up?** — a disclosure with the three readiness steps | the radio is not in the list |
+| 6 | **Talk bar** (docked, only when a radio is remembered and the host has audio) | how do I talk |
+
+`Security profile`, `Operational mode`, `Send a test message` and `Forget this radio` move into the **settings
+sheet** (block 1's gear). The checklist is no longer the empty state: the empty state is “No radio paired” plus
+the primary action, and the checklist is where a person looks when the scan found nothing.
+
+### Why the talk bar is a dock
+
+The PTT is the page's most frequent physical action and the only one a person uses without looking. Three
+placements were considered:
+
+1. **In the voice section, below the fold** (v2): the operator scrolls to talk; wrong for a device you key with a
+   thumb while watching the road. Rejected.
+2. **A floating circle above the bottom nav**: covers list content, and a circular PTT on a page with a bottom
+   nav reads as a call button. Rejected.
+3. **A dock across the bottom edge, above the shell's bottom bar** (chosen): stable position at every scroll
+   offset, 16 dp gutters, one row — listen toggle, level meter, hold-to-talk — so the control sits where the
+   thumb rests. It only exists when a radio is remembered and the host has audio, so it is never a dead control.
+
+The dock is not a second hero: it is `backgroundSurfaceStrong`, one tone above the plate, with the PTT as the
+only filled teal control on the page while the link is up. The station plate's primary (Pair) is only filled when
+there is no radio, so **one filled control is visible per state**.
+
+### Pair sheet (block 4's primary)
+
+`FlashSheetHost` sheet, titled **Pair a radio**:
+
+- opens with `controller.startScan()` (the existing action — no new controller method);
+- scanning row: a pulsing dot, “Scanning for nearby radios…”, the countdown as `Stop (9 s)` (existing copy);
+- device rows: mark, name, `RADIO / SERIAL SPP / OTHER` chip + dBm, trailing `Pair` / `Use this radio`;
+- empty: the existing “No nearby devices found yet…” sentence;
+- footer: “Scanning uses extra battery…” plus `Open Bluetooth settings`;
+- permission missing: the permission strip replaces the list and `Allow Nearby devices` starts the request;
+- dismissing the sheet calls `controller.stopScan()`, so closing it never leaves a scan running.
+
+The sheet is the “pair or scan?” answer the owner asked for: **the page offers the button; the sheet does the
+scanning.**
+
+### Settings sheet
+
+Titled **Radio settings**, three groups, in this order:
+
+1. **Security profile** — the same two choice rows and the `Authorised` / `Authorisation needed` chip; tapping
+   Profile M without authorisation still opens the authorisation sheet.
+2. **Operational mode** — the same four rows with `Active` / `Coming later`.
+3. **This radio** — name, address, callsign facts; then **Send a test message** (RF warning sheet unchanged) and
+   **Forget this radio** as the last, destructive text action with its consequence in one sentence.
+
+Nothing is hidden: every control that was on the v2 page is one tap away, and the page keeps a `Radio settings`
+entry point in the header at all sizes.
+
+### Colour, type, spacing (all from tokens; no literals)
+
+- Ground `backgroundApp`, plate `backgroundSurface`, dock `backgroundSurfaceStrong`, sheet `backgroundSurface`;
+  hairlines `borderSubtle` between settings rows only; the paired-radio rows use spacing, not rules.
+- Hue: `statusOnline`-family success for “Connected”, `accentSecondary` for permission/attention, `textError` for
+  a keyed-transmitter failure or Forget, `accentPrimary` on exactly one filled control.
+- Type: page title 18/600; plate name 20/600; section labels 13/600 `textSecondary` (sentence case — the v2
+  upper-case tracked labels are gone: they were the strongest “wireframe” tell); body 16/22; sublines 12–13/16–18.
+- Spacing: 4 dp base, 16 dp page gutters (24 on desktop), 28 dp between blocks, 64 dp minimum row height on
+  touch.
+
+### Motion (feedback only; no entrances)
+
+- Press: the PTT and every row scale to 0.98 and shift to their pressed tone (existing `hubClickable`).
+- The dock appears the first time a link is up and slides 24 dp up with a 180 ms ease-out (transform + opacity
+  only); it never animates its height.
+- The pair sheet and settings sheet use the app's sheet transition; the scanning dot pulses only while scanning.
+- `reduceMotion` (or `FlashTheme.motion.reduceMotion`): the slide and the pulse become a plain cut/static dot.
+
+### Accessibility
+
+- The PTT is a `Role.Button` with `contentDescription` and a `stateDescription` of “Talking…” while held; it has
+  a 56 dp height so it is reachable one-handed.
+- The state dot is never colour alone: the state word sits next to it.
+- The paired-radio row's trailing action has `Pair with <name>` / `Use <name> as the radio` labels (existing
+  `FlashRadioCopy.a11y*` helpers).
+- Focus order follows the visual order: back ? settings ? switch ? attention action ? paired rows ? pair ?
+  disclosure ? dock (listen ? talk).
+- The sheet traps focus on desktop (its host already does) and restores it to the gear / pair button.
+
+### What does not change
+
+`RadioGatewayController` (no new methods), `RadioGatewayUiState`, `FlashRadioMath`, the authorisation gate, the
+RF transmit warning, `FlashBackHandler`, the dispose behaviour (`stopScan()` + `setVoiceListening(false)`) and
+the `bottomInset` contract. `FakeRadioGatewayController` gains only a **demo-only** `simulateVoice()` helper so the
+debug demo and previews can show the dock; no product path gains logic.
+
+### States this design must render
+
+`OFF`, `ON + no radio`, `ON + paired + connected`, `LINK_LOST`, `SCANNING (sheet)`, `PERMISSION_MISSING`,
+`CONFIRMING_CANDIDATE`, `SETTINGS (sheet)`, plus the voice dock in its three states (off, listening, transmitting).
+
+### Verification (planned)
+
+HTML review page inspected at 390 / 768 / 1440 (`lint.mjs`, `inspect.mjs`), then Compose: `:ui:chat:jvmTest`
+radio suites (no dead actions, a11y source scan, math, mapper, settings entry) and both hosts compile. Device
+checks: `RADUI-DEV02` (phone walk-through) and `RADUI-DEV03` (desktop) in `docs/testing/TEST-BACKLOG.md`.
+
+---
+
+## Redesign v3 — built (2026-11-05)
+
+**Status: BUILT and unit-tested on the JVM host; NOT device-verified; NOT committed to `dev`.** Branch
+`design/radio-gateway-v3` in `E:\FlashWork\radio-ui-v3`. The review page is `design/radio-v3/`
+(`node design/radio-v3/serve.mjs 5191`); its README lists the state URLs.
+
+### Files
+
+| File | Change |
+|---|---|
+| `FlashRadioGatewayScreen.kt` | rewritten: header with the settings gear, station plate, strips, radios, readiness, link facts, and the audio panel (in the flow on a wide window, docked above the shell bar below 900 dp) |
+| `FlashRadioGatewayComponents.kt` | rewritten: station plate, strips, radio rows, readiness, link facts, pair sheet, settings sheet, the two existing dialogs |
+| `FlashRadioVoiceCard.kt` ? `FlashRadioAudioPanel.kt` | `FlashRadioVoiceSection` became `FlashRadioAudioPanel` (listen switch, five-bar level, hold-to-talk, licence note); the file was renamed because it is no longer a card in the page flow |
+| `FlashRadioCopy.kt` | new sentences for the page, the sheets and the talk bar; `SCREEN_TITLE` is now "Radio gateway" (the "Beta" chip carries the maturity marker) |
+| `FlashRadioMath.kt` | three pure helpers: `modeTitle`, `modeSubtitle`, `scanStatusText` (no decision changed) |
+| `FakeRadioGatewayController.kt` | demo-only voice support (`simulateVoice`, and the three voice actions) so previews and the debug demo can show the talk bar |
+| `RadioGatewayDemoActivity.kt` (debug) | opens on a connected VR-N76 with UV-Pro paired and the audio listening, so the owner can see the designed states without a radio |
+
+### Critique round (Impeccable, two isolated assessments) and what it changed
+
+Assessment A (design review, screenshots at 390/768/1440 for eight states) scored the design **26/40**, with
+its strongest criticism aimed at the transmit moment and the lost-link state. Assessment B (detector + source
+audit) found **one** automated finding in the whole review page (the scan dot's pulse, a live-scan indicator,
+kept) and confirmed zero gradients, glows, blur, resting shadows, layout-property animations or text-contrast
+failures — but found non-text contrast and keyboard problems the eye misses. Fixed in the implementation:
+
+1. **A dead link can no longer be keyed (P0).** `FlashRadioAudioPanel(linkLive = …)` disables the PTT when the
+   link is not `CONNECTED`, keeps it in place so the page does not reflow, and says "Reconnect the radio to
+   talk." inside the control.
+2. **The off state has a real action.** The plate carries a full-width "Turn on" button instead of leaving a
+   40 dp switch in the corner as the only way in.
+3. **One filled control per state.** "Pair a new radio" is the filled primary only until a radio is known,
+   then it steps back to a quiet outlined button — while the talk bar is live.
+4. **The transmit moment is unmistakable.** The PTT fills teal at rest and turns **warm with "Talking…"** while
+   keyed, the state line switches to "Talking", the meter follows `txLevel` and an "On air" chip appears.
+5. **The permission strip never contradicts a live link** — it is suppressed while connected.
+6. **Switching radios asks first**: tapping "Use" on another paired radio opens "Use another radio?" instead of
+   silently taking the gateway away from a conversation.
+7. **Non-text contrast (WCAG 1.4.11)**: the switch now carries a capsule outline in `textTertiary` /
+   `accentPrimary` (the track alone was ~1.1:1 on both surfaces), and the unselected radio ring moved from
+   `borderStrong` to `textTertiary` (~3.6:1).
+8. **Keyboard transmit (WCAG 2.1.1)**: the PTT is focusable and holds on Space/Enter down / releases on key up.
+   A screen reader cannot hold a gesture — that limitation is recorded as `RADUI-DEV04` and is not claimed as
+   solved.
+9. **Live region on the station state sentence** and `selectableGroup()` around both settings option lists.
+
+Recorded and **not** implemented (each needs controller/engine work, and this round was design-only):
+
+- **Channel / frequency / busy / refused states.** `RadioGatewayUiState` has no channel, no RSSI for the
+  active link and no "radio is receiving" refusal reason, so the page cannot answer "am I on the right net, and
+  is it clear?" — the critique's P1. Needs a controller field first.
+- **Latch mode, elapsed on-air seconds, haptics on key/unkey, and a slop-tolerant hold** (the hold currently
+  cancels when the finger leaves the control, which ends a transmission without feedback). Needs voice-engine
+  and test work.
+- **Desktop centred dialog instead of a bottom sheet**: the app's own sheet seam (`FlashSheetHost`) is used on
+  both hosts, so the radio settings and pairing surfaces match every other sheet in the product.
+- **Mode 3** stays hidden by design (`FlashRadioMath.visibleModes`), not renumbered.
+- "Use" (switch to this radio) and "Pair" (bond a new one) stay two verbs because they are two acts.
+
+### What did not change
+
+`RadioGatewayController` (no new methods), the authorisation gate and its sheet, the RF transmit warning,
+`FlashBackHandler`, `stopScan()` + `setVoiceListening(false)` on dispose, and the `bottomInset` contract. The
+demo fake gained voice support; no product path gained logic.
+
+### Verification
+
+- Review page: `lint.mjs --app` 0 FAIL / 0 WARN; `inspect.mjs --app` 0 FAIL / 0 WARN at 390 / 768 / 1440 for
+  `connected`, `off`, `empty`, `lost`, `permission`, `candidate`, `scan` and `settings`.
+- Compose (2026-11-05, branch `design/radio-gateway-v3`): `:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` ->
+  **44 tests, 0 failures** across 9 suites (no dead actions, a11y source scan, copy, math, chat math, screen logic,
+  settings entry, mapper, authorisation gate); `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin` and
+  `:desktop:compileKotlinJvm` -> **BUILD SUCCESSFUL**. No Compose UI test renders the screen, so the pixels are
+  verified only in the review page until `RADUI-DEV02`/`03` run on a device.
+- **Device checks owed:** `RADUI-DEV02` (Android, the whole flow with a real radio), `RADUI-DEV03` (desktop),
+  `RADUI-DEV04` (screen-reader and keyboard transmit) in `docs/testing/TEST-BACKLOG.md`.
+
+---
+
+## Redesign v3 — Compose port verified on screen (2026-11-05, later)
+
+The first port was written from the review page; this pass opened the **real** screen and fixed what only a screenshot
+shows. Evidence: `design/radio-v3/compose/` (`compose-wide.png`, `compose-narrow.png`, `compose-settings.png`,
+`compose-pair-sheet.png`).
+
+### How it was rendered
+
+`powershell -File tools\flash-gradle.ps1 :desktop:radioGatewayDemo` (the demo now opens on a connected VR-N76 with
+UV-Pro paired and the audio listening, the same state the review page opens on), then the window was captured at
+1180x820 (wide) and 900x820 (narrow, which crosses the 900 dp break and shows the dock), the settings sheet was opened
+with the header gear, and the pair sheet with "Pair a new radio".
+
+### What the screenshots changed
+
+| Seen on screen | Fixed in Compose |
+|---|---|
+| The audio panel had a speaker icon the design does not have | removed; the head is the title and the switch |
+| Radio rows had no separator | 1 dp hairline under the active row when another radio follows (the design's rule) |
+| "Pair a new radio" used the Hub's near-invisible secondary | a local button: 50 dp, accent when it is the one primary, `backgroundSurfaceStrong` once a radio exists, a 232 dp pill on a wide window and full width on a phone |
+| The talk state and the PTT stacked on every width | they share one row on a wide window and stack only in the phone dock; the PTT is 64 dp tall on a wide window |
+| The plate darkened when the gateway was off | always `backgroundSurface`, as drawn |
+| Blocks were 24 dp apart | 30 dp, matching the review page |
+| The column was 720 dp | 780 dp, matching the review page |
+| "In use" was a teal chip and anything not connected read "Link lost" (including a stopped gateway) | neutral chip for **In use**, warm chip for **Link lost** only when the link actually failed, no chip otherwise |
+| "This link" showed the full mode title and no authorisation | short mode name ("Field Companion"), and the Profile row carries the **Authorised** chip |
+| The steps rendered a check icon *and* the "1." that is inside the copy | the copy no longer carries the number; the number is drawn in the accent, as designed |
+| The test-message row always said "needs a live link" | reflects sending / sent / failed / the RF warning, like the old diagnostics card |
+
+### Differences kept on purpose
+
+- **Sheets are centred overlays on Windows, bottom sheets on Android.** That is the `FlashSheetHost` seam every other
+  sheet in the app uses; forcing a bottom sheet on desktop would make the radio page the odd one out.
+- **Text actions are 16 sp**, the app's `FlashHubTextAction`, where the review page drew 14 px.
+- **Icons**: `FlashIcons` has no handheld-radio glyph, so the plate and rows use the available Device/Bluetooth marks.
+- **The switch carries a 1 dp capsule outline** so its boundary clears WCAG 1.4.11 on both surfaces (the review page's
+  switch measured ~1.1:1).
+- The demo seeds only UV-Pro in the scan list, because `FakeRadioGatewayController.startScan()` keeps a non-empty
+  device list; a real scan shows everything.
+
+### Verification
+
+`:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` -> 44 tests, 0 failures; `:ui:chat:compileKotlinJvm`,
+`:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` -> BUILD SUCCESSFUL. Interaction on a real phone (the listen
+switch, PTT hold, pairing with a radio, the sheets' dismiss behaviour) is still owed: `RADUI-DEV02`..`04`.

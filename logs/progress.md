@@ -93,6 +93,109 @@ Read `docs/ui/hub-admin-console-redesign.md` and the top handoff banner. The shi
 `design/server-console/` folder is the visual reference and must not be deployed as the product. Do not reintroduce a
 fictional hub name/environment; use `/overview.hubName`. Preserve the real step-up/i18n/API and the console tests.
 
+## 2026-11-05 (later) - Radio gateway redesign v3: the Compose port driven to screen parity
+
+### Worked on
+The design was approved; this pass opened the REAL Compose screen (not the review page), compared it with the approved
+design, and fixed every difference the screenshots exposed. Same branch `design/radio-gateway-v3`, worktree
+`E:\FlashWork\radio-ui-v3`.
+
+### Changed
+- `FlashRadioGatewayScreen.kt`: blocks are 30 dp apart; the column is 780 dp (matches the review page); the phone dock
+  gets `stacked = true` so the state line and the talk control stack there while they share one row on a wide window;
+  the radios section receives `fillWidth = dense` for the pairing pill.
+- `FlashRadioGatewayComponents.kt`: the plate is always `backgroundSurface` (it darkened when off); the state sentence is
+  13/18; radio rows carry the design's hairline under the active row; "Pair a new radio" is a local 50 dp button (accent
+  primary only while nothing is paired, `backgroundSurfaceStrong` after, 232 dp pill on a wide window and full width on a
+  phone); row chips are neutral "In use" and warm "Link lost" and appear only when the link is actually connected or lost
+  (a stopped gateway no longer claims "Link lost"); "This link" shows the short mode name and an **Authorised** chip on the
+  profile row; the readiness steps draw their own accent number (the copy no longer carries "1."); the test-message row
+  reflects sending / sent / failed / the RF warning.
+- `FlashRadioAudioPanel.kt`: no speaker icon in the head (the design has none); a shared `RadioAudioStateRow`; the state
+  and the PTT share a row on a wide window and stack in the dock; the PTT is 64 dp tall on a wide window, 56 in the dock.
+- `FlashRadioMath.kt` / `FlashRadioCopy.kt`: `modeShortName` and the four short mode names.
+- `DesktopRadioGatewayDemoApp.kt`: opens on the designed state (connected VR-N76, UV-Pro paired, audio listening) and
+  carries no broken em dash in its title.
+- Evidence: `design/radio-v3/compose/*.png` (wide, narrow/dock, settings sheet, pair sheet), captured from the running app.
+
+### Verification
+- `:desktop:radioGatewayDemo` launched and captured at 1180x820 and 900x820; the settings sheet opened from the header
+  gear, the pair sheet from "Pair a new radio" and the scan started by itself.
+- `:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` -> **44 tests, 0 failures** (9 suites);
+  `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` -> **BUILD SUCCESSFUL**.
+
+### Remaining
+- Interaction on hardware: the listen switch/PTT against a real radio, the sheets' dismiss behaviour, and the screen
+  reader path (`RADUI-DEV02`..`04`).
+- The desktop sheet is a centred overlay (the app's `FlashSheetHost` seam), the phone a bottom sheet; the review page still
+  draws a bottom sheet at both widths.
+- `FlashIcons` has no handheld-radio glyph, so the plate and rows use Device/Bluetooth marks.
+
+### Next AI
+Read the "Redesign v3 - Compose port verified on screen" section of `docs/ui/radio-gateway.md` before editing: it lists the
+exact dp/sp values and the differences kept on purpose. The demo (`:desktop:radioGatewayDemo`) is the fastest way to see
+the screen without a radio; it is not the shipped host (no radio voice there), so the panel only appears in the demo
+because the fake reports `available = true`.
+## 2026-11-05 (later) - Radio gateway redesign v3: your radios, pair sheet, settings sheet, talk bar (design + build)
+
+### Worked on
+The owner's brief: turning the radio gateway on should show the radios already paired and offer to pair a new one; the
+pair action opens a dialog that starts scanning; the security profile and the operational mode belong in settings; and
+hold-to-talk needs a place that makes sense. Design-only round as asked: no controller method, state field or decision
+changed. Built in the worktree `E:\FlashWork\radio-ui-v3` on branch `design/radio-gateway-v3`; commit `ead3480a` (the main tree's `dev` is
+being used by another agent).
+
+### Changed
+- `design/radio-v3/` - a static review page (tokens copied from `FlashPalette`, sentences from `FlashRadioCopy`, eight
+  states as `?state=off|empty|connected|lost|permission|candidate|scan|settings`, `serve.mjs` for a local server).
+- `FlashRadioGatewayScreen.kt` (rewritten): header with the settings gear, station plate, strips, "Your radios", readiness,
+  "This link", and the audio panel - in the page flow at >= 900 dp, docked above the shell bar below it.
+- `FlashRadioGatewayComponents.kt` (rewritten): plate (with a full-width "Turn on" while off), strips, radio rows,
+  readiness, link facts, the pair sheet, the settings sheet (security profile, operational mode, This radio, test frame,
+  Forget) and the existing authorisation / RF-warning dialogs.
+- `FlashRadioVoiceCard.kt` -> `FlashRadioAudioPanel.kt`: `FlashRadioVoiceSection` became `FlashRadioAudioPanel` (listen
+  switch, five-bar level, hold-to-talk, licence note). The PTT is disabled with a reason while the link is down, turns warm
+  with "Talking..." while keyed, and holds on Space/Enter for keyboard users.
+- `FlashRadioCopy.kt`: the new sentences (your radios, pair sheet, settings sheet, talk bar, "On air", the switch's reason).
+  `SCREEN_TITLE` is now "Radio gateway"; the "Beta" chip carries the marker.
+- `FlashRadioMath.kt`: pure helpers only - `modeTitle`, `modeSubtitle`, `scanStatusText`.
+- `FakeRadioGatewayController.kt`: demo-only voice support (`simulateVoice` + the three voice actions) so previews and the
+  debug demo can show the talk bar; `RadioGatewayDemoActivity` opens on a connected VR-N76 with UV-Pro listed.
+- `docs/ui/radio-gateway.md`: "Redesign v3" DESIGNED section (art direction, composition, the talk bar's three considered
+  placements, the pair/settings sheet specs) and the built section with the critique and the deferred items.
+- `docs/testing/TEST-BACKLOG.md`: `RADUI-DEV02` (phone walkthrough), `RADUI-DEV03` (Windows), `RADUI-DEV04` (screen reader
+  and keyboard transmit).
+
+### Why
+The v2 page answered "what is the state of the gateway?" but never "which radios do I have, and how do I add one?", and it
+kept security, mode, voice, diagnostics and the checklist on the same scroll as the hardware. Moving the rarely-used
+controls behind one gear and giving pairing its own sheet leaves four blocks and one dock; the dock puts the most physical
+action (hold to talk) in the thumb zone and keeps it there at every scroll offset.
+
+### Verification
+- Review page: `lint.mjs --app` 0 FAIL / 0 WARN; `inspect.mjs --app` 0 FAIL / 0 WARN at 390 / 768 / 1440 for all eight
+  states (screenshots in `.taste-skill/radio-v3-*`, git-ignored).
+- Impeccable critique run as two isolated assessments on the review page. Assessment A (design review) scored 26/40 and its
+  top finding was that a lost link could still be keyed; Assessment B (detector + source audit) found one automated finding
+  in the whole page (the scan dot's pulse, kept as a live-scan indicator) and no text-contrast failures, but caught the
+  switch track at ~1.1:1 non-text contrast and the missing keyboard path to the PTT. Both were fixed (see the doc section).
+- Compose: :ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*" -> 44 tests, 0 failures (9 suites);
+  :ui:chat:compileKotlinJvm, :app:compileDebugKotlin and :desktop:compileKotlinJvm -> BUILD SUCCESSFUL.
+
+### Remaining
+- Device checks `RADUI-DEV02`..`04`.
+- Channel / frequency / "radio is receiving" refusal states cannot be shown: `RadioGatewayUiState` carries no channel and no
+  busy reason. That is the critique's P1 and needs controller work first.
+- Latch mode, elapsed on-air seconds, haptics on key/unkey, and a slop-tolerant hold (the gesture currently ends a
+  transmission when the finger leaves the control) are voice-engine work, not design.
+- The desktop host reports `available = false` for radio voice, so the talk bar is absent there by design.
+
+### Next AI
+Read `docs/ui/radio-gateway.md` "Redesign v3" before touching the radio page: the structure (plate -> audio -> radios ->
+readiness -> link) is deliberate, and the review page is the fastest way to see a state without a radio. The wiring is
+unchanged, so the existing `FlashRadioNoDeadActionsTest` / `FlashRadioCopyA11ySourceTest` guards still apply; if you add a
+controller method, add it to that table.
+
 ## 2026-11-05 (later) - Wave 2 host baseline: 200 MB, 64 vs 256 KiB; no device measurements
 
 ### Worked on
