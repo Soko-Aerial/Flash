@@ -1,5 +1,54 @@
 # Progress Log
 
+## 2026-11-05 (later) - Chat redesign v2 round 2: the menu, profile, group chats and the swarm UI
+
+### Worked on
+The owner approved the direct chat, the desktop and the redrawn icons, and asked for the rest of the chat
+surface before reviewing again: the three-dot menu's options, group chats with their options and settings, the
+profile view, and the swarm UI. All of it is prototype work in `design/chat-web`; no app source changed.
+
+### Changed
+- `flash/Menu.tsx` - the overflow menu as a 252dp popover (not a sheet): 44dp rows, 18dp icons, destructive items
+  in `--danger-ink` below a hairline, first item focused, Tab trapped, Escape closes. Items come from
+  `FlashConversationMenuMath` verbatim for both a 1:1 chat and a v2 group, plus the proposed **Chat appearance**.
+- `flash/Profile.tsx` - the peer details sheet: 64dp avatar, presence, Connection / Security / Trust / Radio
+  fallback, Shared Media & Files, and the destructive unpair action.
+- `flash/Group.tsx` - the 2x2 collage; group info (invite, add, shared content, settings, members with roles and
+  transport, inline Verify / Make Admin / Remove, two join requests with Approve / Decline); group settings
+  (signed rules, dynamic subtitles, max-size stepper, device seeding preferences, group code, organisation relay);
+  the invite sheet with a copyable link.
+- `flash/Swarm.tsx` - the piece map as a 12-column matrix (verified / downloading / peer / missing) with a legend,
+  the holder list, the sender/receiver/missing-parts/source-lost sentences, and a wide proof board.
+- `flash/Conversation.tsx` - group header, sender name once per run (runs now split on sender), and the swarm map
+  on the file card.
+- `flash/icons.tsx` - six more glyphs (device, group, gallery, share, delete, bluetooth) plus copy: 22 chat glyphs.
+- `App.tsx` - three new sections and eight pinned phone states; desktop unchanged.
+
+### Why
+The menu was previously bypassed (the kebab opened the wallpaper sheet), so the app's own menu items had no design;
+groups, profiles and the swarm are the surfaces the chat actually uses next.
+
+### Verification
+- Impeccable `detect` on `design/chat-web/src`: **0 findings**.
+- `lint.mjs --app`: **0 FAIL** (warnings: the invite link's monospace, menu/sheet shadows, clock, em dashes).
+- `inspect.mjs --app` at 1440/768/390 on the production build: **0 FAIL, 2 WARN** (six radii including the phone
+  frame and the sheet; 3 of 45 blocks above the fold on a review document).
+- No horizontal overflow at any width; every sampled text pair **>=5.21:1** in both themes. The destructive menu
+  text was 4.38:1 (`error500` on white) and now uses `--danger-ink` at 6.25:1.
+- Keyboard: menu traps Tab and closes on Escape; the profile/invite/wallpaper sheets focus their dialog and close
+  on Escape; every icon control has a name.
+- Fixed during review: join-request rows truncating names, group runs merging different senders, bar-shaped piece
+  map cells, a repeated collage initial and one avatar tint, subtitles contradicting their switch, a focus ring on
+  open, and a ragged swarm board.
+
+### Remaining
+- Owner review of the new screens (CHATUI-01 and the new CHATUI-08..12).
+- Wallpaper persistence (ADR-354 decision 4) and the Compose port.
+
+### Next AI
+Read `design/chat-web/CRITIQUE.md` (round 2) and `DESIGN.md` before touching the port. The new card is one
+presentation file per surface; the app's strings and menu item lists are copied, not invented.
+
 ## 2026-11-05 (later) - Chat redesign v2: the critique round fixed 6 P1/P2 findings; the mock still awaits owner review
 
 ### Worked on

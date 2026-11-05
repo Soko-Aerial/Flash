@@ -8652,3 +8652,18 @@ a no-Material-text-field composer, so the redesign keeps those and changes layou
 ### Revisit when
 - The owner rejects the direction (then the mock is revised before any Compose work).
 - Per-chat wallpapers are requested (then Room gains a step and the decision moves to (b)).
+
+### Scope extension (2026-11-05, still PROPOSED)
+After seeing the first mock the owner approved the direct conversation, the desktop shell and the redrawn icons,
+and asked for the rest of the chat surface before reviewing again: the three-dot menu's options, group chats with
+their options and settings, the profile view and the swarm UI. Those are added to the same prototype and to the
+same decision:
+
+- The menu is `FlashConversationMenuMath`'s own list for a 1:1 chat and for a v2 group, plus one proposed item,
+  **Chat appearance** (`CHAT_APPEARANCE`), which is how the wallpaper sheet is reached.
+- The profile is the shipped `FlashPeerDetailsSheet` content; groups use the shipped group copy for roles, join
+  requests, signed rules, device preferences, the group code and the relay row.
+- The swarm UI is `FlashSwarmPieceMap`'s piece states drawn as a 12-column matrix, with `FlashSwarmUiMath`'s four
+  sender/receiver sentences and a holder list.
+- Still presentation only: no new storage, no new capability, and no app source touched. Confirmations, menu
+  actions that do not navigate, and persistence remain outside this mock.

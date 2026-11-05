@@ -107,3 +107,36 @@ Accepted and defended (not changed):
    state would be needed to judge recovery.
 4. **Long contact names** ellipsize; long file names still truncate at the tail in the narrow
    bubble (middle truncation would need a string measured in the layout).
+
+---
+
+## Round 2 — the menu, profile, group and swarm (same day, after the owner's review)
+
+The owner approved the direct chat, the desktop and the icons, and asked for the three-dot menu's
+options, group chats and their settings, the profile view and the swarm UI. Those surfaces were
+added and reviewed against the same evidence tools.
+
+| Severity | Issue | Fixed |
+|---|---|---|
+| P1 | Destructive text was 4.38:1 on white (`--danger` is `error500`) | **Yes.** Text uses `--danger-ink` (#B32626, 6.25:1); the error colour stays for borders and icons |
+| P1 | Join requests truncated the applicant's name and the subline ("Tessa A…", "Wants to join with an in…") | **Yes.** The actions moved to their own row under the name |
+| P2 | Group runs merged two different senders, so the second sender's name disappeared | **Yes.** Runs split on sender as well as direction |
+| P2 | The piece map rendered as wide bars in a chat bubble and as a flat strip on the board | **Yes.** A 12-column, two-row matrix with square cells; the legend keeps 9px swatches |
+| P2 | The group collage repeated initials (A/K/K/K) and every member avatar had one tint | **Yes.** Collage uses A/K/L/N and members carry the four avatar tones |
+| P2 | Rule subtitles contradicted their switch (they described one state only) | **Yes.** State-dependent pairs, using the app's own sentences |
+| P3 | The invite sheet opened with a focus ring on its close button | **Yes.** Dialogs focus their container; Tab still rings the controls |
+| P3 | "Add members" reused the Group info icon | **Yes.** A plus glyph |
+| P3 | The swarm board sat beside the phones and ended 327px short | **Yes.** It spans the canvas under the phones in three columns |
+
+Evidence after the round: `detect` 0 findings; `lint --app` 0 FAIL; `inspect --app` **0 FAIL /
+2 WARN** (six radii, three of 45 blocks above the fold) at 1440/768/390; no horizontal overflow;
+every sampled text pair >=5.21:1 in both themes.
+
+Not changed, and why:
+
+- The menu keeps the shipped item list (plus the proposed Chat appearance); "Mark as unread" still
+  uses the read glyph because that is the app's mapping.
+- Non-navigating menu actions acknowledge with a prototype snackbar; real confirmations stay the
+  app's existing dialogs.
+- The swarm map keeps three data hues (green / cyan / amber) because they encode state, which the
+  app already does.

@@ -75,6 +75,10 @@ the prototype and the app cannot diverge. No webfont.
 | Icons | custom, 24dp grid, **2dp** stroke | custom, 24dp grid, **1.75dp** stroke, one asymmetric detail per glyph; names unchanged |
 | Wallpaper | none | 5 presets + one colour, each with light and dark variants, applied instantly with a visible status and Undo |
 | Settings | no appearance surface | "Chat appearance": wallpaper (opens the sheet), a working theme control and a live preview of the chosen field |
+| Overflow menu | shipped items, stock `DropdownMenu` | same items in a 252dp popover with 44dp rows and destructive items below a rule; one proposed item, **Chat appearance** |
+| Profile | `FlashPeerDetailsSheet` | same rows (connection, security, trust, radio fallback, shared content) restyled around a 64dp avatar; unpair at the foot |
+| Group | header, members sheet, settings sheet, invite sheet | group collage header, sender names once per run, group info with roles and join requests, signed rules above device switches, invite sheet, swipe-free group menu |
+| Swarm | piece map on the file card | the same map as a 12-column matrix inside the bubble, plus the board: holders and the four engine sentences |
 
 Deliberately **not** changed: message grouping rules, delivery ticks, reactions (still the app's text
 glyphs), attachments, transfer cards' states, the conversation menu's items, and every callback.
@@ -134,6 +138,10 @@ screen.
 
 The Compose port replaces `flash_ic_*.xml` path data and `android:strokeWidth`, keeping every
 `FlashIcons` name and `contentDescription`.
+
+The group, menu, profile and swarm work adds six more glyphs (`device`, `group`, `gallery`,
+`share`, `delete`, `bluetooth`) at the same 24dp grid and 1.75dp stroke, for **22 chat glyphs**
+in total.
 
 ---
 
@@ -211,23 +219,34 @@ own Motion switch both collapse every animation to 1ms.
 Presentation only; every parameter and callback of `FlashConversationScreen` stays as it is.
 
 1. `ui/theme/.../composeResources/drawable/flash_ic_*.xml` — new path data at 1.75dp (§5).
-2. `FlashChatHeader.kt` — 60dp row, 34dp avatar, three actions; search already exists in
+2. `FlashChatHeader.kt` — 60dp row, 34dp avatar, three actions; the group variant uses
+   `FlashGroupAvatar` and the member-count subtitle. Search stays in
    `FlashConversationMenu`.
 3. `FlashComposer.kt` — 44dp targets, 22dp pill, `graphite50` fill, one trailing slot with the
    crossfade (no new state: it is `canSend` and `recordingPhase`, both already there).
 4. `FlashMessageList.kt` — paint the wallpaper behind `backgroundChat`, 2dp/16dp run gaps, day chip
    and unread rule restyle. **`FlashConversationScreen`'s `Scaffold` also needs
    `containerColor = backgroundChat`** so overscroll does not reveal the Material scheme.
-5. `FlashMessageBubble.kt` — inline time + tail unchanged; timestamps to the corrected token.
-6. New `FlashChatAppearanceSheet` + a `Chat appearance` entry in `FlashConversationMenu`, with a
-   preview and the five presets.
-7. Wallpaper persistence — **the one logic question.** The mock applies to the open chat and offers
-   Undo; it deliberately does not pretend to offer per-chat vs all-chats scope. Options for the
-   owner:
-   a. one app-wide wallpaper in `FlashSettings` (Android + desktop datastore);
-   b. per-chat in Room (a schema step);
-   c. visual-only for now: the picker previews, nothing is stored.
-   Recommendation: (a) first, then (b) if per-chat is wanted.
+5. `FlashMessageBubble.kt` — inline time + tail unchanged; timestamps to the corrected token;
+   sender name once per group run; the file card yields to the swarm map.
+6. `FlashConversationMenu.kt` — restyle the popover and add `CHAT_APPEARANCE` to
+   `FlashConversationMenuItem` and to `FlashConversationMenuMath.directItems/groupItems`.
+7. `FlashPeerDetailsSheet.kt` — restyle rows and the unpair button; no new data.
+8. `FlashGroupMembersSheet.kt` — section heads, member rows with tone avatars, inline admin actions,
+   join requests with their own action row.
+9. `FlashGroupSettingsSheet.kt` — the two sections (signed rules / this device), the stepper, the
+   state-dependent subtitles, and the code and relay rows.
+10. `FlashSwarmPieceMap.kt` + `FlashFileMessageCard.kt` — the 12-column matrix, the summary line and
+    the delivery lines (`FlashSwarmUiMath` already prints every sentence used here).
+11. New `FlashChatAppearanceSheet` + a `Chat appearance` entry in the menu, with a preview and the
+    five presets.
+12. Wallpaper persistence — **the one logic question.** The mock applies to the open chat and offers
+    Undo; it deliberately does not pretend to offer per-chat vs all-chats scope. Options for the
+    owner:
+    a. one app-wide wallpaper in `FlashSettings` (Android + desktop datastore);
+    b. per-chat in Room (a schema step);
+    c. visual-only for now: the picker previews, nothing is stored.
+    Recommendation: (a) first, then (b) if per-chat is wanted.
 
 Not in scope for the port: reactions, attachments, transfer logic, call UI, desktop rail.
 
@@ -247,25 +266,27 @@ Not in scope for the port: reactions, attachments, transfer logic, call UI, desk
   gate.
 - The prototype is not a Compose preview: sizing at other densities, RTL mirroring and the IME are
   the port's to verify on a device.
+- The menu's non-navigating actions (mark unread, clear, revoke, leave) acknowledge with a prototype
+  snackbar; the shipped confirmations are `FlashLeaveGroupDialog` and the existing confirm host.
+- Group settings toggles, join approvals and the member-action rows change mock state only.
 
 ---
 
 ## 11. Checks run
 
-- The critique is recorded in `CRITIQUE.md` (dual-agent: design review + detector/evidence), and its
-  P1/P2 findings are fixed except where noted as owner decisions.
-- `node <skill>/scripts/lint.mjs --app design/chat-web/src` — **0 FAIL**. Remaining warnings are
-  clock zero-padding (the voice timer) and shadows on real overlays (sheet, phone bezel).
-- Impeccable `detect` on `design/chat-web/src` — **0 findings, exit 0** after the quote's side-tab
-  and the file-in-bubble nesting were removed.
+- The critique is recorded in `CRITIQUE.md` (two rounds: the direct chat first, then group, menu,
+  profile and swarm), and its findings are fixed except the owner decisions listed there.
+- `node <skill>/scripts/lint.mjs --app design/chat-web/src` — **0 FAIL**; warnings are the invite
+  link's monospace (a real link), shadows on the menu/sheet/phone, clock zero-padding and em dashes.
+- Impeccable `detect` on `design/chat-web/src` — **0 findings, exit 0**.
 - `node <skill>/scripts/inspect.mjs --app http://localhost:4174` on the production build —
-  **0 FAIL, 3 WARN**: five corner radii (two are the phone frame's 44 and 56), "2 of 32 blocks above
-  the fold" and "no data hue" (this is a neutral-chrome review document, not a landing page or a
-  chart screen).
-- Screenshots at 1440, 768 and 390, light and dark, five wallpapers; no horizontal overflow
-  (`scrollWidth == clientWidth` at all three widths, re-measured after the composer fix).
-- Contrast measured in the browser: every sampled app pair is ≥5.21:1 (§6). The pre-critique run
-  found 42 failing text elements in four pairs; all four were fixed.
-- Keyboard: 36 stops at 390, 13 inside the phone, input and send/mic in visual order; every icon
-  control has an accessible name; the ring is the app's `--focus-ring`.
-- Reduced motion: `data-motion="reduced"` (and the media query) collapse every animation to 1ms.
+  **0 FAIL, 2 WARN** at 1440 / 768 / 390: six corner radii (two are the phone frame, one the sheet's
+  top) and "3 of 45 blocks above the fold" on a long review document.
+- No horizontal overflow at 1440, 768 or 390 (`scrollWidth == clientWidth`).
+- Contrast measured in the browser: every sampled app pair is ≥5.21:1 in both themes, including the
+  destructive menu items (4.38 → 6.25 with `--danger-ink`), the chip pairs (13:1) and the link box.
+- Keyboard: the menu focuses its first item, traps Tab and closes on Escape; the profile, invite and
+  wallpaper sheets focus their dialog, close on Escape and are labelled; every icon control is named.
+- Reduced motion: `data-motion="reduced"` and the media query collapse every animation to 1ms.
+- Screenshots: `shots/` (git-ignored) at 8 phone states, the swarm board, both themes and five
+  wallpapers.

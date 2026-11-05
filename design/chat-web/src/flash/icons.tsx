@@ -21,7 +21,7 @@ export type IconName =
   | 'close' | 'lock' | 'reply' | 'heart' | 'thumb' | 'play' | 'pause' | 'clock'
   | 'check' | 'read' | 'failed' | 'download' | 'search' | 'pin' | 'bolt'
   | 'wifi' | 'chat' | 'hub' | 'nearby' | 'settings' | 'transfer' | 'chevron'
-  | 'file' | 'plus'
+  | 'file' | 'plus' | 'device' | 'gallery' | 'delete' | 'share' | 'group' | 'bluetooth' | 'copy'
 
 type Stroke = string[]
 
@@ -96,6 +96,38 @@ const STROKE: Record<string, Stroke> = {
     'M6.4 3.4 h7.4 l4.2 4.2 v13 a1.4 1.4 0 0 1 -1.4 1.4 H6.4 a1.4 1.4 0 0 1 -1.4 -1.4 V4.8 a1.4 1.4 0 0 1 1.4 -1.4 Z',
     'M13.6 3.6 v4.2 h4.2',
   ],
+  device: [
+    'M17.2 2.6 H6.8 a2 2 0 0 0 -2 2 v14.8 a2 2 0 0 0 2 2 h10.4 a2 2 0 0 0 2 -2 V4.6 a2 2 0 0 0 -2 -2 Z',
+    'M10.4 18.4 h3.2',
+  ],
+  gallery: [
+    'M4.4 5.2 h15.2 a1.6 1.6 0 0 1 1.6 1.6 v10.4 a1.6 1.6 0 0 1 -1.6 1.6 H4.4 a1.6 1.6 0 0 1 -1.6 -1.6 V6.8 a1.6 1.6 0 0 1 1.6 -1.6 Z',
+    'M8.2 10.2 m-1.5 0 a1.5 1.5 0 1 0 3 0 a1.5 1.5 0 1 0 -3 0',
+    'M3.2 16.4 L8.6 11.6 L12.4 15 L15.6 12.2 L20.8 16.8',
+  ],
+  delete: [
+    'M4.6 6.6 H19.4',
+    'M9.2 6.4 V4.6 a1.2 1.2 0 0 1 1.2 -1.2 h3.2 a1.2 1.2 0 0 1 1.2 1.2 v1.8',
+    'M6.6 6.6 l.8 12.6 a1.6 1.6 0 0 0 1.6 1.5 h6 a1.6 1.6 0 0 0 1.6 -1.5 l.8 -12.6',
+    'M10.4 10.4 v6.6 M13.6 10.4 v6.6',
+  ],
+  share: [
+    'M8.6 12 m-2.4 0 a2.4 2.4 0 1 0 4.8 0 a2.4 2.4 0 1 0 -4.8 0',
+    'M17.8 6.4 m-2.4 0 a2.4 2.4 0 1 0 4.8 0 a2.4 2.4 0 1 0 -4.8 0',
+    'M17.8 17.6 m-2.4 0 a2.4 2.4 0 1 0 4.8 0 a2.4 2.4 0 1 0 -4.8 0',
+    'M10.7 10.9 L15.7 7.5 M10.7 13.1 L15.7 16.5',
+  ],
+  group: [
+    'M9.4 11.2 a3.2 3.2 0 1 0 0 -6.4 a3.2 3.2 0 1 0 0 6.4',
+    'M3.4 20.2 v-1.4 a4.6 4.6 0 0 1 4.6 -4.6 h2.8 a4.6 4.6 0 0 1 4.6 4.6 v1.4',
+    'M16 4.9 a3.2 3.2 0 0 1 0 6.2',
+    'M17.4 14.4 a4.6 4.6 0 0 1 3.2 4.4 v1.4',
+  ],
+  bluetooth: ['M8.2 7.6 L15.8 16.4 L12 20.2 V3.8 L15.8 7.6 L8.2 16.4'],
+  copy: [
+    'M8.6 8.6 h9.8 a1.6 1.6 0 0 1 1.6 1.6 v9.4 a1.6 1.6 0 0 1 -1.6 1.6 H8.6 a1.6 1.6 0 0 1 -1.6 -1.6 v-9.4 a1.6 1.6 0 0 1 1.6 -1.6 Z',
+    'M5.4 15.2 h-.8 a1.6 1.6 0 0 1 -1.6 -1.6 V4.2 a1.6 1.6 0 0 1 1.6 -1.6 h9.4 a1.6 1.6 0 0 1 1.6 1.6 v.8',
+  ],
 }
 
 const FILLED: Partial<Record<IconName, string[]>> = {
@@ -169,4 +201,10 @@ export const ICON_SHEET: Array<{ name: IconName; label: string; note: string }> 
   { name: 'file', label: 'File', note: 'folded corner' },
   { name: 'pin', label: 'Pin', note: 'short tack' },
   { name: 'search', label: 'Search', note: 'long handle' },
+  { name: 'device', label: 'Profile', note: 'phone body, no notch' },
+  { name: 'group', label: 'Group', note: 'two heads, one line' },
+  { name: 'gallery', label: 'Photos', note: 'glint and horizon' },
+  { name: 'share', label: 'Invite', note: 'three nodes' },
+  { name: 'delete', label: 'Clear', note: 'flat lid' },
+  { name: 'bluetooth', label: 'Radio', note: 'one folded stroke' },
 ]
