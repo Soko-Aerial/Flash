@@ -16,10 +16,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -84,8 +85,8 @@ public class LinuxRadioDiscovery(
         )
     }
 
-    override fun scan(timeoutMs: Long): Flow<DiscoveredDevice> = flow {
-        val seen = LinkedHashMap<String, DiscoveredDevice>()
+    override fun scan(timeoutMs: Long): Flow<DiscoveredDevice> = channelFlow {
+        val seen = ConcurrentHashMap<String, DiscoveredDevice>()
 
         suspend fun emitDevice(d: DiscoveredDevice) {
             val key = d.bluetoothAddress.uppercase()
@@ -93,7 +94,7 @@ public class LinuxRadioDiscovery(
             if (existing == null || (existing.name != d.name && d.name != d.bluetoothAddress) || existing.category != d.category) {
                 val resolvedDevice = if (existing?.isPaired == true) d.copy(isPaired = true) else d
                 seen[key] = resolvedDevice
-                emit(resolvedDevice)
+                send(resolvedDevice)
             }
         }
 
@@ -268,59 +269,57 @@ internal class DefaultBlueZLiveScanner(
     private val nameChangeRegex = Regex("""\[\s*CHG\s*\]\s+Device\s+([0-9A-Fa-f:]{17})\s+(?:Name|Alias):\s*(.*)""")
 
     override suspend fun scan(timeoutSeconds: Long, onDeviceDiscovered: suspend (DiscoveredDevice) -> Unit) {
-        withContext(Dispatchers.IO) {
-            val cmd = commandPrefix + listOf("--timeout", timeoutSeconds.toString(), "scan", "on")
-            val process = runCatching {
-                ProcessBuilder(cmd)
-                    .redirectErrorStream(true)
-                    .start()
-            }.getOrNull() ?: return@withContext
+        val cmd = commandPrefix + listOf("--timeout", timeoutSeconds.toString(), "scan", "on")
+        val process = runCatching {
+            ProcessBuilder(cmd)
+                .redirectErrorStream(true)
+                .start()
+        }.getOrNull() ?: return
 
-            try {
-                process.inputStream.bufferedReader().useLines { lines ->
-                    for (line in lines) {
-                        currentCoroutineContext().ensureActive()
-                        val mNew = newDeviceRegex.find(line)
-                        if (mNew != null) {
-                            val mac = mNew.groupValues[1]
-                            val name = mNew.groupValues[2].trim()
-                            val category = LinuxRadioDiscovery.classifyLinuxName(name)
+        try {
+            process.inputStream.bufferedReader().useLines { lines ->
+                for (line in lines) {
+                    currentCoroutineContext().ensureActive()
+                    val mNew = newDeviceRegex.find(line)
+                    if (mNew != null) {
+                        val mac = mNew.groupValues[1]
+                        val name = mNew.groupValues[2].trim()
+                        val category = LinuxRadioDiscovery.classifyLinuxName(name)
+                        onDeviceDiscovered(
+                            DiscoveredDevice(
+                                name = name.ifBlank { mac },
+                                bluetoothAddress = mac,
+                                isPaired = false,
+                                kind = CandidateKind.BLUETOOTH_SERIAL,
+                                category = category,
+                            )
+                        )
+                        continue
+                    }
+
+                    val mChg = nameChangeRegex.find(line)
+                    if (mChg != null) {
+                        val mac = mChg.groupValues[1]
+                        val name = mChg.groupValues[2].trim()
+                        if (name.isNotBlank()) {
                             onDeviceDiscovered(
                                 DiscoveredDevice(
-                                    name = name.ifBlank { mac },
+                                    name = name,
                                     bluetoothAddress = mac,
                                     isPaired = false,
                                     kind = CandidateKind.BLUETOOTH_SERIAL,
-                                    category = category,
+                                    category = LinuxRadioDiscovery.classifyLinuxName(name),
                                 )
                             )
-                            continue
-                        }
-
-                        val mChg = nameChangeRegex.find(line)
-                        if (mChg != null) {
-                            val mac = mChg.groupValues[1]
-                            val name = mChg.groupValues[2].trim()
-                            if (name.isNotBlank()) {
-                                onDeviceDiscovered(
-                                    DiscoveredDevice(
-                                        name = name,
-                                        bluetoothAddress = mac,
-                                        isPaired = false,
-                                        kind = CandidateKind.BLUETOOTH_SERIAL,
-                                        category = LinuxRadioDiscovery.classifyLinuxName(name),
-                                    )
-                                )
-                            }
                         }
                     }
                 }
-            } finally {
-                runCatching { process.destroyForcibly() }
-                // Restore controller state to scan off
-                runCatching {
-                    ProcessBuilder("bluetoothctl", "scan", "off").start().waitFor(1, TimeUnit.SECONDS)
-                }
+            }
+        } finally {
+            runCatching { process.destroyForcibly() }
+            // Restore controller state to scan off
+            runCatching {
+                ProcessBuilder("bluetoothctl", "scan", "off").start().waitFor(1, TimeUnit.SECONDS)
             }
         }
     }
