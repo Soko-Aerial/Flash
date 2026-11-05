@@ -14,9 +14,11 @@
 > colours, reply quote, file nesting, real theme control). Records: **ADR-354 (PROPOSED)**,
 > `ERROR-984` (PowerShell UTF-8 corruption, repaired), `logs/progress.md` 2026-11-05, `CHATUI-01..07`.
 > **Open decision:** wallpaper persistence - (a) app-wide `FlashSettings`, (b) per-chat Room step, (c) preview-only.
-> Recommendation: (a) then (b). **Next:** owner reviews the mock; only then the Compose port (icon XML paths, header,
-> composer, message-list wallpaper, appearance sheet), keeping every `FlashConversationScreen` parameter, every callback
-> and `FlashBubbleShape` unchanged. Nothing is device-verified; no phone was used.
+> Recommendation: (a) then (b). **Committed as `2865e811`** on branch `design/chat-redesign`
+> (worktree `E:\FlashWork\chat-redesign`); nothing pushed, nothing merged. **Next:** owner reviews the mock; only then
+> the Compose port (icon XML paths, header, composer, message-list wallpaper, appearance sheet), keeping every
+> `FlashConversationScreen` parameter, every callback and `FlashBubbleShape` unchanged. Nothing is device-verified; no
+> phone was used.
 
 > **2026-11-05 (latest) - ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone
