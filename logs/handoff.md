@@ -1,6 +1,6 @@
 # Current Handoff
 
-> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` LOCALLY (NOT PUSHED); NOT DEVICE-VERIFIED.**
+> **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` (LOCAL, NOT PUSHED); NOT DEVICE-VERIFIED.**
 > Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
 > (`:desktop:radioGatewayDemo`) and captured at 1180x820 and 900x820, with the settings sheet and the pair sheet opened:
 > evidence in `design/radio-v3/compose/`. The port was corrected against the screenshots (30 dp block rhythm, 780 dp
