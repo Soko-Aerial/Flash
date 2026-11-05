@@ -5478,6 +5478,110 @@ its own window on Windows means `AlertDialog` came back instead of `FlashConfirm
 
 ### Source
 `docs/ui/radio-gateway.md` "Redesign v2" (2026-10-28); ADR-226/227/228/229 unchanged (wiring untouched).
+
+---
+
+## RADUI-DEV02 - Redesign v3 on a phone (2026-11-05)
+
+### Setup
+Android app built from `design/radio-gateway-v3` and installed on the usual handset. One handheld radio (VR-N76 or
+UV-Pro) for the live steps; steps 1-6 also work with the debug demo (Settings -> Radio gateway opens on a connected
+VR-N76 with UV-Pro listed and audio listening).
+
+### Steps
+1. Settings -> "Radio gateway (beta)". With the gateway **off**: the plate reads "No radio paired" / "Radio gateway is
+   off.", a full-width **Turn on** button sits under the sentence, the intro sentence follows, then the three steps under
+   "Before you turn it on". No security/mode/scan sections are visible.
+2. Tap **Turn on** (and separately the switch). The plate reads "Radio gateway is on."; "Your radios" shows
+   "None paired yet" with the **filled** "Pair a new radio" button.
+3. Tap **Pair a new radio**. A sheet opens **and the scan starts by itself** ("Scanning for nearby radios…" plus
+   "Stop (N s)"); devices appear ranked with a RADIO / SERIAL SPP / OTHER chip and dBm. Close the sheet -> the scan stops.
+4. Pair the radio. The sheet closes; the plate shows the radio name with "Connecting…"/"Connected to <name>."; the talk bar
+   appears above the bottom bar (radio audio switch + level + hold-to-talk).
+5. "Your radios" shows the radio with an **In use** chip, and "Pair a new radio" is now a **quiet outlined** button, not a
+   second filled one.
+6. Gear -> **Radio settings**: Security profile (M / A), Operational mode (1 / 2 / 4 / 5 with Active / Coming later), This
+   radio (name, address, callsign), Send a test message, Forget this radio. Tapping Profile M without authorisation opens
+   the authorisation sheet; Forget returns to "No radio paired".
+7. Talk bar with the link up: turn Listen on -> "Listening" and level bars; **hold** Hold to talk -> the control turns
+   **warm** and reads "Talking…", "Talking" and an "On air" chip appear, the radio keys and audio goes out. Release -> back
+   to Listening.
+8. Switch the radio off (link down). The plate shows the lost sentence and Reconnect; the talk bar reads "No link" and its
+   control says "Reconnect the radio to talk." and **does not key anything**.
+9. With a second paired radio in the list, tap **Use** -> "Use another radio?" appears; Cancel keeps the current radio,
+   confirm switches.
+10. Scroll to the end of the page: the last row ("This link" / mode) must be fully readable above the talk bar, never
+    hidden behind it.
+
+### Pass Line
+```text
+PASS: the off state offers Turn on; turning it on shows the paired radios and one filled "Pair a new radio"; that button
+opens a sheet that starts scanning and stops when it is closed; security profile and operational mode live only in the
+settings sheet; the talk bar sits above the bottom bar with hold-to-talk, turns warm with "Talking…" while keyed, and is
+disabled with a reason when the link is down; no row is covered by the talk bar at the end of the scroll; no inline
+colour, no stock Material control.
+```
+
+Interpretation if it fails: a second filled button means the `primary = state.rememberedRadioName == null` rule was lost;
+a live PTT while disconnected means `linkLive` is not wired; a scan that does not start means the sheet's `LaunchedEffect`
+was removed; a talk bar that covers content means the dock was moved back into the scroll area.
+
+### Source
+`docs/ui/radio-gateway.md` "Redesign v3" (2026-11-05).
+
+---
+
+## RADUI-DEV03 - Redesign v3 on Windows (2026-11-05)
+
+### Setup
+Desktop app from `design/radio-gateway-v3`, window at 1440x900 and then maximised; Windows scaling 100 %, 125 % and 150 %.
+
+### Steps
+1. Open the radio page (desktop demo entry or Settings -> Radio gateway). The column is centred and no wider than 720 dp.
+2. Confirm the **audio panel is not docked** on a wide window: it sits in the flow directly under the station plate and is
+   visible without scrolling. On a window narrower than 900 dp it becomes the bottom dock instead.
+3. Desktop hosts report no radio voice, so the audio panel must be **absent** and leave no empty gap.
+4. Gear -> Radio settings and "Pair a new radio" must both open inside the window (no separate native window) and Esc must
+   close them.
+5. Keyboard: Tab to "Hold to talk" (when audio is available), hold **Space** -> talking, release -> stops; auto-repeat must
+   not restart the transmission. Arrow keys move between the radio choices in each settings group.
+6. Repeat at 125 % and 150 % scaling: nothing clipped, no horizontal scrollbar.
+
+### Pass Line
+```text
+PASS: wide window shows plate -> audio panel -> radios -> help -> This link in one centred column; the panel is absent
+where the host has no voice; both sheets stay inside the window; Space holds and releases the PTT; scaling does not clip.
+```
+
+### Source
+`docs/ui/radio-gateway.md` "Redesign v3".
+
+---
+
+## RADUI-DEV04 - Screen reader and keyboard transmit (2026-11-05)
+
+### Setup
+Android with TalkBack (and Switch Access if available); desktop with NVDA or Narrator. Radio connected and listening.
+
+### Steps
+1. TalkBack: focus the station state. It should be announced when it changes (polite live region), not only when focused.
+2. TalkBack: focus the talk control. The name is "Hold to talk through the radio"; the state reads Ready / Talking. Note
+   **whether a double-tap transmits** — the hold gesture is not reachable for a screen reader, and this must not silently
+   key the radio.
+3. Keyboard (desktop): Space/Enter press-and-hold transmits while held; releasing stops; holding the key down must not
+   re-trigger and must not get stuck transmitting.
+4. Switch Access: record whether the talk control can be activated at all.
+5. Report the result even if the only finding is "screen readers cannot hold a PTT" — that is the current limitation.
+
+### Pass Line
+```text
+PASS: state changes are announced; the talk control has a name and a state; the keyboard holds and releases cleanly and
+never sticks; the screen-reader limitation is recorded rather than hidden.
+```
+
+### Source
+`docs/ui/radio-gateway.md` "Redesign v3" (Impeccable Assessment B, WCAG 2.1.1 / 4.1.3).
+
 `FlashRadioGatewayComponents.kt`, `FlashRadioGatewayScreen.kt`, `FlashRadioVoiceCard.kt`.
 
 ### Status

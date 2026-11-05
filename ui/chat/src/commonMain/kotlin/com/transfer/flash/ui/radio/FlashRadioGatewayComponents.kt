@@ -16,10 +16,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -38,20 +43,20 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.transfer.flash.core.radio.connect.RadioCallsign
 import com.transfer.flash.ui.chat.FlashConfirmHost
+import com.transfer.flash.ui.chat.FlashSheetHost
 import com.transfer.flash.ui.hub.FlashHubButton
 import com.transfer.flash.ui.hub.FlashHubChip
+import com.transfer.flash.ui.hub.FlashHubIconButton
 import com.transfer.flash.ui.hub.FlashHubSwitch
 import com.transfer.flash.ui.hub.FlashHubTextAction
 import com.transfer.flash.ui.hub.HubLiveDot
 import com.transfer.flash.ui.hub.HubShapes
 import com.transfer.flash.ui.hub.HubTone
 import com.transfer.flash.ui.hub.color
-import com.transfer.flash.ui.hub.hubCapsStyle
 import com.transfer.flash.ui.hub.hubClickable
-import com.transfer.flash.ui.hub.hubHeroBrush
-import com.transfer.flash.ui.hub.hubRuleBelow
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
@@ -60,12 +65,12 @@ import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 
 /*
- * Redesign v2 (docs/ui/radio-gateway.md "Redesign v2", 2026-10-28).
+ * Redesign v3 (docs/ui/radio-gateway.md, "Redesign v3", 2026-11-05).
  *
  * The rule this file follows: a border and a fill are information, not decoration. The page is ONE station plate
- * (the radio itself) plus two attention strips (permission, candidate found); every other section is a small-caps
- * label with rows separated by hairlines. The language is the Hub tab's (UI-058) - HubShapes, hubCapsStyle,
- * FlashHubSwitch / Button / TextAction / Chip, HubTone - so the app keeps one visual system instead of two.
+ * (the radio and its link), one audio panel (listen + hold to talk), a list of the radios the operator owns with the
+ * one pairing action, and the readiness steps. Security profile, operational mode and the RF test frame moved into
+ * the Radio settings sheet, so the page answers "can I talk now, and how do I add a radio?" and nothing else.
  *
  * Nothing in the wiring changed: the same controller calls, the same FlashRadioCopy sentences and the same
  * FlashRadioMath decisions (FlashRadioNoDeadActionsTest / FlashRadioCopyA11ySourceTest still guard this file).
@@ -108,13 +113,13 @@ internal fun radioStatusTone(status: RadioConnectionStatus, reason: RadioFailure
     }
 }
 
-/** The short profile name used in the station facts ("M · Encrypted"). */
+/** The short profile name used in the link facts ("M · Encrypted"). */
 internal fun shortProfileName(profile: RadioSecurityProfile): String = when (profile) {
     RadioSecurityProfile.PROFILE_M -> FlashRadioCopy.PROFILE_M_SHORT
     RadioSecurityProfile.PROFILE_A -> FlashRadioCopy.PROFILE_A_SHORT
 }
 
-/** A small-caps section label followed by a hairline that runs to the edge, with an optional compact action. */
+/** A section label: sentence case, 13 sp, just above its rows. No caps, no rule, no box. */
 @Composable
 internal fun FlashRadioSectionHeader(
     text: String,
@@ -125,71 +130,75 @@ internal fun FlashRadioSectionHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(top = FlashSpacing.space8, bottom = FlashSpacing.space4),
+            .padding(top = FlashSpacing.space8, bottom = FlashSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
         FlashText(
-            text = text.uppercase(),
-            style = hubCapsStyle(),
+            text = text,
+            modifier = Modifier.weight(1f).semantics { heading() },
+            style = FlashTheme.typography.metadataEmphasis.copy(fontSize = 13.sp, lineHeight = 18.sp),
             color = colors.textSecondary,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        Box(Modifier.weight(1f).height(1.dp).background(colors.borderSubtle))
-        if (action != null) action()
+        action?.invoke()
     }
 }
 
-/** A compact capsule action that sits in a section header: 48 dp touch area, ~30 dp of visible pill. */
+/** A switch with its 48 dp touch area and a spoken name; the only toggle control on this page. */
 @Composable
-private fun RadioHeaderAction(
-    label: String,
-    onClick: () -> Unit,
-    a11yLabel: String? = null,
-) {
+internal fun RadioSwitch(on: Boolean, a11yLabel: String, onToggle: (Boolean) -> Unit) {
     val colors = FlashTheme.colors
+    // The track alone is one tone step from the surface (WCAG 1.4.11 wants 3:1 for a control boundary), so the
+    // hit area carries a hairline capsule in a tone that is actually visible on both the plate and the audio panel.
     Box(
         modifier = Modifier
-            .heightIn(min = FlashDimensions.minTouchTarget)
-            .hubClickable(onClick = onClick)
-            .semantics { if (a11yLabel != null) contentDescription = a11yLabel },
+            .size(FlashDimensions.minTouchTarget)
+            .hubClickable { onToggle(!on) }
+            .semantics {
+                contentDescription = a11yLabel
+                stateDescription = if (on) FlashRadioCopy.VALUE_ON else FlashRadioCopy.VALUE_OFF
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Row(
+        Box(
             modifier = Modifier
                 .clip(HubShapes.capsule)
-                .background(colors.accentPrimary.copy(alpha = 0.14f))
-                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
-            verticalAlignment = Alignment.CenterVertically,
+                .border(
+                    width = FlashDimensions.borderHairline,
+                    color = if (on) colors.accentPrimary else colors.textTertiary,
+                    shape = HubShapes.capsule,
+                )
+                .padding(2.dp),
         ) {
-            FlashText(label, style = FlashTheme.typography.metadataEmphasis, color = colors.accentPrimary, maxLines = 1)
+            FlashHubSwitch(on = on)
         }
     }
 }
 
-/** One "label — value" row of the station facts. */
+/** One "label — value" row of the link facts. */
 @Composable
-internal fun RadioFactRow(label: String, value: String) {
+internal fun RadioFactRow(label: String, value: String, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 40.dp)
-            .hubRuleBelow()
+            .heightIn(min = 44.dp)
             .padding(vertical = FlashSpacing.space8),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         FlashText(
             text = label,
-            modifier = Modifier.widthIn(min = 88.dp),
-            style = FlashTheme.typography.metadataDefault,
+            modifier = Modifier.widthIn(min = 92.dp),
+            style = FlashTheme.typography.captionDefault,
             color = colors.textSecondary,
         )
         Spacer(modifier = Modifier.width(FlashSpacing.space12))
         FlashText(
             text = value,
             modifier = Modifier.weight(1f),
-            style = FlashTheme.typography.bodyDefault,
+            style = FlashTheme.typography.captionDefault,
             color = colors.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -207,7 +216,7 @@ private fun RadioRing(selected: Boolean) {
             .clip(CircleShape)
             .border(
                 width = if (selected) 1.5.dp else FlashDimensions.borderHairline,
-                color = if (selected) colors.accentPrimary else colors.borderStrong,
+                color = if (selected) colors.accentPrimary else colors.textTertiary,
                 shape = CircleShape,
             ),
         contentAlignment = Alignment.Center,
@@ -219,11 +228,11 @@ private fun RadioRing(selected: Boolean) {
 }
 
 /**
- * A choice row (security profile, operational mode): ring, title, optional chip, subtitle. Rows, not cards: the
- * selected state is carried by the ring and the title colour, so the page keeps a single visual weight.
+ * A settings choice row (security profile, operational mode): ring, title, optional chip, subtitle. Rows, not
+ * cards: the selected state is the ring and the title colour.
  */
 @Composable
-private fun RadioChoiceRow(
+internal fun RadioChoiceRow(
     title: String,
     subtitle: String,
     badge: String?,
@@ -244,7 +253,6 @@ private fun RadioChoiceRow(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 64.dp)
-            .hubRuleBelow()
             .hubClickable(enabled = enabled, role = Role.RadioButton, onClick = onClick)
             .semantics {
                 contentDescription = a11yLabel
@@ -265,7 +273,7 @@ private fun RadioChoiceRow(
                     modifier = Modifier.weight(1f, fill = false),
                     style = FlashTheme.typography.bodyEmphasis,
                     color = titleColor,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (badge != null && badge.isNotBlank()) {
@@ -274,7 +282,7 @@ private fun RadioChoiceRow(
             }
             FlashText(
                 text = subtitle,
-                style = FlashTheme.typography.metadataDefault,
+                style = FlashTheme.typography.metadataDefault.copy(fontSize = 13.sp, lineHeight = 18.sp),
                 color = if (enabled) colors.textSecondary else colors.textTertiary,
             )
         }
@@ -284,8 +292,8 @@ private fun RadioChoiceRow(
 // --- Station plate (UI-070 / UI-073) ----------------------------------------------------------------------
 
 /**
- * The one hero of the page: the radio, its live state and the master switch. Everything else on the screen is a
- * section of rows, so this block is the only filled surface with a tone-tinted edge.
+ * The one hero: the radio, its live link and the master switch. Everything else is a section of rows, so this is
+ * the only filled surface that carries identity.
  */
 @Composable
 public fun FlashRadioStationBlock(
@@ -297,6 +305,7 @@ public fun FlashRadioStationBlock(
     val colors = FlashTheme.colors
     val tone = radioStatusTone(state.connectionStatus, state.failureReason)
     val tint = tone.color()
+    val hasRadio = state.rememberedRadioName != null || state.candidateRadio != null
     val sentence = FlashRadioMath.statusSentence(
         state.connectionStatus,
         state.failureReason,
@@ -305,94 +314,106 @@ public fun FlashRadioStationBlock(
     val nextStep = FlashRadioMath.statusNextStep(state.connectionStatus, state.failureReason)
     val stationName = state.rememberedRadioName ?: state.candidateRadio?.name ?: FlashRadioCopy.STATION_NO_RADIO
     val live = state.connectionStatus == RadioConnectionStatus.CONNECTED
+    val canReconnect = state.enabled &&
+        FlashRadioMath.canReconnect(state.connectionStatus, state.rememberedRadioAddress != null)
 
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(RadioCardShape)
-            .then(
-                if (state.enabled) {
-                    Modifier
-                        .background(hubHeroBrush(strong = 0.16f, soft = 0.04f))
-                        .border(FlashDimensions.borderHairline, tint.copy(alpha = 0.35f), RadioCardShape)
-                } else {
-                    Modifier.background(colors.backgroundSurfaceSubtle)
-                },
-            )
-            .padding(FlashSpacing.space16),
+            .background(if (state.enabled) colors.backgroundSurface else colors.backgroundSurfaceSubtle)
+            .padding(18.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(HubShapes.mark(44.dp))
-                    .background(tint.copy(alpha = 0.14f)),
-                contentAlignment = Alignment.Center,
+            FlashIcon(
+                icon = if (hasRadio) FlashIcons.Device else FlashIcons.Bluetooth,
+                contentDescription = null,
+                tint = if (state.enabled) tint else colors.textTertiary,
+                size = 22.dp,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                FlashIcon(
-                    icon = FlashIcons.Connection,
-                    contentDescription = null,
-                    tint = tint,
-                    size = FlashDimensions.iconMd,
-                )
-            }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
                 FlashText(
                     text = stationName,
                     modifier = Modifier.semantics { heading() },
-                    style = FlashTheme.typography.headingSmall,
+                    style = FlashTheme.typography.headingSmall.copy(fontSize = 20.sp, lineHeight = 26.sp),
                     color = colors.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 ) {
-                    HubLiveDot(color = tint, live = live, size = 7.dp)
+                    HubLiveDot(
+                        color = if (state.enabled) tint else colors.textTertiary,
+                        live = live,
+                        size = 7.dp,
+                    )
                     FlashText(
                         text = sentence,
-                        style = FlashTheme.typography.metadataDefault,
+                        style = FlashTheme.typography.captionDefault,
                         color = if (state.enabled) colors.textSecondary else colors.textTertiary,
                         maxLines = 2,
                     )
                 }
             }
-            Box(
-                modifier = Modifier
-                    .size(FlashDimensions.minTouchTarget)
-                    .hubClickable { onToggle(!state.enabled) }
-                    .semantics {
-                        contentDescription = FlashRadioCopy.A11Y_MASTER_SWITCH
-                        stateDescription = if (state.enabled) FlashRadioCopy.VALUE_ON else FlashRadioCopy.VALUE_OFF
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                FlashHubSwitch(on = state.enabled)
-            }
+            RadioSwitch(
+                on = state.enabled,
+                a11yLabel = FlashRadioCopy.A11Y_MASTER_SWITCH,
+                onToggle = onToggle,
+            )
         }
-        if (state.enabled) {
-            if (nextStep.isNotBlank()) {
-                Spacer(modifier = Modifier.height(FlashSpacing.space8))
-                FlashText(
-                    text = nextStep,
-                    style = FlashTheme.typography.bodyDefault,
-                    color = colors.textSecondary,
-                )
-            }
-            if (FlashRadioMath.canReconnect(state.connectionStatus, state.rememberedRadioAddress != null)) {
-                Spacer(modifier = Modifier.height(FlashSpacing.space12))
-                FlashHubButton(
-                    label = FlashRadioCopy.ACTION_RECONNECT,
-                    onClick = onReconnect,
-                    icon = FlashIcons.Retry,
-                    primary = false,
-                )
-            }
+
+        if (state.enabled && nextStep.isNotBlank()) {
+            Spacer(modifier = Modifier.height(FlashSpacing.space8))
+            FlashText(
+                text = nextStep,
+                style = FlashTheme.typography.captionDefault,
+                color = colors.textSecondary,
+            )
+        }
+
+        val facts = listOfNotNull(
+            state.rememberedRadioAddress?.takeIf { it.isNotBlank() },
+        )
+        if (facts.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(FlashSpacing.space8))
+            FlashText(
+                text = FlashRadioCopy.linkFacts(facts.joinToString(" · ")),
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        if (!state.enabled) {
+            // A first-timer should not have to find a 40 dp switch in the corner: the plate carries the one action.
+            Spacer(modifier = Modifier.height(FlashSpacing.space16))
+            FlashHubButton(
+                label = FlashRadioCopy.ACTION_TURN_ON,
+                onClick = { onToggle(true) },
+                modifier = Modifier.fillMaxWidth(),
+                icon = FlashIcons.Bluetooth,
+            )
+        }
+
+        if (canReconnect) {
+            Spacer(modifier = Modifier.height(FlashSpacing.space12))
+            FlashHubButton(
+                label = FlashRadioCopy.ACTION_RECONNECT,
+                onClick = onReconnect,
+                icon = FlashIcons.Retry,
+                primary = false,
+            )
         }
     }
 }
@@ -400,8 +421,8 @@ public fun FlashRadioStationBlock(
 // --- Attention strips -------------------------------------------------------------------------------------
 
 /**
- * The permission strip. It is a strip (tone wash plus a hairline under the text), not a box: it only ever appears
- * when something is actually blocked, and then it is the loudest thing on the page.
+ * The permission strip. It is a strip (tone wash, no border), not a box: it only appears when something is
+ * actually blocked, and then it is the loudest thing on the page.
  */
 @Composable
 public fun FlashRadioPermissionBanner(
@@ -417,7 +438,6 @@ public fun FlashRadioPermissionBanner(
             .fillMaxWidth()
             .clip(RadioCardShape)
             .background(tint.copy(alpha = 0.10f))
-            .border(FlashDimensions.borderHairline, tint.copy(alpha = 0.35f), RadioCardShape)
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
             .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         verticalAlignment = Alignment.CenterVertically,
@@ -444,12 +464,15 @@ public fun FlashRadioPermissionBanner(
         if (isDenied) {
             FlashHubTextAction(FlashRadioCopy.ACTION_OPEN_BT_SETTINGS, onOpenSettings)
         } else {
-            FlashHubTextAction(FlashRadioCopy.ACTION_GRANT_PERMISSION, onRequestPermission)
+            FlashHubButton(
+                label = FlashRadioCopy.ACTION_GRANT_PERMISSION,
+                onClick = onRequestPermission,
+            )
         }
     }
 }
 
-/** "A paired radio found, use it?" as a strip: the one question that needs an answer before anything else works. */
+/** "<name> is paired already, use it?" as a strip: the one question that needs an answer before anything else. */
 @Composable
 public fun FlashRadioCandidateBanner(
     candidate: DiscoveredRadioDevice,
@@ -464,7 +487,6 @@ public fun FlashRadioCandidateBanner(
             .fillMaxWidth()
             .clip(RadioCardShape)
             .background(tint.copy(alpha = 0.10f))
-            .border(FlashDimensions.borderHairline, tint.copy(alpha = 0.40f), RadioCardShape)
             .padding(FlashSpacing.space16),
     ) {
         Row(
@@ -504,75 +526,188 @@ public fun FlashRadioCandidateBanner(
     }
 }
 
-// --- This link (UI-070 remembered radio, UI-073 details) ---------------------------------------------------
+// --- Your radios (UI-071) ---------------------------------------------------------------------------------
 
-/** The facts of the remembered link plus the one destructive-looking action ("Forget"), as plain rows. */
+/**
+ * The radios this device already knows, plus the one filled action that starts pairing. Each row is one device;
+ * the radio in use is marked with a chip, the others offer "Use".
+ */
 @Composable
-public fun FlashRadioLinkSection(
+public fun FlashRadioRadiosSection(
     state: RadioGatewayUiState,
-    onForget: () -> Unit,
+    onPair: (String) -> Unit,
+    onPairNew: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val otherPaired = remember(state.discoveredDevices, state.rememberedRadioAddress) {
+        state.discoveredDevices.filter { it.isPaired && it.id != state.rememberedRadioAddress }
+    }
+    val count = (if (state.rememberedRadioName != null) 1 else 0) + otherPaired.size
+    val connected = state.connectionStatus == RadioConnectionStatus.CONNECTED
+
     Column(modifier = modifier.fillMaxWidth()) {
-        FlashRadioSectionHeader(FlashRadioCopy.SECTION_LINK)
-        RadioFactRow(
-            label = FlashRadioCopy.FACT_RADIO,
-            value = state.rememberedRadioName ?: FlashRadioCopy.FACT_NONE,
+        FlashRadioSectionHeader(
+            text = FlashRadioCopy.SECTION_RADIOS,
+            action = {
+                FlashText(
+                    text = if (count == 0) FlashRadioCopy.RADIOS_NONE else FlashRadioCopy.radiosCount(count),
+                    style = FlashTheme.typography.metadataDefault,
+                    color = FlashTheme.colors.textSecondary,
+                )
+            },
         )
-        RadioFactRow(
-            label = FlashRadioCopy.FACT_ADDRESS,
-            value = state.rememberedRadioAddress ?: FlashRadioCopy.FACT_NONE,
-        )
-        RadioFactRow(
-            label = FlashRadioCopy.FACT_PROFILE,
-            value = shortProfileName(state.selectedProfile),
-        )
-        RadioFactRow(
-            label = FlashRadioCopy.FACT_CALLSIGN,
-            value = state.operatorCallsign ?: FlashRadioCopy.FACT_NONE,
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = FlashDimensions.minTouchTarget),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.End,
-        ) {
-            FlashHubTextAction(FlashRadioCopy.ACTION_FORGET, onForget)
+
+        state.rememberedRadioName?.let { name ->
+            RadioKnownDeviceRow(
+                name = name,
+                address = state.rememberedRadioAddress.orEmpty(),
+                chip = if (connected) FlashRadioCopy.CHIP_IN_USE else FlashRadioCopy.CHIP_LINK_LOST,
+                chipTone = if (connected) HubTone.SUCCESS else HubTone.WARNING,
+            )
         }
-    }
-}
 
-// --- Set up your radio (UI-070 readiness checklist) -------------------------------------------------------
+        otherPaired.forEach { device ->
+            RadioKnownDeviceRow(
+                name = device.name,
+                address = device.id,
+                action = {
+                    Box(
+                        modifier = Modifier.semantics {
+                            contentDescription = FlashRadioCopy.a11yUseDevice(device.name)
+                        },
+                    ) {
+                        FlashHubTextAction(FlashRadioCopy.ACTION_USE_RADIO, onClick = { onPair(device.id) })
+                    }
+                },
+            )
+        }
 
-/** The three readiness steps as rows. Shown while nothing is set up, and while the gateway is off. */
-@Composable
-public fun FlashRadioChecklistSection(
-    modifier: Modifier = Modifier,
-) {
-    val colors = FlashTheme.colors
-    Column(modifier = modifier.fillMaxWidth()) {
-        FlashRadioSectionHeader(FlashRadioCopy.CHECKLIST_TITLE)
-        FlashText(
-            text = FlashRadioCopy.CHECKLIST_SUBTITLE,
-            modifier = Modifier.padding(bottom = FlashSpacing.space8),
-            style = FlashTheme.typography.metadataDefault,
-            color = colors.textTertiary,
+        Spacer(modifier = Modifier.height(FlashSpacing.space16))
+        FlashHubButton(
+            label = FlashRadioCopy.ACTION_PAIR_NEW_RADIO,
+            onClick = onPairNew,
+            modifier = Modifier.fillMaxWidth(),
+            icon = FlashIcons.Bluetooth,
+            // One filled control per state: once a radio is set up, pairing steps back to a quiet button.
+            primary = state.rememberedRadioName == null,
         )
-        ChecklistStep(FlashRadioCopy.CHECKLIST_STEP_1)
-        ChecklistStep(FlashRadioCopy.CHECKLIST_STEP_2)
-        ChecklistStep(FlashRadioCopy.CHECKLIST_STEP_3)
     }
 }
 
 @Composable
-private fun ChecklistStep(text: String) {
+private fun RadioKnownDeviceRow(
+    name: String,
+    address: String,
+    chip: String? = null,
+    chipTone: HubTone = HubTone.NEUTRAL,
+    action: (@Composable () -> Unit)? = null,
+) {
     val colors = FlashTheme.colors
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .hubRuleBelow()
-            .padding(vertical = FlashSpacing.space12),
+            .heightIn(min = 64.dp)
+            .padding(vertical = FlashSpacing.space8),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+    ) {
+        FlashIcon(
+            icon = FlashIcons.Device,
+            contentDescription = null,
+            tint = colors.textSecondary,
+            size = 20.dp,
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
+        ) {
+            FlashText(
+                text = name,
+                style = FlashTheme.typography.bodyEmphasis,
+                color = colors.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                FlashText(
+                    text = address,
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (chip != null) {
+                    FlashHubChip(text = chip, emphasised = chipTone == HubTone.SUCCESS)
+                }
+            }
+        }
+        action?.invoke()
+    }
+}
+
+// --- Readiness steps --------------------------------------------------------------------------------------
+
+/**
+ * The three preparation steps. Shown expanded before anything is paired (and while the gateway is off), and as a
+ * disclosure once a radio is set up, so it never competes with the live link.
+ */
+@Composable
+public fun FlashRadioReadinessSection(
+    title: String,
+    expanded: Boolean,
+    alwaysExpanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    Column(modifier = modifier.fillMaxWidth()) {
+        if (alwaysExpanded) {
+            FlashRadioSectionHeader(text = title)
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = FlashDimensions.minTouchTarget)
+                    .hubClickable(onClick = onToggle),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                FlashText(
+                    text = FlashRadioCopy.HELP_NOT_SHOWING,
+                    modifier = Modifier.weight(1f),
+                    style = FlashTheme.typography.bodyEmphasis,
+                    color = colors.textSecondary,
+                )
+                FlashIcon(
+                    icon = FlashIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = colors.textSecondary,
+                    size = FlashDimensions.iconSm,
+                    modifier = Modifier.rotate(if (expanded) 0f else -90f),
+                )
+            }
+        }
+        if (alwaysExpanded || expanded) {
+            if (alwaysExpanded) {
+                Spacer(modifier = Modifier.height(FlashSpacing.space4))
+            }
+            FlashRadioChecklistStep(FlashRadioCopy.CHECKLIST_STEP_1)
+            FlashRadioChecklistStep(FlashRadioCopy.CHECKLIST_STEP_2)
+            FlashRadioChecklistStep(FlashRadioCopy.CHECKLIST_STEP_3)
+        }
+    }
+}
+
+@Composable
+private fun FlashRadioChecklistStep(text: String) {
+    val colors = FlashTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = FlashSpacing.space4),
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
@@ -586,115 +721,185 @@ private fun ChecklistStep(text: String) {
         FlashText(
             text = text,
             modifier = Modifier.weight(1f),
-            style = FlashTheme.typography.bodyDefault,
-            color = colors.textPrimary,
+            style = FlashTheme.typography.captionDefault,
+            color = colors.textSecondary,
         )
     }
 }
 
-// --- Find my radio (UI-071) -------------------------------------------------------------------------------
+// --- This link (UI-073) -----------------------------------------------------------------------------------
 
-/** Live scan and pairing as rows: the scan action lives in the section header, so it never scrolls away first. */
+/** The operating facts of the live link: what is actually on the air when the operator speaks. */
 @Composable
-public fun FlashRadioFindSection(
-    isScanning: Boolean,
-    countdownSeconds: Int,
-    devices: List<DiscoveredRadioDevice>,
+public fun FlashRadioLinkFactsSection(
+    state: RadioGatewayUiState,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        FlashRadioSectionHeader(FlashRadioCopy.SECTION_LINK)
+        RadioFactRow(FlashRadioCopy.FACT_PROFILE, shortProfileName(state.selectedProfile))
+        RadioFactRow(
+            label = FlashRadioCopy.FACT_CALLSIGN,
+            value = state.operatorCallsign ?: FlashRadioCopy.FACT_NONE,
+        )
+        RadioFactRow(FlashRadioCopy.FACT_MODE, FlashRadioMath.modeTitle(state.selectedMode))
+    }
+}
+
+// --- Pair sheet (UI-071) ----------------------------------------------------------------------------------
+
+/**
+ * The pairing sheet. It exists so the page can offer one button: opening it starts the scan (the existing
+ * [RadioGatewayController.startScan]), closing it stops the scan again.
+ */
+@Composable
+public fun FlashRadioPairSheet(
+    state: RadioGatewayUiState,
+    onDismiss: () -> Unit,
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
     onPair: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onRequestPermission: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
-    val sorted = remember(devices) { FlashRadioMath.sortDiscoveredDevices(devices) }
-    Column(modifier = modifier.fillMaxWidth()) {
-        FlashRadioSectionHeader(
-            text = FlashRadioCopy.FIND_SECTION_TITLE,
-            action = {
-                if (isScanning) {
-                    RadioHeaderAction(
-                        label = FlashRadioCopy.actionStopScan(countdownSeconds),
-                        onClick = onStopScan,
-                        a11yLabel = FlashRadioCopy.A11Y_STOP_SCAN,
-                    )
-                } else {
-                    RadioHeaderAction(
-                        label = FlashRadioCopy.ACTION_SCAN_RADIOS,
-                        onClick = onStartScan,
-                        a11yLabel = FlashRadioCopy.A11Y_START_SCAN,
-                    )
-                }
-            },
-        )
-        FlashText(
-            text = FlashRadioCopy.FIND_SECTION_SUBTITLE,
-            modifier = Modifier.padding(bottom = FlashSpacing.space4),
-            style = FlashTheme.typography.metadataDefault,
-            color = colors.textTertiary,
-        )
-        if (sorted.isEmpty()) {
+    val sorted = remember(state.discoveredDevices) {
+        FlashRadioMath.sortDiscoveredDevices(state.discoveredDevices)
+    }
+
+    LaunchedEffect(Unit) {
+        if (!state.isScanning) onStartScan()
+    }
+
+    FlashSheetHost(
+        onDismiss = {
+            onStopScan()
+            onDismiss()
+        },
+        containerColor = colors.backgroundSurface,
+        dragHandle = { RadioSheetHandle() },
+        modifier = modifier,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(
+                    start = FlashSpacing.space20,
+                    end = FlashSpacing.space20,
+                    bottom = FlashSpacing.space32,
+                ),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = FlashSpacing.space4),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FlashText(
+                    text = FlashRadioCopy.PAIR_SHEET_TITLE,
+                    modifier = Modifier.weight(1f).semantics { heading() },
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+                FlashHubIconButton(FlashIcons.Close, FlashRadioCopy.A11Y_PAIR_SHEET_CLOSE, onDismiss)
+            }
             FlashText(
-                text = FlashRadioCopy.SCAN_NO_DEVICES,
-                modifier = Modifier.padding(vertical = FlashSpacing.space8),
-                style = FlashTheme.typography.bodyDefault,
+                text = FlashRadioCopy.PAIR_SHEET_SUBTITLE,
+                style = FlashTheme.typography.metadataDefault.copy(fontSize = 13.sp, lineHeight = 18.sp),
                 color = colors.textSecondary,
             )
-        } else {
-            sorted.forEach { device ->
-                FlashRadioDeviceRow(device = device, onPair = { onPair(device.id) })
+            Spacer(modifier = Modifier.height(FlashSpacing.space12))
+
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+            ) {
+                HubLiveDot(color = colors.accentPrimary, live = state.isScanning, size = 7.dp)
+                FlashText(
+                    text = FlashRadioMath.scanStatusText(state.isScanning),
+                    modifier = Modifier.weight(1f),
+                    style = FlashTheme.typography.captionDefault,
+                    color = colors.textSecondary,
+                )
+                if (state.isScanning) {
+                    FlashHubTextAction(
+                        label = FlashRadioCopy.actionStopScan(state.scanCountdownSeconds),
+                        onClick = onStopScan,
+                    )
+                } else {
+                    FlashHubTextAction(
+                        label = FlashRadioCopy.ACTION_SCAN_RADIOS,
+                        onClick = onStartScan,
+                    )
+                }
             }
-        }
-        Spacer(modifier = Modifier.height(FlashSpacing.space4))
-        Row(
-            modifier = Modifier.fillMaxWidth().heightIn(min = FlashDimensions.minTouchTarget),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-        ) {
-            FlashText(
-                text = FlashRadioCopy.SCAN_BATTERY_NOTE,
-                modifier = Modifier.weight(1f),
-                style = FlashTheme.typography.metadataDefault,
-                color = colors.textTertiary,
-            )
-            FlashHubTextAction(FlashRadioCopy.ACTION_OPEN_BT_SETTINGS, onOpenSettings)
+
+            val permissionNeeded = !state.nearbyDevicesPermissionGranted ||
+                state.failureReason == RadioFailureReason.PERMISSION_MISSING ||
+                state.failureReason == RadioFailureReason.PERMISSION_DENIED
+            if (permissionNeeded) {
+                Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                FlashRadioPermissionBanner(
+                    isDenied = state.failureReason == RadioFailureReason.PERMISSION_DENIED,
+                    onRequestPermission = onRequestPermission,
+                    onOpenSettings = onOpenSettings,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space8))
+            if (sorted.isEmpty()) {
+                FlashText(
+                    text = FlashRadioCopy.SCAN_NO_DEVICES,
+                    modifier = Modifier.padding(vertical = FlashSpacing.space12),
+                    style = FlashTheme.typography.captionDefault,
+                    color = colors.textSecondary,
+                )
+            } else {
+                sorted.forEach { device ->
+                    RadioDiscoveredRow(
+                        device = device,
+                        onPair = { onPair(device.id) },
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space12))
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = FlashDimensions.minTouchTarget),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+            ) {
+                FlashText(
+                    text = FlashRadioCopy.SCAN_BATTERY_NOTE,
+                    modifier = Modifier.weight(1f),
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textSecondary,
+                )
+                FlashHubTextAction(FlashRadioCopy.ACTION_OPEN_BT_SETTINGS, onOpenSettings)
+            }
         }
     }
 }
 
 @Composable
-private fun FlashRadioDeviceRow(
-    device: DiscoveredRadioDevice,
-    onPair: () -> Unit,
-) {
+private fun RadioDiscoveredRow(device: DiscoveredRadioDevice, onPair: () -> Unit) {
     val colors = FlashTheme.colors
-    val categoryText = FlashRadioMath.categoryBadgeText(device.category)
     val emphasised = device.category == RadioDeviceCategory.KNOWN_RADIO
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
-            .hubRuleBelow()
+            .heightIn(min = 64.dp)
             .padding(vertical = FlashSpacing.space8),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(HubShapes.mark(36.dp))
-                .background(
-                    if (emphasised) colors.accentPrimary.copy(alpha = 0.14f) else colors.backgroundSurfaceStrong,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            FlashIcon(
-                icon = if (emphasised) FlashIcons.Device else FlashIcons.Bluetooth,
-                contentDescription = null,
-                tint = if (emphasised) colors.accentPrimary else colors.textSecondary,
-                size = FlashDimensions.iconSm,
-            )
-        }
+        FlashIcon(
+            icon = if (emphasised) FlashIcons.Device else FlashIcons.Bluetooth,
+            contentDescription = null,
+            tint = if (emphasised) colors.textPrimary else colors.textSecondary,
+            size = 20.dp,
+        )
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
@@ -710,12 +915,12 @@ private fun FlashRadioDeviceRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             ) {
-                FlashHubChip(text = categoryText, emphasised = emphasised)
-                if (device.rssi != null) {
+                FlashHubChip(text = FlashRadioMath.categoryBadgeText(device.category), emphasised = emphasised)
+                device.rssi?.let { rssi ->
                     FlashText(
-                        text = FlashRadioCopy.signalHint(device.rssi),
+                        text = FlashRadioCopy.signalHint(rssi),
                         style = FlashTheme.typography.metadataDefault,
-                        color = colors.textTertiary,
+                        color = colors.textSecondary,
                     )
                 }
             }
@@ -727,12 +932,16 @@ private fun FlashRadioDeviceRow(
                 color = colors.textSecondary,
             )
             device.isPaired -> Box(
-                modifier = Modifier.semantics { contentDescription = FlashRadioCopy.a11yUseDevice(device.name) },
+                modifier = Modifier.semantics {
+                    contentDescription = FlashRadioCopy.a11yUseDevice(device.name)
+                },
             ) {
                 FlashHubTextAction(FlashRadioCopy.ACTION_USE_RADIO, onPair)
             }
             else -> Box(
-                modifier = Modifier.semantics { contentDescription = FlashRadioCopy.a11yPairDevice(device.name) },
+                modifier = Modifier.semantics {
+                    contentDescription = FlashRadioCopy.a11yPairDevice(device.name)
+                },
             ) {
                 FlashHubTextAction(FlashRadioCopy.ACTION_PAIR, onPair)
             }
@@ -740,161 +949,188 @@ private fun FlashRadioDeviceRow(
     }
 }
 
-// --- Security profile (UI-072) ----------------------------------------------------------------------------
+// --- Settings sheet (UI-072 / UI-074 / diagnostics) -------------------------------------------------------
 
-/** Profile M / Profile A as choice rows. Selecting M without the authorisation still opens the sheet. */
+/**
+ * The less-used controls, off the page: security profile, operational mode, the RF test frame and Forget. Same
+ * behaviour, validation and copy as before; only the container moved.
+ */
 @Composable
-public fun FlashRadioSecuritySection(
-    selectedProfile: RadioSecurityProfile,
-    isAuthorised: Boolean,
+public fun FlashRadioSettingsSheet(
+    state: RadioGatewayUiState,
+    canSendTestMessage: Boolean,
+    onDismiss: () -> Unit,
     onSelectProfile: (RadioSecurityProfile) -> Unit,
     onOpenAuthorisation: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val canSelectM = FlashRadioMath.isProfileMSelectable(isAuthorised)
-    Column(modifier = modifier.fillMaxWidth()) {
-        FlashRadioSectionHeader(FlashRadioCopy.SECURITY_SECTION_TITLE)
-        RadioChoiceRow(
-            title = FlashRadioCopy.PROFILE_M_TITLE,
-            subtitle = FlashRadioCopy.PROFILE_M_SUBTITLE,
-            badge = if (isAuthorised) FlashRadioCopy.BADGE_AUTHORISED else FlashRadioCopy.PROFILE_M_NEEDS_AUTH_BADGE,
-            badgeEmphasised = isAuthorised,
-            selected = selectedProfile == RadioSecurityProfile.PROFILE_M,
-            a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_M,
-            onClick = {
-                if (canSelectM) {
-                    onSelectProfile(RadioSecurityProfile.PROFILE_M)
-                } else {
-                    onOpenAuthorisation()
-                }
-            },
-        )
-        RadioChoiceRow(
-            title = FlashRadioCopy.PROFILE_A_TITLE,
-            subtitle = FlashRadioCopy.PROFILE_A_SUBTITLE,
-            badge = null,
-            selected = selectedProfile == RadioSecurityProfile.PROFILE_A,
-            a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_A,
-            onClick = { onSelectProfile(RadioSecurityProfile.PROFILE_A) },
-        )
-    }
-}
-
-// --- Operational mode (UI-074) ----------------------------------------------------------------------------
-
-/** The modes, with "Coming later" as a chip rather than a disabled card. */
-@Composable
-public fun FlashRadioModesSection(
-    selectedMode: RadioGatewayMode,
-    availableModes: Set<RadioGatewayMode>,
     onSelectMode: (RadioGatewayMode) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val modes = remember { FlashRadioMath.visibleModes() }
-    Column(modifier = modifier.fillMaxWidth()) {
-        FlashRadioSectionHeader(FlashRadioCopy.MODES_SECTION_TITLE)
-        modes.forEach { mode ->
-            val selectable = FlashRadioMath.isModeSelectable(mode, availableModes)
-            val title = when (mode) {
-                RadioGatewayMode.FIELD_COMPANION -> FlashRadioCopy.MODE_1_TITLE
-                RadioGatewayMode.BASE_STATION_RELAY -> FlashRadioCopy.MODE_2_TITLE
-                RadioGatewayMode.TACTICAL_RADAR -> FlashRadioCopy.MODE_4_TITLE
-                RadioGatewayMode.ALL_IN_ONE -> FlashRadioCopy.MODE_5_TITLE
-                RadioGatewayMode.WALKIE_TALKIE_BRIDGE -> FlashRadioCopy.MODE_5_TITLE
-            }
-            val subtitle = when (mode) {
-                RadioGatewayMode.FIELD_COMPANION -> FlashRadioCopy.MODE_1_SUBTITLE
-                RadioGatewayMode.BASE_STATION_RELAY -> FlashRadioCopy.MODE_2_SUBTITLE
-                RadioGatewayMode.TACTICAL_RADAR -> FlashRadioCopy.MODE_4_SUBTITLE
-                RadioGatewayMode.ALL_IN_ONE -> FlashRadioCopy.MODE_5_SUBTITLE
-                RadioGatewayMode.WALKIE_TALKIE_BRIDGE -> FlashRadioCopy.MODE_5_SUBTITLE
-            }
-            RadioChoiceRow(
-                title = title,
-                subtitle = subtitle,
-                badge = FlashRadioMath.modeBadgeText(mode, selectedMode, availableModes),
-                badgeEmphasised = mode == selectedMode,
-                selected = mode == selectedMode,
-                a11yLabel = FlashRadioCopy.a11ySelectMode(title),
-                onClick = { onSelectMode(mode) },
-                enabled = selectable,
-            )
-        }
-    }
-}
-
-// --- Radio diagnostics (UI-073) ---------------------------------------------------------------------------
-
-/** One row: the transmit test, its result line, and why it is unavailable when there is no link. */
-@Composable
-public fun FlashRadioDiagnosticsSection(
-    canSend: Boolean,
-    isSending: Boolean,
-    lastSuccess: Boolean?,
-    onRequestSend: () -> Unit,
+    onRequestSendTest: () -> Unit,
+    onForget: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
-    val detail: String
-    val detailColor: androidx.compose.ui.graphics.Color
-    when {
-        isSending -> {
-            detail = FlashRadioCopy.TEST_MESSAGE_SENDING
-            detailColor = colors.textSecondary
-        }
-        lastSuccess == true -> {
-            detail = FlashRadioCopy.TEST_MESSAGE_SENT_SUCCESS
-            detailColor = colors.textSuccess
-        }
-        lastSuccess == false -> {
-            detail = FlashRadioCopy.TEST_MESSAGE_SENT_FAILED
-            detailColor = colors.textError
-        }
-        !canSend -> {
-            detail = FlashRadioCopy.TEST_MESSAGE_NEEDS_LINK
-            detailColor = colors.textTertiary
-        }
-        else -> {
-            detail = FlashRadioCopy.TRANSMIT_WARNING_BODY
-            detailColor = colors.textTertiary
-        }
-    }
-    Column(modifier = modifier.fillMaxWidth()) {
-        FlashRadioSectionHeader(FlashRadioCopy.DIAGNOSTICS_SECTION_TITLE)
-        Row(
+    val canSelectM = FlashRadioMath.isProfileMSelectable(state.isAuthorisedForEncryption)
+    val modes = remember { FlashRadioMath.visibleModes() }
+
+    FlashSheetHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
+        dragHandle = { RadioSheetHandle() },
+        modifier = modifier,
+    ) {
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 56.dp)
-                .hubRuleBelow()
-                .padding(vertical = FlashSpacing.space8),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                .verticalScroll(rememberScrollState())
+                .padding(
+                    start = FlashSpacing.space20,
+                    end = FlashSpacing.space20,
+                    bottom = FlashSpacing.space32,
+                ),
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = FlashSpacing.space8),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 FlashText(
-                    text = FlashRadioCopy.ACTION_SEND_TEST_MESSAGE,
-                    style = FlashTheme.typography.bodyEmphasis,
-                    color = if (canSend) colors.textPrimary else colors.textTertiary,
+                    text = FlashRadioCopy.SETTINGS_SHEET_TITLE,
+                    modifier = Modifier.weight(1f).semantics { heading() },
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
                 )
-                FlashText(
-                    text = detail,
-                    style = FlashTheme.typography.metadataDefault,
-                    color = detailColor,
+                FlashHubIconButton(FlashIcons.Close, FlashRadioCopy.A11Y_SETTINGS_SHEET_CLOSE, onDismiss)
+            }
+
+            FlashRadioSectionHeader(FlashRadioCopy.SECURITY_SECTION_TITLE)
+            Column(modifier = Modifier.selectableGroup()) {
+                RadioChoiceRow(
+                    title = FlashRadioCopy.PROFILE_M_TITLE,
+                    subtitle = FlashRadioCopy.PROFILE_M_SUBTITLE,
+                    badge = if (state.isAuthorisedForEncryption) {
+                        FlashRadioCopy.BADGE_AUTHORISED
+                    } else {
+                        FlashRadioCopy.PROFILE_M_NEEDS_AUTH_BADGE
+                    },
+                    badgeEmphasised = state.isAuthorisedForEncryption,
+                    selected = state.selectedProfile == RadioSecurityProfile.PROFILE_M,
+                    a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_M,
+                    onClick = {
+                        if (canSelectM) {
+                            onSelectProfile(RadioSecurityProfile.PROFILE_M)
+                        } else {
+                            onOpenAuthorisation()
+                        }
+                    },
+                )
+                RadioChoiceRow(
+                    title = FlashRadioCopy.PROFILE_A_TITLE,
+                    subtitle = FlashRadioCopy.PROFILE_A_SUBTITLE,
+                    badge = null,
+                    selected = state.selectedProfile == RadioSecurityProfile.PROFILE_A,
+                    a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_A,
+                    onClick = { onSelectProfile(RadioSecurityProfile.PROFILE_A) },
                 )
             }
-            FlashHubTextAction(
-                label = FlashRadioCopy.ACTION_SEND,
-                onClick = onRequestSend,
-                enabled = canSend,
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space20))
+            FlashRadioSectionHeader(FlashRadioCopy.MODES_SECTION_TITLE)
+            Column(modifier = Modifier.selectableGroup()) {
+                modes.forEach { mode ->
+                    val selectable = FlashRadioMath.isModeSelectable(mode, state.availableModes)
+                    RadioChoiceRow(
+                        title = FlashRadioMath.modeTitle(mode),
+                        subtitle = FlashRadioMath.modeSubtitle(mode),
+                        badge = FlashRadioMath.modeBadgeText(mode, state.selectedMode, state.availableModes),
+                        badgeEmphasised = mode == state.selectedMode,
+                        selected = mode == state.selectedMode,
+                        a11yLabel = FlashRadioCopy.a11ySelectMode(FlashRadioMath.modeTitle(mode)),
+                        onClick = { onSelectMode(mode) },
+                        enabled = selectable,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space20))
+            FlashRadioSectionHeader(FlashRadioCopy.SECTION_THIS_RADIO)
+            RadioFactRow(FlashRadioCopy.FACT_RADIO, state.rememberedRadioName ?: FlashRadioCopy.FACT_NONE)
+            RadioFactRow(FlashRadioCopy.FACT_ADDRESS, state.rememberedRadioAddress ?: FlashRadioCopy.FACT_NONE)
+            RadioFactRow(
+                label = FlashRadioCopy.FACT_CALLSIGN,
+                value = state.operatorCallsign ?: FlashRadioCopy.FACT_NONE,
             )
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space8))
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
+                ) {
+                    FlashText(
+                        text = FlashRadioCopy.ACTION_SEND_TEST_MESSAGE,
+                        style = FlashTheme.typography.bodyEmphasis,
+                        color = if (canSendTestMessage) colors.textPrimary else colors.textTertiary,
+                    )
+                    FlashText(
+                        text = FlashRadioCopy.TEST_MESSAGE_NEEDS_LINK,
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textSecondary,
+                    )
+                }
+                FlashHubTextAction(
+                    label = FlashRadioCopy.ACTION_SEND,
+                    onClick = onRequestSendTest,
+                    enabled = canSendTestMessage,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space12))
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
+                ) {
+                    FlashText(
+                        text = FlashRadioCopy.ACTION_FORGET_RADIO,
+                        style = FlashTheme.typography.bodyEmphasis,
+                        color = colors.textError,
+                    )
+                    FlashText(
+                        text = FlashRadioCopy.forgetConsequence(
+                            state.rememberedRadioName ?: FlashRadioCopy.STATION_NO_RADIO,
+                        ),
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textSecondary,
+                    )
+                }
+                FlashHubTextAction(
+                    label = FlashRadioCopy.ACTION_FORGET,
+                    onClick = onForget,
+                    enabled = state.rememberedRadioAddress != null,
+                )
+            }
         }
     }
 }
 
-// --- Sheets (UI-072 authorisation, UI-073 transmit warning) ------------------------------------------------
+@Composable
+private fun RadioSheetHandle() {
+    Box(
+        modifier = Modifier
+            .padding(vertical = FlashSpacing.space12)
+            .size(width = 36.dp, height = 4.dp)
+            .clip(CircleShape)
+            .background(FlashTheme.colors.borderSubtle),
+    )
+}
+
+// --- Sheets (UI-072 authorisation, diagnostics transmit warning) -------------------------------------------
 
 /** Regulatory authorisation: the statement, the station ID, then the confirm. Same validation as before. */
 @Composable

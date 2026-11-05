@@ -159,6 +159,28 @@ public object FlashRadioMath {
         RadioDeviceCategory.OTHER -> FlashRadioCopy.BADGE_OTHER
     }
 
+    /** The sentence for a mode row's title (redesign v3: the settings sheet shows one list of modes). */
+    public fun modeTitle(mode: RadioGatewayMode): String = when (mode) {
+        RadioGatewayMode.FIELD_COMPANION -> FlashRadioCopy.MODE_1_TITLE
+        RadioGatewayMode.BASE_STATION_RELAY -> FlashRadioCopy.MODE_2_TITLE
+        RadioGatewayMode.TACTICAL_RADAR -> FlashRadioCopy.MODE_4_TITLE
+        RadioGatewayMode.ALL_IN_ONE -> FlashRadioCopy.MODE_5_TITLE
+        RadioGatewayMode.WALKIE_TALKIE_BRIDGE -> FlashRadioCopy.MODE_5_TITLE
+    }
+
+    /** The sentence under a mode row's title. */
+    public fun modeSubtitle(mode: RadioGatewayMode): String = when (mode) {
+        RadioGatewayMode.FIELD_COMPANION -> FlashRadioCopy.MODE_1_SUBTITLE
+        RadioGatewayMode.BASE_STATION_RELAY -> FlashRadioCopy.MODE_2_SUBTITLE
+        RadioGatewayMode.TACTICAL_RADAR -> FlashRadioCopy.MODE_4_SUBTITLE
+        RadioGatewayMode.ALL_IN_ONE -> FlashRadioCopy.MODE_5_SUBTITLE
+        RadioGatewayMode.WALKIE_TALKIE_BRIDGE -> FlashRadioCopy.MODE_5_SUBTITLE
+    }
+
+    /** What the pairing sheet's live line says while the inquiry is running (or stopped). */
+    public fun scanStatusText(isScanning: Boolean): String =
+        if (isScanning) FlashRadioCopy.SENTENCE_SCANNING else FlashRadioCopy.SCAN_STOPPED
+
     /**
      * Sorts discovered devices:
      * 1. Category rank (KNOWN_RADIO [0], then SERIAL_SPP [1], then OTHER [2])
