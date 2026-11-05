@@ -140,6 +140,9 @@ internal class DesktopTrustStore(
     /** Peers whose current pairing was made with protocol v2 (ADR-042). */
     private val verified = ConcurrentHashMap.newKeySet<FlashDeviceId>()
 
+    /** Deliberate revokes (ADR-353): the peer must be paired again before auto-dial or TOFU may pin it. */
+    private val revoked = ConcurrentHashMap<FlashDeviceId, Long>()
+
     init {
         stateDir.mkdirs()
         if (file.isFile) {
@@ -191,6 +194,13 @@ internal class DesktopTrustStore(
                 props.stringPropertyNames()
                     .filter { it.startsWith("verified.") && props.getProperty(it) == "true" }
                     .forEach { verified += FlashDeviceId(it.removePrefix("verified.")) }
+                props.stringPropertyNames()
+                    .filter { it.startsWith("revoked.") }
+                    .forEach { key ->
+                        props.getProperty(key)?.toLongOrNull()?.takeIf { it > 0L }?.let { at ->
+                            revoked[FlashDeviceId(key.removePrefix("revoked."))] = at
+                        }
+                    }
                 // Rewrite once so legacy plaintext keys leave the disk immediately.
                 if (sawLegacy) runCatching { persist() }
             }
@@ -211,6 +221,7 @@ internal class DesktopTrustStore(
         pins.forEach { (id, pin) -> props.setProperty("pin.${id.value}", pin) }
         vouches.forEach { (id, groups) -> props.setProperty("vouch.${id.value}", groups.joinToString(",")) }
         verified.forEach { id -> props.setProperty("verified.${id.value}", "true") }
+        revoked.forEach { (id, at) -> props.setProperty("revoked.${id.value}", at.toString()) }
         file.outputStream().use { output: OutputStream -> props.store(output, "Flash desktop trust") }
     }
 
@@ -219,6 +230,7 @@ internal class DesktopTrustStore(
     override fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit> {
         synchronized(lock) {
             cache[deviceId] = friendlyName
+            revoked.remove(deviceId)
             runCatching { persist() }
         }
         return FlashResult.Success(Unit)
@@ -239,6 +251,8 @@ internal class DesktopTrustStore(
 
     override fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> {
         synchronized(lock) {
+            // ADR-353: no automatic re-pin while the peer is revoked. A real pairing clears the tombstone first.
+            if (revoked.containsKey(deviceId)) return FlashResult.Success(Unit)
             pins[deviceId] = fingerprintHex.uppercase()
             runCatching { persist() }
         }
@@ -247,6 +261,17 @@ internal class DesktopTrustStore(
     }
 
     override fun getPin(deviceId: FlashDeviceId): String? = pins[deviceId]
+
+    override fun isRevoked(deviceId: FlashDeviceId): Boolean = revoked.containsKey(deviceId)
+
+    override fun revokedAt(deviceId: FlashDeviceId): Long? = revoked[deviceId]
+
+    override fun clearRevocation(deviceId: FlashDeviceId) {
+        synchronized(lock) {
+            revoked.remove(deviceId)
+            runCatching { persist() }
+        }
+    }
 
     override fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit> {
         synchronized(lock) {
@@ -264,6 +289,7 @@ internal class DesktopTrustStore(
             sessionKeys.remove(deviceId)
             sealedSessionKeys.remove(deviceId)
             verified.remove(deviceId)
+            revoked[deviceId] = System.currentTimeMillis()
             // Unpairing must not strand a member of a group behind a first-use pin: while a group still
             // vouches for this key, the pin stays (its source becomes VOUCHED).
             if (vouches[deviceId].isNullOrEmpty()) pins.remove(deviceId)

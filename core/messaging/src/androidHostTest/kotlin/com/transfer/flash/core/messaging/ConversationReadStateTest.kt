@@ -127,7 +127,9 @@ class ConversationReadStateTest {
         val repo = repo(conversations, InMemoryMessageDao())
         repo.onInboundWireFrame(text("m1", 1_000L))
         val row = conversations.get("peer")!!
-        assertEquals("peer", row.title)
+        // ADR-353: the fixture's sender name is the sender id itself, so there is no real name to show. A raw id is
+        // never a title; a genuinely named inbound sender would have resolved through the name resolver instead.
+        assertEquals("Unknown device", row.title)
         assertEquals(false, row.isGroup)
         assertNull(row.lastReadCursor)
     }
