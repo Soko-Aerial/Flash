@@ -917,8 +917,7 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**2026-11-05 - Radio path switching fixed in code on branch `fix/radio-path-switching`; host-tested, NOT merged, NOT
-device-verified.** The phone log's two defects are fixed: `isRadioReachable` now requires gateway + connected + key (a
+**2026-11-05 - Radio path switching merged into `dev` as `bfe2c943`; host-tested, NOT device-verified.** The phone log's two defects are fixed: `isRadioReachable` now requires gateway + connected + key (a
 key with the link down used to make the host skip the LAN dial, after which the radio refused), the host sink no longer
 skips `ensureSession` for a radio key, the per-chat `NEVER` policy is read from the already-loaded conversation row and
 named in `radio.path` (`policy`, `pairKey`, `gateway`, `connected`), and a retry of a restored 0-byte transfer no longer

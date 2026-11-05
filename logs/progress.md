@@ -73,12 +73,17 @@ subagent indexed the phone log and correlated it with the code; the parent sessi
   `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`.
 - `:core:radio:jvmTest` green.
 - `:core:transfer:testAndroidHostTest --tests TransferRefusalAndWordingTest` green, including two new retry tests.
-- `:core:messaging:testAndroidHostTest --tests RealFlashChatRepositoryTest` green on the rerun (105 tests; the first
+- `:core:messaging:testAndroidHostTest --tests RealFlashChatRepositoryTest` green on the rerun (107 tests; the first
   run had one `TimeoutCancellationException` in an unrelated delete-for-everyone test, which passed alone and on
   the class rerun).
 - `:core:messaging:jvmTest --tests RadioChatBridgeTest` green, including the new transient-auth and disconnected
   `canCarry` cases.
 - **Not device-verified.** The phone was not connected.
+
+### Merge
+Merged `fix/radio-path-switching` into `dev` with `--no-ff` as **`bfe2c943`**, after committing the other agent's test-hub
+record (`55d16b6c`). Only `logs/handoff.md` and `logs/progress.md` conflicted; both sides were kept (test hub + radio
+path, then the earlier v3/console history). Code is unchanged by the merge.
 
 ### Remaining
 - `RADIO-PATH-01` device run: Wi-Fi off, gateway on, link up, policy Automatic -> `radio.path` should show
