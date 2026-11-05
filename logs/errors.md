@@ -16715,3 +16715,51 @@ Added the SHA-256 checksum for `org.jetbrains.compose.desktop:desktop-jvm-linux-
 
 ### Status
 RESOLVED
+
+## ERROR-985 - Flow invariant violation in LinuxRadioDiscovery.scan during live Bluetooth discovery
+
+### Date
+2026-11-05
+
+### Area
+Radio / Bluetooth / Linux (`:core:radio`)
+
+### Symptoms
+When scanning for radios on Linux desktop, an exception crashed the coroutine worker:
+`java.lang.IllegalStateException: Flow invariant is violated: Flow was collected in [ProducerCoroutine{Active}, Dispatchers.IO], but emission happened in [UndispatchedMarker, UndispatchedCoroutine{Active}, Dispatchers.IO]. Please refer to 'flow' documentation or use 'flowOn' instead`
+
+### Environment
+- OS: Linux x86_64
+- Module: `:core:radio`
+- Component: `LinuxRadioDiscovery`
+
+### Error
+```text
+Exception in thread "DefaultDispatcher-worker-14" java.lang.IllegalStateException: Flow invariant is violated:
+                Flow was collected in [ProducerCoroutine{Active}@26dd77c7, Dispatchers.IO],
+                but emission happened in [kotlinx.coroutines.UndispatchedMarker@3db5ac68, UndispatchedCoroutine{Active}@41ef48e2, Dispatchers.IO].
+        at kotlinx.coroutines.flow.internal.SafeCollector_commonKt.checkContext(SafeCollector.common.kt:84)
+        at kotlinx.coroutines.flow.internal.SafeCollector.checkContext(SafeCollector.kt:132)
+        at kotlinx.coroutines.flow.internal.SafeCollector.emit(SafeCollector.kt:109)
+        at com.transfer.flash.core.radio.link.linux.LinuxRadioDiscovery$scan$1.invokeSuspend$emitDevice(LinuxRadioDiscovery.kt:96)
+```
+
+### Root cause
+`LinuxRadioDiscovery.scan` used the `flow { ... }` builder with `SafeCollector`, which enforces that emissions must happen strictly within the collector's original coroutine context. When `liveScanner.scan` wrapped its work in `withContext(Dispatchers.IO)`, `SafeCollector` detected a context shift and aborted.
+
+### Failed attempts
+None.
+
+### Working fix
+1. Converted `LinuxRadioDiscovery.scan` from `flow { ... }` to `channelFlow { ... }`, which is explicitly designed for asynchronous, callback-driven, and multi-context emissions via `send()`.
+2. Removed redundant `withContext(Dispatchers.IO)` from `DefaultBlueZLiveScanner.scan` as the flow is already dispatched via `flowOn(Dispatchers.IO)`.
+
+### Verification
+- `./gradlew :core:radio:jvmTest`: BUILD SUCCESSFUL (all 7 suites pass).
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+
+### Related files
+- `core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRadioDiscovery.kt`
+
+### Status
+RESOLVED
