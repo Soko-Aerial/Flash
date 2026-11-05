@@ -65,6 +65,16 @@ class FlashSettingsDataStoreTest {
     }
 
     @Test
+    fun `chatWallpaperCustom roundtrip`() = runTest {
+        val settings = newSettings()
+        assertEquals(FlashChatWallpaper.DefaultCustomColour, settings.chatWallpaperCustom.first())
+        for (hex in listOf("#E4EDE3", "#DEE9F2", "#F0E1DC")) {
+            settings.setChatWallpaperCustom(hex)
+            assertEquals(hex, settings.chatWallpaperCustom.first())
+        }
+    }
+
+    @Test
     fun `an unknown chatWallpaper key reads as the default`() = runTest {
         val settings = newSettings()
         settings.setChatWallpaper(FlashChatWallpaper.Pulse)

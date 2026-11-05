@@ -1,5 +1,54 @@
 # Progress Log
 
+## 2026-11-05 (device pass) - First phone run of the chat port: three real defects found and fixed, the appearance sheet completed
+
+### Worked on
+The owner attached the Infinix X6882B (Android 14) and asked why the new Chat appearance sheet felt underwhelming.
+Installed the arm64 debug APK, walked the chat list, the conversation, the menu, the appearance sheet, the profile
+sheet, a live thread, the composer with the IME open, and dark mode. Found and fixed the sheet's rendering bug and two
+header defects, then completed the sheet to the approved mock.
+
+### Changed
+- **ERROR-985**: `Modifier.flashChatWallpaper` returned a fresh `Modifier` instead of chaining its receiver, so every
+  preset swatch lost `fillMaxWidth`/`height`/`clip` and measured 0dp, and the preview lost its height and corners.
+  It now returns `this.then(draw)`; the sheet renders all five swatches, the Yours tile and the 150dp preview.
+- **The approved sheet, completed**: five presets + **Yours**, the six named colours, `Applied . <name>`, **Undo** to
+  the value the sheet opened with, and Done. A new `Custom` entry in `FlashChatWallpaper` and a stored
+  `chat_wallpaper_custom` (`#RRGGBB`) on both hosts; the custom ground is carried down towards the dark surface in
+  dark mode so the hue survives and the contrast does not (the empty-state text sits on the field).
+- **Header**: the verification-aware encryption chip clipped to "En" beside three 48dp actions; it is now the mock's
+  compact 14dp lock (same tap and TalkBack label). The title is 17sp (`FlashTypography.headingConversation`) with
+  tighter paddings; a 13-character name now fits, 14 truncates because the app keeps 48dp touch targets where the
+  web mock used 40dp buttons.
+- **Encoding**: the PowerShell round trip hit the new Kotlin file (the ERROR-984 class); the footer rendered
+  "Applied A... Graphite". Repaired by codepoint (U+00B7), and ERROR-985 carries the addendum.
+- Evidence copied into the repo: `docs/ui/chat-appearance-2026-11-05.png`, `chat-wallpaper-pulse-2026-11-05.png`,
+  `chat-wallpaper-dark-2026-11-05.png`, `chat-composer-focus-2026-11-05.png`.
+
+### Verification (device)
+- The chosen wallpaper survives force-stop/relaunch, applies to every chat, and has light and dark grounds.
+- Undo returns to the value the sheet opened with; a colour tap selects Yours, rings the dot and updates the preview.
+- Custom Sand in dark mode is a deep warm grey with readable light text.
+- The composer's send key replaces the mic in the same 44dp slot with the IME open, no width jump; the pill focus
+  ring and the 44dp attach disc are visible.
+- The compact lock is visible beside "Offline"; the profile sheet's rows and Unpair button render.
+- Tests after the fixes: `:ui:chat:jvmTest`, `:ui:theme:jvmTest`, `:app:testDebugUnitTest` **BUILD SUCCESSFUL**; the
+  settings round-trips (wallpaper + custom colour, both hosts) green; `:app:assembleDebug` green.
+
+### Problems
+- Two taps in my first pass landed on the wrong row because the screenshots I was reading are displayed scaled; the
+  fix was to use `uiautomator dump` bounds, not visual estimates. Not a product defect.
+- The header still truncates a 14-character name on a 360dp screen (48dp touch targets). Recorded, not forced.
+
+### Remaining
+- Group info/group settings re-layout; inline bubble time; a file bubble seen on a wallpaper; the full icon walk at
+  24/48dp; the desktop half of CHATUI-13..16.
+- `CHATUI-01..12` (the mock checks) are still owed as well.
+
+### Next AI
+The appearance sheet is complete and device-seen; do not re-litigate the wallpaper model (ADR-354 option a, app-wide,
+presets + one custom colour). Read ERROR-985 before writing a Compose `Modifier` extension in this module.
+
 ## 2026-11-05 (later) - Chat redesign v2 round 3: the Compose port starts (wallpaper, composer, header, menu) and all 67 icons are redrawn
 
 ### Worked on

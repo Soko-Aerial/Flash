@@ -51,6 +51,8 @@ public data class DesktopSettings(
     val launchAnimation: Boolean = true,
     /** ADR-354: one app-wide chat wallpaper (option a). */
     val chatWallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
+    /** ADR-354: the "Yours" ground, `#RRGGBB`. */
+    val chatWallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
     /** ADR-121: let the organisation hub carry readable chat text to colleagues who are not reachable directly. Default FALSE. */
     val hubContentViaHub: Boolean = false,
 )
@@ -113,6 +115,8 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             swarmKeepFinishedFiles = props.getProperty(KEY_SWARM_KEEP_FINISHED_FILES, "true").toBoolean(),
             launchAnimation = props.getProperty(KEY_LAUNCH_ANIMATION, "true").toBoolean(),
             chatWallpaper = FlashChatWallpaper.fromStorageKey(props.getProperty(KEY_CHAT_WALLPAPER)),
+            chatWallpaperCustom = props.getProperty(KEY_CHAT_WALLPAPER_CUSTOM)
+                ?: FlashChatWallpaper.DefaultCustomColour,
             hubContentViaHub = props.getProperty(KEY_HUB_CONTENT_VIA_HUB, "false").toBoolean(),
         )
     }
@@ -141,6 +145,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_SWARM_KEEP_FINISHED_FILES, settings.swarmKeepFinishedFiles.toString())
         props.setProperty(KEY_LAUNCH_ANIMATION, settings.launchAnimation.toString())
         props.setProperty(KEY_CHAT_WALLPAPER, settings.chatWallpaper.storageKey)
+        props.setProperty(KEY_CHAT_WALLPAPER_CUSTOM, settings.chatWallpaperCustom)
         props.setProperty(KEY_HUB_CONTENT_VIA_HUB, settings.hubContentViaHub.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
@@ -198,6 +203,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_SWARM_KEEP_FINISHED_FILES: String = "swarm_keep_finished_files"
         const val KEY_LAUNCH_ANIMATION: String = "launch_animation"
         const val KEY_CHAT_WALLPAPER: String = "chat_wallpaper"
+        const val KEY_CHAT_WALLPAPER_CUSTOM: String = "chat_wallpaper_custom"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"

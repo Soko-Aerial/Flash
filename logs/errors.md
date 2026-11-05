@@ -16720,3 +16720,76 @@ correctly in the screenshots. No U+00C2 / U+00E2 remains in `src`.
 
 ### Status
 RESOLVED
+
+## ERROR-985 - The wallpaper modifier silently dropped the size/clip modifiers before it, so every appearance swatch measured 0dp
+
+### Date
+2026-11-05
+
+### Area
+Compose / `:ui:chat` appearance sheet (ADR-354 port)
+
+### Symptoms
+On the Infinix X6882B the "Chat appearance" sheet showed the five preset names and the six colour names, but **no swatch tiles at all**; the preview card was ~118px tall instead of 132dp and lost its rounded corners. The sheet looked empty and the owner called it "underwhelming". The thread wallpaper itself still appeared, which hid the cause.
+
+### Environment
+- Android 14 (API 34), Infinix X6882B, 1080x2460, density 480
+- Debug APK from commit `8afaccec` + the port patch
+- Compose Multiplatform (ui:chat:compileKotlinJvm green)
+
+### Error
+No exception. The failure is layout-only: `FlashChatAppearanceSheet.kt` built the tile as
+`Modifier.fillMaxWidth().height(58.dp).clip(...).flashChatWallpaper(w).border(...)`, and the library
+function was written as
+
+```kotlin
+@Composable
+fun Modifier.flashChatWallpaper(w: FlashChatWallpaper): Modifier {
+    return remember(w, colors, dark, flat) {
+        Modifier.drawBehind { drawChatWallpaper(w, colors, dark, flat) }   // the receiver is gone
+    }
+}
+```
+
+so `fillMaxWidth`, `height(58.dp)` and `clip` were discarded with the receiver. The Box wrapped its
+(empty) content: 0dp tall. The preview kept only the modifiers after the call (`border`, `padding`),
+which is why it kept a border while losing its height and corners.
+
+### Root cause
+A Compose `Modifier` extension that constructs and returns a **new** `Modifier` must chain the
+receiver (`this.then(...)`). Returning a fresh modifier replaces the whole chain instead of appending
+to it. There is no compiler or lint error for this; the bug only shows in rendered geometry.
+
+### Failed attempts
+1. Re-checked the tile's `height(58.dp)` and the `FlashChatWallpaperPresets` list — both correct.
+2. Suspected the sheet's scroll/weight measurement and dumped `uiautomator` bounds; they showed the
+   swatch node at 132x144px at the window origin while the name row was correct, which pointed at the
+   modifier chain rather than the parent layout.
+
+### Working fix
+`FlashChatWallpaper.kt` now returns `this.then(draw)`, with a comment explaining why. Every caller
+keeps its size and clip: the five preset swatches, the "Yours" tile, the 150dp preview, the sheet's
+`Scaffold` ground and the message list's background all render as designed.
+
+### Verification
+- Reinstalled the arm64 debug APK; the sheet now shows Graphite/Signal/Blueprint/Draft/Pulse/Yours
+  swatches with their patterns, a 150dp preview with a day chip and two bubbles, the six named
+  colours, `Applied · <name>`, Undo and Done.
+- Undo returns to the value the sheet opened with; the choice survives force-stop/relaunch
+  (Custom + Sand re-checked on the phone); dark mode keeps a dark ground.
+- Build + tests green (see `logs/progress.md` 2026-11-05 device pass).
+
+### Related files
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatWallpaper.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatAppearanceSheet.kt`
+
+### Status
+RESOLVED
+
+### Addendum (same day) - the same PowerShell round trip as ERROR-984 hit the new Kotlin file
+The repair that replaced `FlashSpacing.space6` used `Get-Content | Set-Content`, which decoded the
+UTF-8 file as ANSI and wrote `·` / `·` into the `Applied · <name>` string and two KDoc em dashes. The
+footer rendered "Applied · Graphite". Fixed with an explicit UTF-8 read/replace/write
+(`chr(0xFFFD) -> '·'`, mojibake pairs -> ASCII dashes) and verified by codepoint (`0xB7`). Use the
+edit/read tools or Python `io.open(..., encoding='utf-8')` for Kotlin sources; never PowerShell text
+round trips.

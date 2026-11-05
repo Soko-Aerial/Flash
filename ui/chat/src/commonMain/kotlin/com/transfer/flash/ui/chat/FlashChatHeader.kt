@@ -104,7 +104,7 @@ fun FlashChatHeader(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(60.dp)
-                .padding(horizontal = FlashSpacing.space4),
+                .padding(horizontal = FlashSpacing.space2),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FlashHeaderIconButton(
@@ -158,7 +158,7 @@ fun FlashChatHeader(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = FlashSpacing.space12)
+                    .padding(start = FlashSpacing.space10, end = FlashSpacing.space4)
                     .graphicsLayer {
                         val travel = (1f - titleEntry.value) * TitleEntryTravel.toPx()
                         translationX = if (isRtl) travel else -travel
@@ -173,7 +173,7 @@ fun FlashChatHeader(
                         text = state.title,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = FlashTheme.typography.headingMedium,
+                        style = FlashTheme.typography.headingConversation,
                         color = colors.textPrimary,
                         modifier = Modifier.weight(1f, fill = false),
                     )
@@ -284,6 +284,7 @@ private fun FlashChatHeaderStatusLine(
                     if (encryptionState != FlashEncryptionBadgeState.None) {
                         FlashEncryptionBadge(
                             state = encryptionState,
+                            compact = true,
                             onClick = onEncryptionClick,
                         )
                     } else if (state.isEncrypted) {
@@ -354,7 +355,6 @@ private fun FlashChatHeaderActions(
     menuContent: @Composable () -> Unit = {},
 ) {
     Row(
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (state.showCallActions) {

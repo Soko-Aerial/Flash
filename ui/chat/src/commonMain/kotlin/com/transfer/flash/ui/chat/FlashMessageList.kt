@@ -103,6 +103,8 @@ fun FlashMessageList(
     onJoinInvite: ((String) -> Unit)? = null,
     /** ADR-354: the app-wide chat wallpaper, painted behind the bubbles only. */
     wallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
+    /** ADR-354: the "Yours" ground, only read when [wallpaper] is Custom. */
+    wallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -198,7 +200,7 @@ fun FlashMessageList(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .flashChatWallpaper(wallpaper)
+                .flashChatWallpaper(wallpaper, wallpaperCustom)
                 .padding(horizontal = FlashSpacing.space12),
             state = listState,
             contentPadding = contentPadding,

@@ -7,6 +7,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PointMode
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.dp
@@ -71,34 +72,81 @@ public val FlashChatWallpaperPresets: List<FlashChatWallpaperPreset> = listOf(
     ),
 )
 
+/** One named flat colour for "Yours", exactly the mock's six. All are light by design; the same
+ * ground is used in dark mode because the choice is the user's, and every bubble keeps its own
+ * surface so contrast never depends on it. */
+public data class FlashChatWallpaperColour(val hex: String, val name: String)
+
+public val FlashChatWallpaperColours: List<FlashChatWallpaperColour> = listOf(
+    FlashChatWallpaperColour("#E7E9EC", "Stone"),
+    FlashChatWallpaperColour("#E4EDE3", "Sage"),
+    FlashChatWallpaperColour("#F2E8D8", "Sand"),
+    FlashChatWallpaperColour("#F0E1DC", "Clay"),
+    FlashChatWallpaperColour("#DFF1EC", "Mint"),
+    FlashChatWallpaperColour("#DEE9F2", "Sky"),
+)
+
+/** `#RRGGBB` / `#AARRGGBB`; null for anything a stored file might contain that we cannot draw. */
+public fun parseFlashWallpaperColour(hex: String?): Color? {
+    val raw = hex?.trim()?.removePrefix("#") ?: return null
+    if (raw.length != 6 && raw.length != 8) return null
+    val value = raw.toLongOrNull(16) ?: return null
+    return if (raw.length == 6) Color(0xFF000000L or value) else Color(value)
+}
+
+/** The name shown in the sheet's applied line. */
+public fun chatWallpaperLabel(wallpaper: FlashChatWallpaper): String =
+    if (wallpaper == FlashChatWallpaper.Custom) "Your colour" else presetFor(wallpaper).label
+
 public fun presetFor(wallpaper: FlashChatWallpaper): FlashChatWallpaperPreset =
     FlashChatWallpaperPresets.firstOrNull { it.wallpaper == wallpaper }
         ?: FlashChatWallpaperPresets.first()
 
-/** The preset's ground for the current theme. Usable outside composition (e.g. a Scaffold colour). */
-public fun chatWallpaperGround(wallpaper: FlashChatWallpaper, dark: Boolean): Color {
+/** The ground for the current theme. Usable outside composition (e.g. a Scaffold colour). */
+public fun chatWallpaperGround(
+    wallpaper: FlashChatWallpaper,
+    dark: Boolean,
+    custom: String = FlashChatWallpaper.DefaultCustomColour,
+): Color {
+    if (wallpaper == FlashChatWallpaper.Custom) {
+        val base = parseFlashWallpaperColour(custom)
+            ?: parseFlashWallpaperColour(FlashChatWallpaper.DefaultCustomColour)!!
+        // The palette is deliberately light (bubbles are opaque and keep their own depth). In dark
+        // mode the same colour is carried down towards the surface instead of turning the whole
+        // thread into a bright field under light text: the hue survives, the contrast does too.
+        return if (dark) lerp(base, Color(0xFF101218), 0.82f) else base
+    }
     val preset = presetFor(wallpaper)
     return if (dark) preset.darkGround else preset.lightGround
 }
 
 @Composable
-public fun flashChatWallpaperGround(wallpaper: FlashChatWallpaper): Color =
-    chatWallpaperGround(wallpaper, FlashTheme.isDark)
+public fun flashChatWallpaperGround(
+    wallpaper: FlashChatWallpaper,
+    custom: String = FlashChatWallpaper.DefaultCustomColour,
+): Color = chatWallpaperGround(wallpaper, FlashTheme.isDark, custom)
 
 /**
  * Paints the chosen ground and its pattern. Apply to the conversation surface only; it does not
  * draw bubbles or text.
  */
 @Composable
-public fun Modifier.flashChatWallpaper(wallpaper: FlashChatWallpaper): Modifier {
+public fun Modifier.flashChatWallpaper(
+    wallpaper: FlashChatWallpaper,
+    custom: String = FlashChatWallpaper.DefaultCustomColour,
+): Modifier {
     val colors = FlashTheme.colors
     val dark = FlashTheme.isDark
     val flat = FlashTheme.ultraLowUi
-    return remember(wallpaper, colors, dark, flat) {
+    val draw = remember(wallpaper, colors, dark, flat, custom) {
         Modifier.drawBehind {
-            drawChatWallpaper(wallpaper, colors, dark, flat)
+            drawChatWallpaper(wallpaper, colors, dark, flat, custom)
         }
     }
+    // `this.then(...)`: a Modifier extension that returns a fresh Modifier instead of chaining the
+    // receiver silently drops every earlier size/clip in the chain — that is what made the preset
+    // swatches measure 0dp and the appearance sheet's preview lose its 132dp height.
+    return this.then(draw)
 }
 
 internal fun DrawScope.drawChatWallpaper(
@@ -106,13 +154,14 @@ internal fun DrawScope.drawChatWallpaper(
     colors: FlashColors,
     dark: Boolean,
     flat: Boolean = false,
+    custom: String = FlashChatWallpaper.DefaultCustomColour,
 ) {
-    drawRect(chatWallpaperGround(wallpaper, dark))
+    drawRect(chatWallpaperGround(wallpaper, dark, custom))
     if (flat) return
 
     val ink = colors.textPrimary
     when (wallpaper) {
-        FlashChatWallpaper.Graphite -> Unit
+        FlashChatWallpaper.Graphite, FlashChatWallpaper.Custom -> Unit
 
         FlashChatWallpaper.Signal -> {
             val pitch = 22.dp.toPx()

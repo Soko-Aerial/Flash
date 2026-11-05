@@ -346,8 +346,11 @@ fun FlashConversationScreen(
      * value and passes it here. Default keeps every preview and older caller on the shipped surface.
      */
     chatWallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
+    /** ADR-354: the "Yours" ground, only read when [chatWallpaper] is Custom. */
+    chatWallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
     /** Null keeps the row visible but inert for previews. */
     onSetChatWallpaper: ((FlashChatWallpaper) -> Unit)? = null,
+    onSetChatWallpaperCustom: ((String) -> Unit)? = null,
     /**
      * UI-024 upgrade: a message to open at, set when a global search result (or a file hit) is
      * tapped. The screen scrolls to it and pulses its bubble once; null renders the thread at the
@@ -707,7 +710,7 @@ fun FlashConversationScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         // The wallpaper is the conversation's ground; the Scaffold must not show the Material
         // scheme when the thread overscrolls or is empty.
-        containerColor = flashChatWallpaperGround(chatWallpaper),
+        containerColor = flashChatWallpaperGround(chatWallpaper, chatWallpaperCustom),
         topBar = {
             AnimatedContent(
                 targetState = inSelectionMode to isSearchActive,
@@ -1241,6 +1244,7 @@ fun FlashConversationScreen(
                 onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
                 highlightedMessageId = highlightedMessageId,
                 wallpaper = chatWallpaper,
+                wallpaperCustom = chatWallpaperCustom,
                 peerTypingName = currentPeerTypingName,
                 listState = listState,
                 showSenderHeaders = state.header.isGroup,
@@ -1595,7 +1599,9 @@ fun FlashConversationScreen(
     if (showChatAppearance) {
         FlashChatAppearanceSheet(
             wallpaper = chatWallpaper,
+            custom = chatWallpaperCustom,
             onSelect = { onSetChatWallpaper?.invoke(it) },
+            onCustom = { onSetChatWallpaperCustom?.invoke(it) },
             onDismiss = { showChatAppearance = false },
         )
     }

@@ -8651,21 +8651,32 @@ a no-Material-text-field composer, so the redesign keeps those and changes layou
 - Nothing is device-verified. The owed checks are `CHATUI-01`..`CHATUI-07` in `docs/testing/TEST-BACKLOG.md`.
 
 ### Implementation (2026-11-05, same branch)
-- `FlashChatWallpaper` (5 presets, `storageKey`, `fromStorageKey` defaulting unknown keys to Graphite).
+- `FlashChatWallpaper` (5 presets + **Custom**, `storageKey`, `fromStorageKey` defaulting unknown keys to Graphite).
 - `FlashSettingsDataStore.chatWallpaper` + `setChatWallpaper`; `DesktopSettings`/`DesktopSettingsStore` the same;
   host wiring in `MainActivity` (collected + persisted through the app scope) and `DesktopShell`
   (`engine.updateSettings`).
 - `ui/chat/FlashChatWallpaper.kt` paints the ground and the pattern (`drawPoints` dots, hatch and grid lines, four
   pulse rings) and falls back to the flat ground under `ultraLowUi`; `FlashTheme.isDark` is exposed for the preset pair.
+  The custom ground is stored as `#RRGGBB` (`chat_wallpaper_custom` on both hosts) and is carried down towards the
+  dark surface in dark mode (hue kept, contrast kept). **The modifier must chain its receiver** (`this.then(...)`);
+  returning a fresh `Modifier` dropped every earlier size/clip in the chain and collapsed the swatches — ERROR-985.
 - `FlashMessageList` paints it, the `Scaffold` uses its ground, and `FlashChatAppearanceSheet` is opened by the new
-  `CHAT_APPEARANCE` menu item.
-- New theme tokens: `accentFill`/`onAccentFill` (5.21:1 light, 5.85:1 dark) and `composerInputBackground` moved to
-  `graphite50`/`surface0`.
+  `CHAT_APPEARANCE` menu item. The sheet mirrors the mock: day-chip preview, five presets + **Yours**, the six named
+  colours, `Applied · <name>`, **Undo** to the value it opened with, and Done (design record and phone evidence:
+  `docs/ui/chat-appearance-2026-11-05.png`).
+- New theme tokens: `accentFill`/`onAccentFill` (5.21:1 light, 5.85:1 dark), `headingConversation` (17sp, the
+  header title in the mock) and `composerInputBackground` moved to `graphite50`/`surface0`. The header's encryption
+  badge is icon-only there (the mock's 13dp lock): its chip label used to clip to "En" beside three 48dp actions.
 - Known deviations from the mock, to revisit after a device pass: the bubble time is a compact bottom-right line, not
-  inline in the text (Compose inline content needs a measured placeholder); the file block keeps its tested card with
-  its own surface; the custom colour is not shipped; the group info/settings sheets keep their shipped structure with
-  the new tokens rather than the mock's full re-layout; the swarm map keeps its tested 16-column/fixed-height drawing
-  and its longer summary string.
+  inline in the text (Compose inline content needs a measured placeholder); the group info/settings sheets keep their
+  shipped structure with the new tokens rather than the mock's full re-layout; the swarm map keeps its tested
+  16-column/fixed-height drawing and its longer summary string; the appearance sheet has no Light/Dark control because
+  the theme is one app setting owned by Settings (the mock's separate appearance page had one). The file block's inner
+  card was flattened on the phone pass (it is content on the message now).
+- **Device pass 2026-11-05 (Infinix X6882B, Android 14):** wallpaper chosen, persisted across force-stop, applied to
+  every chat, light and dark grounds seen; Undo reverts; the custom colour and its six presets render; the composer's
+  send key replaces the mic in place with the IME open; the header shows the compact lock and a 13-character name.
+  Full results: `docs/testing/TEST-BACKLOG.md` CHATUI-13..16.
 
 ### Revisit when
 - Per-chat wallpapers or a custom colour are requested (then Room gains a step / a second stored value).

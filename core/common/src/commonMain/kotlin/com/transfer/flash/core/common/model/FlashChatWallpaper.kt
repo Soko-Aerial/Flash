@@ -23,10 +23,16 @@ public enum class FlashChatWallpaper(public val storageKey: String) {
 
     /** The presence arcs from the corner. */
     Pulse("pulse"),
+
+    /** A flat colour of the user's own (mock: "Yours"), stored in `chat_wallpaper_custom`. */
+    Custom("custom"),
     ;
 
     public companion object {
         public val Default: FlashChatWallpaper = Graphite
+
+        /** The mock's default "Yours" colour (Stone). Kept beside the keys so hosts cannot drift. */
+        public const val DefaultCustomColour: String = "#E7E9EC"
 
         /** An absent, blank or unknown key reads as [Default] rather than failing a launch. */
         public fun fromStorageKey(key: String?): FlashChatWallpaper {
