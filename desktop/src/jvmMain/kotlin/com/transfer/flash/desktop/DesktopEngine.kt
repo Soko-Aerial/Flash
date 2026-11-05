@@ -1706,15 +1706,11 @@ public class DesktopEngine(
                     // PC3 dial on demand: a message to a peer that is seen but not connected dials
                     // first (≤ 1 s). Receipts and typing never wait.
                     if (wireFrame is MessageWireFrame.TextMessage) {
-                        // ADR-228 / ERROR-869: no LAN dial for a peer only the radio can reach — it
-                        // cannot succeed while the peer is off Wi-Fi, and it cost a second on every
-                        // outbox pass before the radio step ran. A peer discovery sees right now still
-                        // gets the dial: the LAN path is faster, and the radio is the fallback.
-                        val radioCanCarry = radioPort?.isRadioReachable(targetDeviceId) == true
-                        val seenNow = targetDeviceId in presence.reachablePeerIds.value
-                        if (!radioCanCarry || seenNow) {
-                            autoConnector?.ensureSession(targetDeviceId)
-                        }
+                        // RADIO-PATH-01: do NOT skip this dial just because a radio key exists. A
+                        // chat may be set to NEVER (the radio step then refuses), and the key can be
+                        // present while the link is down; the old skip stranded exactly those
+                        // messages. The radio is still tried only after this LAN attempt and the hub.
+                        autoConnector?.ensureSession(targetDeviceId)
                     }
                     sendChatFrame(network, targetDeviceId, wireFrame)
                 },

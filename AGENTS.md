@@ -917,6 +917,15 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-05 - Radio path switching fixed in code on branch `fix/radio-path-switching`; host-tested, NOT merged, NOT
+device-verified.** The phone log's two defects are fixed: `isRadioReachable` now requires gateway + connected + key (a
+key with the link down used to make the host skip the LAN dial, after which the radio refused), the host sink no longer
+skips `ensureSession` for a radio key, the per-chat `NEVER` policy is read from the already-loaded conversation row and
+named in `radio.path` (`policy`, `pairKey`, `gateway`, `connected`), and a retry of a restored 0-byte transfer no longer
+kills the process (ERROR-984). Also fixed: Profile-M refusal is transient and `radio.rx.ack` measures from transmit;
+Android FGS promotion now precedes the Transsion keep-alive work. Authority: ADR-354, ERROR-984..986, `logs/progress.md`
+2026-11-05 radio path. Owed device checks `RADIO-PATH-01`, `XFER-RETRY-01`, `FGS-01`. The phone was not connected.
+
 **2026-11-05 - Radio gateway redesign v3 is merged into `dev` as `e76edc71` and pushed (dev `d77b8261`).** Branch
 `design/radio-gateway-v3` from `E:\FlashWork\radio-ui-v3`, based on the pushed `efc23ae8`; the merge kept the console
 audit/port entries and the radio entries. The Compose port, the review page `design/radio-v3/`, the demos and the docs are

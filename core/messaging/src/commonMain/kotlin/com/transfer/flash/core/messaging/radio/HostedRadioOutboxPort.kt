@@ -37,7 +37,19 @@ public class HostedRadioOutboxPort(
             }
         }.stateIn(scope, SharingStarted.Eagerly, RadioGatewayConnectionStatus.OFF)
 
+    /**
+     * ADR-227 / RADIO-PATH-01: "reachable" means **this device can key the transmitter for that peer
+     * now**, not merely that a pairing key exists. The host checks this before skipping a LAN dial and
+     * the send path treats it as permission to enter the radio step, so a gateway that is off or a
+     * link that is down must answer false; otherwise a text skips the LAN and is then refused by the
+     * bridge, leaving no path at all (phone log 2026-11-03, 18:34-18:38).
+     */
     override fun isRadioReachable(recipientDeviceId: String): Boolean =
+        isGatewayEnabled &&
+            isConnected &&
+            host.engine.value?.isPeerRadioReachable(recipientDeviceId) == true
+
+    override fun hasRadioPairingKey(recipientDeviceId: String): Boolean =
         host.engine.value?.isPeerRadioReachable(recipientDeviceId) == true
 
     /**
