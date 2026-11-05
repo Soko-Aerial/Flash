@@ -1,5 +1,39 @@
 # Progress Log
 
+## 2026-11-05 (merge) - Radio gateway redesign v3 merged into `dev` as `e76edc71` (local, not pushed)
+
+### Worked on
+Merged the radio gateway redesign v3 branch from worktree `E:\FlashWork\radio-ui-v3` (`design/radio-gateway-v3`, tip
+`27114ff1`) into the local `dev` with `--no-ff`. The branch was based on the pushed `efc23ae8` (Wave 2 baseline); `dev` had
+since advanced with the local console design merge (`ec6c3724`), the port record and the two-agent console audit.
+
+### Merge
+- Merge commit **`e76edc71`**; only `logs/handoff.md` and `logs/progress.md` conflicted. Both sides' entries were kept:
+  the radio v3 banner/entries and the console audit/port entries are all present.
+- `docs/testing/TEST-BACKLOG.md` auto-merged; `RADUI-DEV02..04` and `CONSOLE-D02..D07` are both present.
+- No radio code was changed during the merge; the branch's Compose port, design review page, demos and screenshots are
+  taken as reviewed by the branch's own checks.
+
+### Verification
+- `:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` -> **44 tests, 0 failures** (9 suites).
+- `:ui:chat:testAndroidHostTest --tests "com.transfer.flash.ui.radio.*"` -> **28 tests, 0 failures** (5 suites).
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` -> **BUILD SUCCESSFUL** (from build cache; the merged tree
+  matches the branch outputs).
+- **No device verification:** `RADUI-DEV02` (Android walkthrough), `RADUI-DEV03` (Windows) and `RADUI-DEV04`
+  (screen reader/keyboard transmit) remain TODO.
+
+### Remaining
+- Owner/device checks above.
+- Channel/frequency/busy/refused states need `RadioGatewayUiState`/controller work first (critique P1).
+- Latch, elapsed on-air, haptics and a slop-tolerant hold are voice-engine work.
+- **Not pushed:** local `dev` also contains the console design merge (`ec6c3724`) that was deliberately left unpublished;
+  pushing would publish both. The owner must decide when to push.
+
+### Next AI
+Read `docs/ui/radio-gateway.md` "Redesign v3" and the `RADUI-DEV02..04` entries before touching the page. The wiring is
+unchanged (`RadioGatewayController`/`RadioGatewayUiState` untouched), and the existing no-dead-actions and copy/a11y
+source tests still guard it.
+
 ## 2026-11-05 (review) - two-agent wiring audit of the merged console; no P0, findings open, no code changed
 
 ### Worked on

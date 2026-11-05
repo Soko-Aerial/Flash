@@ -1,7 +1,7 @@
 # Component Research & Design Document — Radio Gateway (UI-070..UI-074)
 
-**Status:** DESIGNED (2026-10-16) · **visual redesign v2 IMPLEMENTED 2026-10-28** · **visual redesign v3 DESIGNED
-2026-11-05** (see “Redesign v3” at the end; v2 is superseded by v3, the behaviour sections below still hold)  
+**Status:** DESIGNED (2026-10-16) · **visual redesign v2 IMPLEMENTED 2026-10-28** · **visual redesign v3 IMPLEMENTED
+and merged into `dev` as `e76edc71` (local, not pushed) 2026-11-05; device checks owed** (see “Redesign v3” at the end; v2 is superseded by v3, the behaviour sections below still hold)  
 **Component IDs:**  
 - **UI-070**: Radio gateway settings entry, checklist, and overview  
 - **UI-071**: Find my radio: candidate detection, live nearby scan list, in-app pairing  
@@ -506,7 +506,8 @@ checks: `RADUI-DEV02` (phone walk-through) and `RADUI-DEV03` (desktop) in `docs/
 
 ## Redesign v3 � built (2026-11-05)
 
-**Status: BUILT and unit-tested on the JVM host; NOT device-verified; NOT committed to `dev`.** Branch
+**Status: BUILT, unit-tested on both hosts, and MERGED into `dev` as `e76edc71` (local, not pushed); NOT
+device-verified.** Branch
 `design/radio-gateway-v3` in `E:\FlashWork\radio-ui-v3`. The review page is `design/radio-v3/`
 (`node design/radio-v3/serve.mjs 5191`); its README lists the state URLs.
 
