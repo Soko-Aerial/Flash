@@ -1,6 +1,34 @@
 # Progress Log
 
-## 2026-11-05 (latest) - Linux Desktop Parity: Bluetooth/Radio Link, XDG Autostart, Band Detection & File Manager Reveal
+## 2026-11-05 (latest) - Linux Bluetooth: Live Streaming Discovery, Automated Agent Pairing & User-Space RFCOMM
+
+### Worked on
+Researched Linux BlueZ Bluetooth stack architecture and resolved gaps:
+1. **Live Discovery:** Replaced static BlueZ cache checks with active real-time discovery (`stdbuf -oL bluetoothctl scan on`), streaming nearby devices immediately as they broadcast (`[NEW]` and `[CHG]`).
+2. **Automated Agent Pairing:** Registered automated BlueZ agent (`NoInputNoOutput`) and automated trust (`trust <mac>`), preventing unhandled stdin prompts and authorization rejections.
+3. **User-Space RFCOMM Links:** Discovered that kernel `/dev/rfcomm*` creation (`rfcomm bind`) strictly requires root (`CAP_NET_ADMIN`), but Linux standard `libc` allows direct user-space `AF_BLUETOOTH` / `BTPROTO_RFCOMM` sockets. Implemented [`LinuxRfcommSocket`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRfcommSocket.kt) connecting to SPP Bluetooth radios without root.
+
+### Changed
+- `core/radio`:
+  - Updated `LinuxRadioDiscovery`:
+    - `scan(timeoutMs)`: Immediately emits known paired devices and serial ports, then launches active `liveScanner` (`stdbuf -oL bluetoothctl scan on`) to stream live devices dynamically.
+    - `pair(device)`: Automates pairing using `agent NoInputNoOutput`, `default-agent`, `pair <mac>`, and `trust <mac>`.
+    - `openLink(remembered)`: Connects directly via user-space POSIX `LinuxRfcommSocket.open(mac)` for 17-char MAC addresses without requiring `rfcomm bind` or root.
+  - Added `LinuxRfcommSocket`:
+    - Direct POSIX `AF_BLUETOOTH` (31) / `BTPROTO_RFCOMM` (3) socket client using JNA `libc`.
+    - Packs 10-byte `sockaddr_rc` with little-endian MAC byte ordering.
+    - Implements non-blocking `ByteLink` using `poll(POLLIN)`.
+  - Updated `LinuxRadioDiscoveryTest`: added unit tests for live scanning stream, automated agent script generation, and `sockaddr_rc` binary layout.
+
+### Verification
+- `./gradlew :core:radio:jvmTest`: BUILD SUCCESSFUL (all 7 suites pass).
+- `./gradlew :desktop:jvmTest --tests "*Radio*"`: BUILD SUCCESSFUL (all 5 suites pass).
+- Live host test: verified `stdbuf -oL bluetoothctl scan on` streams live nearby devices within 0.38s on the ThinkPad host.
+
+### Remaining
+Phase L3 packaging and multi-device interoperability checks.
+
+## 2026-11-05 - Linux Desktop Parity: Bluetooth/Radio Link, XDG Autostart, Band Detection & File Manager Reveal
 
 ### Worked on
 Implemented missing Linux desktop host integrations to achieve full functional parity on Linux hosts:

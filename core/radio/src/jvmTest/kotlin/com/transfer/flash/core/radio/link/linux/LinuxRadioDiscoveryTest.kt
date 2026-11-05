@@ -12,6 +12,7 @@ import com.transfer.flash.core.radio.link.PortKind
 import com.transfer.flash.core.radio.link.SerialPortCatalog
 import com.transfer.flash.core.radio.link.SerialSettings
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -75,18 +76,51 @@ class LinuxRadioDiscoveryTest {
     }
 
     @Test
-    fun scanStreamsPairedDevicesWithoutError() = runTest {
+    fun scanStreamsPairedAndLiveDiscoveredDevices() = runTest {
         val mockCatalog = MockSerialPortCatalog(
             listOf(PortInfo("ttyUSB0", "VR-N76 USB", PortKind.USB_SERIAL))
         )
+        val mockLiveScanner = LinuxRadioDiscovery.LiveScanner { _, onDiscovered ->
+            onDiscovered(
+                DiscoveredDevice(
+                    name = "UV-Pro Radio",
+                    bluetoothAddress = "AA:BB:CC:11:22:33",
+                    isPaired = false,
+                    kind = CandidateKind.BLUETOOTH_SERIAL,
+                    category = CandidateCategory.KNOWN_RADIO,
+                )
+            )
+            onDiscovered(
+                DiscoveredDevice(
+                    name = "Infinix HOT 50",
+                    bluetoothAddress = "90:9D:AC:F2:70:8E",
+                    isPaired = false,
+                    kind = CandidateKind.BLUETOOTH_SERIAL,
+                    category = CandidateCategory.OTHER,
+                )
+            )
+        }
+
         val discovery = LinuxRadioDiscovery(
             serialPortCatalog = mockCatalog,
             commandRunner = { emptyList() },
+            liveScanner = mockLiveScanner,
         )
 
-        val firstDevice = discovery.scan(timeoutMs = 100).first()
-        assertEquals("ttyUSB0", firstDevice.bluetoothAddress)
-        assertEquals(CandidateCategory.KNOWN_RADIO, firstDevice.category)
+        val flowDevices = mutableListOf<DiscoveredDevice>()
+        discovery.scan(timeoutMs = 1000).collect { flowDevices.add(it) }
+
+        assertEquals(3, flowDevices.size)
+        assertEquals("ttyUSB0", flowDevices[0].bluetoothAddress)
+        assertTrue(flowDevices[0].isPaired)
+
+        assertEquals("AA:BB:CC:11:22:33", flowDevices[1].bluetoothAddress)
+        assertEquals("UV-Pro Radio", flowDevices[1].name)
+        assertFalse(flowDevices[1].isPaired)
+        assertEquals(CandidateCategory.KNOWN_RADIO, flowDevices[1].category)
+
+        assertEquals("90:9D:AC:F2:70:8E", flowDevices[2].bluetoothAddress)
+        assertEquals("Infinix HOT 50", flowDevices[2].name)
     }
 
     @Test
@@ -103,6 +137,43 @@ class LinuxRadioDiscoveryTest {
         )
         val result = discovery.pair(device)
         assertTrue(result is PairResult.Success)
+    }
+
+    @Test
+    fun pairBluetoothExecutesAutomatedAgentAndTrust() = runTest {
+        var executedScript: String? = null
+        val commandsRun = mutableListOf<List<String>>()
+
+        val discovery = LinuxRadioDiscovery(
+            serialPortCatalog = MockSerialPortCatalog(emptyList()),
+            commandRunner = { cmd ->
+                commandsRun.add(cmd)
+                listOf("Device 38:D2:00:01:35:B5 VR-N76")
+            },
+            scriptRunner = { cmd, script ->
+                executedScript = script
+                listOf("Pairing successful")
+            }
+        )
+
+        val device = DiscoveredDevice(
+            name = "VR-N76",
+            bluetoothAddress = "38:D2:00:01:35:B5",
+            isPaired = false,
+            kind = CandidateKind.BLUETOOTH_SERIAL,
+        )
+
+        val result = discovery.pair(device)
+        assertTrue(result is PairResult.Success)
+
+        // Verify the script fed to bluetoothctl contained automated agent and trust commands
+        assertTrue(executedScript?.contains("agent NoInputNoOutput") == true)
+        assertTrue(executedScript?.contains("default-agent") == true)
+        assertTrue(executedScript?.contains("pair 38:D2:00:01:35:B5") == true)
+        assertTrue(executedScript?.contains("trust 38:D2:00:01:35:B5") == true)
+
+        // Verify trust was also explicitly confirmed via commandRunner
+        assertTrue(commandsRun.any { it.contains("trust") && it.contains("38:D2:00:01:35:B5") })
     }
 
     @Test
@@ -139,7 +210,7 @@ class LinuxRadioDiscoveryTest {
         )
 
         val radio = RememberedRadio(
-            bluetoothAddress = "38:D2:00:01:35:B5",
+            bluetoothAddress = "invalid-address",
             displayName = "VR-N76",
         )
         try {
@@ -147,8 +218,30 @@ class LinuxRadioDiscoveryTest {
             fail("Expected LinkException")
         } catch (e: LinkException) {
             assertTrue(e.message?.contains("VR-N76") == true)
-            assertTrue(e.message?.contains("38:D2:00:01:35:B5") == true)
+            assertTrue(e.message?.contains("invalid-address") == true)
             assertFalse(e.message?.contains("Windows") == true)
         }
+    }
+
+    @Test
+    fun linuxRfcommSocketPacksSockAddrRcCorrectly() {
+        val bytes = LinuxRfcommSocket.sockaddr("08:A5:DF:FB:19:EE", channel = 1)
+        assertEquals(10, bytes.size)
+
+        // AF_BLUETOOTH = 31 (little-endian: 31, 0)
+        assertEquals(31.toByte(), bytes[0])
+        assertEquals(0.toByte(), bytes[1])
+
+        // BDADDR is reversed (little endian): EE, 19, FB, DF, A5, 08
+        assertEquals(0xEE.toByte(), bytes[2])
+        assertEquals(0x19.toByte(), bytes[3])
+        assertEquals(0xFB.toByte(), bytes[4])
+        assertEquals(0xDF.toByte(), bytes[5])
+        assertEquals(0xA5.toByte(), bytes[6])
+        assertEquals(0x08.toByte(), bytes[7])
+
+        // Channel = 1
+        assertEquals(1.toByte(), bytes[8])
+        assertEquals(0.toByte(), bytes[9])
     }
 }
