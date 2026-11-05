@@ -49,8 +49,10 @@ subagent indexed the phone log and correlated it with the code; the parent sessi
 - `XFER-RETRY-01`: Retry a "couldn't read the file" card on the phone; the app must stay alive and the row must
   keep the sentence.
 - `FGS-01`: cold-start on the Infinix; no `ForegroundServiceDidNotStartInTimeException`.
-- The 2026-11-03 and 2026-11-05 logs also showed `session.down` + immediate redial storms and a second RFCOMM
-  open at 12:20:35; those are separate open items (see below).
+- The 2026-11-03 and 2026-11-05 logs also showed `session.down` + immediate redial storms (one host dialled 40
+  times in 6 minutes), a second RFCOMM open at 12:20:35, a chat-list "Radio only" badge for a `NEVER` chat (the
+  open header is policy-aware), and remembered-route dialling while the hub/radio already carries. These are
+  separate open items; none was changed in this fix.
 
 ## 2026-11-05 (merge) - Radio gateway redesign v3 merged into `dev` as `e76edc71` and pushed (dev `d77b8261`)
 

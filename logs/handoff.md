@@ -1,7 +1,7 @@
 # Current Handoff
 
-> **2026-11-05 (latest) - RADIO PATH SWITCHING: FIXED IN CODE ON BRANCH `fix/radio-path-switching`, HOST-TESTED, NOT
-> COMMITTED TO `dev`, NOT DEVICE-VERIFIED.** The owner's phone log proved two separate defects. (1) `isRadioReachable`
+> **2026-11-05 (latest) - RADIO PATH SWITCHING: FIXED IN CODE ON BRANCH `fix/radio-path-switching` (commit `79122c83`),
+> HOST-TESTED, NOT MERGED INTO `dev`, NOT DEVICE-VERIFIED.** The owner's phone log proved two separate defects. (1) `isRadioReachable`
 > checked only the pairing key, so with the gateway on and the link down the host skipped the LAN dial, the radio
 > refused `not_connected`, and the text had no path for 10 minutes; the 2026-11-05 log showed the same probe with
 > `connected=true` and inbound radio working, which means the per-chat policy was `NEVER` and the probe could not say
@@ -12,6 +12,9 @@
 > refusal tests and `:core:radio:jvmTest` green. Owed device checks `RADIO-PATH-01`, `XFER-RETRY-01`, `FGS-01`.
 > Authority: `docs/decisions.md` ADR-354, `logs/errors.md` ERROR-984..986, `logs/progress.md` 2026-11-05 radio path.
 > **The phone was not connected; nothing here is device-verified.**
+> **Still open from the same logs (not attempted):** session churn (a new dial can supersede a live/adopted session; the
+> phone redialled one host 40 times in 6 minutes), a second RFCOMM open at 12:20:35, the chat-list "Radio only" badge for
+> a `NEVER` chat (the open header is policy-aware), and remembered-route dialling while the hub/radio already carries.
 >
 > **2026-11-05 - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` AND PUSHED (dev `d77b8261`); NOT DEVICE-VERIFIED.**
 > Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
