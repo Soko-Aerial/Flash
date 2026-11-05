@@ -1,5 +1,55 @@
 # Progress Log
 
+## 2026-11-05 (later) - Chat redesign v2 round 3: the Compose port starts (wallpaper, composer, header, menu) and all 67 icons are redrawn
+
+### Worked on
+The owner approved the mock and both screen sets, chose option (a) for the wallpaper (one app-wide setting) and asked
+for the Compose port plus a redesign of **every** app icon in the chat's drawing language. This entry is the first
+port slice; the mock remains the visual authority (`design/chat-web/DESIGN.md`).
+
+### Changed
+- **Wallpaper (ADR-354, option a).** New `FlashChatWallpaper` enum in `:core:common` (5 presets, stable storage keys,
+  unknown keys read as Graphite). `FlashSettingsDataStore.chatWallpaper`/`setChatWallpaper("chat_wallpaper")` and the
+  desktop `DesktopSettings.chatWallpaper`/`DesktopSettingsStore` key, wired through `MainActivity` and `DesktopShell`.
+  New `ui/chat/FlashChatWallpaper.kt` paints the ground and pattern (dots, hatch, graph grid, pulse rings), flat under
+  `ultraLowUi`; `FlashTheme.isDark` is now exposed for the light/dark preset pair.
+- **Appearance sheet.** `FlashChatAppearanceSheet` with a live preview, the five presets and a Done button; opened by a
+  new `CHAT_APPEARANCE` item in `FlashConversationMenuMath` (both direct and group lists) and `FlashConversationMenuItem`.
+- **Thread.** `FlashMessageList` paints the wallpaper instead of `backgroundChat`, the `Scaffold` uses its ground (so
+  overscroll is no longer the Material scheme), day chip is a surface pill with a hairline, the unread/new-messages pill
+  uses `accentFill`/`onAccentFill`, and run gaps are 2dp / 16dp.
+- **Composer.** 44dp controls, 14/10 pill inset at 22dp radius on `graphite50`, a focus ring on the pill, one trailing
+  44dp slot that cross-fades the send key over the persistent mic (the hold gesture keeps its node), and the reply dock
+  restyled to surface-2 + 12dp radius.
+- **Header.** 60dp row, 34dp avatar, three actions (call, video, more). Search leaves the header and is reached from the
+  menu, which already carried it.
+- **Tokens.** `accentFill`/`onAccentFill` (pulse600+white 5.21:1 light, pulse400+pulse900 5.85:1 dark), composer input
+  moved to `graphite50`/`surface0`, `FlashShapes.composerInput` at 22dp, `FlashSpacing.space10/space14/space44`.
+- **Icons.** A subagent rewrote all **67** `flash_ic_*.xml` drawables at 24dp/1.75dp/round: 28 copied byte-for-byte
+  from the approved mock, 39 redrawn in the same language, with a contact sheet at 24/48/96dp on light and dark.
+
+### Why
+The owner approved the direction and asked for a picture-accurate port, with the icons matching the chat.
+
+### Verification
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` **BUILD SUCCESSFUL**.
+- New settings tests: `FlashSettingsDataStoreTest` (default + round-trip + unknown key) and
+  `DesktopSettingsStoreTest` (default + every preset survives a new store) pass.
+- `FlashConversationMenuMathTest` updated for the new item; `:ui:theme:jvmTest` green.
+- Icon XMLs parse as XML, viewport 24, stroke 1.75; contact sheet reviewed in Chromium.
+- Nothing is device-verified; no phone was attached in this session.
+
+### Remaining
+- A second visual pass for the group info / group settings sheets, the file card, the swarm map's 12-column form and
+  the inline bubble time (the shipped versions keep their tested structure).
+- The custom wallpaper colour from the mock is not shipped (option a stores presets only).
+- Icon set: a follow-up optical-size pass is running; verify on a phone at 24/48dp before claiming it.
+- CHATUI-01..16 device checks; nothing has been run on hardware.
+
+### Next AI
+Read ADR-354 "Implementation" for the exact deviations before touching the bubble or the group sheets. Build with
+`tools\flash-gradle.cmd` (never `gradlew`). The wallpaper setting is app-wide by owner decision; per-chat is not built.
+
 ## 2026-11-05 (later) - Chat redesign v2 round 2: the menu, profile, group chats and the swarm UI
 
 ### Worked on

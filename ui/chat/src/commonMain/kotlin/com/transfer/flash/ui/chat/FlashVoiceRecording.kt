@@ -210,7 +210,7 @@ fun FlashMicButton(
 
     Box(
         modifier = modifier
-            .size(FlashSpacing.space40)
+            .size(FlashSpacing.space44)
             .graphicsLayer {
                 scaleX = scale.value
                 scaleY = scale.value

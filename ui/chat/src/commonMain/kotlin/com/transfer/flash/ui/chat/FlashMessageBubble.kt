@@ -45,6 +45,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 // Compile repair, not part of OPT-O03-05's intent: the per-card lambda hoist rewrote the file and
 // voice attachment types from their fully qualified names to their simple names without adding
 // either import. Both names are needed by AttachmentCardItem and VoiceCardItem below.
@@ -471,7 +472,10 @@ private fun FlashMessageTimestampRowUltraLow(
     ) {
         FlashText(
             text = message.timeLabel,
-            style = typography.metadataDefault,
+            style = typography.numericDefault.copy(
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+            ),
             color = timestampColor,
         )
         if (message.isMine) {
@@ -823,7 +827,10 @@ private fun FlashMessageTimestampRow(
     ) {
         FlashText(
             text = message.timeLabel,
-            style = typography.metadataDefault,
+            style = typography.numericDefault.copy(
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
+            ),
             color = timestampColor,
         )
         if (message.isMine) {

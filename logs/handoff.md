@@ -1,6 +1,29 @@
 # Current Handoff
 
-> **2026-11-05 (latest) - CHAT SCREEN REDESIGN V2 IS A WEB MOCK IN `design/chat-web` (TWO ROUNDS); NOTHING IN
+> **2026-11-05 (latest) - CHAT REDESIGN: THE MOCK IS APPROVED AND THE COMPOSE PORT HAS STARTED; ALL 67 ICONS ARE
+> REDRAWN.** The owner approved both screen sets, chose **ADR-354 option (a): one app-wide wallpaper**, and asked for
+> the Compose port plus every icon in the chat's language. On branch `design/chat-redesign` (worktree
+> `E:\FlashWork\chat-redesign`, `dev` untouched):
+> - **Wallpaper** - `FlashChatWallpaper` in `:core:common`; `FlashSettingsDataStore.chatWallpaper` /
+>   `setChatWallpaper("chat_wallpaper")`; `DesktopSettings.chatWallpaper` + store key; wired in `MainActivity` and
+>   `DesktopShell`; painted by `ui/chat/FlashChatWallpaper.kt`; `FlashTheme.isDark` exposed for the preset pair.
+> - **Chat appearance sheet** with live preview + 5 presets, opened by the new `CHAT_APPEARANCE` menu item (direct and
+>   group lists).
+> - **Thread / composer / header**: wallpaper ground (Scaffold included), 2dp/16dp run gaps, day-chip and unread-pill
+>   restyle; 44dp controls, 22dp pill on `graphite50`, one trailing slot cross-fading mic/send; 60dp header, 34dp
+>   avatar, three actions (search moved to the menu). New tokens `accentFill`/`onAccentFill`, `space10/14/44`,
+>   `composerInput` 22dp, `composerInputBackground` graphite50/surface0.
+> - **Icons**: all **67** `flash_ic_*.xml` rewritten at 24dp/1.75dp/round by a subagent (28 byte-identical to the
+>   approved mock, 39 redrawn). An optical-size normalisation pass is running; contact sheet reviewed in Chromium.
+> **Verified:** `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` **BUILD SUCCESSFUL**; `:ui:chat:jvmTest`,
+> `:ui:theme:jvmTest`, `:app:testDebugUnitTest` **green**; new wallpaper settings tests green on both hosts.
+> **Not device-verified; no phone was attached.** **Known deviations** (ADR-354 "Implementation"): compact bottom-right
+> bubble time instead of inline text; the file card keeps its tested surface; group info/settings keep their shipped
+> structure with the new tokens; the swarm map keeps its tested 16-column drawing; no custom colour. Owed:
+> `CHATUI-01..16` (13-16 cover the port), a second visual pass for the group sheets/file card/inline time, and the icon
+> set's device check. Authority: this file, ADR-354, `logs/progress.md` 2026-11-05, `design/chat-web/DESIGN.md`.
+
+> **2026-11-05 - CHAT SCREEN REDESIGN V2 IS A WEB MOCK IN `design/chat-web` (TWO ROUNDS); NOTHING IN
 > `ui/chat` CHANGED; OWNER REVIEW FIRST (CHATUI-01, CHATUI-08..12).** The owner asked for a WhatsApp/Telegram-inspired
 > chat (send key separated from a pill text field, redrawn icons, changeable chat background, settings) and said
 > "design not logic", mock first. Branch `design/chat-redesign`, worktree `E:\FlashWork\chat-redesign` (from `dev` at

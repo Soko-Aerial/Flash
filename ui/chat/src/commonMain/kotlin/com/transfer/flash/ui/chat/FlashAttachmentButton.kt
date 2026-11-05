@@ -73,7 +73,7 @@ fun FlashAttachmentButton(
 
     Box(
         modifier = modifier
-            .size(FlashSpacing.space40)
+            .size(FlashSpacing.space44)
             .graphicsLayer {
                 scaleX = pressScale
                 scaleY = pressScale

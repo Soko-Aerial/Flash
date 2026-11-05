@@ -216,6 +216,11 @@ own Motion switch both collapse every animation to 1ms.
 
 ## 9. Compose port plan (after the owner approves this mock)
 
+**Status 2026-11-05: approved and partially ported.** Done: the wallpaper store and painter, the appearance sheet, the
+menu item, the thread background/day chip/unread pill/run gaps, the composer, the header, the new tokens and all 67
+icons. Open: inline bubble time, the file card's flat form, the group info/settings re-layout, the swarm map's
+12-column form, the custom colour. Deviations are recorded in ADR-354 "Implementation".
+
 Presentation only; every parameter and callback of `FlashConversationScreen` stays as it is.
 
 1. `ui/theme/.../composeResources/drawable/flash_ic_*.xml` — new path data at 1.75dp (§5).
