@@ -7,7 +7,9 @@
 > `FlashTrustStoreTest` 10/10, `DesktopTrustStoreTest` 6/6, title tests 2/2, codec tests 10/10; affected gate 2,613
 > tests / 0 failures / 0 errors. `ERROR-983` (W1 control-escape interaction) fixed on the way. Device checks
 > `W1-REVOKE-03` and `W1-TITLE-01` are owed (no phones). Next: Wave 2 hash-on-receive (code-only) and the
-> measurement backlog.
+> measurement backlog. **Wave 2 host baseline (`EXP-141`):** 64 KiB 72.2 vs 256 KiB 64.5 MB/s, allocation 253 vs
+> 515 MB; no chunk-size change is justified. `W2-XFER-01` (4 GiB, 5 GHz/hotspot), `W2-AND-01` (1 h battery) and
+> `W2-DESK-01` (JFR/tray) are owed.
 
 > **2026-11-05 (latest) — RESUME IDENTITY IS MERGED INTO `dev` AS `cc195841` AND PUSHED (ADR-352, Room v23); UNIT/MIGRATION
 > GREEN, MIGRATION DEVICE-VERIFIED.** `executeSend` now records and verifies size, modification time and the first-64-KiB

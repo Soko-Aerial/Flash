@@ -1,5 +1,34 @@
 # Progress Log
 
+## 2026-11-05 (later) - Wave 2 host baseline: 200 MB, 64 vs 256 KiB; no device measurements
+
+### Worked on
+Started Wave 2 with the only measurement that does not need phones: the existing deterministic host loopback benchmark
+(`TransferLoopbackBenchmarkTest.benchmark200MbTransfer`, 200 MB, `SendPipeline` -> in-memory channel -> `ReceivePipeline` ->
+`MemorySink`, per-chunk SHA-256). Fresh run after the ADR-353 merge; no transfer code changed by this entry.
+
+### Result (`EXP-141`)
+- 64 KiB: median **72.2 MB/s**, 2,769.6 ms wall, 2,671.9 ms CPU, **253 MB** thread allocation.
+- 256 KiB: median **64.5 MB/s**, 3,102.0 ms wall, 2,953.1 ms CPU, **515 MB** allocation.
+- SHA-256: current 355.5 MB/s / 0.2 MB; reusable `MessageDigest` 362.0 MB/s / 0.0 MB (1.02x, not worth a change).
+
+### Decision
+On this host loopback, **64 KiB is faster and allocates half as much**; 256 KiB is not justified. This supersedes the old
+"256 KiB is 48.7 vs 33.8 MB/s" result for this host, which predates the transfer batch 1-3 optimizations. No default or
+adaptive-ceiling change was made. The result is **not** a device/network result: `MemorySink` means no receive-to-disk
+write, no verifier second read, and no TLS.
+
+### Remaining
+- `W2-XFER-01`: 4 GiB, 5 GHz and hotspot, 64 vs 256 KiB, wall/CPU/RSS/disk reads.
+- `W2-AND-01`: 1 h screen-off battery (EXP-140 has cold/warm/PSS/gfxinfo).
+- `W2-DESK-01`: desktop JFR, tray working set/idle CPU, installer size.
+- Hash-on-receive: next code-only candidate, but it needs a design for out-of-order chunks and resume, plus a disk-read
+  measurement before changing the verifier. Do not remove the whole-file check on host-loopback evidence alone.
+
+### Next AI
+Read `EXP-141`, `W2-XFER-01`, `W2-AND-01`, `W2-DESK-01` and `docs/audit/optimization-2026-10-23/O07-file-transfer-throughput.md`
+before touching chunk sizes or the receive verifier. The host numbers do not justify a chunk-size change.
+
 ## 2026-11-05 (later) - ADR-353 revocation tombstone and stable direct-chat title
 
 ### Worked on
