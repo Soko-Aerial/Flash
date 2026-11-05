@@ -39,9 +39,14 @@ implementation + host/unit tests only.
 - Device checks owed: `W1-REVOKE-03`, `W1-TITLE-01` (and the earlier `W1-NACK-01`/`W1-RESUME-01`).
 - Old-peer outbox budget (pre-`pr1`).
 
+### Merged
+Merged `feature/tofu-tombstone-title` (tip `f9b0d5b2`) into `dev` with `--no-ff` as **`c2acce9c`** and pushed
+(`a7ff5636..c2acce9c dev -> dev`). The gate results above describe the merged tree.
+
 ### Next AI
-If the gate is green, merge this branch into `dev` and push. Then start Wave 2 with the code-only item that needs no
-device: hash-on-receive (remove the second full read after a receive) and its tests; measurements remain owed.
+Start Wave 2 with a code-only item that needs no device. Hash-on-receive is the natural next one: remove the second
+full read after a receive without weakening the whole-file check, with tests; the measurement items remain owed. Read the
+`ReceivePipeline`/`WholeFileDigestProvider` path and design the incremental option before changing it.
 
 ## 2026-11-05 (later) - resume identity (ADR-352, Room v23); unit/migration green, device migration verified
 
