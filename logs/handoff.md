@@ -1,6 +1,24 @@
 # Current Handoff
 
-> **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
+> **2026-11-05 (latest) - CHAT SCREEN REDESIGN V2 EXISTS AS A WEB MOCK IN `design/chat-web`; NOTHING IN `ui/chat`
+> CHANGED; OWNER REVIEW FIRST (CHATUI-01).** The owner asked for a WhatsApp/Telegram-inspired chat (send key separated
+> from a pill text field, redrawn icons, changeable chat background, settings) and said "design not logic", mock first.
+> Branch `design/chat-redesign`, worktree `E:\FlashWork\chat-redesign` (created from `dev` at `efc23ae8`, so the agent
+> on the main checkout is undisturbed). Built a standalone Vite/React prototype on the shipped tokens: 60dp header with
+> three actions, three separated composer objects (44dp attach / 44dp pill / one 44dp mic-send control), 1.75dp chat
+> icon set, five wallpapers plus a colour (light and dark variants), a `Chat appearance` page with a live preview, and
+> motion demos. Verified: production build, Impeccable `detect` **0 findings**, `lint.mjs --app` 0 FAIL,
+> `inspect.mjs --app` **0 FAIL / 3 WARN** at 1440/768/390, no horizontal overflow at 390, every sampled text pair
+> **>=5.21:1** (light and dark), reduced motion at 1ms, keyboard focus on every app control. A dual-agent critique is
+> recorded in `design/chat-web/CRITIQUE.md` (24/40, P1/P2 fixed: accent contrast, wallpaper apply model, named
+> colours, reply quote, file nesting, real theme control). Records: **ADR-354 (PROPOSED)**,
+> `ERROR-984` (PowerShell UTF-8 corruption, repaired), `logs/progress.md` 2026-11-05, `CHATUI-01..07`.
+> **Open decision:** wallpaper persistence - (a) app-wide `FlashSettings`, (b) per-chat Room step, (c) preview-only.
+> Recommendation: (a) then (b). **Next:** owner reviews the mock; only then the Compose port (icon XML paths, header,
+> composer, message-list wallpaper, appearance sheet), keeping every `FlashConversationScreen` parameter, every callback
+> and `FlashBubbleShape` unchanged. Nothing is device-verified; no phone was used.
+
+> **2026-11-05 (latest) - ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone
 > (`revoked_<id>` / desktop `revoked.<id>`), `savePin` is a silent no-op while it is present, auto-dial filters the peer,
 > and `trustPeer` clears it. Chat titles use resolver -> stored name -> **Unknown device**, never the raw UUID. Tests:

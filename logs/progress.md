@@ -1,5 +1,105 @@
 # Progress Log
 
+## 2026-11-05 (later) - Chat redesign v2: the critique round fixed 6 P1/P2 findings; the mock still awaits owner review
+
+### Worked on
+Phases 2 and 3 of the owner's pipeline for the chat redesign: an Impeccable critique (two isolated assessments: a
+design review and a detector/browser-evidence pass) and the motion pass. Record: `design/chat-web/CRITIQUE.md`.
+
+### Changed
+- **Contrast (P1).** Every accent fill that carries text or a glyph now uses `pulse600` + white (5.21:1) in light and
+  `pulse400` + `pulse900` (5.85:1) in dark; the sheet's "Done" and the send key were 3.74:1 / ~2.0:1. Four other text
+  pairs failed AA (the verified line at 3.59:1, the file card meta at 4.06:1, two at 4.498:1); all now 5.94-6.76:1.
+- **Wallpaper apply model (P1).** One model: picks apply immediately, the footer states "Applied - <name>" with Undo, and
+  the sheet closes by X, scrim, Escape or Done. The dead "This chat / All chats" scope is removed until ADR-354 decides
+  it; the scope was never a real setting in the mock.
+- **Custom colours (P2).** Six named 44dp swatches (Stone, Sage, Sand, Clay, Mint, Sky) with `aria-label`s; the "Yours"
+  tile carries a plus instead of duplicating a preset.
+- **Reply quote (P2).** No filled panel and no 3dp left bar: a 13dp reply glyph, the accent name and one ellipsised
+  line. This also cleared the detector's `side-tab` finding.
+- **File bubble.** The file block is content on the bubble, not a card inside a card (detector `nested-cards`).
+- **Presentation leaks (P2).** The fake "Enter sends" and "Reduce motion" rows are gone from Chat appearance; Theme is a
+  real light/dark control, and a Reset row.
+- **Accessibility.** The sheet focuses its close button, traps Tab, closes on Escape and is `aria-labelledby`; the
+  scrollable thread gets the app focus ring; header targets are 44dp; "Unread" moved onto a surface pill; the desktop
+  list search is a real input that filters, with an empty state.
+- **Layout.** The 390px composer could not stack (a later rule overrode the media query; the pill overflowed its row by
+  141px) - fixed and re-measured. The mobile wallpaper chips wrap instead of hiding a scrollbar. Measure capped at
+  68-72 characters. Motion demo timings to 12px.
+- **Wallpaper preset.** "Linen" (an feTurbulence grain, which the craft floor refuses) became "Draft", a 24/96dp graph
+  grid drawn as strokes.
+
+### Why
+The critique found a P1 contrast failure on the primary accent and a wallpaper sheet with no coherent apply model;
+both would have been ported into Compose as-is.
+
+### Verification
+- Impeccable `detect` on `design/chat-web/src`: **0 findings, exit 0** (was 1 `side-tab`).
+- `lint.mjs --app`: **0 FAIL** (13 warnings: clock zero-padding, shadows on real overlays, em dashes).
+- `inspect.mjs --app` on the production preview: **0 FAIL, 3 WARN** at 1440/768/390 (device radii, below-fold on a
+  review document, no data hue).
+- Browser contrast probe: every sampled app pair **>=5.21:1**; light and dark; the pre-critique run had 42 failing
+  text elements in four pairs.
+- No horizontal overflow at 1440/768/390 (`scrollWidth == clientWidth`); the 390 composer row and pill are inside the
+  stage after the fix.
+- Keyboard: 36 stops, 13 inside the phone, input and send/mic in visual order, every icon control named.
+
+### Remaining
+- Owner review (CHATUI-01) and the wallpaper persistence decision (ADR-354).
+- The Compose port, after approval.
+- Accepted critiques not changed: typing dots animate (a real state), blocks below the fold, neutral chrome above the
+  fold, and the five radii (two are the device frame).
+
+### Next AI
+Read `design/chat-web/CRITIQUE.md` first, then `DESIGN.md`. Do not re-run the critique blindly; its remaining items are
+owner decisions.
+
+## 2026-11-05 (later) - Chat screen redesign v2: a reviewed web prototype in design/chat-web; no app code changed
+
+### Worked on
+The owner asked for a chat screen redesigned with WhatsApp's and Telegram's lessons (the send key separated from the
+text field, a pill input, redrawn icons, a changeable chat background and the settings that own it), "design not logic",
+with a mock to look at first and the Compose port after approval. Built that mock as a standalone Vite/React prototype
+on a new branch, in its own worktree so the running agent on `dev` was not disturbed.
+
+### Changed (all new; no app source touched)
+- `design/chat-web/` - review page, phone frame (390x844) and desktop window (1200x760), conversation (header, thread,
+  bubbles, composer), wallpaper sheet, `Chat appearance` page, icon sheet, motion demos.
+- `design/chat-web/DESIGN.md` - design record: dealt style, the idea, tokens, contrast table, icon spec, motion spec,
+  Compose port plan and the open wallpaper-persistence question.
+- `design/chat-web/README.md`, `scripts/shots.mjs`, `scripts/repair-encoding.py`.
+- Records: ADR-354 (PROPOSED), ERROR-984, this entry, `logs/handoff.md`, `CHATUI-01..07` in the test backlog.
+
+### Why
+The owner cannot approve motion, the 8dp bubble scoop or wallpaper contrast from a description, and a rejected Compose
+direction would have touched the shipping chat UI. The mock reuses the shipped tokens (`FlashColors`, `FlashTypography`,
+`FlashShapes`, `FlashMotion`) so the port cannot silently change the look.
+
+### Verification
+- `npm run build` (type-check + production bundle) clean.
+- `lint.mjs --app design/chat-web/src`: **0 FAIL**.
+- `inspect.mjs --app` on the production preview at 1440 / 768 / 390: **0 FAIL, 3 WARN** (five radii, two of which are
+  the phone frame; one 88px row imbalance; blocks below the fold on a long review document).
+- No horizontal overflow: `scrollWidth === clientWidth` at 1440, 768 and 390.
+- Contrast measured for every text pair (DESIGN.md section 6); reduced motion collapses every animation to 1ms.
+- Screenshots in `design/chat-web/shots/` (git-ignored) at five wallpapers, light and dark, plus element close-ups.
+
+### Problems
+PowerShell's `Get-Content`/`Set-Content` round trip double-encoded UTF-8 in four prototype source files and added a BOM
+(**ERROR-984**). Repaired by `scripts/repair-encoding.py` (targeted sequence replacement, not a whole-file reverse) and
+verified by typecheck, build and screenshots. Later text edits use the editor tools.
+
+### Remaining
+- Owner review of the mock (CHATUI-01); the port does not start until the direction is approved.
+- The wallpaper persistence decision (ADR-354 decision 4): app-wide setting, per-chat Room step, or preview-only.
+- The Compose port itself: icon paths, header, composer, message-list wallpaper, appearance sheet.
+- Nothing is device-verified; no phone was used.
+
+### Next AI
+Read `design/chat-web/DESIGN.md` and ADR-354 before touching `ui/chat`. Run the prototype with
+`cd design/chat-web && npm run dev` (port 5174). Do not port until the owner approves; when porting, keep every
+`FlashConversationScreen` parameter and callback unchanged and keep `FlashBubbleShape`.
+
 ## 2026-11-05 (later) - Wave 2 host baseline: 200 MB, 64 vs 256 KiB; no device measurements
 
 ### Worked on
