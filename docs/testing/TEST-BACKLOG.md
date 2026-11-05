@@ -7665,3 +7665,28 @@ ERROR-984 log (2026-10-26 10:29:53), `FlashBackgroundService.onCreate`, ADR-354 
 
 ### Status
 TODO
+
+---
+
+## RADIO-PROFILE-A-01 — Signed cleartext is visibly unavailable (2026-11-05)
+
+### Setup
+Current Android app and radio gateway connected, on the Radio screen. A legacy install may already have Profile A selected.
+
+### Steps
+1. Open Radio → Settings → Security.
+2. Try to select **Profile A (Signed cleartext)**.
+3. If the current selection is already Profile A, read the red note and select **Profile M**.
+4. Send a short text.
+
+### Pass
+- Profile A is dimmed with the **Not supported** badge and cannot be selected.
+- A legacy Profile A selection shows the note "Profile A cannot carry Flash chat. Select Profile M; your radio stays connected."
+- Profile M can be selected after authorisation; the text goes by radio and no `SIGNED_NOT_ENABLED` is logged.
+- The app never offers Profile A as a working chat mode.
+
+### Source
+`RadioChatEngine.sendText` Profile-A refusal; `RadioSession.ingestSigned` `SIGNED_NOT_ENABLED`; `RadioChatWiring` has only the peer fingerprint; 2026-11-05 owner report.
+
+### Status
+TODO

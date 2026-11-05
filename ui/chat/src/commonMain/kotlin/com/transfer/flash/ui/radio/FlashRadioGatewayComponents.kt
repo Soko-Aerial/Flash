@@ -1095,6 +1095,14 @@ public fun FlashRadioSettingsSheet(
             }
 
             FlashRadioSectionHeader(FlashRadioCopy.SECURITY_SECTION_TITLE)
+            if (state.selectedProfile == RadioSecurityProfile.PROFILE_A) {
+                FlashText(
+                    text = FlashRadioCopy.PROFILE_A_UNSUPPORTED_NOTE,
+                    modifier = Modifier.padding(bottom = FlashSpacing.space8),
+                    style = FlashTheme.typography.captionDefault,
+                    color = colors.textError,
+                )
+            }
             Column(modifier = Modifier.selectableGroup()) {
                 RadioChoiceRow(
                     title = FlashRadioCopy.PROFILE_M_TITLE,
@@ -1118,10 +1126,13 @@ public fun FlashRadioSettingsSheet(
                 RadioChoiceRow(
                     title = FlashRadioCopy.PROFILE_A_TITLE,
                     subtitle = FlashRadioCopy.PROFILE_A_SUBTITLE,
-                    badge = null,
+                    badge = FlashRadioCopy.PROFILE_A_UNSUPPORTED_BADGE,
                     selected = state.selectedProfile == RadioSecurityProfile.PROFILE_A,
-                    a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_A,
-                    onClick = { onSelectProfile(RadioSecurityProfile.PROFILE_A) },
+                    a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_A + ", not supported",
+                    // Flash chat cannot verify signed frames yet; offering this row made a
+                    // non-working mode look selectable and left messages retrying.
+                    enabled = false,
+                    onClick = {},
                 )
             }
 

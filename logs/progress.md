@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-11-05 (profile A) - Profile A is now visibly unavailable instead of a trap
+
+### Changed
+- The Radio settings sheet no longer offers **Profile A (Signed cleartext)** as a selectable mode; it is dimmed with a "Not supported" badge, and a selected legacy Profile A shows a red sentence telling the operator to select Profile M.
+- The reason is cryptographic, not a UI preference: a signed frame carries a 4-byte tag derived from the sender's identity key, while Flash pairing stores only the fingerprint and `RadioChatWiring` never calls `RadioSession.addBroadcastSender`. A receiver therefore has no full public key to verify the signature; inbound signed frames are dropped as `SIGNED_NOT_ENABLED`. Outbound chat already refused Profile A, so the old row only produced waiting messages.
+- Making Profile A work needs a real peer identity public-key exchange (pairing field or a new wire field) and a send/ACK design for mixed profiles; it is not a one-line switch. Tracked as a follow-up, not claimed.
+
+### Verification
+`:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` green; `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green.
+
+### Device check
+`RADIO-PROFILE-A-01`: a fresh/legacy A selection must be impossible to choose, the warning must name Profile M, and no chat text may be offered to the transmitter while A is selected.
+
+### Source
+Phone/desktop logs 2026-11-05; `RadioChatEngine.sendText` Profile-A refusal; `RadioSession.ingestSigned` `SIGNED_NOT_ENABLED`; `RadioChatWiring` peer trust (fingerprint only).
+
+
 ## 2026-11-05 (ops) - test hub on myserver updated to the merged console build and reset for first-run setup
 
 ### Worked on
@@ -20919,5 +20936,3 @@ after editing to confirm no "record BLOCKED" instruction is left for these twelv
 ### Next AI
 Paste the D and T blocks (§11.D, §11.T) and let them run. If a stream reports a `BLOCKED — owner decision`, it is either one of
 the `device session`/`owner (ops)` rows in §8 or a mistake: these twelve are answered.
-
-
