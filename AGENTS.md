@@ -922,9 +922,11 @@ resume identity (Room v23, merged `cc195841`) are also pushed.** The negative ac
 `FLASH_SEC` arrives with no session key and fails the revoked side's queued messages; its two-phone run is `W1-NACK-01`
 (owed). Resume identity stores size, modification time and the first-64-KiB SHA-256, refuses a changed file, clears the
 sender's chunks and sends cancel; the v22 -> v23 upgrade was device-verified on the Infinix X6882B, while the
-changed-source two-phone run is `W1-RESUME-01` (owed). Affected gate: 1,176 tests / 0 failures / 0 errors. Remaining
-partials: old-peer outbox budget, revocation tombstone, raw-id chat title. Authority: `logs/handoff.md`,
-`logs/progress.md`, ADR-351 and ADR-352.
+changed-source two-phone run is `W1-RESUME-01` (owed). Affected gate: 1,176 tests / 0 failures / 0 errors.
+**ADR-353 (revocation tombstone + stable direct-chat title) is merged as `c2acce9c` and pushed; it also fixed
+ERROR-983 (a W1 control-escape interaction in the hub file codec).** Affected gate for ADR-353: 2,613 tests / 0 failures /
+0 errors; device checks `W1-REVOKE-03` and `W1-TITLE-01` are owed. Remaining partials: old-peer outbox budget. Authority:
+`logs/handoff.md`, `logs/progress.md`, ADR-351, ADR-352 and ADR-353.
 
 **Optimization programme Wave 4 merged and being gate-verified (2026-11-02):** both streams are now ON `dev` - desktop E
 `b2b61b92` (**merged `c5d825f9`**) and kernel K `22a53994` (**merged `bec221d2`**) - from actual base `baf77753`.
@@ -1627,3 +1629,8 @@ powershell -File tools\flash-gradle.ps1 <gradle args>
 - Do not touch the connected phone unless the owner named you for a device session; never uninstall or clear the app.
 - Details, streams, reserved numbers and log-fragment rules: `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` (PROPOSED until the owner answers section 9).
 - The cloud (remote) agent builds in its own sandbox and does not use this lock; it must not be asked to touch this PC's phone or files.
+
+# 37. When generating or refactoring frontend code:
+1. Consult @taste-skill for visual hierarchy, typography, and palette.
+2. Run @impeccable critique to evaluate UX contrast and layout balance.
+3. Apply @animate (Emil Kowalski guidelines) for all interactive states and easing curves.
