@@ -30,6 +30,7 @@ internal class DesktopNetworkBand(
     private val scope: CoroutineScope,
     private val maxAgeMs: Long = 15_000L,
     private val isWindows: Boolean = System.getProperty("os.name").orEmpty().startsWith("Windows"),
+    private val isLinux: Boolean = System.getProperty("os.name").orEmpty().startsWith("Linux", ignoreCase = true),
 ) {
     @Volatile
     private var cached: FlashNetworkBand = FlashNetworkBand.UNKNOWN
@@ -47,7 +48,7 @@ internal class DesktopNetworkBand(
     }
 
     private fun refreshAsync() {
-        if (!isWindows || !refreshing.compareAndSet(false, true)) return
+        if ((!isWindows && !isLinux) || !refreshing.compareAndSet(false, true)) return
         scope.launch(Dispatchers.IO) {
             try {
                 val band = read()
@@ -62,7 +63,22 @@ internal class DesktopNetworkBand(
 
     private fun read(): FlashNetworkBand {
         if (hasWiredAdapter()) return FlashNetworkBand.ETHERNET
-        return runCatching { parseNetshBand(netshInterfaces()) }.getOrNull() ?: FlashNetworkBand.UNKNOWN
+        return if (isWindows) {
+            runCatching { parseNetshBand(netshInterfaces()) }.getOrNull() ?: FlashNetworkBand.UNKNOWN
+        } else if (isLinux) {
+            runCatching { parseLinuxWifiBand(readLinuxWifiOutput()) }.getOrNull() ?: FlashNetworkBand.UNKNOWN
+        } else {
+            FlashNetworkBand.UNKNOWN
+        }
+    }
+
+    private fun readLinuxWifiOutput(): String {
+        return runCatching {
+            val process = ProcessBuilder("iw", "dev").redirectErrorStream(true).start()
+            val text = process.inputStream.bufferedReader().use { it.readText() }
+            process.waitFor(2, TimeUnit.SECONDS)
+            text
+        }.getOrDefault("")
     }
 
     private fun hasWiredAdapter(): Boolean = runCatching {
@@ -91,6 +107,7 @@ internal class DesktopNetworkBand(
     companion object {
         private const val NETSH_TIMEOUT_SECONDS = 3L
         private val GHZ = Regex("""(\d+(?:[.,]\d+)?)\s*GHz""", RegexOption.IGNORE_CASE)
+        private val LINUX_MHZ = Regex("""\((\d+)\s*MHz\)""", RegexOption.IGNORE_CASE)
 
         private val NOT_WIRED = listOf(
             "virtual", "vethernet", "hyper-v", "vmware", "virtualbox", "vpn", "tap-", "wireguard",
@@ -109,9 +126,21 @@ internal class DesktopNetworkBand(
             }
         }
 
-        /** A physical wired adapter, by Java's Windows interface name and the driver's display name. */
+        /** The band parsed from Linux `iw dev` output, or null when not found. */
+        fun parseLinuxWifiBand(output: String): FlashNetworkBand? {
+            val mhz = LINUX_MHZ.find(output)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+            return when {
+                mhz < 3000 -> FlashNetworkBand.WIFI_2_4GHZ
+                mhz < 5900 -> FlashNetworkBand.WIFI_5GHZ
+                else -> FlashNetworkBand.WIFI_6GHZ
+            }
+        }
+
+        /** A physical wired adapter, by Java's interface name and the driver's display name. */
         fun isWiredAdapter(name: String, displayName: String): Boolean {
-            if (!name.startsWith("eth")) return false
+            val n = name.lowercase()
+            val isWiredName = n.startsWith("eth") || n.startsWith("enp") || n.startsWith("eno") || n.startsWith("ens")
+            if (!isWiredName) return false
             val display = displayName.lowercase()
             return NOT_WIRED.none { it in display }
         }

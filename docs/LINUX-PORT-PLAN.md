@@ -227,11 +227,12 @@ gantt
 
 ### Phase L2: Desktop Shell & System Integrations
 *Goal: Parity with Windows desktop in user experience and OS integration.*
-- [ ] In [`DesktopNotificationManager.kt`](file:///C:/Users/KaliOxygen/Downloads/Flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNotificationManager.kt), implement native FreeDesktop notification dispatching (`org.freedesktop.Notifications`).
-- [ ] In [`DesktopAutoStartManager.kt`](file:///C:/Users/KaliOxygen/Downloads/Flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopAutoStartManager.kt), implement XDG Autostart `~/.config/autostart/flash.desktop`.
-- [ ] In [`DesktopNetworkBand.kt`](file:///C:/Users/KaliOxygen/Downloads/Flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNetworkBand.kt), implement Linux network interface classification via sysfs (`/sys/class/net/`) and frequency probing (`iw` / `nmcli`).
-- [ ] In [`DesktopHelpers.kt`](file:///C:/Users/KaliOxygen/Downloads/Flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopHelpers.kt#L49), implement `org.freedesktop.FileManager1.ShowItems` for "Reveal in File Manager".
-- [ ] Replace [`WindowsContextMenuManager.kt`](file:///C:/Users/KaliOxygen/Downloads/Flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/WindowsContextMenuManager.kt) with `DesktopContextMenuManager`, deploying `.desktop` actions and file manager scripts on Linux.
+- [x] (2026-10-08) In [`DesktopNotificationManager.kt`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNotificationManager.kt) & [`LinuxNotifier.kt`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/linux/LinuxNotifier.kt), implement native FreeDesktop notification dispatching (`org.freedesktop.Notifications` + `notify-send` fallback).
+- [x] (2026-11-05) In [`DesktopAutoStartManager.kt`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopAutoStartManager.kt), implement XDG Autostart `~/.config/autostart/flash.desktop`.
+- [x] (2026-11-05) In [`DesktopNetworkBand.kt`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNetworkBand.kt), implement Linux network interface classification (`enp*`, `eno*`, `ens*`) and frequency probing (`iw dev`).
+- [x] (2026-11-05) In [`DesktopHelpers.kt`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopHelpers.kt#L49), implement `org.freedesktop.FileManager1.ShowItems` via D-Bus for "Reveal in File Manager" with folder opening fallback.
+- [x] (2026-11-05) In [`LinuxRadioDiscovery.kt`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRadioDiscovery.kt) & [`DesktopRadioDiscovery.kt`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/DesktopRadioDiscovery.kt), implement Linux Bluetooth and serial radio discovery via BlueZ (`bluetoothctl devices`) and jSerialComm (`/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/rfcomm*`) replacing Windows-only Win32 COM / registry / `bthprops.cpl` calls.
+- [ ] Replace [`WindowsContextMenuManager.kt`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/WindowsContextMenuManager.kt) with `DesktopContextMenuManager`, deploying `.desktop` actions and file manager scripts on Linux.
 
 ### Phase L3: Linux Packaging & Distribution Pipeline
 *Goal: One-click installable `.deb`, `.rpm`, and portable packages.*

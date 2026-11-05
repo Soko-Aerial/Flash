@@ -1,5 +1,55 @@
 # Progress Log
 
+## 2026-11-05 (latest) - Linux Desktop Parity: Bluetooth/Radio Link, XDG Autostart, Band Detection & File Manager Reveal
+
+### Worked on
+Implemented missing Linux desktop host integrations to achieve full functional parity on Linux hosts:
+1. Bluetooth & Radio discovery/link layer without Windows-only Win32 COM / registry / `bthprops.cpl` calls.
+2. FreeDesktop XDG Autostart support.
+3. Linux Wi-Fi frequency & band detection (`iw dev`) and wired interface detection.
+4. Linux file reveal in file manager (`org.freedesktop.FileManager1.ShowItems`).
+
+### Changed
+- `core/radio`:
+  - Added `LinuxRadioDiscovery`: enumerates serial and USB-to-serial ports via `SerialPortCatalog` (jSerialComm), parses paired Bluetooth devices from BlueZ (`bluetoothctl devices`), pairs via `bluetoothctl pair`, opens links on `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/rfcomm*`, with clear Linux-specific error messaging.
+  - Added `DesktopRadioDiscovery`: factory choosing `WindowsRadioDiscovery` on Windows and `LinuxRadioDiscovery` on Linux.
+  - Added `LinuxRadioDiscoveryTest`: unit tests verifying device listing, classification, ranking, scanning, pairing, and openLink.
+- `desktop`:
+  - Updated `DesktopRadioGatewayController`: use `DesktopRadioDiscovery.forCurrentOs()`, `DesktopPaths.stateDir()`, and launch Linux Bluetooth settings (`bluedevil-wizard`, `kcmshell5`, `gnome-control-center`, `blueman-manager`, `lxqt-config`) instead of failing on `ms-settings:bluetooth`.
+  - Updated `DesktopAutoStartManager`: `isSupported` now returns `true` on Linux; implements FreeDesktop XDG Autostart (`~/.config/autostart/flash.desktop`).
+  - Updated `DesktopNetworkBand`: added Linux frequency parsing from `iw dev` (detecting 2.4 GHz, 5 GHz, 6 GHz bands) and Linux wired interface classification (`enp*`, `eno*`, `ens*`). Added unit tests in `DesktopNetworkBandTest`.
+  - Updated `DesktopHelpers`: implemented `org.freedesktop.FileManager1.ShowItems` via `dbus-send` on Linux with fallback to folder open.
+- `docs/LINUX-PORT-PLAN.md`: marked Phase L2 items completed.
+
+### Verification
+- `./gradlew :core:radio:jvmTest`: BUILD SUCCESSFUL (all 6 radio test suites including `LinuxRadioDiscoveryTest` pass).
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `./gradlew :desktop:jvmTest --tests "*Radio*"`: BUILD SUCCESSFUL.
+- `./gradlew :desktop:jvmTest --tests "com.transfer.flash.desktop.DesktopNetworkBandTest"`: BUILD SUCCESSFUL.
+- `./gradlew :desktop:jvmTest --tests "com.transfer.flash.desktop.DesktopDiscoveryDownscaleTest"`: BUILD SUCCESSFUL.
+- `./gradlew :desktop:jvmTest --tests "com.transfer.flash.desktop.FlashDesktopEngineTest"`: BUILD SUCCESSFUL.
+- `./gradlew :desktop:run -m`: dry-run task graph calculation BUILD SUCCESSFUL.
+
+### Remaining
+Phase L3 packaging (`.deb`, `.rpm`) and device verification runs.
+
+## 2026-11-05 - Fixed Linux dependency verification for desktop-jvm-linux-x64 (ERROR-984)
+
+### Worked on
+Fixed a Gradle dependency verification failure on Linux when resolving desktop dependencies for `:desktop:run` and aboutLibraries (`desktop-jvm-linux-x64-1.9.3.pom`).
+
+### Changed
+- `gradle/verification-metadata.xml`: Added checksum entry for `org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3` (`desktop-jvm-linux-x64-1.9.3.pom`, SHA-256 `8eb6b42e9af6acb401948e41e6fdd372377d23c4aebbbb1c768f777aaf2c63e8`).
+
+### Verification
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `./gradlew :desktop:exportLibraryDefinitionsJvm`: BUILD SUCCESSFUL.
+- `./gradlew :desktop:jvmTest`: BUILD SUCCESSFUL (all desktop JVM tests pass).
+- `./gradlew :desktop:run -m`: dry-run task graph calculation BUILD SUCCESSFUL.
+
+### Remaining
+Wave 2 measurement backlog and scheduled tasks.
+
 ## 2026-11-05 (later) - Wave 2 host baseline: 200 MB, 64 vs 256 KiB; no device measurements
 
 ### Worked on
