@@ -937,7 +937,9 @@ post-merge wiring audit (2026-11-05, `docs/audit/2026-11-05-server-console-wirin
 broken API calls, but four open P1 product gaps (department-head client scope/provisioning, multi-department paging,
 revocation-list installer) and a set of new-Overview/shell regressions (audit-chain verify removed, dead retry, wrong
 activity labels, missing `dept_head` role key, display-name refresh, mobile identity, ledger caps, help list). No code was
-changed by the audit; fix the port regressions first. The old
+changed by the audit; fix the port regressions first. The live test hub on `myserver` was updated to the merged build and
+reset for first-run setup on 2026-11-05 (`setupOpen:true`; token in `~/flash-hub/.env`; backup `data.bak`; public URL
+unchanged). The old
 `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Merge conflicts in the two shared logs were resolved by keeping both
 sides; the other agent's Wave 2/tombstone entries are intact. Authority: `logs/handoff.md`, `logs/progress.md`.
 

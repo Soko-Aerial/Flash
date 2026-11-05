@@ -1,5 +1,43 @@
 # Progress Log
 
+## 2026-11-05 (ops) - test hub on myserver updated to the merged console build and reset for first-run setup
+
+### Worked on
+Updated the isolated test hub on `myserver` (`129.213.22.215`, `~/flash-hub`, Docker project `flash-hub`) to the
+`dev` build at `c3685ba1` (`:server:installDist`, 57 jars, `server-2.1.0-beta.3.jar`), then cleared its hub data so the
+owner can start first-run setup again. Only the `flash-hub` compose project was touched; the tunnel and the other
+services on the host were left running.
+
+### Changed (server only)
+- Uploaded the new distribution to `~/flash-hub/app`; the previous app is `app.prev`.
+- Backed up the old data to `~/flash-hub/data.bak` (17 MB); the live `data/` was then cleared.
+- Restarted the hub with the new app; the Cloudflare tunnel container was not recreated, so the public URL is unchanged
+  (current value in `~/flash-hub/.env`; public `/health` 200).
+- `FLASH_SETUP_TOKEN` remains in `~/flash-hub/.env`; it was not printed or committed.
+
+### Verification
+- `flash-hub-hub-1`: healthy immediately after start; `/health` -> `{"status":"ok"}`.
+- `setup/status` -> `{"setupOpen":true,"hasAdmins":false,"delegationStatus":""}`.
+- `/admin/` 200; `/admin/setup` -> `/admin/#/setup` 200; `/admin/ui/css/redesign.css` 200 with the new
+  `Flash Hub console — approved visual system (2026-11-05)` marker.
+- Public tunnel health: HTTP 200.
+- Backup `data.bak` contains the database, server identity, and `data.key`; `app.prev` holds the previous build.
+
+### Problems
+- The hub data files are root-owned inside Docker; the first plain `cp` backup failed and the hub was stopped. Nothing was
+  deleted. A temporary `--user 0` container copied `data` to `data.bak` successfully, then the data/app swap and restart
+  completed.
+
+### Remaining
+- Owner runs first-run setup at the admin console. The setup token is in `~/flash-hub/.env`; reach the console with
+  `ssh -N -L 8444:127.0.0.1:18444 myserver` and open `http://127.0.0.1:8444/admin/`.
+- The test hub is reset: all previous devices, invites, admins, and org state are gone (backup above).
+- Owner browser checks `CONSOLE-D02..D07` can now run against the real hub after setup.
+
+### Next AI
+Do not treat the local mock as the test hub; `myserver` is the live test hub. Do not print or commit the setup token.
+If the new build needs a rollback, `app.prev`/`data.bak` are on the host; the tunnel URL is unchanged.
+
 ## 2026-11-05 (merge) - Radio gateway redesign v3 merged into `dev` as `e76edc71` and pushed (dev `d77b8261`)
 
 ### Worked on

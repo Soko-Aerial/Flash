@@ -1,5 +1,14 @@
 # Current Handoff
 
+> **2026-11-05 (test hub) - `myserver` UPDATED TO THE MERGED CONSOLE BUILD AND RESET FOR FIRST-RUN SETUP.**
+> The isolated test hub on `myserver` (`129.213.22.215`, `~/flash-hub`, Docker project `flash-hub`) now runs the
+> `dev` build at `c3685ba1` (new console; 57 jars; `server-2.1.0-beta.3.jar`). Its data was cleared for setup:
+> `setupOpen:true`, `hasAdmins:false`; `/health` ok; `/admin/#/setup` 200; `redesign.css` 200. The Cloudflare tunnel was
+> not recreated, so the public URL is unchanged (current value in `~/flash-hub/.env`; public `/health` 200). The setup
+> token remains in `~/flash-hub/.env` and was not printed/committed. Old data is backed up at `~/flash-hub/data.bak`
+> (17 MB), old code at `app.prev`. Reach the console with `ssh -N -L 8444:127.0.0.1:18444 myserver`, then
+> `http://127.0.0.1:8444/admin/`. Only the `flash-hub` compose project was touched.
+
 > **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` AND PUSHED (dev `d77b8261`); NOT DEVICE-VERIFIED.**
 > Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
 > (`:desktop:radioGatewayDemo`) and captured at 1180x820 and 900x820, with the settings sheet and the pair sheet opened:
