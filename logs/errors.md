@@ -16668,3 +16668,50 @@ Full messaging suites rerun as part of the gate. No device dependency.
 
 ### Status
 FIXED (host-tested).
+
+## ERROR-984 - Gradle dependency verification failed for org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3
+
+### Date
+2026-11-05
+
+### Area
+Build / Gradle dependency verification / Desktop (Linux)
+
+### Symptoms
+Running `./gradlew :desktop:run` on a Linux host failed during task graph calculation with:
+`Dependency verification failed for configuration ':desktop:detachedConfiguration9'` (and `detachedConfiguration1`, `detachedConfiguration10`)
+`One artifact failed verification: desktop-jvm-linux-x64-1.9.3.pom (org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3) from repository MavenRepo`
+`Configuration cache state could not be cached ...`
+
+### Environment
+- OS: Linux x86_64 (ThinkPad E16 Gen 1)
+- Gradle: 9.5.0
+- JDK: Java 25.0.4.1
+
+### Error
+```text
+Dependency verification failed for configuration ':desktop:detachedConfiguration9'
+One artifact failed verification: desktop-jvm-linux-x64-1.9.3.pom (org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3) from repository MavenRepo
+If the artifacts are trustworthy, you will need to update the gradle/verification-metadata.xml file.
+```
+
+### Root cause
+`gradle/verification-metadata.xml` had verification entries added on Windows (`desktop-jvm-windows-x64-1.9.3.pom`), but was missing `desktop-jvm-linux-x64-1.9.3.pom`. When dependency resolution (specifically the `aboutLibraries` POM batch resolution for the desktop JVM runtime classpath) resolved dependencies on a Linux machine, Gradle strictly rejected the unverified POM file.
+
+### Failed attempts
+None.
+
+### Working fix
+Added the SHA-256 checksum for `org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3:desktop-jvm-linux-x64-1.9.3.pom` (`8eb6b42e9af6acb401948e41e6fdd372377d23c4aebbbb1c768f777aaf2c63e8`) to `gradle/verification-metadata.xml`.
+
+### Verification
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL in 1m 45s.
+- `./gradlew :desktop:exportLibraryDefinitionsJvm`: BUILD SUCCESSFUL in 2s.
+- `./gradlew :desktop:jvmTest`: BUILD SUCCESSFUL in 2m 48s (all desktop tests passed).
+- `./gradlew :desktop:run -m`: dry run BUILD SUCCESSFUL in 3s.
+
+### Related files
+- `gradle/verification-metadata.xml`
+
+### Status
+RESOLVED

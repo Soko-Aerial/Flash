@@ -41,6 +41,29 @@ class DesktopNetworkBandTest {
         assertFalse(DesktopNetworkBand.isWiredAdapter("eth3", "Remote NDIS based Internet Sharing Device"))
         assertFalse(DesktopNetworkBand.isWiredAdapter("eth4", "Bluetooth Device (Personal Area Network)"))
         assertFalse(DesktopNetworkBand.isWiredAdapter("wlan1", "Intel(R) Wi-Fi 6 AX201 160MHz"))
+        assertTrue(DesktopNetworkBand.isWiredAdapter("enp0s31f6", "Intel Ethernet Connection"))
+        assertTrue(DesktopNetworkBand.isWiredAdapter("eno1", "Gigabit Ethernet Controller"))
+    }
+
+    @Test
+    fun `reads the band from linux iw dev output`() {
+        val iwOutput5G = """
+            Interface wlp0s20f3
+                ifindex 3
+                wdev 0x1
+                addr f0:20:ff:40:7a:c7
+                type managed
+                channel 149 (5745 MHz), width: 80 MHz, center1: 5775 MHz
+        """.trimIndent()
+        assertEquals(FlashNetworkBand.WIFI_5GHZ, DesktopNetworkBand.parseLinuxWifiBand(iwOutput5G))
+
+        val iwOutput24G = "channel 6 (2437 MHz), width: 20 MHz"
+        assertEquals(FlashNetworkBand.WIFI_2_4GHZ, DesktopNetworkBand.parseLinuxWifiBand(iwOutput24G))
+
+        val iwOutput6G = "channel 1 (5955 MHz), width: 160 MHz"
+        assertEquals(FlashNetworkBand.WIFI_6GHZ, DesktopNetworkBand.parseLinuxWifiBand(iwOutput6G))
+
+        assertNull(DesktopNetworkBand.parseLinuxWifiBand("no channel info"))
     }
 
     @Test

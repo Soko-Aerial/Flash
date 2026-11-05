@@ -17,9 +17,11 @@ import com.transfer.flash.core.radio.gateway.RadioGatewayManager
 import com.transfer.flash.core.radio.gateway.RadioGatewayState
 import com.transfer.flash.core.radio.gateway.TestMessageResult
 import com.transfer.flash.core.radio.link.ByteLink
+import com.transfer.flash.core.radio.link.DesktopRadioDiscovery
 import com.transfer.flash.core.radio.link.DiscoveredDevice
 import com.transfer.flash.core.radio.link.RadioDeviceDiscovery
 import com.transfer.flash.core.radio.link.windows.WindowsRadioDiscovery
+import com.transfer.flash.desktop.DesktopPaths
 import com.transfer.flash.ui.radio.DiscoveredRadioDevice
 import com.transfer.flash.ui.radio.FlashRadioMath
 import com.transfer.flash.ui.radio.RadioConnectionStatus
@@ -59,9 +61,9 @@ import kotlinx.coroutines.launch
  */
 public class DesktopRadioGatewayController(
     private val scope: CoroutineScope,
-    private val stateDir: File = File(System.getProperty("user.home"), ".flash"),
+    private val stateDir: File = DesktopPaths.stateDir(),
     private val clock: FlashTimeSource = SystemTimeSource,
-    private val discoveryFactory: () -> RadioDeviceDiscovery = { WindowsRadioDiscovery() },
+    private val discoveryFactory: () -> RadioDeviceDiscovery = { DesktopRadioDiscovery.forCurrentOs() },
     private val rememberedStoreFactory: () -> RememberedRadioStore = {
         DesktopPropertiesRadioStore(stateDir).rememberedStore
     },
@@ -342,10 +344,29 @@ public class DesktopRadioGatewayController(
                 val os = System.getProperty("os.name")?.lowercase() ?: ""
                 if (os.contains("win")) {
                     ProcessBuilder("cmd.exe", "/c", "start", "ms-settings:bluetooth").start()
+                } else if (os.contains("linux")) {
+                    openLinuxBluetoothSettings()
                 } else if (java.awt.Desktop.isDesktopSupported()) {
                     java.awt.Desktop.getDesktop().browse(java.net.URI("ms-settings:bluetooth"))
                 }
             }
+        }
+    }
+
+    private fun openLinuxBluetoothSettings() {
+        val candidates = listOf(
+            listOf("bluedevil-wizard"),
+            listOf("kcmshell5", "kcm_bluetooth"),
+            listOf("gnome-control-center", "bluetooth"),
+            listOf("blueman-manager"),
+            listOf("lxqt-config"),
+        )
+        for (cmd in candidates) {
+            val started = runCatching {
+                ProcessBuilder(cmd).start()
+                true
+            }.getOrDefault(false)
+            if (started) return
         }
     }
 

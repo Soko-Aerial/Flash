@@ -1,6 +1,30 @@
 # Current Handoff
 
-> **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
+> **2026-11-05 (latest) — LINUX DESKTOP PARITY: BLUETOOTH/RADIO, XDG AUTOSTART, BAND DETECTION & FILE REVEAL IMPLEMENTED.**
+> Complete Linux parity audit and implementation across recent features:
+> 1. **Bluetooth & Radio Link Layer:** Implemented [`LinuxRadioDiscovery`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRadioDiscovery.kt)
+>    and [`DesktopRadioDiscovery`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/DesktopRadioDiscovery.kt) factory.
+>    Enumerates serial and USB radios via `SerialPortCatalog` (jSerialComm), parses paired devices from BlueZ (`bluetoothctl devices`),
+>    pairs via `bluetoothctl pair`, opens links on `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/rfcomm*`. Replaces Windows-only Win32 COM / registry / `bthprops.cpl` calls.
+> 2. **Desktop Radio Gateway:** Updated [`DesktopRadioGatewayController`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/radio/DesktopRadioGatewayController.kt)
+>    to use `DesktopRadioDiscovery.forCurrentOs()`, `DesktopPaths.stateDir()` (XDG compliance), and open native Linux Bluetooth settings
+>    (`bluedevil-wizard`, `kcmshell5`, `gnome-control-center`, `blueman-manager`, `lxqt-config`) instead of failing on `ms-settings:bluetooth`.
+> 3. **XDG Autostart:** Updated [`DesktopAutoStartManager`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopAutoStartManager.kt)
+>    to support Linux (`~/.config/autostart/flash.desktop`).
+> 4. **Network Band Probing:** Updated [`DesktopNetworkBand`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNetworkBand.kt)
+>    with Linux frequency parsing via `iw dev` (2.4 GHz, 5 GHz, 6 GHz) and wired Ethernet interfaces (`enp*`, `eno*`, `ens*`, `eth*`).
+> 5. **File Manager Reveal:** Updated [`DesktopHelpers`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopHelpers.kt)
+>    to invoke `org.freedesktop.FileManager1.ShowItems` via D-Bus with fallback to folder open.
+> 6. **Dependency Verification:** Resolved `ERROR-984` in `gradle/verification-metadata.xml` for `desktop-jvm-linux-x64-1.9.3.pom`.
+> Verification: `:core:radio:jvmTest` (green, 6 suites), `:desktop:compileKotlinJvm` (green), `:desktop:jvmTest` (`*Radio*`, `DesktopNetworkBandTest`, `DesktopDiscoveryDownscaleTest`, `FlashDesktopEngineTest` all green), `:desktop:run -m` (green).
+
+> **2026-11-05 — ERROR-984: DESKTOP LINUX DEPENDENCY VERIFICATION RESOLVED.** Added SHA-256 for
+> `desktop-jvm-linux-x64-1.9.3.pom` (`8eb6b42e9af6acb401948e41e6fdd372377d23c4aebbbb1c768f777aaf2c63e8`) in
+> `gradle/verification-metadata.xml`. Resolves build failure when running `:desktop:run` on Linux where aboutLibraries
+> POM batch and configuration cache failed on unverified Linux Compose desktop POM metadata. Verified: `:desktop:compileKotlinJvm`
+> (1m 45s), `:desktop:exportLibraryDefinitionsJvm` (2s), `:desktop:jvmTest` (2m 48s, green), `:desktop:run -m` (3s).
+
+> **2026-11-05 — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone
 > (`revoked_<id>` / desktop `revoked.<id>`), `savePin` is a silent no-op while it is present, auto-dial filters the peer,
 > and `trustPeer` clears it. Chat titles use resolver -> stored name -> **Unknown device**, never the raw UUID. Tests:

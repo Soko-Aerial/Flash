@@ -72,6 +72,26 @@ internal object DesktopHelpers {
                     Runtime.getRuntime().exec(arrayOf("open", "-R", file.absolutePath))
                     true
                 }
+                os.contains("linux") -> {
+                    val fileUri = file.toURI().toString()
+                    val dbusSuccess = runCatching {
+                        val process = ProcessBuilder(
+                            "dbus-send",
+                            "--session",
+                            "--dest=org.freedesktop.FileManager1",
+                            "--type=method_call",
+                            "/org/freedesktop/FileManager1",
+                            "org.freedesktop.FileManager1.ShowItems",
+                            "array:string:$fileUri",
+                            "string:"
+                        ).start()
+                        process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0
+                    }.getOrDefault(false)
+                    if (!dbusSuccess && Desktop.isDesktopSupported()) {
+                        Desktop.getDesktop().open(file.parentFile ?: file)
+                    }
+                    true
+                }
                 else -> {
                     if (Desktop.isDesktopSupported()) {
                         Desktop.getDesktop().open(file.parentFile ?: file)
