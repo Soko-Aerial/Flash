@@ -268,6 +268,12 @@ export function tabs({ items, selected, onSelect, label }) {
   const id = uid('tabs');
   const list = h('div', { class: 'tabs', role: 'tablist', 'aria-label': label });
   const buttons = new Map();
+  const many = items.length > 3;
+  const mobile = h(
+    'select',
+    { class: 'input select tabs-select', 'aria-label': label, on: { change: (ev) => select(ev.target.value) } },
+    items.map((item) => h('option', { value: item.id, text: item.label })),
+  );
   function select(tabId, { focus = false } = {}) {
     for (const [k, b] of buttons) {
       const on = k === tabId;
@@ -275,6 +281,7 @@ export function tabs({ items, selected, onSelect, label }) {
       b.tabIndex = on ? 0 : -1;
       toggleClass(b, 'is-selected', on);
     }
+    mobile.value = tabId;
     if (focus) buttons.get(tabId).focus();
     onSelect(tabId);
   }
@@ -303,19 +310,21 @@ export function tabs({ items, selected, onSelect, label }) {
   });
   select(selected ?? items[0].id);
   const panel = h('div', { class: 'tabpanel', role: 'tabpanel', id: id + '-panel', tabindex: '0' });
+  const el = h('div', { class: ['tabs-wrap', many ? 'is-many' : ''] }, list, many ? h('div', { class: 'tabs-select-wrap' }, mobile) : null);
   return {
-    el: list,
+    el,
     panel,
     select,
     setBadge(tabId, value) {
       const b = buttons.get(tabId);
-      let el = b.querySelector('.tab-badge');
-      if (!value) return el && el.remove();
-      if (!el) {
-        el = h('span', { class: 'tab-badge num' });
-        b.appendChild(el);
+      if (!b) return undefined;
+      let badge = b.querySelector('.tab-badge');
+      if (!value) return badge && badge.remove();
+      if (!badge) {
+        badge = h('span', { class: 'tab-badge num' });
+        b.appendChild(badge);
       }
-      el.textContent = String(value);
+      badge.textContent = String(value);
       return undefined;
     },
   };

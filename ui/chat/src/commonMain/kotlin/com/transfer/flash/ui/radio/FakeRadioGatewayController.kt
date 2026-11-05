@@ -17,6 +17,9 @@ public class FakeRadioGatewayController(
     private val _state = MutableStateFlow(initialState)
     override val state: StateFlow<RadioGatewayUiState> = _state.asStateFlow()
 
+    private val _voice = MutableStateFlow(RadioVoiceUiState())
+    override val voice: StateFlow<RadioVoiceUiState> = _voice.asStateFlow()
+
     /** Records method names of user actions invoked on this controller. */
     public val actionsLog: MutableList<String> = mutableListOf()
 
@@ -276,5 +279,50 @@ public class FakeRadioGatewayController(
                 statusNextStep = FlashRadioMath.statusNextStep(RadioConnectionStatus.CONFIRMING_CANDIDATE, RadioFailureReason.NONE),
             )
         }
+    }
+
+    /**
+     * Preview and demo helper: puts the fake's audio link into [phase] so the audio panel (listen switch, level,
+     * hold-to-talk) can be seen without a radio. Not a product path — the real host drives [voice] from its own
+     * audio stack.
+     */
+    public fun simulateVoice(
+        phase: RadioVoicePhase,
+        rxLevel: Float = 0f,
+        txLevel: Float = 0f,
+        message: String? = null,
+        needsMicrophonePermission: Boolean = false,
+    ) {
+        _voice.value = RadioVoiceUiState(
+            available = true,
+            phase = phase,
+            rxLevel = rxLevel,
+            txLevel = txLevel,
+            message = message,
+            needsMicrophonePermission = needsMicrophonePermission,
+        )
+    }
+
+    override fun setVoiceListening(on: Boolean) {
+        actionsLog.add("setVoiceListening($on)")
+        _voice.update { current ->
+            current.copy(
+                available = true,
+                phase = if (on) RadioVoicePhase.LISTENING else RadioVoicePhase.OFF,
+                message = null,
+            )
+        }
+    }
+
+    override fun voicePushToTalk(down: Boolean) {
+        actionsLog.add("voicePushToTalk($down)")
+        _voice.update { current ->
+            current.copy(phase = if (down) RadioVoicePhase.TRANSMITTING else RadioVoicePhase.LISTENING, txLevel = if (down) 0.7f else 0f)
+        }
+    }
+
+    override fun requestMicrophonePermission() {
+        actionsLog.add("requestMicrophonePermission")
+        _voice.update { it.copy(needsMicrophonePermission = false) }
     }
 }

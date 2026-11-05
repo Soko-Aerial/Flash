@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio gateway — redesign v3 review</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="Flash">
+      <div class="rail-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M13 2 5 14h5l-1 8 8-12h-5l1-8Z" fill="currentColor"/></svg>
+      </div>
+      <div class="rail-items" aria-hidden="true">
+        <span class="rail-dot"></span>
+        <span class="rail-dot"></span>
+        <span class="rail-dot"></span>
+      </div>
+    </aside>
+
+    <main class="pane">
+      <header class="topbar">
+        <button class="icon-btn" id="back" aria-label="Navigate back">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <h1>Radio gateway</h1>
+        <span class="beta">Beta</span>
+        <button class="icon-btn" id="open-settings" aria-label="Radio settings">
+          <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 13.6a7.7 7.7 0 0 0 0-3.2l1.9-1.4-2-3.4-2.2.9a7.8 7.8 0 0 0-2.8-1.6L14 2.5h-4l-.3 2.4a7.8 7.8 0 0 0-2.8 1.6l-2.2-.9-2 3.4 1.9 1.4a7.7 7.7 0 0 0 0 3.2L2.7 15l2 3.4 2.2-.9a7.8 7.8 0 0 0 2.8 1.6l.3 2.4h4l.3-2.4a7.8 7.8 0 0 0 2.8-1.6l2.2.9 2-3.4-1.9-1.4Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+        </button>
+      </header>
+
+      <div class="scroll" id="scroll">
+        <div class="column" id="column"><!-- rendered --></div>
+      </div>
+
+      <div class="dock-slot" id="dock-slot"><!-- dock --></div>
+    </main>
+  </div>
+
+  <nav class="tabbar" aria-label="Flash">
+    <span class="tab tab-on"></span>
+    <span class="tab"></span>
+    <span class="tab"></span>
+    <span class="tab"></span>
+  </nav>
+
+  <div class="sheet-layer" id="sheet-layer" hidden>
+    <div class="scrim" id="scrim"></div>
+    <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

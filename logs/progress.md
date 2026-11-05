@@ -78,6 +78,236 @@ Fixed a Gradle dependency verification failure on Linux when resolving desktop d
 ### Remaining
 Wave 2 measurement backlog and scheduled tasks.
 
+## 2026-11-05 (merge) - Radio gateway redesign v3 merged into `dev` as `e76edc71` and pushed (dev `d77b8261`)
+
+### Worked on
+Merged the radio gateway redesign v3 branch from worktree `E:\FlashWork\radio-ui-v3` (`design/radio-gateway-v3`, tip
+`27114ff1`) into the local `dev` with `--no-ff`. The branch was based on the pushed `efc23ae8` (Wave 2 baseline); `dev` had
+since advanced with the local console design merge (`ec6c3724`), the port record and the two-agent console audit.
+
+### Merge
+- Merge commit **`e76edc71`**; only `logs/handoff.md` and `logs/progress.md` conflicted. Both sides' entries were kept:
+  the radio v3 banner/entries and the console audit/port entries are all present.
+- `docs/testing/TEST-BACKLOG.md` auto-merged; `RADUI-DEV02..04` and `CONSOLE-D02..D07` are both present.
+- No radio code was changed during the merge; the branch's Compose port, design review page, demos and screenshots are
+  taken as reviewed by the branch's own checks.
+
+### Verification
+- `:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` -> **44 tests, 0 failures** (9 suites).
+- `:ui:chat:testAndroidHostTest --tests "com.transfer.flash.ui.radio.*"` -> **28 tests, 0 failures** (5 suites).
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` -> **BUILD SUCCESSFUL** (from build cache; the merged tree
+  matches the branch outputs).
+- **No device verification:** `RADUI-DEV02` (Android walkthrough), `RADUI-DEV03` (Windows) and `RADUI-DEV04`
+  (screen reader/keyboard transmit) remain TODO.
+
+### Remaining
+- Owner/device checks above.
+- Channel/frequency/busy/refused states need `RadioGatewayUiState`/controller work first (critique P1).
+- Latch, elapsed on-air, haptics and a slop-tolerant hold are voice-engine work.
+- **Pushed (2026-11-05):** the console design merge (`ec6c3724`) and this radio merge were published together as `dev`
+  `d77b8261`; the owner approved the push. `origin/dev` now matches local `dev` (plus the docs follow-up).
+
+### Next AI
+Read `docs/ui/radio-gateway.md` "Redesign v3" and the `RADUI-DEV02..04` entries before touching the page. The wiring is
+unchanged (`RadioGatewayController`/`RadioGatewayUiState` untouched), and the existing no-dead-actions and copy/a11y
+source tests still guard it.
+
+## 2026-11-05 (review) - two-agent wiring audit of the merged console; no P0, findings open, no code changed
+
+### Worked on
+Two independent, read-only `general` subagents reviewed the merged `dev` console (`e1bc495b`, merge `ec6c3724`):
+one on the frame/auth/Overview/Join-requests/shared-UI wiring, one on every feature screen and its
+UI -> API -> server route/DTO contract. Neither changed files, ran Gradle, a browser or a device. The parent
+spot-checked the P1s and the new-Overview regressions.
+
+### Result
+- **No P0 and no privilege escalation.** Every audited control reaches a real server route with the correct
+  method/path/body; CSRF, step-up action/target strings, role gates, CSP-safe DOM, i18n and print rules are intact.
+  No sample-data mutation remains in the shipped console; “Meridian Works”/“Production” is only in the design prototype.
+- **4 P1 product gaps:** no client-side department-head scope (org-only screens/actions 403, sometimes after step-up);
+  multi-department heads are filtered after `LIMIT/OFFSET` in Devices/Invites/Announcements; the revocation-list
+  installer has no UI despite `POST /revocations/install`; department-head admin accounts cannot be created/re-scoped
+  from Administrators despite the server APIs.
+- **Port regressions to fix first:** Overview no longer verifies the audit chain; `/overview`/`/metrics` retry is dead
+  because the rejected promise is cached; “Latest activity” maps wrong action keys (`join.decline`/`admin.session.start`/
+  `delegation.verify` vs the real `join.reject`/`admin.login`/`delegation.install`); `role.short.dept_head` is missing;
+  display name reverts to username on session refresh; phone/tablet lose the user/session; ledger says “No devices
+  online”/“No invites waiting” from capped newest pages; help omits `g r`/`g n`; the 60-minute strip is 15 minutes.
+- **Design/feature gap:** join approval is one click, while the approved design/README/`CONSOLE-D06` promise a phone-code
+  confirmation gate. Needs an owner decision: implement step-up + confirmation, or correct the record and keep one click.
+- Other P2/P3: announcement paging/total, stale invite-group selections, announcement delete/conflict body empty
+  (`text:` vs `message:`), department IDs shown as names, Settings health caps online at 500, cold deep links lost,
+  logout/expiry edge cases, hardcoded About version, and smaller copy/a11y items.
+
+### Verification
+- Both agents re-ran `node --test server/admin-ui-tests/*.test.mjs`: **83/83 pass**.
+- The merged tree previously passed `AdminConsoleWebTest` **15/15** and `AdminConsoleApiTest` **10/10**.
+- No code was changed in this audit.
+
+### Remaining
+- Fix the port regressions R1-R9 first (small, testable). Decide the join-approval gate. Then do department-head
+  scope/provisioning + multi-department queries as one server+console feature, followed by the revocation installer.
+- Owner browser checks `CONSOLE-D02..D07` remain.
+
+### Next AI
+Read `docs/audit/2026-11-05-server-console-wiring-review.md` before touching the console. Start with R1-R9; do not
+re-audit from scratch. The P1 head work needs server query/paging changes and a head login browser test, not just CSS.
+
+## 2026-11-05 (port) - approved server dashboard design ported into the shipped console; merged as ec6c3724
+
+### Worked on
+The owner approved the alternative hub console design (`d3fb6c33`) and asked for it to replace the shipped console with
+every feature wired. The port keeps the real console's API, CSP-safe DOM, i18n, step-up, error boundaries, print rules
+and all existing tables/forms/drawers; only the visual/shell/Overview/auth layer was replaced.
+
+### Changed
+- `server/src/main/resources/admin-ui/css/redesign.css` (new, loaded after the functional CSS): approved tokens, type,
+  shapes, shell, Overview, auth and component treatment. The real feature CSS remains underneath for feature classes.
+- `js/ui/shell.js`: open-plane 248 px sidebar with Hub/People/Trust groups, real hub name, session countdown, user row,
+  theme/help, five-cell phone bar and More sheet. API preserved (`setActive`, `setBadge`, `setHub`, `setUser`,
+  `setCountdown`, `refreshTheme`).
+- `js/main.js`: `#/requests` route, request badge/active state, display name, redirect `#/organization?tab=requests` ->
+  `#/requests`.
+- `js/views/overview.js`: real `/overview` + `/metrics` + `/devices` + `/invites` + `/audit` composition. Health/
+  waiting/ledger are partial-safe; the relay strip is browser-sampled and says the hub keeps no history. Department
+  admins get the device quota instead of org-only uptime/metrics.
+- `js/views/login.js` `authFrame`: approved brand/hub-line/card; the real sign-in/recovery/lockout/expiry/sign-out
+  behaviour untouched.
+- `js/views/organization.js`: Organization now only Departments/Groups; the real join-request queue is `#/requests`.
+- `js/ui/widgets.js` tabs: labelled select fallback when more than three tabs do not fit on phone (Security).
+- `js/views/devices.js`: dynamic active/online/revoked/enrolled lede and the phone department/last-seen subline.
+- `js/views/audit.js`: chain-status strip and primary Verify action.
+- `js/views/announcements.js`: plaintext banner, no ADR reference in user copy.
+- `js/views/fonts`/`strings`: role short labels, requests/group labels, new Overview/audit copy.
+- No fictional org/environment: the shell uses the hub name from `/overview`. The review world remains only in
+  `design/server-console/`.
+- Docs: old console record marked SUPERSEDED; design record updated to approved/ported; review README updated;
+  `CONSOLE-D01` PASS and a Results-log entry; handoff banner updated.
+
+### Verification
+- `server/admin-ui-tests/*.test.mjs`: **83/83 pass**.
+- `:server:test --tests "*AdminConsole*"`: `AdminConsoleWebTest` **15/15**, `AdminConsoleApiTest` **10/10**.
+- Browser review harness (real assets + mock API): every route rendered at 1440, 768 and 390 with no page errors or
+  document overflow; sign-out -> login and sign-in -> Overview exercised. Device, security, tab-select, request queue,
+  Audit chain strip and auth pages inspected.
+- `:server:compileKotlin` green; no Kotlin/Android code changed.
+- **Committed as `adb26723`** on `agent/console-redesign` (design commit `d3fb6c33`).
+
+### Remaining
+- **Merged** `agent/console-redesign` into `dev` as **`ec6c3724`** (`--no-ff`; local `dev` ahead of `origin/dev`, not
+  pushed). The only merge conflicts were `logs/handoff.md` and `logs/progress.md`; both sides' entries were kept.
+- Owner browser checks `CONSOLE-D02..D07` (desktop/tablet/phone, dialogs, sign-in/out, contrast/touch).
+- The relay strip fills only while a console is open; if the owner wants a full last-hour chart on first load, add a
+  server-side relay history as a separate, tested feature (the hub currently keeps none by design).
+
+### Next AI
+Read `docs/ui/hub-admin-console-redesign.md` and the top handoff banner. The shipped console is the implementation; the
+`design/server-console/` folder is the visual reference and must not be deployed as the product. Do not reintroduce a
+fictional hub name/environment; use `/overview.hubName`. Preserve the real step-up/i18n/API and the console tests.
+
+## 2026-11-05 (later) - Radio gateway redesign v3: the Compose port driven to screen parity
+
+### Worked on
+The design was approved; this pass opened the REAL Compose screen (not the review page), compared it with the approved
+design, and fixed every difference the screenshots exposed. Same branch `design/radio-gateway-v3`, worktree
+`E:\FlashWork\radio-ui-v3`.
+
+### Changed
+- `FlashRadioGatewayScreen.kt`: blocks are 30 dp apart; the column is 780 dp (matches the review page); the phone dock
+  gets `stacked = true` so the state line and the talk control stack there while they share one row on a wide window;
+  the radios section receives `fillWidth = dense` for the pairing pill.
+- `FlashRadioGatewayComponents.kt`: the plate is always `backgroundSurface` (it darkened when off); the state sentence is
+  13/18; radio rows carry the design's hairline under the active row; "Pair a new radio" is a local 50 dp button (accent
+  primary only while nothing is paired, `backgroundSurfaceStrong` after, 232 dp pill on a wide window and full width on a
+  phone); row chips are neutral "In use" and warm "Link lost" and appear only when the link is actually connected or lost
+  (a stopped gateway no longer claims "Link lost"); "This link" shows the short mode name and an **Authorised** chip on the
+  profile row; the readiness steps draw their own accent number (the copy no longer carries "1."); the test-message row
+  reflects sending / sent / failed / the RF warning.
+- `FlashRadioAudioPanel.kt`: no speaker icon in the head (the design has none); a shared `RadioAudioStateRow`; the state
+  and the PTT share a row on a wide window and stack in the dock; the PTT is 64 dp tall on a wide window, 56 in the dock.
+- `FlashRadioMath.kt` / `FlashRadioCopy.kt`: `modeShortName` and the four short mode names.
+- `DesktopRadioGatewayDemoApp.kt`: opens on the designed state (connected VR-N76, UV-Pro paired, audio listening) and
+  carries no broken em dash in its title.
+- Evidence: `design/radio-v3/compose/*.png` (wide, narrow/dock, settings sheet, pair sheet), captured from the running app.
+
+### Verification
+- `:desktop:radioGatewayDemo` launched and captured at 1180x820 and 900x820; the settings sheet opened from the header
+  gear, the pair sheet from "Pair a new radio" and the scan started by itself.
+- `:ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*"` -> **44 tests, 0 failures** (9 suites);
+  `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` -> **BUILD SUCCESSFUL**.
+
+### Remaining
+- Interaction on hardware: the listen switch/PTT against a real radio, the sheets' dismiss behaviour, and the screen
+  reader path (`RADUI-DEV02`..`04`).
+- The desktop sheet is a centred overlay (the app's `FlashSheetHost` seam), the phone a bottom sheet; the review page still
+  draws a bottom sheet at both widths.
+- `FlashIcons` has no handheld-radio glyph, so the plate and rows use Device/Bluetooth marks.
+
+### Next AI
+Read the "Redesign v3 - Compose port verified on screen" section of `docs/ui/radio-gateway.md` before editing: it lists the
+exact dp/sp values and the differences kept on purpose. The demo (`:desktop:radioGatewayDemo`) is the fastest way to see
+the screen without a radio; it is not the shipped host (no radio voice there), so the panel only appears in the demo
+because the fake reports `available = true`.
+## 2026-11-05 (later) - Radio gateway redesign v3: your radios, pair sheet, settings sheet, talk bar (design + build)
+
+### Worked on
+The owner's brief: turning the radio gateway on should show the radios already paired and offer to pair a new one; the
+pair action opens a dialog that starts scanning; the security profile and the operational mode belong in settings; and
+hold-to-talk needs a place that makes sense. Design-only round as asked: no controller method, state field or decision
+changed. Built in the worktree `E:\FlashWork\radio-ui-v3` on branch `design/radio-gateway-v3`; commit `ead3480a` (the main tree's `dev` is
+being used by another agent).
+
+### Changed
+- `design/radio-v3/` - a static review page (tokens copied from `FlashPalette`, sentences from `FlashRadioCopy`, eight
+  states as `?state=off|empty|connected|lost|permission|candidate|scan|settings`, `serve.mjs` for a local server).
+- `FlashRadioGatewayScreen.kt` (rewritten): header with the settings gear, station plate, strips, "Your radios", readiness,
+  "This link", and the audio panel - in the page flow at >= 900 dp, docked above the shell bar below it.
+- `FlashRadioGatewayComponents.kt` (rewritten): plate (with a full-width "Turn on" while off), strips, radio rows,
+  readiness, link facts, the pair sheet, the settings sheet (security profile, operational mode, This radio, test frame,
+  Forget) and the existing authorisation / RF-warning dialogs.
+- `FlashRadioVoiceCard.kt` -> `FlashRadioAudioPanel.kt`: `FlashRadioVoiceSection` became `FlashRadioAudioPanel` (listen
+  switch, five-bar level, hold-to-talk, licence note). The PTT is disabled with a reason while the link is down, turns warm
+  with "Talking..." while keyed, and holds on Space/Enter for keyboard users.
+- `FlashRadioCopy.kt`: the new sentences (your radios, pair sheet, settings sheet, talk bar, "On air", the switch's reason).
+  `SCREEN_TITLE` is now "Radio gateway"; the "Beta" chip carries the marker.
+- `FlashRadioMath.kt`: pure helpers only - `modeTitle`, `modeSubtitle`, `scanStatusText`.
+- `FakeRadioGatewayController.kt`: demo-only voice support (`simulateVoice` + the three voice actions) so previews and the
+  debug demo can show the talk bar; `RadioGatewayDemoActivity` opens on a connected VR-N76 with UV-Pro listed.
+- `docs/ui/radio-gateway.md`: "Redesign v3" DESIGNED section (art direction, composition, the talk bar's three considered
+  placements, the pair/settings sheet specs) and the built section with the critique and the deferred items.
+- `docs/testing/TEST-BACKLOG.md`: `RADUI-DEV02` (phone walkthrough), `RADUI-DEV03` (Windows), `RADUI-DEV04` (screen reader
+  and keyboard transmit).
+
+### Why
+The v2 page answered "what is the state of the gateway?" but never "which radios do I have, and how do I add one?", and it
+kept security, mode, voice, diagnostics and the checklist on the same scroll as the hardware. Moving the rarely-used
+controls behind one gear and giving pairing its own sheet leaves four blocks and one dock; the dock puts the most physical
+action (hold to talk) in the thumb zone and keeps it there at every scroll offset.
+
+### Verification
+- Review page: `lint.mjs --app` 0 FAIL / 0 WARN; `inspect.mjs --app` 0 FAIL / 0 WARN at 390 / 768 / 1440 for all eight
+  states (screenshots in `.taste-skill/radio-v3-*`, git-ignored).
+- Impeccable critique run as two isolated assessments on the review page. Assessment A (design review) scored 26/40 and its
+  top finding was that a lost link could still be keyed; Assessment B (detector + source audit) found one automated finding
+  in the whole page (the scan dot's pulse, kept as a live-scan indicator) and no text-contrast failures, but caught the
+  switch track at ~1.1:1 non-text contrast and the missing keyboard path to the PTT. Both were fixed (see the doc section).
+- Compose: :ui:chat:jvmTest --tests "com.transfer.flash.ui.radio.*" -> 44 tests, 0 failures (9 suites);
+  :ui:chat:compileKotlinJvm, :app:compileDebugKotlin and :desktop:compileKotlinJvm -> BUILD SUCCESSFUL.
+
+### Remaining
+- Device checks `RADUI-DEV02`..`04`.
+- Channel / frequency / "radio is receiving" refusal states cannot be shown: `RadioGatewayUiState` carries no channel and no
+  busy reason. That is the critique's P1 and needs controller work first.
+- Latch mode, elapsed on-air seconds, haptics on key/unkey, and a slop-tolerant hold (the gesture currently ends a
+  transmission when the finger leaves the control) are voice-engine work, not design.
+- The desktop host reports `available = false` for radio voice, so the talk bar is absent there by design.
+
+### Next AI
+Read `docs/ui/radio-gateway.md` "Redesign v3" before touching the radio page: the structure (plate -> audio -> radios ->
+readiness -> link) is deliberate, and the review page is the fastest way to see a state without a radio. The wiring is
+unchanged, so the existing `FlashRadioNoDeadActionsTest` / `FlashRadioCopyA11ySourceTest` guards still apply; if you add a
+controller method, add it to that table.
+
 ## 2026-11-05 (later) - Wave 2 host baseline: 200 MB, 64 vs 256 KiB; no device measurements
 
 ### Worked on
@@ -154,6 +384,52 @@ Merged `feature/tofu-tombstone-title` (tip `f9b0d5b2`) into `dev` with `--no-ff`
 Start Wave 2 with a code-only item that needs no device. Hash-on-receive is the natural next one: remove the second
 full read after a receive without weakening the whole-file check, with tests; the measurement items remain owed. Read the
 `ReceivePipeline`/`WholeFileDigestProvider` path and design the incremental option before changing it.
+## 2026-11-05 (later) - server dashboard alternative designed and verified; proposal only, shipped console untouched
+
+### Worked on
+The owner was not satisfied with the shipped hub admin console: it did not conform to the rest of the Flash app and did not
+feel professional. He asked for a complete alternative **design**, built in its own worktree because another agent was using
+the current branch, with the shipped implementation left untouched. Approval is the gate; no product code was changed.
+
+### Changed
+- New worktree `E:/FlashWork/D-console`, branch `agent/console-redesign`, based on `dev` `a7ff5636`.
+- New standalone review build in `design/server-console/`: no build step, no dependencies, no CDN, no web fonts, no external
+  images; `node scripts/serve.mjs` -> `http://localhost:5182/`. Ten routes plus dialogs, drawer and a mobile More sheet.
+- Direction: `draw.mjs --app --kind devtools --theme light --style achromatic-ledger`, seed `1682487600`, with
+  `--keep palette,type`. Pulse/graphite palette, FlashTypography system face, Flash 16/12/8 shapes. The one hue is the live
+  relay data; the primary action is ink. Full direction and data in `design/server-console/DESIGN-NOTES.md`.
+- New design record `docs/ui/hub-admin-console-redesign.md`; a proposal banner links it from `docs/ui/hub-admin-console.md`.
+- Manual review checks `CONSOLE-D01..D07` added to `docs/testing/TEST-BACKLOG.md`.
+
+### Verification
+- Phase 2 was a dual-agent Impeccable critique: Assessment A design review (26/40, Good) and Assessment B detector +
+  browser evidence. The critique found one P0 (Security -> Delegation/Trust root fingerprint overflowed the page at
+  1440/768/390), a mobile select that displayed the wrong active view on deep links, a 1.34:1 separator, 5 tiny-text
+  nodes, and a set of honesty/action gaps. All P0 and design-level findings were fixed; the functional simulation limits
+  are stated in the README.
+- Phase 3: feedback-only motion, 120-200 ms ease-out; dialog/drawer enter 200 ms and exit 140 ms; toasts enter/exit;
+  transform/opacity only; reduced-motion verified in Chrome (~0.01 ms, dialog closes immediately).
+- Phase 4: `inspect.mjs --app` on Overview -> **0 FAIL, 1 WARN** (`tiny-text`; defended: app-screen rules allow 12 px
+  metadata / 11 px ticks, primary content is 14 px). Every other inspected route -> 0 FAIL. A 54-page sweep
+  (18 routes x 1440/768/390) found **0 document overflows, 0 unnamed controls, 0 console/page errors, 0 computed
+  text-contrast failures**. Final screenshots are in `design/server-console/shots/final/`; the test/design evidence is in
+  `shots/impeccable/`.
+- No Gradle build, server change or shipped asset was touched. Playwright was used only by review scripts.
+
+### Remaining
+- Owner review and an explicit choice: port it, port the Overview first, or keep the shipped console. The port plan is
+  `design/server-console/README.md` section 7.
+- The prototype's writes are in-memory, the step-up code is illustrative, and there is no real API/WebCrypto/QR/print/
+  persistence or lockout state. Do not treat the prototype as a release candidate.
+
+### Committed
+`d3fb6c33` on `agent/console-redesign` (worktree `E:/FlashWork/D-console`): the review build, design docs, screenshots,
+progress/handoff and the `CONSOLE-*` checks. No shipped console file was touched.
+
+### Next AI
+Read `design/server-console/README.md` and `docs/ui/hub-admin-console-redesign.md` before touching the console. If the owner
+approves a port, keep the shipped router, CSP-safe DOM, i18n, step-up, error boundaries and print rules; do not copy
+`data.js` or Playwright scripts into product code. If the owner does not approve, leave the shipped console alone.
 
 ## 2026-11-05 (later) - resume identity (ADR-352, Room v23); unit/migration green, device migration verified
 
