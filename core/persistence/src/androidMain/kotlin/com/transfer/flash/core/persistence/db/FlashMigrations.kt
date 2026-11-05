@@ -79,6 +79,9 @@ public object FlashMigrations {
     /** v21 -> v22: missing secondary indexes on top DAO queries (OPT-O06-05). */
     public val MIGRATION_21_22: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_21_22)
 
+    /** v22 -> v23: source identity for a verified resume (ADR-352). */
+    public val MIGRATION_22_23: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_22_23)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

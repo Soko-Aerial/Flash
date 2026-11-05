@@ -7363,7 +7363,12 @@ green. These are the two-device checks that still gate confidence.
 - **Source:** `5ab9c9f7`. **Status:** TODO (needs the harness; the limiter itself is unit-tested)
 
 ### W1-RESUME-01 — A source file changed between sessions
-- **Status:** POSTPONED, not implemented. The plan is Room v22 -> v23 with source size, mtime and a first/last 64 KiB digest; resume must verify them and restart from zero on a mismatch.
-- **Steps when it lands:** start a 1 GiB send, pause or stop it, change the source file (same size and different content is the important case), resume. Repeat with an unchanged file.
-- **Pass:** the changed file restarts from zero, the old done chunks are cleared, the row says why, and no corrupt file is assembled; the unchanged file still resumes.
-- **Source:** `docs/audit/2026-11-03-nectarlink-comparative-review.md` item 3. **Status:** POSTPONED
+- **Status:** IMPLEMENTED (Room v22 -> v23, ADR-352); unit and migration tests green; **device run owed**.
+- **Setup:** two paired phones; a file large enough for several chunks (8 MiB or more is enough).
+- **Steps:** start a send; pause it or force-stop the sender mid-transfer; change the source file with the **same size** but different content; resume/Retry. Repeat with an unchanged file. Finally, send the changed file again from the composer (a new transfer id).
+- **Pass (ADR-352):** the changed file becomes **Failed** with "The file changed while it was being sent. Try sending it again."; the sender's confirmed chunks are cleared, so a Retry does not skip them; no corrupt file is delivered. The unchanged file resumes and completes. A new send of the changed file starts from zero and completes.
+- **Why not an in-place zero restart:** the receiver keys its session on `(transferId, fileId)`; an in-place restart is rejected as SESSION_CONFLICT on a live session or mixes the receiver's persisted chunks after a receiver restart. ADR-352 records this deviation from the audit plan's wording. "Send it again" is the safe zero restart.
+- **Migration:** install the v23 build over an existing v22 install with transfer history; the app opens without a migration error, and `transfers` has nullable `sourceSizeBytes`, `sourceLastModifiedMs`, `sourcePrefixSha256`.
+- **Result 2026-11-05 (migration part):** the v23 debug APK installed over the Infinix X6882B's existing v22 data (`adb install -r` -> Success), the app started, and the chat list still showed `Flash Olive`/`final-check` and `Flash Gecko`/`w1session`. No `FATAL EXCEPTION`, `IllegalStateException`, `SQLiteException` or Room migration error appeared in the app's logcat; the migration is device-verified.
+- **Still owed:** the changed-source resume run (needs two phones; the Samsung left USB before this build) and the unchanged-file resume.
+- **Source:** `docs/audit/2026-11-03-nectarlink-comparative-review.md` item 3, ADR-352, `SourceIdentityTest`, `RealFlashTransferRepositoryTest` ("a changed source is refused..."), `FlashMigrationsChainTest`, `FlashJvmMigrationsTest`. **Status:** PARTIAL (migration device-verified; changed-file resume device run owed)

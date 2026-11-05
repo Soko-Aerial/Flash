@@ -80,10 +80,13 @@ import com.transfer.flash.core.network.ws.WsTransferServer
 import com.transfer.flash.core.transfer.FileSourceOpener
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.FlashTransferRepository
+import com.transfer.flash.core.transfer.SourceIdentity
+import com.transfer.flash.core.transfer.SourceIdentityProvider
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
 import com.transfer.flash.core.transfer.chunked.RejectReason
+import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.chunked.WholeFileCheck
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.core.transfer.multistream.StreamChannel
@@ -1403,6 +1406,9 @@ public class DesktopEngine(
         val transfer = RealFlashTransferRepository(
             streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
             fileSourceOpener = fileOpener,
+            sourceIdentityProvider = object : SourceIdentityProvider {
+                override suspend fun identity(fileUri: String): SourceIdentity? = readSourceIdentity(fileUri)
+            },
             store = null, // D5 = C pending (09B-2) — matches the Phase 16 harness.
             repositoryScope = scope,
             requireReceiverAcceptance = true,
@@ -2373,6 +2379,37 @@ public class DesktopEngine(
     }
 
     /** FLASH_XFER control frames — route into the repository (both directions). */
+    /** ADR-352: size, mtime and a first-64-KiB digest for a desktop file source. */
+    private fun readSourceIdentity(uriString: String): SourceIdentity? = runCatching {
+        val file = runCatching {
+            if (uriString.startsWith("file:", ignoreCase = true)) {
+                java.io.File(java.net.URI(uriString))
+            } else {
+                java.io.File(uriString)
+            }
+        }.getOrElse {
+            java.io.File(uriString)
+        }
+        if (!file.isFile) return@runCatching null
+        val prefix = runCatching {
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0
+                while (total < buffer.size) {
+                    val read = input.read(buffer, total, buffer.size - total)
+                    if (read < 0) break
+                    total += read
+                }
+                Sha256.digestHex(buffer.copyOf(total))
+            }
+        }.getOrNull()
+        SourceIdentity(
+            sizeBytes = file.length(),
+            lastModifiedMs = file.lastModified().takeIf { it > 0L },
+            prefixSha256Hex = prefix,
+        )
+    }.getOrNull()
+
     private suspend fun handleInboundText(peerDeviceId: String, text: String) {
         FlashInboundRouter.routeInboundText(
             peerDeviceId = peerDeviceId,

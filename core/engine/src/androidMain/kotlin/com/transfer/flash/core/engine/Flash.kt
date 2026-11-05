@@ -57,8 +57,13 @@ import com.transfer.flash.core.security.trust.FlashTrustStore
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
+import com.transfer.flash.core.transfer.SourceIdentity
+import com.transfer.flash.core.transfer.SourceIdentityProvider
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
+import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
 import com.transfer.flash.core.transfer.chunked.RejectReason
 import com.transfer.flash.core.transfer.multistream.StreamChannel
@@ -377,6 +382,9 @@ private class Wiring(
             // unchanged — it stays an InputStream producer because that is what ContentResolver
             // hands back.
             fileSourceOpener = { uriString -> openSource(uriString).source() },
+            sourceIdentityProvider = object : SourceIdentityProvider {
+                override suspend fun identity(fileUri: String): SourceIdentity? = readSourceIdentity(fileUri)
+            },
             store = if (config.enableResume) RoomTransferStore(db.transferDao(), db.transferChunkDao()) else null,
             repositoryScope = scope,
             requireReceiverAcceptance = true,
@@ -1173,6 +1181,57 @@ private class Wiring(
         return appContext.contentResolver.openInputStream(android.net.Uri.parse(uriString))
             ?: throw IOException("Content resolver returned null stream for $uriString")
     }
+
+    /**
+     * ADR-352: the best identity the Storage Access Framework can give. Providers are inconsistent: SIZE and
+     * COLUMN_LAST_MODIFIED are optional and some return -1/0, so each signal is independent and the first-64-KiB
+     * digest is the decisive one. Null only when nothing at all could be read (the repository then keeps the old
+     * behaviour rather than inventing a mismatch).
+     */
+    private fun readSourceIdentity(uriString: String): SourceIdentity? = runCatching {
+        val uri = android.net.Uri.parse(uriString)
+        val file = if (uri.scheme.equals("file", ignoreCase = true)) {
+            uri.path?.let(::File)?.takeIf { it.isFile }
+        } else {
+            null
+        }
+        var size = file?.length() ?: queryLongColumn(uri, OpenableColumns.SIZE)?.takeIf { it >= 0L }
+        val modified = file?.lastModified()?.takeIf { it > 0L }
+            ?: queryLongColumn(uri, DocumentsContract.Document.COLUMN_LAST_MODIFIED)?.takeIf { it > 0L }
+        val prefix = runCatching {
+            appContext.contentResolver.openInputStream(uri)?.use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0
+                while (total < buffer.size) {
+                    val read = input.read(buffer, total, buffer.size - total)
+                    if (read < 0) break
+                    total += read
+                }
+                Sha256.digestHex(buffer.copyOf(total))
+            }
+        }.getOrNull()
+        if (file == null && size == 0L && prefix != null && prefix != Sha256.digestHex(ByteArray(0))) {
+            // Some content providers report 0 for a size they do not know. The prefix proves this source is not
+            // empty, so 0 is not a real size; treating it as one would refuse a valid resume.
+            size = null
+        }
+        if (size == null && modified == null && prefix == null) {
+            null
+        } else {
+            SourceIdentity(sizeBytes = size, lastModifiedMs = modified, prefixSha256Hex = prefix)
+        }
+    }.getOrNull()
+
+    private fun queryLongColumn(uri: android.net.Uri, column: String): Long? = runCatching {
+        appContext.contentResolver.query(uri, arrayOf(column), null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                null
+            } else {
+                val index = cursor.getColumnIndex(column)
+                if (index < 0 || cursor.isNull(index)) null else cursor.getLong(index).takeIf { it >= 0L }
+            }
+        }
+    }.getOrNull()
 
     /**
      * Restarts outbound transfers that this peer's previous disconnect failed (ERROR-035).
