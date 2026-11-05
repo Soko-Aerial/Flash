@@ -25,8 +25,13 @@ port slice; the mock remains the visual authority (`design/chat-web/DESIGN.md`).
   menu, which already carried it.
 - **Tokens.** `accentFill`/`onAccentFill` (pulse600+white 5.21:1 light, pulse400+pulse900 5.85:1 dark), composer input
   moved to `graphite50`/`surface0`, `FlashShapes.composerInput` at 22dp, `FlashSpacing.space10/space14/space44`.
-- **Icons.** A subagent rewrote all **67** `flash_ic_*.xml` drawables at 24dp/1.75dp/round: 28 copied byte-for-byte
-  from the approved mock, 39 redrawn in the same language, with a contact sheet at 24/48/96dp on light and dark.
+- **Icons.** All **67** `flash_ic_*.xml` drawables rewritten at 24dp/1.75dp/round: 28 copied byte-for-byte from the
+  approved mock, 39 redrawn. A second pass fitted every redrawn glyph to an 18.0dp longest axis (anchor median ink
+  17.10 x 17.65dp), re-drew `settings` as an open counter with eight flat teeth, deepened `flag`, turned `camera_flip`
+  into two rotation arrows, opened the `hand` finger gaps to 1.6dp, and made `hangup` the call handset struck
+  perpendicular to its axis. `tray` (Windows tray + hub mailbox) was still the brand bolt and is now an inbox tray.
+  Record: `docs/ui/chat-icon-set.md` with the 24px comparison and the full sheet. AAPT + compile green; no device
+  render yet (CHATUI-16).
 
 ### Why
 The owner approved the direction and asked for a picture-accurate port, with the icons matching the chat.
