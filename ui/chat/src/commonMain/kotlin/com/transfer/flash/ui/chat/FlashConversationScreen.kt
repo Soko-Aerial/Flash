@@ -55,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.core.common.model.FlashRadioPolicy
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupHistoryUi
@@ -983,10 +984,46 @@ fun FlashConversationScreen(
             }
         },
         bottomBar = {
-            // UI-029 addendum 3: a device that left or was removed has nothing to type into; say so instead.
-            if (state.selfMembership != FlashSelfMembership.Active) {
-                FlashGroupSelfNotice(membership = state.selfMembership)
-            } else FlashComposer(
+            Column {
+                // A direct chat set to Never looked exactly like an unreachable peer: the header drops
+                // the radio-only claim and the composer accepts text, but the radio step will refuse.
+                // Say it where the operator is about to type, with the one-tap way out.
+                if (state.radioPolicy == FlashRadioPolicy.NEVER &&
+                    state.header.presence == FlashPeerPresence.Offline &&
+                    state.selfMembership == FlashSelfMembership.Active
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(FlashTheme.colors.backgroundSurfaceStrong)
+                            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlashText(
+                            text = "Radio fallback is off for this chat.",
+                            modifier = Modifier.weight(1f),
+                            style = FlashTheme.typography.captionDefault,
+                            color = FlashTheme.colors.textSecondary,
+                        )
+                        FlashText(
+                            text = "Turn on",
+                            modifier = Modifier
+                                .clip(FlashShapes.attachment)
+                                .clickable { onSetRadioPolicy(FlashRadioPolicy.AUTO) }
+                                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                                .semantics {
+                                    role = Role.Button
+                                    contentDescription = "Turn on radio fallback for this chat"
+                                },
+                            style = FlashTheme.typography.captionDefault.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
+                            color = FlashTheme.colors.accentPrimary,
+                        )
+                    }
+                }
+                // UI-029 addendum 3: a device that left or was removed has nothing to type into; say so instead.
+                if (state.selfMembership != FlashSelfMembership.Active) {
+                    FlashGroupSelfNotice(membership = state.selfMembership)
+                } else FlashComposer(
                 draft = draftState.text,
                 onDraftChanged = {
                     val capped = FlashPinnedMessageMath.capLength(it, com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
@@ -1137,6 +1174,7 @@ fun FlashConversationScreen(
                 },
                 voiceAmplitudeProvider = { voiceRecorder.maxAmplitude() },
             )
+            }
         },
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize()) {
