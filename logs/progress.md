@@ -38,6 +38,11 @@ Read ADR-351, `ERROR-982`, `W1-REVOKE-02`, and this entry. Do not call the notic
 device-verified. The honest remaining halves are the outbox negative ack, the revocation tombstone, the raw-id title,
 and resume identity. Pick one as its own change.
 
+### Merged
+Merged `fix/wave1-safety` (tip `9765fde3`) into `dev` with `--no-ff` as **`239f8581`** and pushed to `origin/dev`.
+The affected gate and device results above describe the merged tree. Remaining partials unchanged: outbox budget,
+TOFU re-pin tombstone, raw-id title, and resume identity (Room v22 -> v23).
+
 ## 2026-11-04 - ADR-351 `PAIR_REVOKE` implemented; notice device-verified, header unit-tested
 
 ### Worked on
