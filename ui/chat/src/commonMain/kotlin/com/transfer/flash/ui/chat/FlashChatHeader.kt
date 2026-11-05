@@ -66,8 +66,6 @@ fun FlashChatHeader(
      */
     showVideoCallAction: Boolean = true,
     onMenuClick: () -> Unit = {},
-    /** UI-028: group-only search-in-conversation action. */
-    onSearchClick: () -> Unit = {},
     /**
      * UI-031: verification-aware encryption trust state for the status-line badge. When not
      * [FlashEncryptionBadgeState.None], the tappable [FlashEncryptionBadge] replaces the static
@@ -105,7 +103,7 @@ fun FlashChatHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(FlashDimensions.headerHeight)
+                .height(60.dp)
                 .padding(horizontal = FlashSpacing.space4),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -131,7 +129,7 @@ fun FlashChatHeader(
                 FlashGroupAvatar(
                     initials = state.memberInitials,
                     seed = state.avatarSeed,
-                    size = FlashDimensions.avatarMd,
+                    size = 34.dp,
                     modifier = avatarEntryModifier
                         .clip(CircleShape)
                         .clickable(onClick = onAvatarClick)
@@ -145,7 +143,7 @@ fun FlashChatHeader(
                 FlashAvatar(
                     initials = state.avatarInitials,
                     seed = state.avatarSeed,
-                    size = FlashDimensions.avatarMd,
+                    size = 34.dp,
                     modifier = avatarEntryModifier
                         .clip(CircleShape)
                         .clickable(onClick = onAvatarClick)
@@ -197,7 +195,6 @@ fun FlashChatHeader(
                 onVideoCallClick = onVideoCallClick,
                 showVideoCallAction = showVideoCallAction,
                 onMenuClick = onMenuClick,
-                onSearchClick = onSearchClick,
                 menuContent = menuContent,
             )
         }
@@ -354,7 +351,6 @@ private fun FlashChatHeaderActions(
     onVideoCallClick: () -> Unit,
     showVideoCallAction: Boolean,
     onMenuClick: () -> Unit,
-    onSearchClick: () -> Unit = {},
     menuContent: @Composable () -> Unit = {},
 ) {
     Row(
@@ -370,9 +366,6 @@ private fun FlashChatHeaderActions(
                     FlashIcon(icon = FlashIcons.VideoCall)
                 }
             }
-        }
-        FlashHeaderIconButton(onClick = onSearchClick, description = "Search messages") {
-            FlashIcon(icon = FlashIcons.Search)
         }
         Box {
             FlashHeaderIconButton(onClick = onMenuClick, description = "Conversation menu") {

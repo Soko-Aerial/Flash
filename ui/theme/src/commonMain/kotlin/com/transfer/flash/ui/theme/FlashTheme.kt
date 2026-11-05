@@ -14,6 +14,7 @@ private val LocalFlashTypography = compositionLocalOf { FlashTypography.default(
 private val LocalFlashMotion = compositionLocalOf { FlashMotion(reduceMotion = false) }
 private val LocalFlashMinimalChrome = compositionLocalOf { false }
 private val LocalFlashUltraLowUi = compositionLocalOf { false }
+private val LocalFlashDark = compositionLocalOf { false }
 
 /**
  * Access Flash chat design tokens. Do not use MaterialTheme.colorScheme for chat-visible styling.
@@ -57,6 +58,18 @@ object FlashTheme {
         @Composable
         @ReadOnlyComposable
         get() = LocalFlashUltraLowUi.current
+
+    /**
+     * True when the authored dark palette is active.
+     *
+     * Exposed because the chat wallpaper (ADR-354) has its own light and dark ground per preset and
+     * is painted outside the semantic colour slots; deriving it from a surface's luminance would
+     * break the moment a preset's ground is intentionally deep in light mode.
+     */
+    val isDark: Boolean
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalFlashDark.current
 }
 
 /**
@@ -111,6 +124,7 @@ fun FlashTheme(
         LocalFlashMinimalChrome provides minimalChrome,
         LocalFlashUltraLowUi provides ultraLowUi,
         LocalFlashHapticsEnabled provides hapticsEnabled,
+        LocalFlashDark provides darkTheme,
         content = content,
     )
 }

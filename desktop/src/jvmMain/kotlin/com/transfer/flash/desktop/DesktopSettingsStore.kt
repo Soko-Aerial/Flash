@@ -1,5 +1,6 @@
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.common.model.FlashChatWallpaper
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
@@ -48,6 +49,8 @@ public data class DesktopSettings(
     val swarmKeepFinishedFiles: Boolean = true,
     /** UI-056 / ADR-080: the handwritten launch animation when Flash starts. Default TRUE. */
     val launchAnimation: Boolean = true,
+    /** ADR-354: one app-wide chat wallpaper (option a). */
+    val chatWallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
     /** ADR-121: let the organisation hub carry readable chat text to colleagues who are not reachable directly. Default FALSE. */
     val hubContentViaHub: Boolean = false,
 )
@@ -109,6 +112,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             swarmHelpShare = props.getProperty(KEY_SWARM_HELP_SHARE, "true").toBoolean(),
             swarmKeepFinishedFiles = props.getProperty(KEY_SWARM_KEEP_FINISHED_FILES, "true").toBoolean(),
             launchAnimation = props.getProperty(KEY_LAUNCH_ANIMATION, "true").toBoolean(),
+            chatWallpaper = FlashChatWallpaper.fromStorageKey(props.getProperty(KEY_CHAT_WALLPAPER)),
             hubContentViaHub = props.getProperty(KEY_HUB_CONTENT_VIA_HUB, "false").toBoolean(),
         )
     }
@@ -136,6 +140,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_SWARM_HELP_SHARE, settings.swarmHelpShare.toString())
         props.setProperty(KEY_SWARM_KEEP_FINISHED_FILES, settings.swarmKeepFinishedFiles.toString())
         props.setProperty(KEY_LAUNCH_ANIMATION, settings.launchAnimation.toString())
+        props.setProperty(KEY_CHAT_WALLPAPER, settings.chatWallpaper.storageKey)
         props.setProperty(KEY_HUB_CONTENT_VIA_HUB, settings.hubContentViaHub.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
@@ -192,6 +197,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_SWARM_HELP_SHARE: String = "swarm_help_share"
         const val KEY_SWARM_KEEP_FINISHED_FILES: String = "swarm_keep_finished_files"
         const val KEY_LAUNCH_ANIMATION: String = "launch_animation"
+        const val KEY_CHAT_WALLPAPER: String = "chat_wallpaper"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"

@@ -7522,3 +7522,39 @@ not the app.
   go offline now"; the receiver reads "Getting it from K devices"; an offline holder shows "Offline - n%"; a lost
   source shows "Your file is no longer available. Pick it again to keep sharing"; no piece numbers or peer ids appear.
 - **Status:** TODO
+
+### CHATUI-13 - Chat wallpaper persists (ADR-354 option a)
+- **Setup:** Android build with the ported chat; a Windows build from the same commit; two chats.
+- **Steps:** open a chat, menu > Chat appearance, choose each of the five presets, close and reopen the chat; kill and
+  relaunch the app; do the same on the desktop; switch the system to dark and back.
+- **Pass:** every chat uses the chosen preset (app-wide); the choice survives a restart on both hosts; each preset has
+  its light and its dark ground; message text and timestamps keep their contrast on all five; an unreadable/absent
+  stored value falls back to Graphite instead of failing a launch.
+- **Status:** TODO
+
+### CHATUI-14 - Overflow menu and Chat appearance entry
+- **Setup:** a 1:1 chat and a v2 group, both hosts.
+- **Steps:** open the kebab; confirm the item lists; open Chat appearance; use Search, View profile, Group info, Group
+  settings, Invite link and Add members; check destructive items and Escape/outside dismissal.
+- **Pass:** the lists match `FlashConversationMenuMath` including Chat appearance; the popover is 252dp with 44dp rows;
+  each item opens its surface; destructive items keep their confirmations; the menu is reachable with one thumb and
+  dismisses with back/Escape.
+- **Status:** TODO
+
+### CHATUI-15 - Header and composer on a phone
+- **Setup:** Android phone, two paired chats; a hardware keyboard for the desktop step.
+- **Steps:** type 1 and 6 lines; open/close the IME; clear the draft; hold the mic and slide to cancel; send; open the
+  reply dock.
+- **Pass:** the three header actions fit with the name and presence; the mic and send share one 44dp slot with a
+  crossfade and never move the pill; the pill grows to 6 lines; the IME never overlaps the composer; the reply dock
+  matches the design.
+- **Status:** TODO
+
+### CHATUI-16 - The full icon set at 24dp and 48dp
+- **Setup:** Android and Windows builds from the icon commit.
+- **Steps:** walk every screen that uses icons (chats list, conversation header/composer, attachments, transfers, nearby,
+  settings, hub, calls, radio) at default and large font/UI scale; single out the nav row and the call controls.
+- **Pass:** no glyph reads as a different symbol from before; stroke weight is even next to the chat glyphs; nothing
+  clips its frame at 48dp; `settings` still reads as a cog, `mic_off`/`video_off` have a clear slash, and the four nav
+  glyphs match the chat hand.
+- **Status:** TODO

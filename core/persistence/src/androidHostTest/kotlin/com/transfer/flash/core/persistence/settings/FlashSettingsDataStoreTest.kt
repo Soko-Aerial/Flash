@@ -7,6 +7,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import com.transfer.flash.core.common.model.FlashChatWallpaper
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,6 +52,25 @@ class FlashSettingsDataStoreTest {
         assertNull(settings.saveLocationUri.first())
         assertEquals(365, settings.retentionDays.first())
         assertEquals("", settings.displayName.first())
+        assertEquals(FlashChatWallpaper.Default, settings.chatWallpaper.first())
+    }
+
+    @Test
+    fun `chatWallpaper roundtrip stores the stable key`() = runTest {
+        val settings = newSettings()
+        for (wallpaper in FlashChatWallpaper.entries) {
+            settings.setChatWallpaper(wallpaper)
+            assertEquals(wallpaper.name, wallpaper, settings.chatWallpaper.first())
+        }
+    }
+
+    @Test
+    fun `an unknown chatWallpaper key reads as the default`() = runTest {
+        val settings = newSettings()
+        settings.setChatWallpaper(FlashChatWallpaper.Pulse)
+        assertEquals(FlashChatWallpaper.Pulse, settings.chatWallpaper.first())
+        // A value this build does not know must not throw or leave the chat without a wallpaper.
+        assertEquals(FlashChatWallpaper.Default, FlashChatWallpaper.fromStorageKey("from-a-newer-build"))
     }
 
     @Test

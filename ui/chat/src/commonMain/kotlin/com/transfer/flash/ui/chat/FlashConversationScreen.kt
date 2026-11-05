@@ -64,6 +64,7 @@ import com.transfer.flash.core.messaging.model.FlashHubNoticeUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
+import com.transfer.flash.core.common.model.FlashChatWallpaper
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
@@ -341,6 +342,13 @@ fun FlashConversationScreen(
     isLinkedToHub: Boolean = false,
     onToggleLinkToHub: ((Boolean) -> Unit)? = null,
     /**
+     * ADR-354: the app-wide chat wallpaper. Presentation only; the host reads and writes the stored
+     * value and passes it here. Default keeps every preview and older caller on the shipped surface.
+     */
+    chatWallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
+    /** Null keeps the row visible but inert for previews. */
+    onSetChatWallpaper: ((FlashChatWallpaper) -> Unit)? = null,
+    /**
      * UI-024 upgrade: a message to open at, set when a global search result (or a file hit) is
      * tapped. The screen scrolls to it and pulses its bubble once; null renders the thread at the
      * newest position as before.
@@ -535,6 +543,8 @@ fun FlashConversationScreen(
 
     // UI-032: 1:1 peer details sheet (opened from the header avatar for non-group chats).
     var showPeerDetails by remember { mutableStateOf(false) }
+    // ADR-354: the wallpaper picker, opened from the conversation menu.
+    var showChatAppearance by remember { mutableStateOf(false) }
     // Task 3.3: Per-conversation shared content sheet.
     var showSharedContent by remember { mutableStateOf(false) }
     // Task 3.4: Pinned message banner.
@@ -695,6 +705,9 @@ fun FlashConversationScreen(
 
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        // The wallpaper is the conversation's ground; the Scaffold must not show the Material
+        // scheme when the thread overscrolls or is empty.
+        containerColor = flashChatWallpaperGround(chatWallpaper),
         topBar = {
             AnimatedContent(
                 targetState = inSelectionMode to isSearchActive,
@@ -808,7 +821,6 @@ fun FlashConversationScreen(
                                         showPeerDetails = true
                                     }
                                 },
-                                onSearchClick = { isSearchActive = true },
                                 encryptionState = encryptionState,
                                 onEncryptionClick = { showEncryptionSheet = true },
                                 onCallClick = {
@@ -839,6 +851,8 @@ fun FlashConversationScreen(
                                             when (item) {
                                                 FlashConversationMenuItem.VIEW_PROFILE -> showPeerDetails = true
                                                 FlashConversationMenuItem.SEARCH -> isSearchActive = true
+                                                FlashConversationMenuItem.CHAT_APPEARANCE ->
+                                                    showChatAppearance = true
                                                 FlashConversationMenuItem.REVOKE_TRUST -> onRevokePeerTrust?.invoke()
                                                 FlashConversationMenuItem.MARK_UNREAD ->
                                                     conversationId?.let { onMarkUnread(it) }
@@ -1226,6 +1240,7 @@ fun FlashConversationScreen(
                 onStopRadioRetry = onStopRadioRetry,
                 onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
                 highlightedMessageId = highlightedMessageId,
+                wallpaper = chatWallpaper,
                 peerTypingName = currentPeerTypingName,
                 listState = listState,
                 showSenderHeaders = state.header.isGroup,
@@ -1573,6 +1588,15 @@ fun FlashConversationScreen(
                     Text("Keep transfer", color = colors.textSecondary)
                 }
             },
+        )
+    }
+
+    // ADR-354: the chat wallpaper picker.
+    if (showChatAppearance) {
+        FlashChatAppearanceSheet(
+            wallpaper = chatWallpaper,
+            onSelect = { onSetChatWallpaper?.invoke(it) },
+            onDismiss = { showChatAppearance = false },
         )
     }
 

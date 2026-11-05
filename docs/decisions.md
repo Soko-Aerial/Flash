@@ -8609,10 +8609,10 @@ resolver) was removed.
 When the capability/version registry lands, expose the tombstone in the Nearby row and consider an explicit "Un-revoke"
 action alongside Pair. A receiver reset frame is unrelated; this is local state.
 
-## ADR-354 - Chat screen redesign v2 is presentation-only and mock-first, and the wallpaper store is an open decision
+## ADR-354 - Chat screen redesign v2 is presentation-only; the wallpaper is one app-wide setting
 
 ### Status
-PROPOSED (owner approval pending; nothing in `ui/chat` changed)
+ACCEPTED 2026-11-05 (owner approved the mock and both screen sets, and chose option (a) for wallpaper storage)
 
 ### Decision
 1. The conversation screen is redesigned as: a 60dp header with three actions (call, video, more; search stays in the
@@ -8622,9 +8622,10 @@ PROPOSED (owner approval pending; nothing in `ui/chat` changed)
 2. The change is **presentation only**: no wire, protocol, repository, callback or settings logic changes.
 3. The direction is built as a standalone web prototype (`design/chat-web`) and reviewed by the owner **before** any
    Compose change. The prototype is the visual authority for the port.
-4. The wallpaper store is deliberately undecided. Options: (a) one app-wide setting in `FlashSettings` (Android and
-   desktop), (b) per-chat in Room (a schema step), (c) preview-only until a later change. Recommendation: (a) first,
-   then (b) if per-chat is asked for; the sheet already offers "This chat" and "All chats".
+4. **The wallpaper is one app-wide setting** (the owner's choice, 2026-11-05): `FlashChatWallpaper` lives in
+   `:core:common`, Android persists the stable key in `FlashSettingsDataStore` (`chat_wallpaper`) and the desktop in
+   `DesktopSettingsStore` (`chat_wallpaper` in `settings.properties`). A per-chat wallpaper (Room step) and the mock's
+   free colour are NOT built; the picker offers the five presets.
 
 ### Context
 The owner asked for a chat screen that takes the separated send key, the pill text box and the changeable background
@@ -8649,9 +8650,26 @@ a no-Material-text-field composer, so the redesign keeps those and changes layou
   rather than `backgroundChat`; the wallpaper work fixes that.
 - Nothing is device-verified. The owed checks are `CHATUI-01`..`CHATUI-07` in `docs/testing/TEST-BACKLOG.md`.
 
+### Implementation (2026-11-05, same branch)
+- `FlashChatWallpaper` (5 presets, `storageKey`, `fromStorageKey` defaulting unknown keys to Graphite).
+- `FlashSettingsDataStore.chatWallpaper` + `setChatWallpaper`; `DesktopSettings`/`DesktopSettingsStore` the same;
+  host wiring in `MainActivity` (collected + persisted through the app scope) and `DesktopShell`
+  (`engine.updateSettings`).
+- `ui/chat/FlashChatWallpaper.kt` paints the ground and the pattern (`drawPoints` dots, hatch and grid lines, four
+  pulse rings) and falls back to the flat ground under `ultraLowUi`; `FlashTheme.isDark` is exposed for the preset pair.
+- `FlashMessageList` paints it, the `Scaffold` uses its ground, and `FlashChatAppearanceSheet` is opened by the new
+  `CHAT_APPEARANCE` menu item.
+- New theme tokens: `accentFill`/`onAccentFill` (5.21:1 light, 5.85:1 dark) and `composerInputBackground` moved to
+  `graphite50`/`surface0`.
+- Known deviations from the mock, to revisit after a device pass: the bubble time is a compact bottom-right line, not
+  inline in the text (Compose inline content needs a measured placeholder); the file block keeps its tested card with
+  its own surface; the custom colour is not shipped; the group info/settings sheets keep their shipped structure with
+  the new tokens rather than the mock's full re-layout; the swarm map keeps its tested 16-column/fixed-height drawing
+  and its longer summary string.
+
 ### Revisit when
-- The owner rejects the direction (then the mock is revised before any Compose work).
-- Per-chat wallpapers are requested (then Room gains a step and the decision moves to (b)).
+- Per-chat wallpapers or a custom colour are requested (then Room gains a step / a second stored value).
+- The device pass (`CHATUI-13..16`) shows the inline time or the group-sheet re-layout is worth the risk.
 
 ### Scope extension (2026-11-05, still PROPOSED)
 After seeing the first mock the owner approved the direct conversation, the desktop shell and the redrawn icons,
