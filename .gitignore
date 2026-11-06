@@ -48,5 +48,6 @@ data/
 __pycache__/
 *.pyc
 
-# Design-review working folder (taste-skill inspect output)
+# Design-review working folder / taste-skill artefacts (direction sheets, inspector screenshots, reports)
 /.taste-skill/
+.taste-skill/

@@ -1,6 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- UI-046 FlashBottomNav tab glyph: Settings (gear).
-     Outline geometry adapted from Feather "settings" (MIT) to Flash 2dp stroke house style. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -8,16 +6,23 @@
     android:viewportHeight="24">
     <path
         android:strokeColor="#FF000000"
-        android:strokeWidth="2"
+        android:strokeWidth="1.75"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
         android:fillColor="#00000000"
-        android:pathData="M12,15a3,3 0,1 0,0 -6a3,3 0,0 0,0 6z" />
+        android:pathData="M6.31 12 A5.69 5.69 0 1 0 17.69 12 A5.69 5.69 0 1 0 6.31 12" />
     <path
         android:strokeColor="#FF000000"
-        android:strokeWidth="2"
+        android:strokeWidth="1.75"
         android:strokeLineCap="round"
         android:strokeLineJoin="round"
         android:fillColor="#00000000"
-        android:pathData="M19.4,15a1.65,1.65 0,0 0,0.33 1.82l0.06,0.06a2,2 0,0 1,0 2.83a2,2 0,0 1,-2.83 0l-0.06,-0.06a1.65,1.65 0,0 0,-1.82 -0.33a1.65,1.65 0,0 0,-1 1.51V21a2,2 0,0 1,-2 2a2,2 0,0 1,-2 -2v-0.09A1.65,1.65 0,0 0,9 19.4a1.65,1.65 0,0 0,-1.82 0.33l-0.06,0.06a2,2 0,0 1,-2.83 0a2,2 0,0 1,0 -2.83l0.06,-0.06a1.65,1.65 0,0 0,0.33 -1.82a1.65,1.65 0,0 0,-1.51 -1H3a2,2 0,0 1,-2 -2a2,2 0,0 1,2 -2h0.09A1.65,1.65 0,0 0,4.6 9a1.65,1.65 0,0 0,-0.33 -1.82l-0.06,-0.06a2,2 0,0 1,0 -2.83a2,2 0,0 1,2.83 0l0.06,0.06a1.65,1.65 0,0 0,1.82 0.33H9a1.65,1.65 0,0 0,1 -1.51V3a2,2 0,0 1,2 -2a2,2 0,0 1,2 2v0.09a1.65,1.65 0,0 0,1 1.51a1.65,1.65 0,0 0,1.82 -0.33l0.06,-0.06a2,2 0,0 1,2.83 0a2,2 0,0 1,0 2.83l-0.06,0.06a1.65,1.65 0,0 0,-0.33 1.82V9a1.65,1.65 0,0 0,1.51 1H21a2,2 0,0 1,2 2a2,2 0,0 1,-2 2h-0.09a1.65,1.65 0,0 0,-1.51 1z" />
+        android:pathData="M10.74 5.82 L10.94 3.89 L13.06 3.89 L13.26 5.82 M15.48 6.75 L16.99 5.52 L18.48 7.01 L17.25 8.52 M18.18 10.74 L20.11 10.94 L20.11 13.06 L18.18 13.26 M17.25 15.48 L18.48 16.99 L16.99 18.48 L15.48 17.25 M13.26 18.18 L13.06 20.11 L10.94 20.11 L10.74 18.18 M8.52 17.25 L7.01 18.48 L5.52 16.99 L6.75 15.48 M5.82 13.26 L3.89 13.06 L3.89 10.94 L5.82 10.74 M6.75 8.52 L5.52 7.01 L7.01 5.52 L8.52 6.75" />
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.75"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M9.36 12 A2.64 2.64 0 1 0 14.64 12 A2.64 2.64 0 1 0 9.36 12" />
 </vector>

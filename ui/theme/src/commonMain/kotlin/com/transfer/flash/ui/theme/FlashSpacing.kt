@@ -9,12 +9,18 @@ object FlashSpacing {
     val space2 = 2.dp
     val space4 = 4.dp
     val space8 = 8.dp
+    /** 10dp: the composer pill's vertical inset in the approved chat design. */
+    val space10 = 10.dp
     val space12 = 12.dp
+    /** 14dp: the composer pill's inner inset in the approved chat design. */
+    val space14 = 14.dp
     val space16 = 16.dp
     val space20 = 20.dp
     val space24 = 24.dp
     val space32 = 32.dp
     val space40 = 40.dp
+    /** 44dp: the composer's control size in the approved chat design. */
+    val space44 = 44.dp
 
     /** @deprecated Use [space2] — kept for provisional chat migration. */
     @Deprecated("Use FlashSpacing.space2", ReplaceWith("FlashSpacing.space2"))

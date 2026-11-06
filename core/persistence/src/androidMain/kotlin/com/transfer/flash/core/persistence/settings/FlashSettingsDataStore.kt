@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.transfer.flash.core.common.model.FlashChatWallpaper
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import java.io.File
 import java.io.IOException
@@ -78,6 +79,10 @@ public class FlashSettingsDataStore(
         public val swarmHelpShare: Preferences.Key<Boolean> = booleanPreferencesKey("swarm_help_share")
         public val swarmKeepFinishedFiles: Preferences.Key<Boolean> = booleanPreferencesKey("swarm_keep_finished_files")
         public val launchAnimation: Preferences.Key<Boolean> = booleanPreferencesKey("launch_animation")
+        /** ADR-355: one app-wide chat wallpaper, stored as [FlashChatWallpaper.storageKey]. */
+        public val chatWallpaper: Preferences.Key<String> = stringPreferencesKey("chat_wallpaper")
+        /** ADR-355: the "Yours" ground, `#RRGGBB`. Only read when the wallpaper is Custom. */
+        public val chatWallpaperCustom: Preferences.Key<String> = stringPreferencesKey("chat_wallpaper_custom")
     }
 
     public companion object {
@@ -224,6 +229,17 @@ public class FlashSettingsDataStore(
     public val launchAnimation: Flow<Boolean> =
         preferences.map { it[Keys.launchAnimation] ?: true }
 
+    /**
+     * ADR-355: the app-wide chat wallpaper. Unset, blank or unknown reads as
+     * [FlashChatWallpaper.Default], so this can never fail a launch on an older file.
+     */
+    public val chatWallpaper: Flow<FlashChatWallpaper> =
+        preferences.map { FlashChatWallpaper.fromStorageKey(it[Keys.chatWallpaper]) }
+
+    /** ADR-355: the "Yours" ground. A blank or unparseable value reads as the mock's default. */
+    public val chatWallpaperCustom: Flow<String> =
+        preferences.map { it[Keys.chatWallpaperCustom] ?: FlashChatWallpaper.DefaultCustomColour }
+
     public suspend fun setThemeMode(value: String) {
         dataStore.edit { it[Keys.themeMode] = value }
     }
@@ -297,6 +313,16 @@ public class FlashSettingsDataStore(
 
     public suspend fun setLaunchAnimation(value: Boolean) {
         dataStore.edit { it[Keys.launchAnimation] = value }
+    }
+
+    /** ADR-355: stores the app-wide chat wallpaper by its stable [FlashChatWallpaper.storageKey]. */
+    public suspend fun setChatWallpaper(value: FlashChatWallpaper) {
+        dataStore.edit { it[Keys.chatWallpaper] = value.storageKey }
+    }
+
+    /** ADR-355: stores the "Yours" ground; the sheet only offers values it can parse. */
+    public suspend fun setChatWallpaperCustom(value: String) {
+        dataStore.edit { it[Keys.chatWallpaperCustom] = value }
     }
 
     public suspend fun setSwarmHelpShare(value: Boolean) {

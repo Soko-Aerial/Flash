@@ -66,8 +66,6 @@ fun FlashChatHeader(
      */
     showVideoCallAction: Boolean = true,
     onMenuClick: () -> Unit = {},
-    /** UI-028: group-only search-in-conversation action. */
-    onSearchClick: () -> Unit = {},
     /**
      * UI-031: verification-aware encryption trust state for the status-line badge. When not
      * [FlashEncryptionBadgeState.None], the tappable [FlashEncryptionBadge] replaces the static
@@ -105,8 +103,8 @@ fun FlashChatHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(FlashDimensions.headerHeight)
-                .padding(horizontal = FlashSpacing.space4),
+                .height(60.dp)
+                .padding(horizontal = FlashSpacing.space2),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FlashHeaderIconButton(
@@ -131,7 +129,7 @@ fun FlashChatHeader(
                 FlashGroupAvatar(
                     initials = state.memberInitials,
                     seed = state.avatarSeed,
-                    size = FlashDimensions.avatarMd,
+                    size = 34.dp,
                     modifier = avatarEntryModifier
                         .clip(CircleShape)
                         .clickable(onClick = onAvatarClick)
@@ -145,7 +143,7 @@ fun FlashChatHeader(
                 FlashAvatar(
                     initials = state.avatarInitials,
                     seed = state.avatarSeed,
-                    size = FlashDimensions.avatarMd,
+                    size = 34.dp,
                     modifier = avatarEntryModifier
                         .clip(CircleShape)
                         .clickable(onClick = onAvatarClick)
@@ -160,7 +158,7 @@ fun FlashChatHeader(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = FlashSpacing.space12)
+                    .padding(start = FlashSpacing.space10, end = FlashSpacing.space4)
                     .graphicsLayer {
                         val travel = (1f - titleEntry.value) * TitleEntryTravel.toPx()
                         translationX = if (isRtl) travel else -travel
@@ -175,7 +173,7 @@ fun FlashChatHeader(
                         text = state.title,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = FlashTheme.typography.headingMedium,
+                        style = FlashTheme.typography.headingConversation,
                         color = colors.textPrimary,
                         modifier = Modifier.weight(1f, fill = false),
                     )
@@ -197,7 +195,6 @@ fun FlashChatHeader(
                 onVideoCallClick = onVideoCallClick,
                 showVideoCallAction = showVideoCallAction,
                 onMenuClick = onMenuClick,
-                onSearchClick = onSearchClick,
                 menuContent = menuContent,
             )
         }
@@ -287,6 +284,7 @@ private fun FlashChatHeaderStatusLine(
                     if (encryptionState != FlashEncryptionBadgeState.None) {
                         FlashEncryptionBadge(
                             state = encryptionState,
+                            compact = true,
                             onClick = onEncryptionClick,
                         )
                     } else if (state.isEncrypted) {
@@ -354,11 +352,9 @@ private fun FlashChatHeaderActions(
     onVideoCallClick: () -> Unit,
     showVideoCallAction: Boolean,
     onMenuClick: () -> Unit,
-    onSearchClick: () -> Unit = {},
     menuContent: @Composable () -> Unit = {},
 ) {
     Row(
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (state.showCallActions) {
@@ -370,9 +366,6 @@ private fun FlashChatHeaderActions(
                     FlashIcon(icon = FlashIcons.VideoCall)
                 }
             }
-        }
-        FlashHeaderIconButton(onClick = onSearchClick, description = "Search messages") {
-            FlashIcon(icon = FlashIcons.Search)
         }
         Box {
             FlashHeaderIconButton(onClick = onMenuClick, description = "Conversation menu") {

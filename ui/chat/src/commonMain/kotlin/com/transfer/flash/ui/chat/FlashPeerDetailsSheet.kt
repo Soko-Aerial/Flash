@@ -307,7 +307,7 @@ private fun PeerDetailRow(icon: FlashIconSpec?, label: String, value: String) {
         )
         FlashText(
             text = value,
-            style = FlashTheme.typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
+            style = FlashTheme.typography.captionDefault.copy(fontWeight = FontWeight.SemiBold),
             color = colors.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -331,8 +331,8 @@ private fun RevokeTrustButton(onClick: () -> Unit, modifier: Modifier = Modifier
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(FlashShapes.chip)
-            .border(FlashDimensions.borderHairline, colors.textError, FlashShapes.chip)
+            .clip(FlashShapes.button)
+            .border(FlashDimensions.borderHairline, colors.textError, FlashShapes.button)
             .clickable(onClick = onClick)
             .padding(vertical = FlashSpacing.space12),
         horizontalArrangement = Arrangement.Center,

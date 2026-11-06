@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,6 +45,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import com.transfer.flash.core.messaging.model.FlashMessageGroupPosition
+import com.transfer.flash.core.common.model.FlashChatWallpaper
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
@@ -99,6 +101,10 @@ fun FlashMessageList(
     onStopRadioRetry: (String) -> Unit = {},
     /** UI-054 (O-14): join action triggered from an inline group invite card. */
     onJoinInvite: ((String) -> Unit)? = null,
+    /** ADR-355: the app-wide chat wallpaper, painted behind the bubbles only. */
+    wallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
+    /** ADR-355: the "Yours" ground, only read when [wallpaper] is Custom. */
+    wallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -194,7 +200,7 @@ fun FlashMessageList(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .background(colors.backgroundChat)
+                .flashChatWallpaper(wallpaper, wallpaperCustom)
                 .padding(horizontal = FlashSpacing.space12),
             state = listState,
             contentPadding = contentPadding,
@@ -234,11 +240,11 @@ fun FlashMessageList(
             val spacingBelow = when (message.groupPosition) {
                 FlashMessageGroupPosition.TOP,
                 FlashMessageGroupPosition.MIDDLE,
-                -> FlashSpacing.space4
+                -> FlashSpacing.space2
 
                 FlashMessageGroupPosition.BOTTOM,
                 FlashMessageGroupPosition.SINGLE,
-                -> FlashSpacing.space12
+                -> FlashSpacing.space16
             }
 
             val isSelected = message.id in selectedMessageIds
@@ -364,10 +370,15 @@ private fun FlashDaySeparator(
         FlashText(
             text = label,
             style = FlashTheme.typography.metadataEmphasis,
-            color = FlashTheme.colors.chatTextSystem,
+            color = FlashTheme.colors.textTertiary,
             modifier = Modifier
                 .clip(FlashShapes.avatar)
-                .background(FlashTheme.colors.backgroundSurfaceSubtle)
+                .background(FlashTheme.colors.backgroundSurface)
+                .border(
+                    FlashDimensions.borderHairline,
+                    FlashTheme.colors.borderSubtle,
+                    FlashShapes.avatar,
+                )
                 .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
         )
     }
@@ -405,7 +416,7 @@ internal fun FlashNewMessagesPill(
     Row(
         modifier = modifier
             .clip(FlashShapes.avatar)
-            .background(colors.accentPrimary)
+            .background(colors.accentFill)
             .clickable(onClick = onClick)
             .semantics {
                 role = Role.Button
@@ -420,14 +431,14 @@ internal fun FlashNewMessagesPill(
         FlashIcon(
             icon = FlashIcons.Back,
             contentDescription = null,
-            tint = colors.textOnAccent,
+            tint = colors.onAccentFill,
             size = FlashDimensions.iconSm,
             modifier = Modifier.graphicsLayer { rotationZ = -90f },
         )
         FlashText(
             text = FlashChatScrollMath.pillLabel(count),
             style = typography.metadataEmphasis,
-            color = colors.textOnAccent,
+            color = colors.onAccentFill,
         )
     }
 }

@@ -8650,3 +8650,91 @@ because it did not know the policy.
 The auto-connect sweep still redials remembered routes while the hub is online or the radio is carrying; that
 is a separate presentation/planner question (`PRESENCE-CONNECTIONS-PLAN` P-2.1) and needs a policy-aware
 `Links` hook, not a blanket suppression.
+
+## ADR-355 - Chat screen redesign v2 is presentation-only; the wallpaper is one app-wide setting
+
+### Status
+ACCEPTED 2026-11-05 (owner approved the mock and both screen sets, and chose option (a) for wallpaper storage)
+
+### Decision
+1. The conversation screen is redesigned as: a 60dp header with three actions (call, video, more; search stays in the
+   conversation menu), three separated composer objects (44dp attach, 44dp pill at 22dp radius, one 44dp trailing
+   control that crossfades mic to send), a redrawn chat icon set at a 1.75dp stroke on the same 24dp grid, five
+   changeable chat wallpapers plus one custom colour, and a `Chat appearance` page that owns the choice.
+2. The change is **presentation only**: no wire, protocol, repository, callback or settings logic changes.
+3. The direction is built as a standalone web prototype (`design/chat-web`) and reviewed by the owner **before** any
+   Compose change. The prototype is the visual authority for the port.
+4. **The wallpaper is one app-wide setting** (the owner's choice, 2026-11-05): `FlashChatWallpaper` lives in
+   `:core:common`, Android persists the stable key in `FlashSettingsDataStore` (`chat_wallpaper`) and the desktop in
+   `DesktopSettingsStore` (`chat_wallpaper` in `settings.properties`). A per-chat wallpaper (Room step) and the mock's
+   free colour are NOT built; the picker offers the five presets.
+
+### Context
+The owner asked for a chat screen that takes the separated send key, the pill text box and the changeable background
+from WhatsApp and Telegram, with redrawn icons and settings, and said "design not logic" and "I should see the mock
+first". The app already ships a custom design system, a 20dp bubble with an 8dp concave scoop (`FlashBubbleShape`), and
+a no-Material-text-field composer, so the redesign keeps those and changes layout, colour slots and the icon paths.
+
+### Alternatives considered
+- **Port to Compose first, review on a device.** Rejected: motion timing, the 8dp scoop and the wallpaper contrast
+  cannot be judged from a description, and a rejected direction would have touched the shipping UI.
+- **An invented visual world for chat (new colours, new type).** Rejected: `AGENTS.md` section 34 forbids replacing the
+  Flash design system; the Hub-tab prototype was rejected for the same reason (see the SUPERSEDED note in
+  `docs/ui/hub-web-atlas-prototype.md`).
+- **A third-party chat UI kit.** Rejected: ADR-003 and the premium UI rules.
+
+### Consequences
+- The port is a restyle of `FlashChatHeader`, `FlashComposer`, `FlashMessageList`, `FlashMessageBubble` and a new
+  appearance sheet; every parameter and callback stays.
+- Two token corrections are proposed: a darker tertiary text step for 12dp text outside bubbles (`graphite500` is
+  4.50:1 on white and 3.86:1 on `graphite100`), and `pulse800` for outgoing timestamps (4.24:1 -> 6.40:1).
+- `FlashConversationScreen`'s `Scaffold` has no `containerColor`, so overscroll currently reveals the Material scheme
+  rather than `backgroundChat`; the wallpaper work fixes that.
+- Nothing is device-verified. The owed checks are `CHATUI-01`..`CHATUI-07` in `docs/testing/TEST-BACKLOG.md`.
+
+### Implementation (2026-11-05, same branch)
+- `FlashChatWallpaper` (5 presets + **Custom**, `storageKey`, `fromStorageKey` defaulting unknown keys to Graphite).
+- `FlashSettingsDataStore.chatWallpaper` + `setChatWallpaper`; `DesktopSettings`/`DesktopSettingsStore` the same;
+  host wiring in `MainActivity` (collected + persisted through the app scope) and `DesktopShell`
+  (`engine.updateSettings`).
+- `ui/chat/FlashChatWallpaper.kt` paints the ground and the pattern (`drawPoints` dots, hatch and grid lines, four
+  pulse rings) and falls back to the flat ground under `ultraLowUi`; `FlashTheme.isDark` is exposed for the preset pair.
+  The custom ground is stored as `#RRGGBB` (`chat_wallpaper_custom` on both hosts) and is carried down towards the
+  dark surface in dark mode (hue kept, contrast kept). **The modifier must chain its receiver** (`this.then(...)`);
+  returning a fresh `Modifier` dropped every earlier size/clip in the chain and collapsed the swatches — ERROR-990.
+- `FlashMessageList` paints it, the `Scaffold` uses its ground, and `FlashChatAppearanceSheet` is opened by the new
+  `CHAT_APPEARANCE` menu item. The sheet mirrors the mock: day-chip preview, five presets + **Yours**, the six named
+  colours, `Applied · <name>`, **Undo** to the value it opened with, and Done (design record and phone evidence:
+  `docs/ui/chat-appearance-2026-11-05.png`).
+- New theme tokens: `accentFill`/`onAccentFill` (5.21:1 light, 5.85:1 dark), `headingConversation` (17sp, the
+  header title in the mock) and `composerInputBackground` moved to `graphite50`/`surface0`. The header's encryption
+  badge is icon-only there (the mock's 13dp lock): its chip label used to clip to "En" beside three 48dp actions.
+- Known deviations from the mock, to revisit after a device pass: the bubble time is a compact bottom-right line, not
+  inline in the text (Compose inline content needs a measured placeholder); the group info/settings sheets keep their
+  shipped structure with the new tokens rather than the mock's full re-layout; the swarm map keeps its tested
+  16-column/fixed-height drawing and its longer summary string; the appearance sheet has no Light/Dark control because
+  the theme is one app setting owned by Settings (the mock's separate appearance page had one). The file block's inner
+  card was flattened on the phone pass (it is content on the message now).
+- **Device pass 2026-11-05 (Infinix X6882B, Android 14):** wallpaper chosen, persisted across force-stop, applied to
+  every chat, light and dark grounds seen; Undo reverts; the custom colour and its six presets render; the composer's
+  send key replaces the mic in place with the IME open; the header shows the compact lock and a 13-character name.
+  Full results: `docs/testing/TEST-BACKLOG.md` CHATUI-13..16.
+
+### Revisit when
+- Per-chat wallpapers or a custom colour are requested (then Room gains a step / a second stored value).
+- The device pass (`CHATUI-13..16`) shows the inline time or the group-sheet re-layout is worth the risk.
+
+### Scope extension (2026-11-05, still PROPOSED)
+After seeing the first mock the owner approved the direct conversation, the desktop shell and the redrawn icons,
+and asked for the rest of the chat surface before reviewing again: the three-dot menu's options, group chats with
+their options and settings, the profile view and the swarm UI. Those are added to the same prototype and to the
+same decision:
+
+- The menu is `FlashConversationMenuMath`'s own list for a 1:1 chat and for a v2 group, plus one proposed item,
+  **Chat appearance** (`CHAT_APPEARANCE`), which is how the wallpaper sheet is reached.
+- The profile is the shipped `FlashPeerDetailsSheet` content; groups use the shipped group copy for roles, join
+  requests, signed rules, device preferences, the group code and the relay row.
+- The swarm UI is `FlashSwarmPieceMap`'s piece states drawn as a 12-column matrix, with `FlashSwarmUiMath`'s four
+  sender/receiver sentences and a holder list.
+- Still presentation only: no new storage, no new capability, and no app source touched. Confirmations, menu
+  actions that do not navigate, and persistence remain outside this mock.

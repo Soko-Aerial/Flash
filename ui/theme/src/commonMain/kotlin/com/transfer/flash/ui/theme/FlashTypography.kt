@@ -11,6 +11,8 @@ data class FlashTypography(
     val display: TextStyle,
     val headingLarge: TextStyle,
     val headingMedium: TextStyle,
+    /** 17sp: the conversation header's title in the approved chat design (one step under headingMedium). */
+    val headingConversation: TextStyle,
     val headingSmall: TextStyle,
     val bodyDefault: TextStyle,
     val bodyEmphasis: TextStyle,
@@ -64,6 +66,12 @@ data class FlashTypography(
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 18.sp,
                     lineHeight = 24.sp,
+                ),
+                headingConversation = TextStyle(
+                    fontFamily = fontFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 17.sp,
+                    lineHeight = 22.sp,
                 ),
                 headingSmall = TextStyle(
                     fontFamily = fontFamily,
