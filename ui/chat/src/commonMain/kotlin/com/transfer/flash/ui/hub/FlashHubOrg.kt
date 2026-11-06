@@ -55,13 +55,11 @@ internal fun LazyListScope.hubDepartmentItems(
         }
         return
     }
-    val largest = departments.maxOf { it.memberCount }
     items(departments.size, key = { "d:${departments[it].id}" }, contentType = { "department" }) { i ->
         val d = departments[i]
         FlashHubDepartmentCard(
             d, onClick = { onOpen(d.id) },
-            share = FlashHubVisualMath.share(d.memberCount, largest),
-            modifier = flashAnimateItem(FlashTheme.motion).hubStagger(if (i < HUB_STAGGER_ITEMS) i else -1, "hub-dept"),
+            modifier = flashAnimateItem(FlashTheme.motion),
         )
     }
 }
@@ -69,7 +67,6 @@ internal fun LazyListScope.hubDepartmentItems(
 @Composable
 internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, modifier: Modifier = Modifier, share: Float? = null) {
     val colors = FlashTheme.colors
-    val grown = rememberHubGrow(share ?: 0f, label = "hubDeptShare")
     Row(
         modifier = modifier
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
@@ -91,12 +88,8 @@ internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, mod
                 if (d.isMine) FlashHubChip(FlashHubCopy.DEPT_YOURS, emphasised = true)
             }
             FlashText(FlashHubMath.departmentSummary(d), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
-            FlashText(FlashHubMath.headsLine(d), style = FlashTheme.typography.metadataDefault, color = colors.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (share != null) {
-                Box(Modifier.fillMaxWidth().padding(top = FlashSpacing.space4).height(4.dp).clip(HubShapes.capsule).background(colors.backgroundSurfaceStrong)) {
-                    Box(Modifier.fillMaxHeight().fillMaxWidth(grown).clip(HubShapes.capsule).background(colors.accentPrimary.copy(alpha = if (d.isMine) 1f else 0.6f)))
-                }
-            }
+            FlashText(FlashHubMath.headsLine(d), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+
         }
     }
 }

@@ -89,15 +89,11 @@ internal fun LazyListScope.hubNewsItems(
         }
         return
     }
-    item(key = "news-compose", contentType = "compose") {
-        if (canPost) {
-            FlashHubComposeEntry(
-                subtitle = if (posting is HubPostingRights.OrgWide) FlashHubCopy.ANN_COMPOSE_SUB_ORG else FlashHubCopy.ANN_COMPOSE_SUB_DEPT,
-                onClick = onNew,
-            )
-        } else {
-            FlashHubNoteCard(FlashIcons.Announcement, FlashHubCopy.ANN_MEMBERS_CANT_POST)
-        }
+    if (canPost) item(key = "news-compose", contentType = "compose") {
+        FlashHubComposeEntry(
+            subtitle = if (posting is HubPostingRights.OrgWide) FlashHubCopy.ANN_COMPOSE_SUB_ORG else FlashHubCopy.ANN_COMPOSE_SUB_DEPT,
+            onClick = onNew,
+        )
     }
     if (news.isEmpty()) {
         item(key = "news-empty", contentType = "empty") {
@@ -143,28 +139,12 @@ internal const val HUB_STAGGER_ITEMS: Int = 6
 /** The "Share an update" row at the top of News for people who may post. The whole row is the button. */
 @Composable
 internal fun FlashHubComposeEntry(subtitle: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = FlashTheme.colors
-    Row(
-        modifier = modifier
-            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
-            .fillMaxWidth()
-            .clip(HubShapes.card)
-            .background(colors.accentPrimary.copy(alpha = 0.07f))
-            .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.40f), HubShapes.card)
-            .hubClickable(onClick = onClick)
-            .padding(FlashSpacing.space12)
-            .semantics(mergeDescendants = true) { contentDescription = "${FlashHubCopy.ANN_COMPOSE_TITLE}. $subtitle" },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+    Column(
+        modifier.padding(horizontal = FlashSpacing.space16).padding(bottom = FlashSpacing.space16),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
-        Box(Modifier.size(44.dp).clip(HubShapes.mark(44.dp)).background(colors.accentPrimary), contentAlignment = Alignment.Center) {
-            FlashIcon(icon = FlashIcons.Announcement, contentDescription = null, tint = colors.textOnAccent, size = FlashDimensions.iconMd)
-        }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
-            FlashText(FlashHubCopy.ANN_COMPOSE_TITLE, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary, maxLines = 1)
-            FlashText(subtitle, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        }
-        FlashHubChip(FlashHubCopy.ANN_POST, emphasised = true)
+        FlashHubButton(FlashHubCopy.ANN_COMPOSER_TITLE_NEW, onClick, icon = FlashIcons.Edit)
+        FlashText(subtitle, style = FlashTheme.typography.metadataDefault, color = FlashTheme.colors.textSecondary)
     }
 }
 
@@ -231,18 +211,13 @@ internal fun FlashAnnouncementCard(
         animationSpec = FlashTheme.motion.tweenNormalSpec(),
         label = "hubCardEdge",
     )
-    val wash = if (a.pinned && hubDecorAllowed()) {
-        androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(colors.accentPrimary.copy(alpha = 0.10f), colors.backgroundSurface))
-    } else {
-        androidx.compose.ui.graphics.SolidColor(colors.backgroundSurface)
-    }
     Row(
         modifier = modifier
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
             .clip(HubShapes.card)
-            .background(wash)
+            .background(colors.backgroundSurface)
             .border(FlashDimensions.borderHairline, if (a.pinned) colors.accentPrimary.copy(alpha = 0.55f) else colors.borderSubtle, HubShapes.card)
             .hubClickable(onClick = onOpen)
             .semantics(mergeDescendants = true) {
@@ -250,7 +225,7 @@ internal fun FlashAnnouncementCard(
                 if (hasMenu) customActions = listOf(CustomAccessibilityAction("More actions") { onMenu(); true })
             },
     ) {
-        Box(Modifier.width(3.dp).fillMaxHeight().background(edge))
+        Box(Modifier.width(1.dp).fillMaxHeight().background(edge))
         Column(
             modifier = Modifier.weight(1f).padding(FlashSpacing.space16),
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),

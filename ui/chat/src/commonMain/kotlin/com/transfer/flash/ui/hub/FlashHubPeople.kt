@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -158,6 +159,7 @@ internal fun FlashHubFilterChip(label: String, selected: Boolean, onClick: () ->
 @Composable
 internal fun FlashHubPersonRow(person: HubPersonUi, showDepartment: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
+    val largeText = LocalDensity.current.fontScale >= 1.3f
     val spoken = FlashHubMath.personAccessibility(person, includeDepartment = showDepartment)
     Row(
         modifier = modifier
@@ -180,15 +182,21 @@ internal fun FlashHubPersonRow(person: HubPersonUi, showDepartment: Boolean, onC
                 text = if (person.isSelf) "${person.displayName} · ${FlashHubCopy.PEOPLE_YOU}" else person.displayName,
                 style = FlashTheme.typography.bodyEmphasis,
                 color = colors.textPrimary,
-                maxLines = 1,
+                maxLines = if (largeText) Int.MAX_VALUE else 1,
                 overflow = TextOverflow.Ellipsis,
             )
             if (showDepartment && person.departmentName.isNotBlank()) {
-                FlashText(person.departmentName, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                FlashText(person.departmentName, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = if (largeText) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (largeText) {
+                val badges = listOfNotNull(FlashHubMath.roleBadge(person.role), FlashHubCopy.PEOPLE_PAIRED.takeIf { person.paired && !person.isSelf })
+                if (badges.isNotEmpty()) FlashText(badges.joinToString(" · "), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
             }
         }
-        FlashHubMath.roleBadge(person.role)?.let { FlashHubChip(it, emphasised = true) }
-        if (person.paired && !person.isSelf) FlashHubChip(FlashHubCopy.PEOPLE_PAIRED)
+        if (!largeText) {
+            FlashHubMath.roleBadge(person.role)?.let { FlashHubChip(it, emphasised = true) }
+            if (person.paired && !person.isSelf) FlashHubChip(FlashHubCopy.PEOPLE_PAIRED)
+        }
     }
 }
 
@@ -229,8 +237,8 @@ internal fun FlashHubPersonContent(
                 .fillMaxWidth()
                 .hubStagger(0, person.deviceId)
                 .clip(HubShapes.card)
-                .background(hubHeroBrush())
-                .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.28f), HubShapes.card)
+                .background(colors.backgroundSurface)
+                .border(FlashDimensions.borderHairline, colors.borderSubtle, HubShapes.card)
                 .padding(FlashSpacing.space16),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space16),

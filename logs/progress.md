@@ -21268,3 +21268,15 @@ verified by typecheck, build and screenshots. Later text edits use the editor to
 Read `design/chat-web/DESIGN.md` and ADR-355 before touching `ui/chat`. Run the prototype with
 `cd design/chat-web && npm run dev` (port 5174). Do not port until the owner approves; when porting, keep every
 `FlashConversationScreen` parameter and callback unchanged and keep `FlashBubbleShape`.
+
+## 2026-11-06 — Hub workspace redesign
+
+### Worked on / changed
+Reorganized the existing Hub into a responsive organizational workspace: persistent organization, role and truthful connection status; compact section headings; restrained announcement/department/people styling; centered desktop list with detail only after selection. Preserved role permissions, search, refresh, connection details, posting, directory and group actions. Research/design authority: `docs/ui/hub-workspace-redesign.md` (DESIGNED before implementation).
+
+### Verification
+Locked Gradle gate passed: Hub JVM 205 tests and Android-host 196 tests, zero failures/errors/skips; `:app:assembleDebug` and desktop native render fixture passed (323 tasks, 3m14s). Final render-only rerun passed (42s). Ten fictional-data native captures cover phone/desktop, dark, 200% font, loading/empty/offline/error. Renderer retains the last invalidated frame to avoid blank retained graphics layers from redundant offscreen renders. No transport, service or schema change. `git diff --check` passed. Full app lint and device interaction were not run. Scaffold compile repair is ERROR-991.
+
+### Remaining / next AI
+HUBWORK-01..05 in TEST-BACKLOG track role/action, network recovery, resize/keyboard, accessibility and lifecycle checks. Shared bottom navigation labels and fixed avatar initials can clip at 200% font. Continue the owner-requested minimal professional redesign of Transfers and Nearby, particularly paired-device rows; follow UI-047/048 research and preserve existing callbacks. No device operated and no push performed.
+

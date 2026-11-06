@@ -16945,3 +16945,35 @@ footer rendered "Applied · Graphite". Fixed with an explicit UTF-8 read/replace
 (`chr(0xFFFD) -> '·'`, mojibake pairs -> ASCII dashes) and verified by codepoint (`0xB7`). Use the
 edit/read tools or Python `io.open(..., encoding='utf-8')` for Kotlin sources; never PowerShell text
 round trips.
+
+
+## ERROR-991 — Hub workspace verification scaffold did not compile
+
+### Date / area / environment
+2026-11-06; new test/render scaffolding, Windows Gradle host; shared Compose UI (Android compile SDK 37), CMP 1.9.3.
+
+### Symptoms / error
+Product UI compiled, but `:desktop:compileTestKotlinJvm` failed with
+`Cannot access constructor(reduceMotion: Boolean): FlashMotion: it is internal`.
+The new common test also had two malformed `@Test fun...` declarations (`Expecting member declaration`).
+
+### Root cause
+The render fixture directly called an internal theme constructor instead of the public composable factory;
+two test declarations omitted the space after the Kotlin `fun` keyword.
+
+### Failed attempts
+The first verification invocation exposed these scaffold errors; no product API was widened to make the fixture compile.
+
+### Working fix
+Use `rememberFlashMotion(reduceMotion = true)` in the render fixture and correct the test declarations.
+
+### Verification
+Final gate: BUILD SUCCESSFUL in 3m 14s; Hub JVM 205 tests and Android-host 196 tests, no failures/errors/skips;
+Android debug APK assembled; desktop native render fixture passed.
+
+### Related files
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/FlashHubWorkspaceRenderTest.kt`
+- `ui/chat/src/commonTest/kotlin/com/transfer/flash/ui/hub/FlashHubWorkspaceTest.kt`
+
+### Status
+RESOLVED (verification scaffold only).

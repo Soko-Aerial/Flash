@@ -917,6 +917,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-06 — Hub workspace redesign implemented.** Organization/role/status header, compact sections and adaptive detail use existing Flash tokens and callbacks. Hub JVM 205 + Android-host 196 tests, APK assembly and desktop native renders green. Design: `docs/ui/hub-workspace-redesign.md`. HUBWORK-01..05 device/interaction checks owed. Next owner scope: minimal professional Transfers and Nearby, especially paired devices.
+
 **2026-11-06 - Chat redesign v2 merged into `dev` as `ca9ada63` from `design/chat-redesign`.** The approved mock and
 Compose port are in: app-wide wallpaper + appearance sheet, redesigned header/composer/message-list, all 67 icons
 redrawn, and the phone-pass fixes. The branch's decision is **ADR-355** (main already had ADR-354 for the radio path; the

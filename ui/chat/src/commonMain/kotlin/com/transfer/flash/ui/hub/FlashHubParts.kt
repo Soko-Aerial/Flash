@@ -171,12 +171,12 @@ internal fun FlashHubTopBar(
 }
 
 @Composable
-internal fun FlashHubIconButton(icon: FlashIconSpec, description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun FlashHubIconButton(icon: FlashIconSpec, description: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     Box(
         modifier = modifier
             .size(FlashDimensions.minTouchTarget)
             .clip(HubShapes.control)
-            .hubClickable(onClick = onClick)
+            .hubClickable(enabled = enabled, onClick = onClick)
             .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
@@ -242,7 +242,7 @@ internal fun FlashHubTextAction(label: String, onClick: () -> Unit, modifier: Mo
             .padding(horizontal = FlashSpacing.space12),
         contentAlignment = Alignment.Center,
     ) {
-        FlashText(label, style = FlashTheme.typography.bodyEmphasis, color = if (enabled) colors.accentPrimary else colors.textTertiary)
+        FlashText(label, style = FlashTheme.typography.bodyEmphasis, color = if (enabled) colors.accentFill else colors.textTertiary)
     }
 }
 
@@ -261,7 +261,7 @@ internal fun FlashHubButton(
     val bg by animateColorAsState(
         targetValue = when {
             !enabled -> colors.backgroundSurfaceStrong
-            primary -> colors.accentPrimary
+            primary -> colors.accentFill
             else -> colors.backgroundSurfaceSubtle
         },
         animationSpec = motion.tweenFastSpec(),
@@ -269,7 +269,7 @@ internal fun FlashHubButton(
     )
     val fg = when {
         !enabled -> colors.textTertiary
-        primary -> colors.textOnAccent
+        primary -> colors.onAccentFill
         else -> colors.textPrimary
     }
     Row(
@@ -615,8 +615,6 @@ internal fun FlashHubEmptyState(
     actionBusy: Boolean = false,
 ) {
     val colors = FlashTheme.colors
-    val phase = rememberHubPhase(periodMs = 3200)
-    val decor = hubDecorAllowed()
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -626,26 +624,7 @@ internal fun FlashHubEmptyState(
     ) {
         Box(
             modifier = Modifier
-                .size(88.dp)
-                .then(
-                    if (decor) {
-                        Modifier.drawBehind {
-                            val p = phase.value
-                            val grow = this.size.minDimension * 0.18f * p
-                            drawRect(
-                                colors.accentPrimary.copy(alpha = 0.16f * (1f - p)),
-                                topLeft = Offset(-grow / 2f, -grow / 2f),
-                                size = Size(this.size.width + grow, this.size.height + grow),
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(2f),
-                            )
-                        }
-                    } else {
-                        Modifier
-                    },
-                )
-                .clip(HubShapes.mark(88.dp))
-                .background(colors.accentPrimary.copy(alpha = 0.10f))
-                .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.40f), HubShapes.mark(88.dp)),
+                .size(56.dp),
             contentAlignment = Alignment.Center,
         ) { FlashIcon(icon = icon, contentDescription = null, tint = colors.accentPrimary, size = FlashDimensions.iconLg) }
         FlashText(
@@ -687,7 +666,7 @@ internal fun FlashHubSkeleton(modifier: Modifier = Modifier, rows: Int = 8) {
     Column(
         modifier = modifier.fillMaxWidth().semantics { contentDescription = FlashHubCopy.LOADING; liveRegion = LiveRegionMode.Polite },
     ) {
-        block(null, 196.dp, Modifier.padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12).clearAndSetSemantics { })
+        block(null, 48.dp, Modifier.padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12).clearAndSetSemantics { })
         repeat(rows.coerceIn(1, 12)) {
             Row(
                 modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = FlashSpacing.space16).clearAndSetSemantics { },
