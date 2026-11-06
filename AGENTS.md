@@ -917,6 +917,13 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-06 - Chat redesign v2 merged into `dev` as `ca9ada63` from `design/chat-redesign`.** The approved mock and
+Compose port are in: app-wide wallpaper + appearance sheet, redesigned header/composer/message-list, all 67 icons
+redrawn, and the phone-pass fixes. The branch's decision is **ADR-355** (main already had ADR-354 for the radio path; the
+branch errors were renumbered **ERROR-989/990**). Device pass: `CHATUI-13`/`14` PASS, `CHATUI-15` PARTIAL on the Infinix;
+`CHATUI-01..12/16` and the desktop checks are owed. Verification on the merged tree: `:ui:chat:jvmTest`,
+`:ui:theme:jvmTest`, `:app:testDebugUnitTest`, `:desktop:jvmTest` and app/desktop compile green. Not pushed yet.
+
 **2026-11-05 - Radio path switching merged into `dev` as `bfe2c943`; host-tested, and the core bidirectional text
 path is now owner-confirmed on the Infinix + Windows radios.** After setting the phone chat's **Radio fallback** to
 **Automatic**, both directions send and acknowledge; the one-way case was `policy=NEVER`, and power-cycling the radios

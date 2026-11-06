@@ -1,8 +1,13 @@
 # Progress Log
 
-## 2026-11-06 (chat merge) - approved chat redesign merged into `dev`
+## 2026-11-06 (chat merge) - approved chat redesign merged into `dev` as `ca9ada63`
 
-Merged `design/chat-redesign` into `dev`: the approved wallpaper/appearance sheet, composer/header, 67 redrawn icons and the phone-pass fixes. The branch is based on `efc23ae8`; current `dev` work is preserved. Renumbered the branch decision to **ADR-355** and its errors to **ERROR-989/990** because main already used ADR-354 and ERROR-984/985. Device pass: CHATUI-13/14 PASS, CHATUI-15 PARTIAL on the Infinix; CHATUI-01..12/16 and desktop checks are owed.
+Merged `design/chat-redesign` into `dev` as **`ca9ada63`**: the approved wallpaper/appearance sheet, composer/header,
+67 redrawn icons and the phone-pass fixes. The branch is based on `efc23ae8`; current `dev` work is preserved.
+Renumbered the branch decision to **ADR-355** and its errors to **ERROR-989/990** because main already used ADR-354 and
+ERROR-984/985. Device pass: CHATUI-13/14 PASS, CHATUI-15 PARTIAL on the Infinix; CHATUI-01..12/16 and desktop checks are
+owed. Verification on the merged tree: `:ui:chat:jvmTest`, `:ui:theme:jvmTest`, `:app:testDebugUnitTest` and
+`:desktop:jvmTest` green; app/desktop compile green.
 
 ## 2026-11-06 (backlog audit) - 752 non-radio and radio tests are not fully passed
 

@@ -19,7 +19,8 @@ because their numbers tune the code (owner decision P8, `docs/network/PRESENCE-C
 **Full inventory (2026-11-06):** [`TEST-BACKLOG-AUDIT-2026-11-06.md`](TEST-BACKLOG-AUDIT-2026-11-06.md) lists every
 test heading that is not fully passed (767 headings: 681 TODO, 5 partial, 6 blocked, 30 no recorded status, 14 other
 non-pass, 1 fail; only 15 PASS and 15 automated-but-device-owed). Radio is 85 of the 752 not-fully-passed headings; the
-rest are calls/PTT, groups/swarm, hub/server/console, chat/UI/search, network/release and performance.
+rest are calls/PTT, groups/swarm, hub/server/console, chat/UI/search, network/release and performance. The chat redesign
+merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; live non-pass is 766.
 
 ## 0. Before any test session
 
