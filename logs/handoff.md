@@ -1,6 +1,13 @@
 # Current Handoff
 
-> **2026-11-05 (latest, two-phone test session) - FGS-01, XFER-RETRY-01 (empty case) and RADIO-PROFILE-A-01 (UI) PASS.**
+> **2026-11-06 (latest, full backlog audit) - 767 test headings, 752 not fully passed; radio is only 85 of them.**
+> The earlier "only radios" reading was an artifact of parsing only `### Status` TODOs. The full inventory is
+> `docs/testing/TEST-BACKLOG-AUDIT-2026-11-06.md` and is linked from the backlog header. Counts: 681 TODO, 5 PARTIAL,
+> 6 BLOCKED, 30 NO_STATUS, 14 OTHER non-pass, 1 FAIL, 15 PASS, 15 automated-but-device-owed. Large non-radio blocks:
+> hub/server/console 223, groups/swarm 99, calls/PTT 90, chat/UI/search 64, performance 55, network/release 47. 58 are
+> explicitly planned/not built. `dev` `c99ca55a` (then this audit record) is pushed to `origin/dev`.
+>
+> **2026-11-05 (two-phone test session) - FGS-01, XFER-RETRY-01 (empty case) and RADIO-PROFILE-A-01 (UI) PASS.**
 > Infinix X6882B + Samsung SM-G986U1, current debug APK installed with `adb install -r` (data preserved). The phone pair
 > is on the same Wi-Fi and has a session. `FGS-01`: foreground service `foregroundId=41`, no FGS crash. `XFER-RETRY-01`:
 > 0-byte file shows the visible Failed row, retry before/after a process restart does not crash. `RADIO-PROFILE-A-01`:

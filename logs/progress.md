@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-11-06 (backlog audit) - 752 non-radio and radio tests are not fully passed
+
+The whole `docs/testing/TEST-BACKLOG.md` was parsed mechanically, not just the `### Status` TODOs. The older
+tests use `**Status:**` lines and many have no status at all; the earlier "only radios" reading was wrong.
+
+- 767 test headings: **15 PASS**, **15 automated but device-owed**, **681 TODO**, **5 PARTIAL**, **6 BLOCKED**,
+  **30 NO_STATUS**, **14 OTHER non-pass**, **1 FAIL** => **752 not fully passed**.
+- Rough buckets: hub/server/console 223; groups/swarm/membership 99; calls/PTT 90; other 89; radio 85;
+  chat/UI/search/notifications 64; performance/measurements 55; network/release/migration 47.
+- 58 are explicitly planned/not built (mostly hub, department heads, announcements, Hub tab), so not runnable yet.
+- Full list: `docs/testing/TEST-BACKLOG-AUDIT-2026-11-06.md`; linked from the backlog header.
+- Two-phone session already passed `FGS-01`, `XFER-RETRY-01` (empty case) and `RADIO-PROFILE-A-01` (UI); the
+  remaining radio hardware tests are only one bucket.
+- Pushed `dev` `50b6cadf` then audit commit `c99ca55a` to `origin/dev`.
+
 ## 2026-11-05 (two-phone backlog) - FGS, 0-byte retry and Profile A UI pass; radio rows blocked
 
 ### Worked on
