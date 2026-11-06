@@ -6,6 +6,18 @@ package com.transfer.flash.ui.hub
  * Plan A3 section 9 (`org_ann_*`) and Plan B section 9 (`org_trust_*`, `org_start_*`); do not paraphrase them.
  */
 public object FlashHubCopy {
+    public const val WORKSPACE_CONNECTING: String = "Connecting…"
+    public const val WORKSPACE_SIGNING_IN: String = "Signing in…"
+    public const val WORKSPACE_EXPIRED: String = "Sign-in expired"
+    public const val WORKSPACE_ATTENTION: String = "Connection needs attention"
+    public const val WORKSPACE_REMOVED: String = "Access removed"
+    public const val WORKSPACE_UNENROLLED: String = "Not connected to an organization"
+    public const val WORKSPACE_NEWS: String = "Announcements"
+    public const val WORKSPACE_NEWS_HELP: String = "Updates from your organization and departments."
+    public const val WORKSPACE_PEOPLE_HELP: String = "Find a colleague and start a conversation."
+    public const val WORKSPACE_DEPARTMENTS_HELP: String = "Explore teams, their people and groups."
+    public const val WORKSPACE_GROUPS_HELP: String = "Continue a conversation or find a group to join."
+
     // --- Tab and top bar ---------------------------------------------------------------------------------
     public const val TAB_LABEL: String = "Hub"
     public const val SEARCH: String = "Search"

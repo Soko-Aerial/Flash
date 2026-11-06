@@ -7891,3 +7891,49 @@ not the app.
   glyphs match the chat hand.
 - **Status:** TODO - icons were seen incidentally in the nav bar, chat list, header, composer and profile sheet and
   read coherently at 24dp; the full screen walk (calls, radio, hub, transfers) at 24/48dp and large font is owed.
+
+
+## Hub organizational workspace redesign — 2026-11-06
+
+Source for all cases: `docs/ui/hub-workspace-redesign.md` (UI-058). Native fixture rendering is visual evidence,
+not a substitute for the following real-host checks. No phone was operated in this session.
+
+### HUBWORK-01 — Roles and actions on Android
+- Setup: enrolled phone, accounts for member, department head and administrator.
+- Steps: open Hub; inspect organization/role; visit all four sections; publish for each allowed audience; open a
+  person and Message; exercise conditional Call, group Open/Join/Request/Pending and management where authorized.
+- Pass: role matches enrollment; only supported/authorized controls appear; actions complete through their existing
+  flows; no unauthorized audience is offered; unread announcements and draft/error recovery still work.
+- Status: TODO.
+
+### HUBWORK-02 — Connection and recovery states
+- Setup: enrolled phone with a synced directory, plus a never-synced profile.
+- Steps: disconnect/reconnect network; refresh; inspect the connection sheet; load groups during a failure; retry.
+- Pass: cached content remains usable; loading, offline and failures are explicit; retry/refresh work; connecting
+  does not claim Connected; expired/revoked access retains the required recovery action.
+- Status: TODO.
+
+### HUBWORK-03 — Desktop layout and navigation
+- Setup: Windows app enrolled in a hub with people, announcements and departments.
+- Steps: resize from 640x480 to 1440x900; select/close people, announcements and departments; search and clear search;
+  switch Hub/Chats; operate controls with keyboard.
+- Pass: no blank reserved detail pane before selection; details and lists remain usable; selection/back/search work;
+  existing app rail stays visible; no keyboard trap or clipped primary action.
+- Status: TODO.
+
+### HUBWORK-04 — Accessible phone layouts
+- Setup: Android phone with TalkBack, light/dark themes, 100% and 200% font size, reduced motion; long organization and
+  department names in the directory.
+- Steps: read the header, traverse section tabs, open a person/department, search, refresh; rotate to landscape.
+- Pass: names/role/status readable, controls reachable, selected tab announced, connection changes spoken politely;
+  no overlapping hit targets, hidden primary action or unwanted movement under reduced motion.
+- Native-render finding: the existing shared bottom bar clips its labels at 200% font; fixed-size avatar initials also clip. Hub header and colleague names were repaired. Verify on a real phone before assigning the shared-shell follow-up.
+- Status: TODO.
+
+### HUBWORK-05 — Content and lifecycle regression
+- Setup: populated hub on Android and Windows.
+- Steps: scroll each section; open/close a detail; switch sections; background and return; exercise notification deep
+  links, pending group requests, announcement edit/pin/delete and failed-post retry.
+- Pass: list positions/selection behave consistently; read marking only follows visible announcements; drafts survive
+  failure; no duplicate conversation/join action; existing privacy and link-confirmation behavior is preserved.
+- Status: TODO.

@@ -1,5 +1,8 @@
 # Current Handoff
 
+> **2026-11-06 — HUB WORKSPACE REDESIGN IMPLEMENTED on `dev` (commit follows this record).** Design and evidence: `docs/ui/hub-workspace-redesign.md`, ten native fixture captures in `docs/ui/hub-workspace-renders/`. Hub JVM 205 + Android-host 196 tests green; Android debug assembly and desktop render green. No device verification; HUBWORK-01..05 owed. Owner requested a focused Hub commit, then Transfers and Nearby with minimal professional paired-device rows. Next: research/design UI-047/048 before edits. Existing user photos remain untouched. No push.
+
+
 > **2026-11-06 (latest) - CHAT REDESIGN V2 MERGED INTO `dev` AS `ca9ada63`.** The approved chat mock and Compose port from `design/chat-redesign` are now on `dev`: wallpaper/appearance, composer/header, all 67 redrawn icons and the phone-pass fixes. Branch decision renumbered **ADR-355**; branch errors **ERROR-989/990** (main already used ADR-354/ERROR-984/985). CHATUI-13/14 PASS and CHATUI-15 PARTIAL on the Infinix; CHATUI-01..12/16 and the desktop checks remain owed. Verification: `:ui:chat:jvmTest`, `:ui:theme:jvmTest`, `:app:testDebugUnitTest` and `:desktop:jvmTest` green; app/desktop compile green. See the pre-merge records at the end and `docs/testing/TEST-BACKLOG.md` CHATUI.
 
 > **2026-11-06 (latest, full backlog audit) - 767 test headings, 752 not fully passed; radio is only 85 of them.**
