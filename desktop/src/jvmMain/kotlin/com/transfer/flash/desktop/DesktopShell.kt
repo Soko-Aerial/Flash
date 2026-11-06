@@ -1211,6 +1211,14 @@ public fun DesktopShell(
         val draftOwnerId = nav.current.conversationId ?: selectedChatConversationId
         FlashConversationScreen(
             state = conversationState,
+            chatWallpaper = desktopSettings.chatWallpaper,
+            chatWallpaperCustom = desktopSettings.chatWallpaperCustom,
+            onSetChatWallpaper = { wallpaper ->
+                engine.updateSettings { it.copy(chatWallpaper = wallpaper) }
+            },
+            onSetChatWallpaperCustom = { hex ->
+                engine.updateSettings { it.copy(chatWallpaperCustom = hex) }
+            },
             onBack = {
                 selectedChatConversationId = null
                 chatRepository.closeConversation()

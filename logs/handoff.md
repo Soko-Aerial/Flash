@@ -1,5 +1,7 @@
 # Current Handoff
 
+> **2026-11-06 (latest) - CHAT REDESIGN V2 MERGED INTO `dev`.** The approved chat mock and Compose port from `design/chat-redesign` are now on `dev`: wallpaper/appearance, composer/header, all 67 redrawn icons and the phone-pass fixes. ADR-355; ERROR-989/990. CHATUI-13/14 PASS and CHATUI-15 PARTIAL on the Infinix; CHATUI-01..12/16 and the desktop checks remain owed. See the pre-merge records at the end and `docs/testing/TEST-BACKLOG.md` CHATUI.
+
 > **2026-11-06 (latest, full backlog audit) - 767 test headings, 752 not fully passed; radio is only 85 of them.**
 > The earlier "only radios" reading was an artifact of parsing only `### Status` TODOs. The full inventory is
 > `docs/testing/TEST-BACKLOG-AUDIT-2026-11-06.md` and is linked from the backlog header. Counts: 681 TODO, 5 PARTIAL,
@@ -8400,3 +8402,60 @@ AGENTS §29; then commit (do not push without the owner). Known limit: deleting 
   owner says so.
 - **Known load flakes**, to rerun alone: ORGT-U16, `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`,
   `GroupJoinTest.testApprovalMissedWhileOfflineCompletesOnReconnect`.
+
+---
+
+## Merged chat-redesign records (pre-merge, 2026-11-05)
+
+> **2026-11-05 (latest) - CHAT REDESIGN: THE MOCK IS APPROVED AND THE COMPOSE PORT HAS STARTED; ALL 67 ICONS ARE
+> REDRAWN.** The owner approved both screen sets, chose **ADR-355 option (a): one app-wide wallpaper**, and asked for
+> the Compose port plus every icon in the chat's language. On branch `design/chat-redesign` (worktree
+> `E:\FlashWork\chat-redesign`, `dev` untouched):
+> - **Wallpaper** - `FlashChatWallpaper` in `:core:common`; `FlashSettingsDataStore.chatWallpaper` /
+>   `setChatWallpaper("chat_wallpaper")`; `DesktopSettings.chatWallpaper` + store key; wired in `MainActivity` and
+>   `DesktopShell`; painted by `ui/chat/FlashChatWallpaper.kt`; `FlashTheme.isDark` exposed for the preset pair.
+> - **Chat appearance sheet** with live preview + 5 presets, opened by the new `CHAT_APPEARANCE` menu item (direct and
+>   group lists).
+> - **Thread / composer / header**: wallpaper ground (Scaffold included), 2dp/16dp run gaps, day-chip and unread-pill
+>   restyle; 44dp controls, 22dp pill on `graphite50`, one trailing slot cross-fading mic/send; 60dp header, 34dp
+>   avatar, three actions (search moved to the menu). New tokens `accentFill`/`onAccentFill`, `space10/14/44`,
+>   `composerInput` 22dp, `composerInputBackground` graphite50/surface0.
+> - **Icons**: all **67** `flash_ic_*.xml` rewritten at 24dp/1.75dp/round (28 byte-identical to the approved mock, 39
+>   redrawn), then fitted to an 18.0dp optical size. `settings` is a cog with eight flat teeth, `hangup` is the call
+>   handset struck perpendicular, `tray` is an inbox tray (it was the brand bolt). Record and images:
+>   `docs/ui/chat-icon-set.md`; AAPT + compile green; no device render yet (`CHATUI-16`).
+> **Verified:** `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` **BUILD SUCCESSFUL**; `:ui:chat:jvmTest`,
+> `:ui:theme:jvmTest`, `:app:testDebugUnitTest` **green**; new wallpaper settings tests green on both hosts.
+> **Not device-verified; no phone is attached.** The debug APKs are built and waiting:
+> `app/build/outputs/apk/debug/app-universal-debug.apk` (install this on any handset) and
+> `app-arm64-v8a-debug.apk` (the Infinix/Samsung route). Install with `adb install -r <apk>` once the owner
+> attaches a device, then run `CHATUI-13..16`. **Known deviations** (ADR-355 "Implementation"): compact bottom-right
+> bubble time instead of inline text; the file card keeps its tested surface; group info/settings keep their shipped
+> structure with the new tokens; the swarm map keeps its tested 16-column drawing; no custom colour. Owed:
+> `CHATUI-01..16` (13-16 cover the port), a second visual pass for the group sheets/file card/inline time, and the icon
+> set's device check. Authority: this file, ADR-355, `logs/progress.md` 2026-11-05, `design/chat-web/DESIGN.md`.
+
+> **2026-11-05 - CHAT SCREEN REDESIGN V2 IS A WEB MOCK IN `design/chat-web` (TWO ROUNDS); NOTHING IN
+> `ui/chat` CHANGED; OWNER REVIEW FIRST (CHATUI-01, CHATUI-08..12).** The owner asked for a WhatsApp/Telegram-inspired
+> chat (send key separated from a pill text field, redrawn icons, changeable chat background, settings) and said
+> "design not logic", mock first. Branch `design/chat-redesign`, worktree `E:\FlashWork\chat-redesign` (from `dev` at
+> `efc23ae8`, so the agent on the main checkout is undisturbed). The prototype runs on the shipped tokens and now
+> covers: 60dp header with three actions, three separated composer objects (44dp attach / 44dp pill / one 44dp
+> mic-send control), five wallpapers plus a colour with light and dark variants, `Chat appearance`, **the overflow
+> menu** (FlashConversationMenuMath's items for 1:1 and groups + a proposed Chat appearance item), **the profile
+> sheet**, **group chats** (collage header, sender names, group info with roles and join requests, signed group
+> rules above device switches, invite sheet) and **the swarm UI** (12-column piece matrix, holder list, the four
+> engine sentences), with 22 redrawn icons at 1.75dp. Verified: production build, Impeccable `detect` **0 findings**,
+> `lint.mjs --app` 0 FAIL, `inspect.mjs --app` **0 FAIL / 2 WARN** at 1440/768/390, no horizontal overflow, every
+> sampled text pair **>=5.21:1** in both themes, reduced motion at 1ms, menu/sheets keyboard-complete. Two critique
+> rounds are recorded in `design/chat-web/CRITIQUE.md`; the second round fixed destructive text contrast (4.38 ->
+> 6.25), join-request truncation, sender-run grouping, bar-shaped map cells, a repeated collage initial and
+> one-tint avatars. Records: **ADR-355 (PROPOSED, with its scope extension)**, `ERROR-989` (PowerShell UTF-8
+> corruption, repaired), `logs/progress.md` 2026-11-05, `CHATUI-01..12`.
+> **Open decision:** wallpaper persistence - (a) app-wide `FlashSettings`, (b) per-chat Room step, (c) preview-only.
+> Recommendation: (a) then (b). **Committed as `b1e2d97a`** (round 2; round 1 was `2865e811`) on branch
+> `design/chat-redesign` (worktree `E:\FlashWork\chat-redesign`); nothing pushed, nothing merged. **Next:** owner
+> reviews the new screens; only then the Compose port (icon XML paths, header, composer, message-list wallpaper,
+> menu item, profile sheet, group info/settings, piece map, appearance sheet), keeping every
+> `FlashConversationScreen` parameter, every callback and `FlashBubbleShape` unchanged. Nothing is device-verified;
+> no phone was used.

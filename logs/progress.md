@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2026-11-06 (chat merge) - approved chat redesign merged into `dev`
+
+Merged `design/chat-redesign` into `dev`: the approved wallpaper/appearance sheet, composer/header, 67 redrawn icons and the phone-pass fixes. The branch is based on `efc23ae8`; current `dev` work is preserved. Renumbered the branch decision to **ADR-355** and its errors to **ERROR-989/990** because main already used ADR-354 and ERROR-984/985. Device pass: CHATUI-13/14 PASS, CHATUI-15 PARTIAL on the Infinix; CHATUI-01..12/16 and desktop checks are owed.
+
 ## 2026-11-06 (backlog audit) - 752 non-radio and radio tests are not fully passed
 
 The whole `docs/testing/TEST-BACKLOG.md` was parsed mechanically, not just the `### Status` TODOs. The older
@@ -20999,3 +21003,263 @@ after editing to confirm no "record BLOCKED" instruction is left for these twelv
 ### Next AI
 Paste the D and T blocks (§11.D, §11.T) and let them run. If a stream reports a `BLOCKED — owner decision`, it is either one of
 the `device session`/`owner (ops)` rows in §8 or a mistake: these twelve are answered.
+
+---
+
+## Merged chat-redesign progress records (pre-merge, 2026-11-05)
+
+## 2026-11-05 (device pass) - First phone run of the chat port: three real defects found and fixed, the appearance sheet completed
+
+### Worked on
+The owner attached the Infinix X6882B (Android 14) and asked why the new Chat appearance sheet felt underwhelming.
+Installed the arm64 debug APK, walked the chat list, the conversation, the menu, the appearance sheet, the profile
+sheet, a live thread, the composer with the IME open, and dark mode. Found and fixed the sheet's rendering bug and two
+header defects, then completed the sheet to the approved mock.
+
+### Changed
+- **ERROR-990**: `Modifier.flashChatWallpaper` returned a fresh `Modifier` instead of chaining its receiver, so every
+  preset swatch lost `fillMaxWidth`/`height`/`clip` and measured 0dp, and the preview lost its height and corners.
+  It now returns `this.then(draw)`; the sheet renders all five swatches, the Yours tile and the 150dp preview.
+- **The approved sheet, completed**: five presets + **Yours**, the six named colours, `Applied . <name>`, **Undo** to
+  the value the sheet opened with, and Done. A new `Custom` entry in `FlashChatWallpaper` and a stored
+  `chat_wallpaper_custom` (`#RRGGBB`) on both hosts; the custom ground is carried down towards the dark surface in
+  dark mode so the hue survives and the contrast does not (the empty-state text sits on the field).
+- **Header**: the verification-aware encryption chip clipped to "En" beside three 48dp actions; it is now the mock's
+  compact 14dp lock (same tap and TalkBack label). The title is 17sp (`FlashTypography.headingConversation`) with
+  tighter paddings; a 13-character name now fits, 14 truncates because the app keeps 48dp touch targets where the
+  web mock used 40dp buttons.
+- **Encoding**: the PowerShell round trip hit the new Kotlin file (the ERROR-989 class); the footer rendered
+  "Applied A... Graphite". Repaired by codepoint (U+00B7), and ERROR-990 carries the addendum.
+- Evidence copied into the repo: `docs/ui/chat-appearance-2026-11-05.png`, `chat-wallpaper-pulse-2026-11-05.png`,
+  `chat-wallpaper-dark-2026-11-05.png`, `chat-composer-focus-2026-11-05.png`.
+
+### Verification (device)
+- The chosen wallpaper survives force-stop/relaunch, applies to every chat, and has light and dark grounds.
+- Undo returns to the value the sheet opened with; a colour tap selects Yours, rings the dot and updates the preview.
+- Custom Sand in dark mode is a deep warm grey with readable light text.
+- The composer's send key replaces the mic in the same 44dp slot with the IME open, no width jump; the pill focus
+  ring and the 44dp attach disc are visible.
+- The compact lock is visible beside "Offline"; the profile sheet's rows and Unpair button render.
+- Tests after the fixes: `:ui:chat:jvmTest`, `:ui:theme:jvmTest`, `:app:testDebugUnitTest` **BUILD SUCCESSFUL**; the
+  settings round-trips (wallpaper + custom colour, both hosts) green; `:app:assembleDebug` green.
+
+### Problems
+- Two taps in my first pass landed on the wrong row because the screenshots I was reading are displayed scaled; the
+  fix was to use `uiautomator dump` bounds, not visual estimates. Not a product defect.
+- The header still truncates a 14-character name on a 360dp screen (48dp touch targets). Recorded, not forced.
+
+### Remaining
+- Group info/group settings re-layout; inline bubble time; a file bubble seen on a wallpaper; the full icon walk at
+  24/48dp; the desktop half of CHATUI-13..16.
+- `CHATUI-01..12` (the mock checks) are still owed as well.
+
+### Next AI
+The appearance sheet is complete and device-seen; do not re-litigate the wallpaper model (ADR-355 option a, app-wide,
+presets + one custom colour). Read ERROR-990 before writing a Compose `Modifier` extension in this module.
+
+## 2026-11-05 (later) - Chat redesign v2 round 3: the Compose port starts (wallpaper, composer, header, menu) and all 67 icons are redrawn
+
+### Worked on
+The owner approved the mock and both screen sets, chose option (a) for the wallpaper (one app-wide setting) and asked
+for the Compose port plus a redesign of **every** app icon in the chat's drawing language. This entry is the first
+port slice; the mock remains the visual authority (`design/chat-web/DESIGN.md`).
+
+### Changed
+- **Wallpaper (ADR-355, option a).** New `FlashChatWallpaper` enum in `:core:common` (5 presets, stable storage keys,
+  unknown keys read as Graphite). `FlashSettingsDataStore.chatWallpaper`/`setChatWallpaper("chat_wallpaper")` and the
+  desktop `DesktopSettings.chatWallpaper`/`DesktopSettingsStore` key, wired through `MainActivity` and `DesktopShell`.
+  New `ui/chat/FlashChatWallpaper.kt` paints the ground and pattern (dots, hatch, graph grid, pulse rings), flat under
+  `ultraLowUi`; `FlashTheme.isDark` is now exposed for the light/dark preset pair.
+- **Appearance sheet.** `FlashChatAppearanceSheet` with a live preview, the five presets and a Done button; opened by a
+  new `CHAT_APPEARANCE` item in `FlashConversationMenuMath` (both direct and group lists) and `FlashConversationMenuItem`.
+- **Thread.** `FlashMessageList` paints the wallpaper instead of `backgroundChat`, the `Scaffold` uses its ground (so
+  overscroll is no longer the Material scheme), day chip is a surface pill with a hairline, the unread/new-messages pill
+  uses `accentFill`/`onAccentFill`, and run gaps are 2dp / 16dp.
+- **Composer.** 44dp controls, 14/10 pill inset at 22dp radius on `graphite50`, a focus ring on the pill, one trailing
+  44dp slot that cross-fades the send key over the persistent mic (the hold gesture keeps its node), and the reply dock
+  restyled to surface-2 + 12dp radius.
+- **Header.** 60dp row, 34dp avatar, three actions (call, video, more). Search leaves the header and is reached from the
+  menu, which already carried it.
+- **Tokens.** `accentFill`/`onAccentFill` (pulse600+white 5.21:1 light, pulse400+pulse900 5.85:1 dark), composer input
+  moved to `graphite50`/`surface0`, `FlashShapes.composerInput` at 22dp, `FlashSpacing.space10/space14/space44`.
+- **Fidelity pass on the bubble and composer.** The attach key now has the mock's surface-2 disc; the file block drops
+  its inner fill and border so it reads as content on the message (no card inside a card); bubble bottom inset is 9dp.
+  Compile green. The debug APK for the device pass is built with this state.
+- **Icons.** All **67** `flash_ic_*.xml` drawables rewritten at 24dp/1.75dp/round: 28 copied byte-for-byte from the
+  approved mock, 39 redrawn. A second pass fitted every redrawn glyph to an 18.0dp longest axis (anchor median ink
+  17.10 x 17.65dp), re-drew `settings` as an open counter with eight flat teeth, deepened `flag`, turned `camera_flip`
+  into two rotation arrows, opened the `hand` finger gaps to 1.6dp, and made `hangup` the call handset struck
+  perpendicular to its axis. `tray` (Windows tray + hub mailbox) was still the brand bolt and is now an inbox tray.
+  Record: `docs/ui/chat-icon-set.md` with the 24px comparison and the full sheet. AAPT + compile green; no device
+  render yet (CHATUI-16).
+
+### Why
+The owner approved the direction and asked for a picture-accurate port, with the icons matching the chat.
+
+### Verification
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` **BUILD SUCCESSFUL**.
+- New settings tests: `FlashSettingsDataStoreTest` (default + round-trip + unknown key) and
+  `DesktopSettingsStoreTest` (default + every preset survives a new store) pass.
+- `FlashConversationMenuMathTest` updated for the new item; `:ui:theme:jvmTest` green.
+- Icon XMLs parse as XML, viewport 24, stroke 1.75; contact sheet reviewed in Chromium.
+- Nothing is device-verified; no phone was attached in this session.
+
+### Remaining
+- A second visual pass for the group info / group settings sheets, the file card, the swarm map's 12-column form and
+  the inline bubble time (the shipped versions keep their tested structure).
+- The custom wallpaper colour from the mock is not shipped (option a stores presets only).
+- Icon set: a follow-up optical-size pass is running; verify on a phone at 24/48dp before claiming it.
+- CHATUI-01..16 device checks; nothing has been run on hardware.
+
+### Next AI
+Read ADR-355 "Implementation" for the exact deviations before touching the bubble or the group sheets. Build with
+`tools\flash-gradle.cmd` (never `gradlew`). The wallpaper setting is app-wide by owner decision; per-chat is not built.
+
+## 2026-11-05 (later) - Chat redesign v2 round 2: the menu, profile, group chats and the swarm UI
+
+### Worked on
+The owner approved the direct chat, the desktop and the redrawn icons, and asked for the rest of the chat
+surface before reviewing again: the three-dot menu's options, group chats with their options and settings, the
+profile view, and the swarm UI. All of it is prototype work in `design/chat-web`; no app source changed.
+
+### Changed
+- `flash/Menu.tsx` - the overflow menu as a 252dp popover (not a sheet): 44dp rows, 18dp icons, destructive items
+  in `--danger-ink` below a hairline, first item focused, Tab trapped, Escape closes. Items come from
+  `FlashConversationMenuMath` verbatim for both a 1:1 chat and a v2 group, plus the proposed **Chat appearance**.
+- `flash/Profile.tsx` - the peer details sheet: 64dp avatar, presence, Connection / Security / Trust / Radio
+  fallback, Shared Media & Files, and the destructive unpair action.
+- `flash/Group.tsx` - the 2x2 collage; group info (invite, add, shared content, settings, members with roles and
+  transport, inline Verify / Make Admin / Remove, two join requests with Approve / Decline); group settings
+  (signed rules, dynamic subtitles, max-size stepper, device seeding preferences, group code, organisation relay);
+  the invite sheet with a copyable link.
+- `flash/Swarm.tsx` - the piece map as a 12-column matrix (verified / downloading / peer / missing) with a legend,
+  the holder list, the sender/receiver/missing-parts/source-lost sentences, and a wide proof board.
+- `flash/Conversation.tsx` - group header, sender name once per run (runs now split on sender), and the swarm map
+  on the file card.
+- `flash/icons.tsx` - six more glyphs (device, group, gallery, share, delete, bluetooth) plus copy: 22 chat glyphs.
+- `App.tsx` - three new sections and eight pinned phone states; desktop unchanged.
+
+### Why
+The menu was previously bypassed (the kebab opened the wallpaper sheet), so the app's own menu items had no design;
+groups, profiles and the swarm are the surfaces the chat actually uses next.
+
+### Verification
+- Impeccable `detect` on `design/chat-web/src`: **0 findings**.
+- `lint.mjs --app`: **0 FAIL** (warnings: the invite link's monospace, menu/sheet shadows, clock, em dashes).
+- `inspect.mjs --app` at 1440/768/390 on the production build: **0 FAIL, 2 WARN** (six radii including the phone
+  frame and the sheet; 3 of 45 blocks above the fold on a review document).
+- No horizontal overflow at any width; every sampled text pair **>=5.21:1** in both themes. The destructive menu
+  text was 4.38:1 (`error500` on white) and now uses `--danger-ink` at 6.25:1.
+- Keyboard: menu traps Tab and closes on Escape; the profile/invite/wallpaper sheets focus their dialog and close
+  on Escape; every icon control has a name.
+- Fixed during review: join-request rows truncating names, group runs merging different senders, bar-shaped piece
+  map cells, a repeated collage initial and one avatar tint, subtitles contradicting their switch, a focus ring on
+  open, and a ragged swarm board.
+
+### Remaining
+- Owner review of the new screens (CHATUI-01 and the new CHATUI-08..12).
+- Wallpaper persistence (ADR-355 decision 4) and the Compose port.
+
+### Next AI
+Read `design/chat-web/CRITIQUE.md` (round 2) and `DESIGN.md` before touching the port. The new card is one
+presentation file per surface; the app's strings and menu item lists are copied, not invented.
+
+## 2026-11-05 (later) - Chat redesign v2: the critique round fixed 6 P1/P2 findings; the mock still awaits owner review
+
+### Worked on
+Phases 2 and 3 of the owner's pipeline for the chat redesign: an Impeccable critique (two isolated assessments: a
+design review and a detector/browser-evidence pass) and the motion pass. Record: `design/chat-web/CRITIQUE.md`.
+
+### Changed
+- **Contrast (P1).** Every accent fill that carries text or a glyph now uses `pulse600` + white (5.21:1) in light and
+  `pulse400` + `pulse900` (5.85:1) in dark; the sheet's "Done" and the send key were 3.74:1 / ~2.0:1. Four other text
+  pairs failed AA (the verified line at 3.59:1, the file card meta at 4.06:1, two at 4.498:1); all now 5.94-6.76:1.
+- **Wallpaper apply model (P1).** One model: picks apply immediately, the footer states "Applied - <name>" with Undo, and
+  the sheet closes by X, scrim, Escape or Done. The dead "This chat / All chats" scope is removed until ADR-355 decides
+  it; the scope was never a real setting in the mock.
+- **Custom colours (P2).** Six named 44dp swatches (Stone, Sage, Sand, Clay, Mint, Sky) with `aria-label`s; the "Yours"
+  tile carries a plus instead of duplicating a preset.
+- **Reply quote (P2).** No filled panel and no 3dp left bar: a 13dp reply glyph, the accent name and one ellipsised
+  line. This also cleared the detector's `side-tab` finding.
+- **File bubble.** The file block is content on the bubble, not a card inside a card (detector `nested-cards`).
+- **Presentation leaks (P2).** The fake "Enter sends" and "Reduce motion" rows are gone from Chat appearance; Theme is a
+  real light/dark control, and a Reset row.
+- **Accessibility.** The sheet focuses its close button, traps Tab, closes on Escape and is `aria-labelledby`; the
+  scrollable thread gets the app focus ring; header targets are 44dp; "Unread" moved onto a surface pill; the desktop
+  list search is a real input that filters, with an empty state.
+- **Layout.** The 390px composer could not stack (a later rule overrode the media query; the pill overflowed its row by
+  141px) - fixed and re-measured. The mobile wallpaper chips wrap instead of hiding a scrollbar. Measure capped at
+  68-72 characters. Motion demo timings to 12px.
+- **Wallpaper preset.** "Linen" (an feTurbulence grain, which the craft floor refuses) became "Draft", a 24/96dp graph
+  grid drawn as strokes.
+
+### Why
+The critique found a P1 contrast failure on the primary accent and a wallpaper sheet with no coherent apply model;
+both would have been ported into Compose as-is.
+
+### Verification
+- Impeccable `detect` on `design/chat-web/src`: **0 findings, exit 0** (was 1 `side-tab`).
+- `lint.mjs --app`: **0 FAIL** (13 warnings: clock zero-padding, shadows on real overlays, em dashes).
+- `inspect.mjs --app` on the production preview: **0 FAIL, 3 WARN** at 1440/768/390 (device radii, below-fold on a
+  review document, no data hue).
+- Browser contrast probe: every sampled app pair **>=5.21:1**; light and dark; the pre-critique run had 42 failing
+  text elements in four pairs.
+- No horizontal overflow at 1440/768/390 (`scrollWidth == clientWidth`); the 390 composer row and pill are inside the
+  stage after the fix.
+- Keyboard: 36 stops, 13 inside the phone, input and send/mic in visual order, every icon control named.
+
+### Remaining
+- Owner review (CHATUI-01) and the wallpaper persistence decision (ADR-355).
+- The Compose port, after approval.
+- Accepted critiques not changed: typing dots animate (a real state), blocks below the fold, neutral chrome above the
+  fold, and the five radii (two are the device frame).
+
+### Next AI
+Read `design/chat-web/CRITIQUE.md` first, then `DESIGN.md`. Do not re-run the critique blindly; its remaining items are
+owner decisions.
+
+## 2026-11-05 (later) - Chat screen redesign v2: a reviewed web prototype in design/chat-web; no app code changed
+
+### Worked on
+The owner asked for a chat screen redesigned with WhatsApp's and Telegram's lessons (the send key separated from the
+text field, a pill input, redrawn icons, a changeable chat background and the settings that own it), "design not logic",
+with a mock to look at first and the Compose port after approval. Built that mock as a standalone Vite/React prototype
+on a new branch, in its own worktree so the running agent on `dev` was not disturbed.
+
+### Changed (all new; no app source touched)
+- `design/chat-web/` - review page, phone frame (390x844) and desktop window (1200x760), conversation (header, thread,
+  bubbles, composer), wallpaper sheet, `Chat appearance` page, icon sheet, motion demos.
+- `design/chat-web/DESIGN.md` - design record: dealt style, the idea, tokens, contrast table, icon spec, motion spec,
+  Compose port plan and the open wallpaper-persistence question.
+- `design/chat-web/README.md`, `scripts/shots.mjs`, `scripts/repair-encoding.py`.
+- Records: ADR-355 (PROPOSED), ERROR-989, this entry, `logs/handoff.md`, `CHATUI-01..07` in the test backlog.
+
+### Why
+The owner cannot approve motion, the 8dp bubble scoop or wallpaper contrast from a description, and a rejected Compose
+direction would have touched the shipping chat UI. The mock reuses the shipped tokens (`FlashColors`, `FlashTypography`,
+`FlashShapes`, `FlashMotion`) so the port cannot silently change the look.
+
+### Verification
+- `npm run build` (type-check + production bundle) clean.
+- `lint.mjs --app design/chat-web/src`: **0 FAIL**.
+- `inspect.mjs --app` on the production preview at 1440 / 768 / 390: **0 FAIL, 3 WARN** (five radii, two of which are
+  the phone frame; one 88px row imbalance; blocks below the fold on a long review document).
+- No horizontal overflow: `scrollWidth === clientWidth` at 1440, 768 and 390.
+- Contrast measured for every text pair (DESIGN.md section 6); reduced motion collapses every animation to 1ms.
+- Screenshots in `design/chat-web/shots/` (git-ignored) at five wallpapers, light and dark, plus element close-ups.
+
+### Problems
+PowerShell's `Get-Content`/`Set-Content` round trip double-encoded UTF-8 in four prototype source files and added a BOM
+(**ERROR-989**). Repaired by `scripts/repair-encoding.py` (targeted sequence replacement, not a whole-file reverse) and
+verified by typecheck, build and screenshots. Later text edits use the editor tools.
+
+### Remaining
+- Owner review of the mock (CHATUI-01); the port does not start until the direction is approved.
+- The wallpaper persistence decision (ADR-355 decision 4): app-wide setting, per-chat Room step, or preview-only.
+- The Compose port itself: icon paths, header, composer, message-list wallpaper, appearance sheet.
+- Nothing is device-verified; no phone was used.
+
+### Next AI
+Read `design/chat-web/DESIGN.md` and ADR-355 before touching `ui/chat`. Run the prototype with
+`cd design/chat-web && npm run dev` (port 5174). Do not port until the owner approves; when porting, keep every
+`FlashConversationScreen` parameter and callback unchanged and keep `FlashBubbleShape`.

@@ -2892,6 +2892,25 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-05 - Chat redesign port, first device pass (Infinix X6882B)
+
+Build: branch `design/chat-redesign`, arm64 debug APK from the port + fixes (`7442ef16`, `b1a8c2da`, `4e71680a`,
+plus the device-pass fixes in the next commit). Device: Infinix X6882B, Android 14, 1080x2460 @480dpi.
+
+Ran: CHATUI-13 PASS, CHATUI-14 PASS, CHATUI-15 PARTIAL, CHATUI-16 not run as a full walk. Wallpaper presets and the
+six named colours, Undo, persistence across force-stop, dark mode, the composer's mic-to-send crossfade with the IME
+open, the compact header lock and the profile sheet were exercised by hand.
+
+Found and fixed: **ERROR-990** (the wallpaper modifier dropped its receiver chain, so every preset swatch measured
+0dp and the preview lost its height/clip), the header encryption chip clipping to "En" (now the compact lock), a
+14-character header title truncating (17sp title + tighter paddings; 13 fits), and a PowerShell round trip that
+corrupted the `Applied ...` line (the ERROR-989 class; repaired, codepoint-checked).
+
+Still owed: the group info/settings re-layout, inline bubble time, a file bubble on the wallpaper, the full icon walk,
+the desktop half of every item above, and the wave of existing `CHATUI-01..12` mock checks.
+
+
+
 ### 2026-11-05 - Two-phone device backlog session (Infinix + Samsung)
 - **Code / build:** `dev` `b07cc61f`; debug APK installed with `adb install -r` on both phones (data preserved; first-install dates unchanged: Infinix 2026-10-22, Samsung 2026-09-02).
 - **Devices:** Infinix X6882B (Android 14) `13114704AP002141`; Samsung SM-G986U1 (Android 13) `R5CN21CNJAF`; same Wi-Fi LAN (`Ayaata Wifi_5G`, 192.168.0.199 / .107).
@@ -7713,3 +7732,161 @@ Current Android app and radio gateway connected, on the Radio screen. A legacy i
 
 ### Status
 PASS (UI/selection, Infinix 2026-11-05; Profile A dimmed, Not supported, tap does not select; transmit step blocked because the remembered radio was Link lost).
+
+---
+
+## 4zzzzzzzzzzzzzzzzzzzz Chat redesign v2 (CHATUI) - owed after the mock and the port
+
+Source: ADR-355, `design/chat-web/DESIGN.md`, `logs/progress.md` 2026-11-05. None of these have been run; the mock is
+not the app.
+
+### CHATUI-01 - Owner review of the web mock
+- **Setup:** `cd design/chat-web; npm install; npm run dev` -> http://localhost:5174 (or `npm run build && npm run preview`
+  -> :4174).
+- **Steps:** at 1440, 768 and 390: read the conversation, type in the composer until the mic becomes send, press the
+  kebab to open the wallpaper sheet, switch all five presets and the custom colour, switch light/dark, open Chat
+  appearance, press Replay in Motion, then turn Motion off and press Replay again.
+- **Pass:** the owner approves the direction (header, composer, wallpapers, icons, motion) or names the changes; the mic
+  and send never move the layout; every wallpaper keeps message text readable; reduced motion still changes state with no
+  travel.
+- **Status:** TODO
+
+### CHATUI-02 - Composer on a phone with the IME, 1 to 6 lines (after the port)
+- **Setup:** Android build with the ported composer, two paired phones.
+- **Steps:** type one line, then paste six lines; open and close the IME at the bottom of the thread; hold the mic and
+  slide to cancel; send a voice note; press Enter on a hardware keyboard.
+- **Pass:** the pill grows to six lines and stops; the composer stays above the IME with no jump; the trailing control
+  crossfades mic -> send in one slot with no width change; cancel discards and send sends; Enter sends and Shift+Enter
+  makes a new line.
+- **Status:** TODO
+
+### CHATUI-03 - Wallpaper, whichever store ADR-355 chooses
+- **Setup:** one phone (and the desktop if an app-wide setting is chosen).
+- **Steps:** set each of the five presets and one custom colour in a chat; kill and relaunch; switch theme; open a second
+  chat (per-chat option) or check every chat (app-wide option).
+- **Pass:** the chosen wallpaper survives the relaunch; its light and dark variants both apply; bubbles keep AA contrast
+  on every preset; the "This chat" / "All chats" scope behaves as labelled (if built).
+- **Status:** TODO
+
+### CHATUI-04 - Contrast and 200% font scale (after the port)
+- **Setup:** Android with large font / display size 200%, light and dark; a chat with incoming, outgoing, file, voice and
+  reply bubbles.
+- **Steps:** scroll the thread; open the wallpaper sheet; open Chat appearance.
+- **Pass:** no text is clipped; metadata still meets 4.5:1; the bubble tail does not clip text; the composer stays one
+  row at 200%.
+- **Status:** TODO
+
+### CHATUI-05 - RTL
+- **Setup:** Android set to an RTL locale (Arabic or Hebrew), two paired phones.
+- **Steps:** open a chat; send and receive; open the wallpaper sheet.
+- **Pass:** the bubble scoop mirrors to the sender's side, the header back arrow and the composer order mirror, no icon
+  is upside down, and the wallpaper sheet's tiles keep their labels.
+- **Status:** TODO
+
+### CHATUI-06 - Reduced motion on a LOW tier handset (after the port)
+- **Setup:** a low-end device or the performance tier set to LOW; Android "Remove animations" on.
+- **Steps:** type and send, open the wallpaper sheet, switch wallpaper.
+- **Pass:** no entrance travel, no scale pops, no sheet rise; state still changes instantly; nothing is left invisible.
+- **Status:** TODO
+
+### CHATUI-07 - Desktop window at 100/125/150% and the narrow minimum (after the port)
+- **Setup:** Windows desktop build, UI scale 100/125/150%, window at the 640x480 minimum and maximised.
+- **Steps:** open a chat in two panes, type six lines, open the wallpaper sheet.
+- **Pass:** the composer keeps its 820dp measure centred in a wide window; no horizontal scrollbar; the sheet fits
+  inside the conversation pane; the header keeps three actions with the name readable.
+- **Status:** TODO
+
+### CHATUI-08 - Overflow menu on both platforms (after the port)
+- **Setup:** a 1:1 chat and a v2 group, Android and Windows.
+- **Steps:** open the kebab; on the phone check every item; on desktop press Escape and click outside; choose View
+  profile, Group info, Group settings, Invite link, Chat appearance; then Mark as unread and Leave group.
+- **Pass:** the item list matches `FlashConversationMenuMath` (destructive last, separated); the popover opens under
+  the button with 44dp rows; Escape/outside closes; each navigating item opens its surface; the destructive items
+  ask for confirmation before doing anything.
+- **Status:** TODO
+
+### CHATUI-09 - Peer profile and unpair (after the port)
+- **Setup:** two paired phones, one chat open.
+- **Steps:** open the profile from the avatar and from the menu; check each row against the real session; tap Shared
+  Media & Files; press Unpair this device.
+- **Pass:** Connection/Security/Trust/Radio fallback show the live values; shared content opens; unpair asks for
+  confirmation, then the peer shows **Not paired** and can no longer deliver (ADR-351).
+- **Status:** TODO
+
+### CHATUI-10 - Group info and join requests (after the port)
+- **Setup:** a v2 group with 6 members, one unpaired applicant and one paired applicant.
+- **Steps:** open Group info; expand a vouched member; Verify, Make Admin and Remove; approve one request and
+  decline the other; open Invite people.
+- **Pass:** the roster matches the signed roster; a vouched member shows "Added by <name> - not verified" and can be
+  verified; removing asks for confirmation and rotates the group code; approve/decline updates the request list and
+  the member count; the unpaired applicant is marked "Not paired".
+- **Status:** TODO
+
+### CHATUI-11 - Group settings, signed vs device (after the port)
+- **Setup:** a v2 group; two devices in it; one admin and one member account.
+- **Steps:** as the admin, toggle each rule and change the max size; as the member, open the same page; toggle the
+  device switches on both; change the group code.
+- **Pass:** rules are read-only for the member with the admin-only sentence; rule changes reach the other device and
+  survive a restart (signed); device switches never change the other device; changing the code invalidates old
+  invite links and keeps current members.
+- **Status:** TODO
+
+### CHATUI-12 - Swarm piece map and delivery lines (after the port)
+- **Setup:** a group of three or more devices with group swarm on; a 100 MB+ file; one member offline.
+- **Steps:** send the file; watch the sender's map and lines; pause one receiver; bring a holder back; delete the
+  source file on the sender and retry sharing.
+- **Pass:** the map's verified count matches the progress; the sender reads "Delivered to N of M" and then "You can
+  go offline now"; the receiver reads "Getting it from K devices"; an offline holder shows "Offline - n%"; a lost
+  source shows "Your file is no longer available. Pick it again to keep sharing"; no piece numbers or peer ids appear.
+- **Status:** TODO
+
+### CHATUI-13 - Chat wallpaper persists (ADR-355 option a)
+- **Setup:** Android build with the ported chat; a Windows build from the same commit; two chats.
+- **Steps:** open a chat, menu > Chat appearance, choose each of the five presets, close and reopen the chat; kill and
+  relaunch the app; do the same on the desktop; switch the system to dark and back.
+- **Pass:** every chat uses the chosen preset (app-wide); the choice survives a restart on both hosts; each preset has
+  its light and its dark ground; message text and timestamps keep their contrast on all five; an unreadable/absent
+  stored value falls back to Graphite instead of failing a launch.
+- **Status:** PASS 2026-11-05 - Infinix X6882B (Android 14) on the port build. The chosen preset survived a
+  force-stop/relaunch and applied to every chat; light and dark grounds were seen (Signal, Sand, custom); `Undo`
+  returned to the value the sheet opened with; an unknown stored value still falls back to Graphite (unit test).
+  Desktop half not run.
+- **Evidence:** `docs/ui/chat-appearance-2026-11-05.png`, `chat-wallpaper-pulse-2026-11-05.png`,
+  `chat-wallpaper-dark-2026-11-05.png`.
+
+### CHATUI-14 - Overflow menu and Chat appearance entry
+- **Setup:** a 1:1 chat and a v2 group, both hosts.
+- **Steps:** open the kebab; confirm the item lists; open Chat appearance; use Search, View profile, Group info, Group
+  settings, Invite link and Add members; check destructive items and Escape/outside dismissal.
+- **Pass:** the lists match `FlashConversationMenuMath` including Chat appearance; the popover is 252dp with 44dp rows;
+  each item opens its surface; destructive items keep their confirmations; the menu is reachable with one thumb and
+  dismisses with back/Escape.
+- **Status:** PASS 2026-11-05 - 1:1 chat on the Infinix. The menu lists match `FlashConversationMenuMath` (View
+  profile, Search, Chat appearance, Revoke trust, Mark as unread, Clear conversation); Chat appearance opens the
+  sheet; View profile opens the peer sheet; the popover is 252dp wide with 52dp rows (4dp over the mock - Material's
+  minimum height kept, not forced); back dismisses it. Group menu and desktop not run.
+- **Evidence:** the session screenshots in the device folder (05, 07, 09).
+
+### CHATUI-15 - Header and composer on a phone
+- **Setup:** Android phone, two paired chats; a hardware keyboard for the desktop step.
+- **Steps:** type 1 and 6 lines; open/close the IME; clear the draft; hold the mic and slide to cancel; send; open the
+  reply dock.
+- **Pass:** the three header actions fit with the name and presence; the mic and send share one 44dp slot with a
+  crossfade and never move the pill; the pill grows to 6 lines; the IME never overlaps the composer; the reply dock
+  matches the design.
+- **Status:** PARTIAL 2026-11-05 - Infinix, one 1:1 chat. The three header actions fit beside a 34dp avatar; the
+  compact lock no longer clips; a 13-character name fits ("Flash Gazelle"), 14 truncates ("Flash Hedgeh...") - the
+  mock's 40dp web buttons vs the app's 48dp touch targets; the send key replaces the mic in the same 44dp slot with
+  the IME open and no width jump; the pill focus ring and the 44dp attach disc are visible. Hold-to-record, slide to
+  cancel and the locked recording bar were **not** exercised. Desktop not run.
+- **Evidence:** `docs/ui/chat-composer-focus-2026-11-05.png`.
+
+### CHATUI-16 - The full icon set at 24dp and 48dp
+- **Setup:** Android and Windows builds from the icon commit.
+- **Steps:** walk every screen that uses icons (chats list, conversation header/composer, attachments, transfers, nearby,
+  settings, hub, calls, radio) at default and large font/UI scale; single out the nav row and the call controls.
+- **Pass:** no glyph reads as a different symbol from before; stroke weight is even next to the chat glyphs; nothing
+  clips its frame at 48dp; `settings` still reads as a cog, `mic_off`/`video_off` have a clear slash, and the four nav
+  glyphs match the chat hand.
+- **Status:** TODO - icons were seen incidentally in the nav bar, chat list, header, composer and profile sheet and
+  read coherently at 24dp; the full screen walk (calls, radio, hub, transfers) at 24/48dp and large font is owed.

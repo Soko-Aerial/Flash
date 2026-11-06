@@ -24,13 +24,14 @@ object FlashShapes {
     val radius12 = 12.dp
     val radius16 = 16.dp
     val radius20 = 20.dp
+    val radius22 = 22.dp
     val radius24 = 24.dp
     val radiusFull = 999.dp
 
     val chip = RoundedCornerShape(radius8)
     val attachment = RoundedCornerShape(radius12)
     val sheet = RoundedCornerShape(topStart = radius24, topEnd = radius24)
-    val composerInput = RoundedCornerShape(radius20)
+    val composerInput = RoundedCornerShape(radius22)
     val composerBar = RoundedCornerShape(radiusFull)
     val avatar = RoundedCornerShape(radiusFull)
     val button = RoundedCornerShape(radius12)

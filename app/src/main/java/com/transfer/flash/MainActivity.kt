@@ -127,6 +127,7 @@ import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.settings.FlashSettingsScreen
 import com.transfer.flash.ui.settings.FlashThemeMode
+import com.transfer.flash.core.common.model.FlashChatWallpaper
 import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.ui.shell.FlashBottomNav
 import com.transfer.flash.ui.shell.FlashBottomNavDefaults
@@ -837,6 +838,10 @@ fun FlashApp(
     val persistScope = rememberCoroutineScope()
 
     val themeModeKey by store.themeMode.collectAsState(initial = FlashSettingsDataStore.THEME_MODE_SYSTEM)
+    // ADR-355: one app-wide chat wallpaper, chosen from the conversation menu.
+    val chatWallpaper by store.chatWallpaper.collectAsState(initial = FlashChatWallpaper.Default)
+    val chatWallpaperCustom by store.chatWallpaperCustom
+        .collectAsState(initial = FlashChatWallpaper.DefaultCustomColour)
     val dynamicAccent by store.dynamicAccent.collectAsState(initial = false)
     val hapticsEnabled by store.hapticsEnabled.collectAsState(initial = true)
     val backgroundTransfers by store.backgroundTransfers.collectAsState(initial = false)
@@ -1070,6 +1075,10 @@ fun FlashApp(
                     engine = engine,
                     settings = settings,
                     onSettingsChange = onSettingsChange,
+                    chatWallpaper = chatWallpaper,
+                    chatWallpaperCustom = chatWallpaperCustom,
+                    onSetChatWallpaper = { wallpaper -> persistScope.launch { store.setChatWallpaper(wallpaper) } },
+                    onSetChatWallpaperCustom = { hex -> persistScope.launch { store.setChatWallpaperCustom(hex) } },
                     pendingNotificationConversation = pendingNotificationConversation,
                     pendingCallAnswer = pendingCallAnswer,
                     pendingShare = pendingShare,
@@ -1115,6 +1124,10 @@ private fun FlashShell(
     engine: AppEngine,
     settings: FlashSettingsModel,
     onSettingsChange: (FlashSettingsModel) -> Unit,
+    chatWallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
+    chatWallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
+    onSetChatWallpaper: ((FlashChatWallpaper) -> Unit)? = null,
+    onSetChatWallpaperCustom: ((String) -> Unit)? = null,
     pendingNotificationConversation: MutableStateFlow<String?>,
     pendingCallAnswer: MutableStateFlow<Boolean>,
     pendingShare: MutableStateFlow<PendingSharePayload?>,
@@ -2086,6 +2099,10 @@ private fun FlashShell(
         val draftOwnerId = conversationId ?: selectedChatConversationId
         FlashConversationScreen(
             state = conversationState,
+            chatWallpaper = chatWallpaper,
+            chatWallpaperCustom = chatWallpaperCustom,
+            onSetChatWallpaper = onSetChatWallpaper,
+            onSetChatWallpaperCustom = onSetChatWallpaperCustom,
             onBack = {
                 chatRepository.closeConversation()
                 if (twoPane) {
