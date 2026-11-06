@@ -1,6 +1,6 @@
 # Test backlog audit - 2026-11-06
 
-Source: `docs/testing/TEST-BACKLOG.md` at `dev` `50b6cadf`. Mechanical audit of every test heading with an ID; it does not claim a test was run.
+Source: `docs/testing/TEST-BACKLOG.md` at `dev` `50b6cadf`. Mechanical audit of every test heading with an ID; it does not claim a test was run. This count predates the `design/chat-redesign` merge (`ca9ada63`), which added `CHATUI-01..16`; those 16 are in the backlog, so the live total is 783 headings. Of the 16, `CHATUI-13/14` are PASS, `CHATUI-15` is PARTIAL and `CHATUI-01..12/16` are TODO, so the live non-pass total is 766.
 
 ## Summary
 
