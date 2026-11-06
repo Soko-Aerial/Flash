@@ -16,6 +16,40 @@ Source: `docs/testing/TEST-BACKLOG.md` at `dev` `50b6cadf`. Mechanical audit of 
 
 `AUTOMATED` means the status says an automated pass but still names a device/real-hub run. `NO_STATUS` has no recorded result and must be treated as not done/unknown. `OTHER` includes IMPLEMENTED / UNBLOCKED / DECIDED states that still owe a physical or manual run.
 
+## Correction: most “planned / not built” status text is stale
+
+58 entries literally say `PLANNED`, `not built` or `nothing built`, but many were written before the feature landed. Current code
+shows these are **built and only owe a device test**, not missing features:
+
+- Group secret/membership (`GMB-01..14`, `GSEC-01..05/07/08`, `SWM-06`): GM-1..GM-10 and the invite/rotation/join UI are in
+  `GroupJoinTest`, `GroupRotationTest`, `GroupDiscoveryTest`, `GroupSecretStore` and the group settings sheets.
+- Announcements (`ANN-01..11`): `AnnouncementStore`, routes, client API, Room state and console are present (Plan A3 complete).
+- Department heads (`DEPH-01..07`): `AdminAuthService` Plan A1 migration, `DepartmentHeadScopeTest`, console role/invite flow.
+- Directory privacy (`PRIV-01..05`): `DirectoryPrivacy.kt` and the hidden-department tests/routes are present.
+- Hub tab (`HUBT-01..14`, later `HUBT-20..32`): `FlashHubScreen`/`FlashHubRoute` and the later H6–H10 work are present.
+- Hub files P3/P4 (`HUBFILE-C/M/G`): the client transport and file-message/group paths landed after those rows were written.
+- ORGT-11/12/13: B4 hub-group rosters on the LAN (and the built ORG-send wake work) landed; ORGT-14 identity-key regeneration is
+  the remaining unimplemented/undefined case.
+- `HUBA-12`/`HUBU-11` are partial, not wholly planned: the browser signer works; the phone-as-step-up path is still blocked.
+
+### Genuinely not built or only partial
+
+- **Transfer v2 / pull transfer**: `SWM-05`, `TV2-01` — plan only.
+- **Revocation gossip over LAN (Plan B B5)**: the revocation-list exchange/ripple is not implemented; B4 roster statements are.
+- **Identity-key regeneration** (`ORGT-14`): no implemented recovery/definition.
+- **Optional group discovery beacon** (`GSEC-06`): not built; the secret/invite path itself is built.
+- **Phone as step-up approver** (`HUBA-12`, `HUBU-11`): browser signer exists; phone path blocked.
+- **Profile A signed-cleartext chat**: deliberately unsupported until a peer identity-public-key exchange exists.
+- **Wi‑Fi Direct transport**: still not implemented.
+- **Hub files LAN ↔ hub hand-over**: not built (P3/P4 explicitly left it out).
+- **B4 residuals**: `org_group_unsealed` header not wired, no conversation for an admin-added hub group before joining, `Flash.kt`
+  not wired, revocations not passed to `HubGroupRosters`.
+- **Department-head client gaps**: client scope/provisioning, multi-department paging and revocation-list installer remain open
+  from the 2026-11-05 console audit.
+
+These are the only feature-level “not built” items; the other 700+ are tests of built behavior that still need a device, hub,
+desktop or measurement run.
+
 ## Not done, by area
 
 ### 1. Recent call fixes (2026-09-29)
