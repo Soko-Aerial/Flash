@@ -48,7 +48,9 @@ try {
     $waited = [int]((Get-Date) - $started).TotalSeconds
     Write-Host ("[flash-gradle] lock acquired after {0}s" -f $waited)
 
-    $jbr = "C:\Users\KaliOxygen\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2"
+    $jbr = if ($env:FLASH_JDK) { $env:FLASH_JDK } else {
+        "C:\Users\KaliOxygen\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2"
+    }
     if ($Runner -eq "") {
         if (-not (Test-Path $jbr)) { throw "JBR 21 not found at $jbr (is the drive holding ~/.gradle attached?)" }
         $afunix = "C:\Users\KaliOxygen\.gradle\afunix"

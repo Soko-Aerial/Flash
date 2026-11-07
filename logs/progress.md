@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-11-07 — Flash 2.2.0 release consolidation
+
+- Captured the audited Nearby/Transfers refinement and ADR-356 in `ac2308a1` on
+  `codex/release-2.2.0`. Kept fixture renders as documentation. Moved the two loose photos to
+  the sibling `Flash-local-photos` directory. The locked baseline built in 4m37s.
+- Closed SEC-NEW-01/02/03/04/08/10 in source. The focused server recheck passed 44 cases
+  and the Android SDK host suite passed 129. The console Node suite passed 83. See ADR-360
+  and ERROR-1004–1007 for the regressions, intermittent server test and build details.
+- Set Android/desktop to 2.2.0 (Android code 5) and independently versioned the Hub and SDK
+  at 2.2.0-beta.1. The JDK 17 JitPack install task list produced 57 artifact directories
+  in a scratch repository. External Android/JVM consumers compiled against published
+  messaging, WebRTC and call UI. Regenerated and independently checked 51 sample dependency
+  checksums. JitPack reports the old beta under `Soko-Aerial`, which the install docs now use.
+- Updated the changelog, developer/API guides and operator instructions. Owner UI review,
+  the forced release gates, release-device checks and isolated Hub rollout are tracked in
+  the handoff and test backlog before tagging.
+
 ## 2026-11-07 — Hub remediation HR5
 
 Implemented D10 signed LAN revocation exchange in Android app/SDK and desktop. Hub fetch and LAN receive use the same per-root verified version floor. The signed list survives restart, overlays directory and roster decisions, and closes the linked-group paired-trust fallback. Direct local pairing retains its existing semantics. ADR-359, protocol, security, operator notes and probes capture the design and the remote certificate-serial limitation.

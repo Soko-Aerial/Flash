@@ -1,5 +1,11 @@
 # Current Handoff
 
+> **2026-11-07 — 2.2.0 release candidate on `codex/release-2.2.0`.** App/desktop 2.2.0,
+> code 5, SDK/Hub 2.2.0-beta.1. Security fixes, release docs and JDK 17 publication dry run
+> complete. Local isolated consumers passed on Android and JVM. Owner sign-off on the
+> compact tabs and physical acceptance remain release gates. Use `docs/release-build.md`
+> and the REL22/HUBREADY cases before publishing.
+
 > **2026-11-07 — Hub HR1–HR5 implementation complete on `dev`.** Implementation commit `165c1f4d`. Clean-checkout verification passed 788 Gradle tests and 83 console tests, Android APK assembly and desktop compilation. Android app/SDK and desktop persist verified per-root revocation state and exchange it through authenticated LAN sessions. The restored HR5 gate passed 1,035 tests, APK assembly and desktop compile. HUBREADY-01..05 remain owed on real hosts. Use the HR6 handoff in `docs/plans/HUB-READINESS-REMEDIATION.md` to start fresh-identity replacement.
 
 > **2026-11-07 — Hub remediation HR1–HR4 implemented locally.** Scoped server listings, data-key restore validation, group mailbox retirement, and console scope/provisioning/revocation import/approval/paging are in the working tree. The console Chrome fixture and Node suite passed. Real Hub/browser-device acceptance remains HUBREADY-01..05. Next HR5, signed LAN revocation propagation. See `docs/plans/HUB-READINESS-REMEDIATION.md` for the precise stopping point.

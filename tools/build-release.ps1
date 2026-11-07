@@ -234,6 +234,7 @@ if ($wantSigned) {
 
 $jdk = Find-Jdk
 $env:JAVA_HOME = $jdk
+$env:FLASH_JDK = $jdk
 # Moves the JDK's AF_UNIX socket folder out of %TEMP%. Some Windows setups fail Gradle with
 # "Unable to establish loopback connection" without it (logs/errors.md ERROR-017); harmless otherwise.
 if (-not $env:JAVA_TOOL_OPTIONS) {
@@ -262,13 +263,18 @@ if ($doAndroid) {
     # -KeepApkOutput lets a caller exercise that check instead.
     $apkOutputDir = Join-Path $RepoRoot 'app\build\outputs\apk\release'
     if (-not $KeepApkOutput -and (Test-Path $apkOutputDir)) {
-        Remove-Item -LiteralPath $apkOutputDir -Recurse -Force
+        $resolvedOutput = (Resolve-Path -LiteralPath $apkOutputDir).Path
+        $resolvedRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+        if (-not $resolvedOutput.StartsWith("$resolvedRoot\", [StringComparison]::OrdinalIgnoreCase)) {
+            Fail "APK output path is outside the workspace: $resolvedOutput"
+        }
+        Remove-Item -LiteralPath $resolvedOutput -Recurse -Force
     }
 }
 $started = Get-Date
 Push-Location $RepoRoot
 try {
-    Invoke-Native (Join-Path $RepoRoot 'gradlew.bat') ($tasks + $gradleFlags) 'Gradle build'
+    Invoke-Native (Join-Path $RepoRoot 'tools\flash-gradle.cmd') ($tasks + $gradleFlags) 'Gradle build'
 } finally { Pop-Location }
 
 # --- Collect outputs -------------------------------------------------------------------------

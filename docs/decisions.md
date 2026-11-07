@@ -8769,3 +8769,16 @@ An administrative change can race a delivery already authorised for a connected 
 Use the signed list as a durable overlay on the directory and roster. This preserves signed records and supports restart without a Room migration. Group trust gates apply a learned cutoff even when a peer also has a manual pin. A matching cached TLS binding can still carry the signed cutoff while its lease is valid. Known delegation cutoffs must appear in each subsequent list. The Hub's serial-only revocation of a remote certificate needs Hub enforcement or refreshed directory state because the LAN directory uses a separate statement serial.
 
 Follow [the wire and compatibility contract](protocol.md#offline-hub-revocations-on-the-lan-adr-359). HUBREADY-04 covers physical acceptance.
+
+## ADR-360 — Reconcile durable revocation state before Hub directory service starts
+
+2026-11-07. The release audit found a gap between loading root-signed revocations at startup
+and registering asynchronous live callbacks. Startup now reconciles the directory after disk
+imports and before serving requests. A revoked device, its current certificate, or its
+issuing delegation blocks directory membership. Existing group membership removal triggers
+ADR-358 mailbox retirement. Group versions advance durably for ordinary members as well as
+admins. Repeating the cleanup after restart does not advance the version again.
+
+The Android SDK supplies the same revocation-cache readiness gate as both apps. The linked
+group receive path can retry while the cache loads instead of acknowledging a transient
+trust refusal. Device checks are HUBREADY-04 and REL22-02.

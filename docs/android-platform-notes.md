@@ -977,3 +977,12 @@ Checked 2026-11-07 for the app's API 24+ support. Android distinguishes persiste
 **Verified against Android Developers for API 21+, including Flash's minSdk 24.** `Context.getNoBackupFilesDir()` supplies an internal directory excluded from automatic remote backup and needs no extra permissions. Flash derives the current directory path at runtime and stores signed revocation state beneath it. This preserves the list across process restart and avoids restoring an older list from Android's automatic backup. [Android Developers Context reference](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir())
 
 The existing Android file helper keeps the temporary and destination files in the same directory, checks rename success and now syncs revocation-list writes before replacement. The Windows Android-host JVM uses atomic NIO replacement because Windows `File.renameTo` failed when a destination already existed. Physical Android replacement remains part of HUBREADY-04. [Android Developers File reference](https://developer.android.com/reference/java/io/File#renameTo(java.io.File))
+
+## 2026-11-07 — Exclude submitted voice recordings from backup
+
+**Verified against Android Developers.** Android 7–11 (API 24–30) uses the manifest's
+`fullBackupContent` rules. Android 12+ (API 31+) uses `dataExtractionRules`, with separate
+cloud backup and device-to-device sections. A file-domain exclusion applies recursively
+under `filesDir`. Flash excludes `sent` in all three applicable sections, so existing and new
+submitted recordings keep their local playback paths. Physical restore verification is
+REL22-01. [Android Developers Auto Backup documentation](https://developer.android.com/identity/data/autobackup).
