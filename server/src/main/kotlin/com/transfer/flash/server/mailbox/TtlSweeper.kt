@@ -10,12 +10,12 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Periodic background task that removes expired mailbox rows (REL-11).
+ * Periodic background task that removes expired and membership-retired mailbox rows (REL-11).
  *
  * Differences from the first version: a failed sweep is LOGGED and counted (it used to be swallowed silently), the
  * sweep repeats in batches until nothing expired is left (so a backlog drains in one pass instead of one batch per
- * interval), and every row it removes is reported to [onExpired] so the relay can tell an online sender that its
- * message expired undelivered (`FLASH_QUEUE_STATE state=EXPIRED`). [onMaintenance] runs after each pass for housekeeping
+ * interval), and each reportable row goes to [onExpired] so the relay can tell an online sender whether its
+ * message expired or was dropped. [onMaintenance] runs after each pass for housekeeping
  * such as `PRAGMA incremental_vacuum`.
  */
 class TtlSweeper(
@@ -37,7 +37,7 @@ class TtlSweeper(
     private val expiredTotal = AtomicLong()
     private val failures = AtomicLong()
 
-    /** Rows this sweeper has removed since it was created. */
+    /** Expired rows this sweeper has removed since it was created. */
     val expiredCount: Long get() = expiredTotal.get()
 
     /** Passes that failed since it was created. */
@@ -90,17 +90,17 @@ class TtlSweeper(
             val batch = store.deleteExpired(batchSize)
             if (batch.isEmpty()) break
             total += batch.size
-            expiredTotal.addAndGet(batch.size.toLong())
+            expiredTotal.addAndGet(batch.count { !it.membershipRemoved }.toLong())
             try {
                 onExpired(batch)
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                logger.warn("Telling senders about {} expired messages failed: {}", batch.size, t.toString())
+                logger.warn("Telling senders about {} retired messages failed: {}", batch.size, t.toString())
             }
             if (batch.size < batchSize) break
         }
-        if (total > 0) logger.info("Mailbox sweep removed {} expired messages", total)
+        if (total > 0) logger.info("Mailbox sweep removed {} expired or retired messages", total)
         return total
     }
 

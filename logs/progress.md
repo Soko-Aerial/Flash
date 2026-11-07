@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-11-07 — Hub remediation HR5
+
+Implemented D10 signed LAN revocation exchange in Android app/SDK and desktop. Hub fetch and LAN receive use the same per-root verified version floor. The signed list survives restart, overlays directory and roster decisions, and closes the linked-group paired-trust fallback. Direct local pairing retains its existing semantics. ADR-359, protocol, security, operator notes and probes capture the design and the remote certificate-serial limitation.
+
+The restored locked gate passed 1,035 tests with zero failures, errors or skips, APK assembly and desktop compilation. The earlier full Android-host messaging run passed 694 tests. Removing the signature, strict version and linked-group guards failed their regressions, and all guards were restored. ERROR-1001..1003 record filesystem and fixture corrections. The Impeccable hook's two approved severity accents were suppressed only within the console stylesheet.
+
+HUBREADY-04 remains owed across three physical peers. The next phase is HR6, device identity replacement. Implementation and evidence are in `docs/plans/HUB-READINESS-REMEDIATION.md`.
+
+## 2026-11-07 — Hub remediation HR4
+
+Implemented role-aware routes and actions, head creation and department reassignment, signed revocation import with step-up, explicit join confirmation, Overview audit status and stable announcement paging. Chrome fixture exercised those workflows and the department-head layout at 1440, 768 and 390 px. The first approval pass exposed ERROR-1000, corrected before the green browser rerun. Final locked server gate 118/118 and Node gate 83/83. HUBREADY-05 tracks real Hub acceptance. Next HR5, durable signed LAN revocation propagation. See `docs/plans/HUB-READINESS-REMEDIATION.md`.
+
+## 2026-11-07 — Hub remediation HR3
+
+Group membership deletion now retires pending Hub group copies in the same transaction. A rejoin cannot recover old rows, prefetched rows are checked again before hand-off, and direct mail stays deliverable. The sweeper emits the existing per-recipient `DROPPED` event. The old-code E2E and disabled-trigger regressions both reproduced the replay. The locked server gate passed 103 tests with zero failures, errors or skips. ADR-358 records the hand-off boundary and compatibility limits. HUBREADY-03 remains owed. Next HR4, console workflow and paging.
+
+## 2026-11-07 — Hub remediation HR2
+
+Bound `data.key` to the database using an authenticated verifier in existing metadata. Startup and `admin-recovery` now use the same preflight. Missing or wrong keys fail before service starts, and first-use and legacy stores migrate with the matching key. Three startup tests failed on the old loader. The locked server gate passed 46 tests with zero failures, errors or skips. Updated backup/recovery instructions and recorded ADR-357. HUBREADY-02 operator restore remains owed. Next HR3, queued group delivery after removal.
+
+## 2026-11-07 — Hub remediation HR1
+
+Recorded the phased rollout plan in `docs/plans/HUB-READINESS-REMEDIATION.md`. HR1 applies department and invite-state constraints before SQL pagination, replaces capped invite overview counts, and restores announcement list/search for multi-department heads. The original regressions were red, both scope-removal mutations were red, and the restored locked gate passed 79 server tests with zero failures, errors or skips. Browser scope, stable announcement continuation and provisioning follow in HR4. HUBREADY-01 remains owed. Next HR2, startup validation of the database and data key.
+
+## 2026-11-07 — Hub feature and rollout review
+
+Cross-checked server, console and Android/desktop Hub flows against the roadmap and current tests. Recorded missing LAN revocation propagation, department-head provisioning and query issues, startup key/restore validation, device replacement, the revocation-list installer, and missing OS announcement notifications. Also recorded that the Hub replays pre-removal group mailbox items to a still-enrolled former member and flagged the delivery policy for review. Older backlog statements about missing roster revocation inputs and missing conversations for admin-added group members are stale for the shipped hosts. See `docs/audit/2026-11-07-hub-feature-readiness.md` and `HUBREADY-01..04`.
+
+Console Node tests passed 83/83. Locked server gate passed 23/23 for department scope, announcement admin routes, phone approval, lifecycle and restart. Three isolated JVM probes reproduced the empty multi-department announcement list, replay to a former group member and key regeneration on incomplete restore. ERROR-996..998 track defects and missing notification wiring. No physical device, browser session or deployed Hub was used. Next, address the rollout P1s and run the scoped head, revocation and isolated restore drills. Product code and deployment were unchanged.
+
 ## 2026-11-06 (chat merge) - approved chat redesign merged into `dev` as `ca9ada63`
 
 Merged `design/chat-redesign` into `dev` as **`ca9ada63`**: the approved wallpaper/appearance sheet, composer/header,

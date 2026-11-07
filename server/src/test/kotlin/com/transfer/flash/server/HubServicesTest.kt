@@ -15,10 +15,15 @@ import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.server.auth.DelegationStatus
 import com.transfer.flash.server.auth.HubKeyStore
 import com.transfer.flash.server.auth.InviteScope
+import com.transfer.flash.server.auth.SecretBox
+import com.transfer.flash.server.auth.SecureFiles
 import com.transfer.flash.server.auth.generateEcKeyPair
 import com.transfer.flash.server.auth.sign
 import com.transfer.flash.server.auth.toBase64Spki
 import com.transfer.flash.server.config.ServerConfig
+import com.transfer.flash.server.mailbox.MailboxMessage
+import com.transfer.flash.server.mailbox.MailboxQueue
+import com.transfer.flash.server.storage.update
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -30,11 +35,13 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
 import java.nio.file.Files
 import java.security.KeyPair
+import java.util.Base64
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -184,6 +191,63 @@ class HubServicesTest {
         File(dir, "server-identity.pk8").writeText("garbage")
         assertFailsWith<HubStartupException> { HubServices.build(config()) }
         assertEquals("garbage", File(dir, "server-identity.pk8").readText(), "a corrupt key is never regenerated")
+    }
+
+    @Test
+    fun aBoundDatabaseRefusesAMissingOrDifferentDataKeyAndCanRecoverWithItsOriginal() {
+        val hub = build()
+        val key = File(dir, "data.key").toPath()
+        val original = Files.readAllBytes(key)
+        val admin = hub.admins.breakGlassReset("restore-admin")
+        hub.database.close()
+
+        Files.delete(key)
+        val missing = assertFailsWith<HubStartupException> { build() }
+        assertTrue(missing.message.orEmpty().contains("matching data.key"))
+        assertFalse(Files.exists(key), "a failed start must not create a key")
+        val wrong = Base64.getEncoder().encode(ByteArray(32) { 42 })
+        SecureFiles.writeOwnerOnly(key, wrong)
+        assertFailsWith<HubStartupException> { build() }
+        assertTrue(wrong.contentEquals(Files.readAllBytes(key)))
+
+        SecureFiles.writeOwnerOnly(key, original)
+        assertEquals(admin.totpSecret, build().admins.getAdmin(admin.username)?.totpSecret)
+    }
+
+    @Test
+    fun legacySealedMailboxAuthenticatesItsKeyBeforeBinding() = runBlocking<Unit> {
+        val hub = build()
+        val key = File(dir, "data.key").toPath()
+        val original = Files.readAllBytes(key)
+        val mailbox = MailboxQueue(hub.database, secrets = SecretBox.loadOrCreate(key))
+        assertTrue(mailbox.enqueue(MailboxMessage("origin", "target", "test", "MSG_TEXT", "queued", 1)).isStored)
+        hub.database.withConnection { it.update("DELETE FROM hub_meta WHERE k = 'data-key.verifier.v1'") }
+        hub.database.close()
+
+        Files.delete(key)
+        assertFailsWith<HubStartupException> { build() }
+        assertFalse(Files.exists(key))
+        SecureFiles.writeOwnerOnly(key, Base64.getEncoder().encode(ByteArray(32) { 43 }))
+        assertFailsWith<HubStartupException> { build() }
+
+        SecureFiles.writeOwnerOnly(key, original)
+        val reopened = build()
+        assertEquals("queued", MailboxQueue(reopened.database, secrets = SecretBox.loadOrCreate(key)).fetchPage("target", 0, 1).single().payload)
+        assertTrue(reopened.identities.meta("data-key.verifier.v1").orEmpty().startsWith(SecretBox.PREFIX))
+    }
+
+    @Test
+    fun aLegacyUnsealedDatabaseCanCreateAKeyAndRetainItsAuthenticator() {
+        val hub = build()
+        val old = com.transfer.flash.server.admin.AdminAuthService(printSetupTokenToConsole = false, db = hub.database)
+        val admin = old.breakGlassReset("legacy-admin")
+        hub.database.withConnection { it.update("DELETE FROM hub_meta WHERE k = 'data-key.verifier.v1'") }
+        hub.database.close()
+        Files.delete(File(dir, "data.key").toPath())
+
+        val reopened = build()
+        assertEquals(admin.totpSecret, reopened.admins.getAdmin(admin.username)?.totpSecret)
+        assertTrue(reopened.identities.meta("data-key.verifier.v1").orEmpty().startsWith(SecretBox.PREFIX))
     }
 
     @Test

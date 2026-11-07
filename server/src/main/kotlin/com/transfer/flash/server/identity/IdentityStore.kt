@@ -169,11 +169,38 @@ class IdentityStore(private val db: ServerDatabase) {
         conn.queryOne("SELECT * FROM hub_invites WHERE invite_id = ?", inviteId, map = ::inviteRow)
     }
 
-    fun listInvites(limit: Int = 500, offset: Int = 0): List<InviteRecord> = db.withConnection { conn ->
-        conn.query(
-            "SELECT * FROM hub_invites ORDER BY created_at DESC, invite_id LIMIT ? OFFSET ?",
-            limit.coerceIn(1, 1000), offset.coerceAtLeast(0), map = ::inviteRow,
-        )
+    fun listInvites(
+        limit: Int = 500,
+        offset: Int = 0,
+        allowedDepartments: Set<String>? = null,
+        state: InviteState? = null,
+        nowMs: Long = System.currentTimeMillis(),
+    ): List<InviteRecord> = db.withConnection { conn ->
+        if (allowedDepartments?.isEmpty() == true) return@withConnection emptyList()
+        val where = ArrayList<String>()
+        val params = ArrayList<Any?>()
+        if (allowedDepartments != null) {
+            where += "department IN (${allowedDepartments.joinToString(",") { "?" }})"
+            params.addAll(allowedDepartments)
+        }
+        if (state != null) {
+            where += "$INVITE_STATE_SQL = ?"
+            params += nowMs
+            params += state.name
+        }
+        val filter = if (where.isEmpty()) "" else " WHERE ${where.joinToString(" AND ")}"
+        params += limit.coerceIn(1, 1000)
+        params += offset.coerceAtLeast(0)
+        conn.query("SELECT * FROM hub_invites$filter ORDER BY created_at DESC, invite_id LIMIT ? OFFSET ?", *params.toTypedArray(), map = ::inviteRow)
+    }
+
+    fun countInvitesByState(nowMs: Long, allowedDepartments: Set<String>?): Map<InviteState, Int> = db.withConnection { conn ->
+        if (allowedDepartments?.isEmpty() == true) return@withConnection emptyMap()
+        val filter = allowedDepartments?.let { " WHERE department IN (${it.joinToString(",") { "?" }})" }.orEmpty()
+        val params = listOf<Any?>(nowMs) + allowedDepartments.orEmpty()
+        conn.query("SELECT $INVITE_STATE_SQL AS invite_state, COUNT(*) FROM hub_invites$filter GROUP BY invite_state", *params.toTypedArray()) { rs ->
+            InviteState.valueOf(rs.getString(1)) to rs.getInt(2)
+        }.toMap()
     }
 
     /** Revokes a pending invite. False when it does not exist or was already revoked. */
@@ -293,11 +320,17 @@ class IdentityStore(private val db: ServerDatabase) {
         search: String? = null,
         limit: Int = 100,
         offset: Int = 0,
+        allowedDepartments: Set<String>? = null,
     ): List<DeviceRecord> = db.withConnection { conn ->
+        if (allowedDepartments?.isEmpty() == true) return@withConnection emptyList()
         val where = ArrayList<String>()
         val params = ArrayList<Any?>()
         if (status != null) { where += "status = ?"; params += status.name }
         if (department != null) { where += "department = ?"; params += department }
+        if (allowedDepartments != null) {
+            where += "department IN (${allowedDepartments.joinToString(",") { "?" }})"
+            params.addAll(allowedDepartments)
+        }
         if (!search.isNullOrBlank()) {
             where += "(device_id LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')"
             val like = "%" + search.trim().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
@@ -498,6 +531,10 @@ class IdentityStore(private val db: ServerDatabase) {
 
         fun inviteIdOf(tokenHash: String): String = tokenHash.take(12)
 
+        // Keep this precedence and the strict expiry boundary aligned with InviteRecord.state.
+        private const val INVITE_STATE_SQL = "CASE WHEN revoked_at IS NOT NULL THEN 'REVOKED' " +
+            "WHEN uses >= max_uses THEN 'USED' WHEN expires_at < ? THEN 'EXPIRED' ELSE 'PENDING' END"
+
         val MIGRATIONS: List<Migration> = listOf(
             Migration(1, "identity: meta, counters, invites, devices, certificate history, revocations") { conn ->
                 conn.createStatement().use { st ->
@@ -560,6 +597,12 @@ class IdentityStore(private val db: ServerDatabase) {
                             "DELETE FROM hub_sealing_keys WHERE device_id = OLD.device_id; " +
                             "DELETE FROM hub_sealing_retired WHERE device_id = OLD.device_id; END",
                     )
+                }
+            },
+            Migration(3, "identity: indexes for department-scoped console listings") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_hub_devices_department_order ON hub_devices(department, enrolled_at DESC, device_id)")
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_hub_invites_department_order ON hub_invites(department, created_at DESC, invite_id)")
                 }
             },
         )

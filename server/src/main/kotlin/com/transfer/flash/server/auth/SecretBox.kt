@@ -18,8 +18,8 @@ import javax.crypto.spec.SecretKeySpec
  * Stored form: `enc1:` + base64(nonce || ciphertext+tag). A value without the prefix is a legacy plaintext and is returned as is by
  * [open] (the owner of the data re-seals it at startup, see `AdminAuthService.sealLegacySecrets`).
  *
- * The key file MUST be backed up separately from the database (docs/security.md): without it the sealed values are lost, and the
- * administrators re-enrol their authenticator through `admin-recovery`.
+ * The key file must be backed up separately from the database (docs/security.md). The original key is required to
+ * restore the sealed values.
  */
 class SecretBox private constructor(private val key: SecretKeySpec?, private val random: SecureRandom = SecureRandom()) {
 
@@ -98,7 +98,7 @@ class SecretBox private constructor(private val key: SecretKeySpec?, private val
          * The box of [keyFile]: created (owner-only) on first use, loaded afterwards. A key file of the wrong size is an error, never
          * silently replaced (a replaced key makes every sealed value unreadable).
          */
-        fun loadOrCreate(keyFile: Path): SecretBox {
+        fun loadOrCreate(keyFile: Path, createIfMissing: Boolean = true): SecretBox {
             if (Files.exists(keyFile)) {
                 val text = String(Files.readAllBytes(keyFile), Charsets.UTF_8).trim()
                 val bytes = try {
@@ -116,6 +116,7 @@ class SecretBox private constructor(private val key: SecretKeySpec?, private val
                 }
                 return ofKey(bytes)
             }
+            if (!createIfMissing) throw KeyFileException("data key file is missing")
             val fresh = ByteArray(32).also(SecureRandom()::nextBytes)
             SecureFiles.writeOwnerOnly(keyFile, Base64.getEncoder().encode(fresh))
             return ofKey(fresh)

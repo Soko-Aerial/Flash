@@ -8738,3 +8738,23 @@ same decision:
   sender/receiver sentences and a holder list.
 - Still presentation only: no new storage, no new capability, and no app source touched. Confirmations, menu
   actions that do not navigate, and persistence remain outside this mock.
+
+## ADR-357 — Bind the Hub data key to its database
+
+**Accepted and implemented 2026-11-07.** Hub remediation HR2 records an AES-GCM verifier in `hub_meta` before serving requests or writing sealed secrets. The verifier uses a dedicated AAD domain. Startup and `admin-recovery` refuse a missing or mismatched key. Older sealed stores authenticate a bounded sample of existing records before binding. A store that has never sealed data can create a key on first use. This retains the existing format and independent per-row validation and quarantine.
+
+Generating a replacement key at startup left inaccessible rows behind a healthy process. A key checksum in a sidecar would prove only that two files were copied together. The database verifier is restored with the data it protects. The original key must be backed up separately. Restore with a matching pair and verify the actual records in HUBREADY-02. See ERROR-997.
+
+## ADR-358 — Group removal retires the recipient's queued Hub copies
+
+**Accepted and implemented 2026-11-07.** Hub remediation HR3 uses the live directory membership as the authority for undelivered group mailbox data. A trigger marks the recipient's queued copies for retirement in the same transaction as a membership delete. Rejoining cannot clear the retirement. The queue refuses writes while that group membership is absent and rechecks fetched group rows before relay hand-off. The ordinary sweep deletes marked rows and reports `DROPPED` per recipient to online senders. Direct mail and existing group file authorisation keep their delivery rules.
+
+An administrative change can race a delivery already authorised for a connected session. The authorisation before hand-off is the boundary for mailbox replay. A removal cannot recall a payload handed off earlier. Events for disconnected senders follow the existing transient queue-state contract. The migration retires orphaned rows present at upgrade and cannot infer a removal followed by a rejoin that both occurred on older software. Physical acceptance is HUBREADY-03.
+
+## ADR-359 — Persist Hub revocation lists and exchange them on authenticated LAN sessions
+
+**Accepted and implemented 2026-11-07.** Implements D10 of Plan B. Android and desktop share a cache and LAN exchange. The cache verifies the existing signed list against the enrolled root and the matching trusted delegation, then writes it atomically under that root before using it. The LAN handler uses `rvg1` and the active TLS certificate key, checked against the directory snapshot. Directory leases and manual pairing policy are unchanged.
+
+Use the signed list as a durable overlay on the directory and roster. This preserves signed records and supports restart without a Room migration. Group trust gates apply a learned cutoff even when a peer also has a manual pin. A matching cached TLS binding can still carry the signed cutoff while its lease is valid. Known delegation cutoffs must appear in each subsequent list. The Hub's serial-only revocation of a remote certificate needs Hub enforcement or refreshed directory state because the LAN directory uses a separate statement serial.
+
+Follow [the wire and compatibility contract](protocol.md#offline-hub-revocations-on-the-lan-adr-359). HUBREADY-04 covers physical acceptance.

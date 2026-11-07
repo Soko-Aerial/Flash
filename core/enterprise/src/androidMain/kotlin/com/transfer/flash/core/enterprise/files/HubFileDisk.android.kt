@@ -1,10 +1,13 @@
 package com.transfer.flash.core.enterprise.files
 
+import android.annotation.SuppressLint
 import java.io.EOFException
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -25,11 +28,17 @@ internal actual object HubFileDisk {
         return file.readBytes()
     }
 
-    actual fun replaceAtomically(path: String, bytes: ByteArray) {
+    @SuppressLint("NewApi") // java.nio.file runs only on the Windows host JVM, including Android host tests.
+    actual fun replaceAtomically(path: String, bytes: ByteArray, sync: Boolean) {
         val target = File(path)
         val temp = File(target.parentFile, target.name + ".tmp")
         FileOutputStream(temp).use { out ->
             out.write(bytes)
+            if (sync) out.fd.sync()
+        }
+        if (System.getProperty("os.name", "").startsWith("Windows")) {
+            Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            return
         }
         if (!temp.renameTo(target)) throw IOException("cannot replace file")
     }

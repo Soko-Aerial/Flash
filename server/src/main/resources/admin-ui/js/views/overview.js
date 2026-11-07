@@ -7,6 +7,7 @@ import { t } from '../i18n.js';
 import { api } from '../app.js';
 import { formatNumber, formatBytes, formatDuration, formatDate, relativeTime } from '../format.js';
 import { loadInto } from '../ui/boundary.js';
+import { isOrgAdmin, session } from '../state.js';
 
 const POLL_MS = 15000;
 const SAMPLE_LIMIT = 60;
@@ -104,11 +105,13 @@ function activityRow(entry) {
 }
 
 export function mountOverview(container, ctx) {
+  const orgAdmin = isOrgAdmin();
   let stopped = false;
   const samples = [];
   let lastMetrics = null;
   let overviewPromise = null;
   let metricsPromise = null;
+  let auditPromise = null;
 
   const title = h('h1', { class: 'page-title', id: 'page-title', tabindex: '-1', text: t('overview.title') });
   const lede = h('p', { class: 'page-sub fx-lede', text: t('common.loading') });
@@ -119,7 +122,7 @@ export function mountOverview(container, ctx) {
     'div',
     { class: 'page-head' },
     h('div', { class: 'page-titles' }, title, lede),
-    h('div', { class: 'page-actions' }, create, review),
+    h('div', { class: 'page-actions' }, orgAdmin || session.departments?.length ? create : null, review),
   );
 
   const healthHost = h('div', { class: 'fx-health' });
@@ -137,10 +140,10 @@ export function mountOverview(container, ctx) {
     { class: 'fx-panel fx-ledger', 'aria-label': t('overview.new.activity') },
     h('div', { class: 'fx-ledger-col' }, ledgerHead(t('overview.new.devices'), t('overview.new.viewAll'), '#/devices'), devicesHost),
     h('div', { class: 'fx-ledger-col' }, ledgerHead(t('overview.new.invites'), t('nav.invites'), '#/invites'), invitesHost),
-    h('div', { class: 'fx-ledger-col' }, ledgerHead(t('overview.new.activity'), t('overview.new.audit'), '#/audit'), activityHost),
+    orgAdmin ? h('div', { class: 'fx-ledger-col' }, ledgerHead(t('overview.new.activity'), t('overview.new.audit'), '#/audit'), activityHost) : null,
   );
 
-  container.append(head, health, h('div', { class: 'fx-overview-grid' }, relay, waiting, ledger));
+  container.append(head, health, h('div', { class: ['fx-overview-grid', orgAdmin ? '' : 'is-scoped'] }, orgAdmin ? relay : null, waiting, ledger));
 
   function updateHead(o) {
     const active = o.devicesByStatus?.ACTIVE || 0;
@@ -155,18 +158,38 @@ export function mountOverview(container, ctx) {
 
   function overview() {
     if (!overviewPromise) {
-      overviewPromise = api.get('/overview').then((o) => {
-        ctx.onOverview(o);
-        updateHead(o);
+      const pending = api.get('/overview').then((o) => {
+        if (!stopped && overviewPromise === pending) {
+          ctx.onOverview(o);
+          updateHead(o);
+        }
         return o;
+      }).catch((e) => {
+        if (overviewPromise === pending) overviewPromise = null;
+        throw e;
       });
+      overviewPromise = pending;
     }
     return overviewPromise;
   }
 
   function metrics() {
-    if (!metricsPromise) metricsPromise = api.get('/metrics');
+    if (!metricsPromise) {
+      const pending = api.get('/metrics').catch((e) => {
+        if (metricsPromise === pending) metricsPromise = null;
+        throw e;
+      });
+      metricsPromise = pending;
+    }
     return metricsPromise;
+  }
+
+  function auditStatus() {
+    if (!auditPromise) auditPromise = api.get('/audit/verify').catch(() => {
+      auditPromise = null;
+      return null;
+    });
+    return auditPromise;
   }
 
   function live() {
@@ -175,6 +198,12 @@ export function mountOverview(container, ctx) {
 
   function renderHealth(o, m) {
     const active = o.devicesByStatus?.ACTIVE || 0;
+    if (!orgAdmin) return [
+      healthCell({ label: t('overview.tile.online'), value: formatNumber(o.onlineDevices || 0), hint: t('overview.new.ofActive', { n: formatNumber(active) }), lead: true }),
+      healthCell({ label: t('overview.new.activeDevices'), value: formatNumber(active) }),
+      healthCell({ label: t('overview.new.invites'), value: formatNumber(o.invites?.pending || 0) }),
+      healthCell({ label: t('overview.tile.requests'), value: formatNumber(o.pendingJoinRequests || 0) }),
+    ];
     const revoked = o.devicesByStatus?.REVOKED || 0;
     const unenrolled = o.devicesByStatus?.UNENROLLED || 0;
     const uptime = m ? formatDuration((m.uptimeSeconds || 0) * 1000) : null;
@@ -252,7 +281,7 @@ export function mountOverview(container, ctx) {
     ];
   }
 
-  function renderWaiting(o) {
+  function renderWaiting(o, verified) {
     const d = o.delegation || {};
     const days = d.daysLeft;
     const delegationValue = d.status === 'AWAITING' ? t('overview.tile.delegation.waiting') : days !== null && days !== undefined ? t('overview.tile.delegation.days', { n: days }) : '–';
@@ -267,10 +296,10 @@ export function mountOverview(container, ctx) {
         'div',
         { class: 'fx-waiting-rows' },
         waitRow({ glyph: 'requests', title: t('overview.tile.requests'), sub: t('overview.new.joinSub'), value: formatNumber(o.pendingJoinRequests || 0), href: '#/requests' }),
-        waitRow({ glyph: 'lock', title: t('overview.tile.delegation'), sub: delegationSub, value: delegationValue, warn: d.status !== 'ACTIVE' || (days !== null && days !== undefined && days < 14), href: '#/security?tab=delegation' }),
-        waitRow({ glyph: 'audit', title: t('overview.health.chain'), sub: t('overview.new.auditSub'), value: t('overview.new.check'), href: '#/audit' }),
+        orgAdmin ? waitRow({ glyph: 'lock', title: t('overview.tile.delegation'), sub: delegationSub, value: delegationValue, warn: d.status !== 'ACTIVE' || (days !== null && days !== undefined && days < 14), href: '#/security?tab=delegation' }) : null,
+        orgAdmin ? waitRow({ glyph: 'audit', title: t('overview.health.chain'), sub: verified ? t('overview.audit.checked', { n: formatNumber(verified.entries) }) : t('overview.new.auditSub'), value: verified ? t(verified.ok ? 'overview.audit.intact' : 'overview.audit.broken') : t('overview.new.check'), warn: verified?.ok === false, href: '#/audit' }) : null,
       ),
-      h('p', { class: 'fx-wait-note', text: t('overview.new.waitNote') }),
+      orgAdmin ? h('p', { class: 'fx-wait-note', text: t('overview.new.waitNote') }) : null,
     ];
   }
 
@@ -297,14 +326,14 @@ export function mountOverview(container, ctx) {
       quiet,
       skeleton: 'tiles',
       rows: 4,
-      load: async () => ({ o: await overview(), m: await metrics().catch(() => null) }),
+      load: async () => ({ o: await overview(), m: orgAdmin ? await metrics().catch(() => null) : null }),
       render: ({ o, m }) => renderHealth(o, m),
     });
-    loadInto(relayHost, { quiet, rows: 4, load: live, render: ([, m]) => renderRelay(m) });
-    loadInto(waitingHost, { quiet, rows: 3, load: overview, render: (o) => renderWaiting(o) });
+    if (orgAdmin) loadInto(relayHost, { quiet, rows: 4, load: live, render: ([, m]) => renderRelay(m) });
+    loadInto(waitingHost, { quiet, rows: 3, load: async () => ({ o: await overview(), v: orgAdmin ? await auditStatus() : null }), render: ({ o, v }) => renderWaiting(o, v) });
     loadInto(devicesHost, { quiet, rows: 3, load: () => api.get('/devices', { query: { limit: 24 } }), render: renderDevices });
     loadInto(invitesHost, { quiet, rows: 3, load: () => api.get('/invites', { query: { limit: 100 } }), render: renderInvites });
-    loadInto(activityHost, { quiet, rows: 3, load: () => api.get('/audit', { query: { order: 'desc', limit: 3 } }), render: renderActivity });
+    if (orgAdmin) loadInto(activityHost, { quiet, rows: 3, load: () => api.get('/audit', { query: { order: 'desc', limit: 3 } }), render: renderActivity });
   }
 
   function reload(quiet = false) {

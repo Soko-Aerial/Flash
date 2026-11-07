@@ -48,7 +48,7 @@ class AnnouncementAdminRoutesTest {
         val audit = AuditLogger(db, clock = { now })
         val directory = OrganizationDirectory.open(db)
         val identities = IdentityStore.open(db)
-        val store = AnnouncementStore.open(db)
+        val store = AnnouncementStore.open(db, clock = { now })
         val config = ServerConfig(port = 8443, adminPort = 8444, host = "127.0.0.1", dataDir = "./test-data", tlsMode = "proxy")
         val deps = AdminApiDeps(
             web = AdminWeb(admins, externalUrl = "http://localhost", policy = AdminListenerPolicy.Open),
@@ -188,5 +188,69 @@ class AnnouncementAdminRoutesTest {
         val list = HubRestCodec.decode<AnnouncementSearchResponseDto>(rList.bodyAsText())
         assertEquals(1, list.items.size)
         assertEquals("dept-a", list.items[0].departmentId)
+    }
+
+    @Test
+    fun multipleDepartmentHeadListsAndSearchesOnlyAssignedDepartments() = testApplication {
+        val realm = Realm()
+        realm.directory.createDepartment("dept-c", "Gamma", emptyList(), DirectoryActor.CONSOLE)
+        realm.admins.setHeadDepartments("head-a", listOf("dept-a", "dept-b"), "boss")
+        val empty = realm.admins.createHead("head-empty", headPassword, "boss", "No departments", emptyList(), null)
+        mount(realm)
+        val boss = client.loginAs(realm, "boss", bossPassword, realm.bossTotp)
+        val head = client.loginAs(realm, "head-a", headPassword, realm.headTotp)
+        val headWithoutDepartments = client.loginAs(realm, "head-empty", headPassword, empty.totpSecret)
+        for (department in listOf("dept-a", "dept-b", "dept-c")) {
+            realm.now += 1_000
+            val result = client.postA(
+                "/announcements", boss,
+                PostAnnouncementRequestDto("department", department, "Quarterly update $department", "An announcement"),
+            )
+            assertEquals(HttpStatusCode.Created, result.status)
+        }
+        suspend fun read(query: String, session: Sess = head): AnnouncementSearchResponseDto {
+            val result = client.getA("/announcements$query", session)
+            assertEquals(HttpStatusCode.OK, result.status)
+            return HubRestCodec.decode(result.bodyAsText())
+        }
+
+        val first = read("?limit=1")
+        assertEquals(listOf("dept-b"), first.items.map { it.departmentId })
+        assertEquals(listOf("dept-a"), read("?before=${first.nextBefore}&limit=1").items.map { it.departmentId })
+        assertEquals(setOf("dept-a", "dept-b"), read("?q=Quarterly").items.map { it.departmentId }.toSet())
+        assertEquals(listOf("dept-a"), read("?departmentId=dept-a").items.map { it.departmentId })
+        assertEquals(AnnouncementSearchResponseDto(), read("?departmentId=dept-c"))
+        assertEquals(AnnouncementSearchResponseDto(), read("?scope=org"))
+        assertEquals(AnnouncementSearchResponseDto(), read("", headWithoutDepartments))
+        assertEquals(3, read("", boss).items.size)
+    }
+
+    @Test
+    fun compositeCursorContinuesAcrossPostsWithTheSameCreationTime() = testApplication {
+        val realm = Realm()
+        mount(realm)
+        val boss = client.loginAs(realm, "boss", bossPassword, realm.bossTotp)
+        val ids = (1..3).map { i ->
+            val result = client.postA("/announcements", boss, PostAnnouncementRequestDto("org", null, "Quarterly $i", "Update"))
+            assertEquals(HttpStatusCode.Created, result.status)
+            HubRestCodec.decode<AnnouncementItemDto>(result.bodyAsText()).id
+        }.sortedDescending()
+        suspend fun page(query: String): AnnouncementSearchResponseDto {
+            val result = client.getA("/announcements?$query", boss)
+            assertEquals(HttpStatusCode.OK, result.status)
+            return HubRestCodec.decode(result.bodyAsText())
+        }
+
+        for (query in listOf("limit=1", "limit=1&q=Quarterly")) {
+            val first = page(query)
+            val item = first.items.single()
+            val next = page("$query&before=${first.nextBefore}&beforeId=${item.id}")
+            assertEquals(1, next.items.size)
+            assertEquals(ids.take(2), listOf(item.id, next.items.single().id))
+            val last = page("$query&before=${next.nextBefore}&beforeId=${next.items.single().id}")
+            assertEquals(ids.last(), last.items.single().id)
+            assertEquals(null, last.nextBefore)
+        }
+        assertEquals(HttpStatusCode.BadRequest, client.getA("/announcements?beforeId=missing-time", boss).status)
     }
 }

@@ -355,8 +355,7 @@ private fun Route.overviewRoutes(d: AdminApiDeps) {
         val session = call.adminSession(d) ?: return@get
         val scope = d.scopeOf(session)
         val now = d.clock()
-        val inScopeDept: (String?) -> Boolean = { dept -> scope.allows(dept) || (scope is ConsoleScope.Org) }
-        val invites = d.identities.listInvites(1000).filter { inScopeDept(it.department) }.groupingBy { it.state(now) }.eachCount()
+        val invites = d.identities.countInvitesByState(now, (scope as? ConsoleScope.Departments)?.ids)
         val groups = d.directory.listGroups().filter { g ->
             when (scope) {
                 ConsoleScope.Org -> true
@@ -416,16 +415,15 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
             if (askedDept != null && scope !is ConsoleScope.Org && !scope.allows(askedDept)) {
                 return@get call.respondJson(emptyList<DeviceDto>())
             }
-            val effectiveDept = when (scope) {
-                ConsoleScope.Org -> askedDept
-                is ConsoleScope.Departments -> askedDept ?: if (scope.ids.size == 1) scope.ids.single() else null
-            }
-            val list = d.identities.listDevices(status, effectiveDept, q["search"], q["limit"].toIntOr(100, 1..500), q["offset"].toIntOr(0, 0..1_000_000))
-            val scoped = when (scope) {
-                ConsoleScope.Org -> list
-                is ConsoleScope.Departments -> list.filter { scope.allows(it.department) }
-            }
-            call.respondJson(scoped.map { it.toDto(d.directory.isOnline(it.deviceId)) })
+            val list = d.identities.listDevices(
+                status = status,
+                department = askedDept,
+                search = q["search"],
+                limit = q["limit"].toIntOr(100, 1..500),
+                offset = q["offset"].toIntOr(0, 0..1_000_000),
+                allowedDepartments = (scope as? ConsoleScope.Departments)?.ids,
+            )
+            call.respondJson(list.map { it.toDto(d.directory.isOnline(it.deviceId)) })
         }
 
         get("/{id}") {
@@ -522,12 +520,14 @@ private fun Route.inviteRoutes(d: AdminApiDeps) {
             val scope = d.scopeOf(session)
             val now = d.clock()
             val state = call.request.queryParameters["state"]?.let { s -> InviteState.entries.firstOrNull { it.name.equals(s, true) } ?: return@get call.badRequest() }
-            val all = d.identities.listInvites(call.request.queryParameters["limit"].toIntOr(200, 1..1000), call.request.queryParameters["offset"].toIntOr(0, 0..1_000_000))
-            call.respondJson(
-                all.filter { state == null || it.state(now) == state }
-                    .filter { inv -> if (scope is ConsoleScope.Org) true else !inv.department.isNullOrBlank() && scope.allows(inv.department) }
-                    .map { it.toDto(now) },
+            val invites = d.identities.listInvites(
+                limit = call.request.queryParameters["limit"].toIntOr(200, 1..1000),
+                offset = call.request.queryParameters["offset"].toIntOr(0, 0..1_000_000),
+                allowedDepartments = (scope as? ConsoleScope.Departments)?.ids,
+                state = state,
+                nowMs = now,
             )
+            call.respondJson(invites.map { it.toDto(now) })
         }
 
         post {

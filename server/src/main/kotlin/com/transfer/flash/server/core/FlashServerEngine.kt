@@ -161,7 +161,7 @@ public class FlashServerEngine(
                 store = mailboxQueue,
                 sweepIntervalMs = sweepIntervalMs,
                 coroutineScope = sweeperScope,
-                onExpired = { rows -> rows.forEach { relayFrameRouter.notifyExpired(it.origin, it.target, it.msgId) } },
+                onExpired = { rows -> rows.forEach(relayFrameRouter::notifyRetired) },
                 onMaintenance = { database?.incrementalVacuum() },
             )
         }

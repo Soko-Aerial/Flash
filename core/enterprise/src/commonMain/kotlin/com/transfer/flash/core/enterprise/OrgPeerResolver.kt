@@ -9,6 +9,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.hubprotocol.certs.RevocationList
 import com.transfer.flash.core.persistence.db.dao.OrgDirectoryDao
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
@@ -85,6 +86,9 @@ public interface OrgPeerResolver {
      */
     public fun displayName(deviceId: String): String? = null
 
+    /** A cached device-id or delegation revocation, independent of the peer's manual trust pin. */
+    public fun isRevokedColleague(deviceId: String): Boolean = false
+
     /**
      * Searches known colleague device IDs in the snapshot by query string (case-insensitive name/dept/role).
      * Returns empty set if query is blank or if the lease is expired.
@@ -123,6 +127,9 @@ public class RealOrgPeerResolver(
     private val ownFingerprintProvider: (() -> String?)? = null,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val revocations: () -> RevocationList? = { null },
+    private val enrolledRoot: (() -> String?)? = null,
+    private val permitsOrg: () -> Boolean = { true },
 ) : OrgPeerResolver {
 
     private val _identityMismatch = MutableStateFlow(false)
@@ -134,6 +141,7 @@ public class RealOrgPeerResolver(
         val departmentId: String,
         val role: String,
         val keyFingerprint: String,
+        val delegationSerial: Long,
     )
 
     private val lock = Any()
@@ -142,6 +150,7 @@ public class RealOrgPeerResolver(
 
     @Volatile
     private var snapshotIndex: Map<String, SnapshotPeer> = emptyMap()
+    private var snapshotRoot: String? = null
     @Volatile
     private var lastSyncSuccessMs: Long = 0L
     @Volatile
@@ -178,6 +187,7 @@ public class RealOrgPeerResolver(
                 departmentId = m.departmentId,
                 role = m.role,
                 keyFingerprint = m.subjectPublicKeyFingerprint,
+                delegationSerial = m.statementDelegationSerial,
             )
         }
 
@@ -192,6 +202,7 @@ public class RealOrgPeerResolver(
         synchronized(lock) {
             if (currentGen == generation) {
                 snapshotIndex = newIndex
+                snapshotRoot = syncState?.orgRootFingerprint
                 _identityMismatch.value = mismatch
                 if (syncState != null) {
                     lastSyncSuccessMs = syncState.lastSyncSuccessMs
@@ -209,6 +220,7 @@ public class RealOrgPeerResolver(
         synchronized(lock) {
             ++generation
             snapshotIndex = emptyMap()
+            snapshotRoot = null
             lastSyncSuccessMs = 0L
             graceDays = DEFAULT_GRACE_DAYS
             _identityMismatch.value = false
@@ -224,28 +236,22 @@ public class RealOrgPeerResolver(
     }
 
     override fun isKnownColleague(deviceId: String): Boolean {
-        if (!isEnrolled() || _identityMismatch.value) return false
-        val now = clock()
-        val currentLease = synchronized(lock) {
-            calculateLeaseLocked(now)
-        }
-        return currentLease is OrgLease.Valid && snapshotIndex.containsKey(deviceId)
+        return activePeer(deviceId) != null
     }
 
     override fun searchColleagueIds(query: String, limit: Int): Set<String> {
-        if (!isEnrolled() || _identityMismatch.value) return emptySet()
         val q = query.trim().lowercase()
-        if (q.isEmpty()) return emptySet()
-        val now = clock()
-        val currentLease = synchronized(lock) {
-            calculateLeaseLocked(now)
+        if (q.isEmpty() || !isEnrolled() || _identityMismatch.value) return emptySet()
+        val index = synchronized(lock) {
+            if (!hasActiveSnapshotLocked()) return emptySet()
+            snapshotIndex
         }
-        if (currentLease !is OrgLease.Valid) return emptySet()
-        return snapshotIndex.values
+        val list = revocations()
+        return index.values.asSequence()
             .filter { peer ->
-                peer.displayName.lowercase().contains(q) ||
+                !isRevoked(peer, list) && (peer.displayName.lowercase().contains(q) ||
                     peer.departmentId.lowercase().contains(q) ||
-                    peer.role.lowercase().contains(q)
+                    peer.role.lowercase().contains(q))
             }
             .take(limit)
             .map { it.deviceId }
@@ -253,21 +259,50 @@ public class RealOrgPeerResolver(
     }
 
     override fun displayName(deviceId: String): String? {
-        if (!isEnrolled()) return null
-        return snapshotIndex[deviceId]?.displayName
+        if (!isEnrolled() || !permitsOrg()) return null
+        return synchronized(lock) {
+            if (!hasSnapshotRootLocked()) return null
+            snapshotIndex[deviceId]?.takeUnless { isRevoked(it, revocations()) }?.displayName
+        }
     }
 
-    override fun resolve(deviceId: String): OrgPeer? {
-        if (!isEnrolled() || _identityMismatch.value) return null
-        val now = clock()
-        val currentLease = synchronized(lock) {
-            calculateLeaseLocked(now)
-        }
-        if (currentLease !is OrgLease.Valid) {
-            return null
-        }
+    override fun isRevokedColleague(deviceId: String): Boolean = synchronized(lock) {
+        val list = revocations() ?: return false
+        if (list.revokesDevice(deviceId)) return true
+        val peer = snapshotIndex[deviceId] ?: return false
+        hasSnapshotRootLocked() && list.isDelegationRevoked(peer.delegationSerial)
+    }
 
-        val peer = snapshotIndex[deviceId] ?: return null
+    /** Revocation messages may cross a cutoff using the previously certified TLS binding. This grants no ORG access. */
+    public fun authenticatesRevocationPeer(deviceId: String, root: String, tlsFingerprint: String): Boolean = synchronized(lock) {
+        !_identityMismatch.value && snapshotRoot.equals(root, ignoreCase = true) &&
+            hasSnapshotRootLocked() && calculateLeaseLocked(clock(), requireOrg = false) is OrgLease.Valid &&
+            snapshotIndex[deviceId]?.keyFingerprint.equals(tlsFingerprint, ignoreCase = true)
+    }
+
+    private fun activePeer(deviceId: String): SnapshotPeer? {
+        if (!isEnrolled() || _identityMismatch.value) return null
+        return synchronized(lock) {
+            if (!hasActiveSnapshotLocked()) return null
+            snapshotIndex[deviceId]?.takeUnless { isRevoked(it, revocations()) }
+        }
+    }
+
+    private fun hasActiveSnapshotLocked(): Boolean = hasSnapshotRootLocked() && calculateLeaseLocked(clock()) is OrgLease.Valid
+
+    private fun hasSnapshotRootLocked(): Boolean =
+        enrolledRoot == null || enrolledRoot.invoke()?.equals(snapshotRoot, ignoreCase = true) == true
+
+    /** Publish a changed lease to observers when the local credential is revoked by a new list. */
+    public fun onRevocationsChanged(): Unit = synchronized(lock) {
+        updateLeaseLocked(clock())
+    }
+
+    private fun isRevoked(peer: SnapshotPeer, list: RevocationList?): Boolean =
+        list != null && (list.revokesDevice(peer.deviceId) || list.isDelegationRevoked(peer.delegationSerial))
+
+    override fun resolve(deviceId: String): OrgPeer? {
+        val peer = activePeer(deviceId) ?: return null
         val storedPin = trustStore.getPin(deviceId)
 
         val bindingOk = if (storedPin == null) {
@@ -301,8 +336,8 @@ public class RealOrgPeerResolver(
         )
     }
 
-    private fun calculateLeaseLocked(now: Long): OrgLease {
-        if (!isEnrolled() || _identityMismatch.value) return OrgLease.None
+    private fun calculateLeaseLocked(now: Long, requireOrg: Boolean = true): OrgLease {
+        if (!isEnrolled() || _identityMismatch.value || !hasSnapshotRootLocked() || (requireOrg && !permitsOrg())) return OrgLease.None
         if (lastSyncSuccessMs <= 0L) {
             return OrgLease.None
         }

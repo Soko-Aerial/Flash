@@ -16977,3 +16977,69 @@ Android debug APK assembled; desktop native render fixture passed.
 
 ### Status
 RESOLVED (verification scaffold only).
+
+## ERROR-996 — Multi-department heads get an empty announcement list
+
+### Date / area
+2026-11-07 — Hub console announcement scope, `dev` at `f999b5a5`.
+
+### Symptoms / root cause
+`GET /admin/api/v1/announcements` returns HTTP 200 with an empty `items` array for a head scoped to multiple departments, even when filtering to one permitted department. `AnnouncementAdminRoutes.kt` supplies a caller department only for a head with exactly one department. `AnnouncementStore.kt` treats the missing caller department as visibility of organisation posts only, or rejects a selected department before querying. The route then filters any remaining rows to department posts.
+
+### Verification / next step
+A temporary Ktor route probe created two posts, one per assigned department. The org admin saw both and the head saw neither, with and without `departmentId=dept-a`. The existing single-head fixture passed. Apply the complete department set before filtering and pagination and exercise HUBREADY-01.
+
+### Status
+RESOLVED in server code by Hub remediation HR1. The new multi-department route regression is green in the 79-test gate and fails when the SQL scope is removed. HUBREADY-01 browser verification remains owed.
+
+## ERROR-997 — Existing sealed Hub data does not block startup when its key is missing
+
+### Date / area
+2026-11-07 — Hub backup and restore, `dev` at `f999b5a5`.
+
+### Symptoms / root cause
+`HubServices` calls `SecretBox.loadOrCreate` even for an existing database. If `data.key` is absent, the loader creates a different key without checking for existing sealed rows. A syntactically valid but mismatched key also passes file validation. Existing sealed mailbox rows and TOTP seeds need the original key.
+
+### Verification / next step
+A temporary E2E probe queued a sealed message, stopped a disposable Hub, removed only `data.key` and restarted. The Hub started, minted a different key and retained the old row. Add a restore-specific preflight and exercise matching, absent and mismatched keys in HUBREADY-02.
+
+### Status
+RESOLVED in server code by Hub remediation HR2. Three new regressions failed on the old loader and passed in the 46-test gate. The operator restore drill remains HUBREADY-02.
+
+## ERROR-998 — Hub announcement refresh has no system notification producer
+
+### Date / area
+2026-11-07 — Hub announcements on Android and desktop, `dev` at `f999b5a5`.
+
+### Symptoms / root cause
+Plan A3 specifies title-only system announcements and an opt-out. `RealFlashChatRepository.kt` uses relay hints and reconnection to refresh the local feed. The production notification managers have no new-announcement producer, and the existing Hub route consumers only provide the destination for a tap.
+
+### Verification / next step
+Source trace only. Wire a scope-aware notification producer and setting on both hosts. Verify privacy, duplicate suppression, permission denial and cold start using ANN-01, ANN-10 and HUBT-12. Check ANN-11 separately for background delivery.
+
+### Status
+OPEN.
+
+## ERROR-999 — Removed group members can replay Hub-held group messages
+
+2026-11-07. The group send path checks the current member list at send time, but mailbox replay used only the authenticated recipient ID. Both the original-code E2E and a mutation that disabled the retirement trigger reproduced old payloads after removal and rejoin. ADR-358 retires rows in the directory write, checks prefetched rows and reports `DROPPED` on sweep. Resolved in the 103-test HR3 gate. HUBREADY-03 remains owed on real hosts.
+
+## ERROR-1000 — Join approval confirmation could not resolve the group name
+
+2026-11-07. The first Chrome fixture click reached `decide` but raised `ReferenceError: groupName is not defined`. The existing group label helper lived inside list rendering. Moved the lookup to the view scope and reused it in the list and confirmation. The rerun showed the correct group and sent no write until approval was confirmed. RESOLVED in the isolated browser fixture. HUBREADY-05 covers the real Hub.
+
+## ERROR-1001 — Windows Android-host JVM cannot replace an existing revocation cache file
+
+2026-11-07. A second verified write in `HubRevocationCacheTest.expiredDelegationCannotPublishOrClearRootRevocationButVerifiedHistoryStillLoads` returned `STORAGE_FAILED` on Android-host. The Android actual uses a sibling `File.renameTo`, whose Windows JVM implementation does not replace the existing destination. The Windows host path now uses atomic NIO replacement. The Android path still uses the checked same-directory rename. No fallback deletes the old version first. The first gate also overlapped a resolver signature edit and compiled the SDK against the earlier signature. The next gate was run after the signatures matched.
+
+## ERROR-1002 — Paired-group test used the wrong direct-message entry point
+
+2026-11-07. The initial test tried to assert a result from `sendTextTo`, whose return type is Unit. Reworked it to feed a real direct message through the inbound handler and assert that it is stored while the linked-group message is refused.
+
+**Status.** RESOLVED in the restored HR5 gate.
+
+## ERROR-1003 — Hub file fixture read delivery status before the outbox persisted it
+
+2026-11-07. The broad JVM gate exposed `HUBFILE-P4-U50` reading PENDING after both tickets were observable. The fake relay records a sent ticket before the real outbox updates the message to SENT. The fixture now waits for that existing state transition, with the same bounded helper it uses for ticket delivery. The product send path is unchanged.
+
+**Status.** RESOLVED in the restored HR5 JVM gate.

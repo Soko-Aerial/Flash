@@ -115,6 +115,8 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
             val reqScope = call.request.queryParameters["scope"]
             val departmentId = call.request.queryParameters["departmentId"]
             val before = call.request.queryParameters["before"]?.toLongOrNull()
+            val beforeId = call.request.queryParameters["beforeId"]
+            if (beforeId != null && (before == null || beforeId.isBlank() || beforeId.length > 128)) return@get call.badRequest()
             val rawLimit = call.request.queryParameters["limit"]?.toIntOrNull()
             val limit = (rawLimit ?: 50).coerceIn(1, 100)
 
@@ -131,32 +133,20 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 }
             }
 
-            val effectiveDeptId = when {
-                isOrgAdmin -> departmentId
-                scope is ConsoleScope.Departments -> departmentId ?: if (scope.ids.size == 1) scope.ids.single() else null
-                else -> null
-            }
-
             val result = store.searchAnnouncements(
                 query = q,
                 scope = if (!isOrgAdmin) "department" else reqScope,
-                departmentId = effectiveDeptId,
+                departmentId = departmentId,
                 before = before,
                 limit = limit,
-                callerDeptId = if (scope is ConsoleScope.Departments && scope.ids.size == 1) scope.ids.single() else null,
+                callerDeptId = null,
                 isOrgAdmin = isOrgAdmin,
                 nowMs = d.clock(),
+                consoleDepartments = (scope as? ConsoleScope.Departments)?.ids,
+                beforeId = beforeId,
             )
-
-            // If head scope has multiple departments, filter in-memory to ensure only allowed departments
-            val finalItems = if (!isOrgAdmin && scope is ConsoleScope.Departments) {
-                result.items.filter { it.scope == "department" && scope.allows(it.departmentId) }
-            } else {
-                result.items
-            }
-
-            d.audit.record(session.username, "admin.announcement.list", "rows=${finalItems.size}")
-            call.respondJson(result.copy(items = finalItems))
+            d.audit.record(session.username, "admin.announcement.list", "rows=${result.items.size}")
+            call.respondJson(result)
         }
 
         // GET /admin/api/v1/announcements/{id}

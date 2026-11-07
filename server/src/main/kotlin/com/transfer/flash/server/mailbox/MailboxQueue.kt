@@ -4,10 +4,15 @@ import com.transfer.flash.server.auth.SecretBox
 import com.transfer.flash.server.observability.MailboxStats
 import com.transfer.flash.server.observability.RelayMetrics
 import com.transfer.flash.server.storage.ServerDatabase
+import com.transfer.flash.server.storage.scalarLong
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.util.concurrent.atomic.AtomicLong
+
+/** Length-prefix each component so a sealed payload cannot be moved to a different message. */
+internal fun mailboxPayloadContext(origin: String, target: String, msgId: String): String =
+    "mailbox_envelopes.payload|${origin.length}:$origin|${target.length}:$target|${msgId.length}:$msgId"
 
 /**
  * Durable store-and-forward mailbox over [ServerDatabase] (schema: [MailboxSchema]).
@@ -38,6 +43,7 @@ class MailboxQueue(
     private val metrics: RelayMetrics? = null,
     /** The hub data key (ADR-130): payloads are stored sealed when it is active. [SecretBox.None] stores them as given (tests). */
     private val secrets: SecretBox = SecretBox.None,
+    private val enforceGroupMembership: Boolean = false,
 ) : MailboxStore, MailboxStats {
 
     private val logger = LoggerFactory.getLogger(MailboxQueue::class.java)
@@ -48,12 +54,9 @@ class MailboxQueue(
 
     init {
         MailboxSchema.migrate(database, clock)
+        if (enforceGroupMembership) MailboxSchema.migrateGroupAuthorization(database)
         sealLegacyPayloads()
     }
-
-    /** What a payload is bound to, so a sealed value cannot be moved to another row (length-prefixed: no ambiguous joins). */
-    private fun payloadContext(origin: String, target: String, msgId: String): String =
-        "mailbox_envelopes.payload|${origin.length}:$origin|${target.length}:$target|${msgId.length}:$msgId"
 
     /**
      * ADR-130: rows written before the data key was used for payloads are sealed in place at startup, in small transactions. Idempotent
@@ -76,7 +79,7 @@ class MailboxQueue(
                 conn.prepareStatement("UPDATE mailbox_envelopes SET payload = ?, sealed = 1 WHERE seq = ?").use { up ->
                     for (r in rows) {
                         val plain = (r[4] as ByteArray?) ?: ByteArray(0)
-                        up.setBytes(1, secrets.sealBytes(plain, payloadContext(r[1] as String, r[2] as String, r[3] as String)))
+                        up.setBytes(1, secrets.sealBytes(plain, mailboxPayloadContext(r[1] as String, r[2] as String, r[3] as String)))
                         up.setLong(2, r[0] as Long)
                         up.addBatch()
                     }
@@ -138,6 +141,11 @@ class MailboxQueue(
 
     private fun insert(conn: Connection, m: MailboxMessage, payload: ByteArray, ttlOverrideMs: Long?): EnqueueResult {
         val now = clock()
+        if (enforceGroupMembership && m.group != null && conn.scalarLong(
+                "SELECT COUNT(*) FROM dir_group_members WHERE group_id = ? AND device_id = ?",
+                m.group, m.target,
+            ) == 0L
+        ) return EnqueueResult.UnknownRecipient
 
         // A quarantined copy (RLY-01) is not a delivery in progress: the sender was told DROPPED, so its resend must not be swallowed
         // as a duplicate of a row that will never be delivered. Nor is a row whose lifetime has run out but which the sweeper has not
@@ -198,7 +206,7 @@ class MailboxQueue(
             stmt.setString(2, m.target)
             stmt.setString(3, m.msgId)
             stmt.setString(4, m.type)
-            stmt.setBytes(5, if (secrets.isActive) secrets.sealBytes(payload, payloadContext(m.origin, m.target, m.msgId)) else payload)
+            stmt.setBytes(5, if (secrets.isActive) secrets.sealBytes(payload, mailboxPayloadContext(m.origin, m.target, m.msgId)) else payload)
             stmt.setLong(6, size)
             stmt.setString(7, m.group)
             stmt.setLong(8, sentAt)
@@ -327,7 +335,7 @@ class MailboxQueue(
                         val raw = rs.getBytes(6) ?: ByteArray(0)
                         val plain = if (rs.getInt(11) == 1) {
                             try {
-                                secrets.openBytes(raw, payloadContext(rs.getString(2), rs.getString(3), rs.getString(4)))
+                                secrets.openBytes(raw, mailboxPayloadContext(rs.getString(2), rs.getString(3), rs.getString(4)))
                             } catch (e: RuntimeException) {
                                 // Wrong or missing data key, or a tampered row. Only the exception class is kept, never payload bytes.
                                 bad.add(
@@ -378,12 +386,22 @@ class MailboxQueue(
     override suspend fun acknowledge(target: String, msgId: String, origin: String?): List<AckedRow> =
         acknowledgeBatch(target, listOf(msgId), origin)
 
+    override suspend fun mayReplay(row: QueuedMessage): Boolean {
+        if (!enforceGroupMembership || row.group == null) return true
+        return database.io { conn ->
+            conn.scalarLong(
+                "SELECT COUNT(*) FROM mailbox_envelopes WHERE seq = ? AND expires_at > ? AND undeliverable_reason IS NULL",
+                row.seq, clock(),
+            ) != 0L
+        }
+    }
+
     override suspend fun acknowledgeBatch(target: String, msgIds: List<String>, origin: String?): List<AckedRow> {
         if (msgIds.isEmpty()) return emptyList()
         val rows = database.ioTransaction { conn ->
             val foundRows = ArrayList<Pair<Long, AckedRow>>(msgIds.size)
             conn.prepareStatement(
-                "SELECT seq, origin_device_id, created_at FROM mailbox_envelopes WHERE target_device_id = ? AND msg_id = ?" +
+                "SELECT seq, origin_device_id, created_at FROM mailbox_envelopes WHERE target_device_id = ? AND msg_id = ? AND undeliverable_reason IS NULL" +
                     (if (origin != null) " AND origin_device_id = ?" else "") + " ORDER BY seq LIMIT 1",
             ).use { stmt ->
                 stmt.setString(1, target)
@@ -429,14 +447,14 @@ class MailboxQueue(
                 stmt.setLong(1, now)
                 stmt.setInt(2, cap)
                 stmt.executeQuery().use { rs ->
-                    val list = ArrayList<Triple<Long, ExpiredRow, Boolean>>(cap)
+                    val list = ArrayList<Triple<Long, ExpiredRow, String?>>(cap)
                     while (rs.next()) {
                         val seq = rs.getLong(1)
                         val origin = rs.getString(2)
                         val target = rs.getString(3)
                         val msgId = rs.getString(4)
-                        val isQuarantined = rs.getString(5) != null
-                        list.add(Triple(seq, ExpiredRow(origin, target, msgId), isQuarantined))
+                        val reason = rs.getString(5)
+                        list.add(Triple(seq, ExpiredRow(origin, target, msgId, reason == MailboxSchema.GROUP_MEMBER_REMOVED), reason))
                     }
                     list
                 }
@@ -453,12 +471,15 @@ class MailboxQueue(
             // F39 / ERROR-775: Quarantined rows are deleted from disk by their own rule (ADR-223),
             // but must not be returned to emit an EXPIRED event because they were already reported
             // as DROPPED when quarantined (RLY-01, ADR-222).
-            found.filter { !it.third }.map { it.second }
+            found.filter { it.third == null || it.second.membershipRemoved }.map { it.second }
         }
-        if (rows.isNotEmpty()) {
-            expired.addAndGet(rows.size.toLong())
-            metrics?.inc(RelayMetrics.MAILBOX_EVENTS, rows.size.toLong(), "event" to "expired")
+        val expiredCount = rows.count { !it.membershipRemoved }
+        if (expiredCount > 0) {
+            expired.addAndGet(expiredCount.toLong())
+            metrics?.inc(RelayMetrics.MAILBOX_EVENTS, expiredCount.toLong(), "event" to "expired")
         }
+        val retiredCount = rows.size - expiredCount
+        if (retiredCount > 0) noteDropped(retiredCount)
         return rows
     }
 

@@ -384,7 +384,7 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
 | File | What it is | If lost |
 |---|---|---|
 | `flash-hub.db` | devices, directory, groups, announcements, audit, mailbox, sealed-file index | organisation must be re-enrolled |
-| `data.key` | seals sensitive columns (e.g. authenticator seeds) | **those columns become unreadable**: admins must re-enrol their authenticator |
+| `data.key` | seals authenticator seeds and queued mailbox payloads | **startup refuses a missing or mismatched key** for a bound database. Restore the matching key to recover sealed data. |
 | `files/` | the sealed file payloads, one directory per `fileId` (ADR-215) | the index survives and every download answers `503` until the sweeper removes those rows after retention |
 | `server-identity.pk8` / `server-identity.pub` | the hub's own delegate key pair (owner-only) | issue a new delegation; devices re-enrol |
 | `delegation.cert` | the root-signed delegation | re-issue from the root |
@@ -401,7 +401,8 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
   `data.key` first.
 - **Keep `data.key` in a different place from database backups.** It is the only thing that
   makes a stolen database copy useless on its own; storing them together throws that away.
-- Test a restore once, on a spare machine, before you need one.
+- Test a restore on a spare machine. Restore the database and file blobs from the same snapshot, restore the matching `data.key` from its separate backup, then verify admin sign-in, mailbox delivery, file download and revocation. Use an isolated listener for the drill.
+- `Data key validation failed` means the database has a verifier or older sealed data that the loaded key cannot authenticate. Stop and recover the matching database/key pair. `admin-recovery` also uses the bound key when resetting a lost authenticator.
 
 ---
 
@@ -527,3 +528,9 @@ Deploying a hub is where the still-unverified hub features get their first real 
 are listed, one by one, in `docs/testing/TEST-BACKLOG.md` — the `HUB-*`, `HUBR-*`,
 `ANN-*`, `ORGT-*`, `DEPH-*`, `PRIV-*` and `HUBT-*` series — with the exact steps and pass
 conditions. Record results there (§35 of `AGENTS.md`), not in this guide.
+
+### Offline revocation support on clients
+
+For a physical check, use HUBREADY-04 and compare the received list version with the Hub's published version. Look for `org.revocation.lan result=APPLIED` on the receiving client. A device that is offline from the Hub needs a reachable same-root client with a still-valid cached TLS binding and a newer verified list. If the version has not moved, check the clients' versions and leases and allow one ten-minute exchange window. Use device-ID revocation when the device must lose offline organisation access. A serial-only revocation remains enforced by the Hub.
+
+An `org.revocation.storage operation=load` event indicates unavailable or invalid saved state. Restore the matching client state from a trusted copy or escalate for recovery, then check the current published version before permitting offline access. Preserve evidence of the prior revocation floor. For root-signed imports, carry forward existing delegation revocations in the new signed list.

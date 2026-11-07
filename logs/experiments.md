@@ -3033,3 +3033,7 @@ time, sender/receiver CPU, peak RSS and disk read bytes.
 
 ### Status
 Host baseline recorded; device/battery/desktop measurements TODO (`W2-XFER-01`, `W2-AND-01`, `W2-DESK-01`).
+
+## 2026-11-07 — HR5 synthetic revocation exchange size case
+
+The shared `HubRevocationGossipTest` fixture carries 5,000 signed certificate serials and one hashed device ID through the bounded LAN codec, persists the result, restarts the recipient cache, and confirms it can offer the same version to a third peer. This is a synthetic functional case. No device latency, bandwidth or memory measurements were taken.

@@ -7,6 +7,7 @@ import { t } from '../i18n.js';
 import { getTheme, cycleTheme } from '../theme.js';
 import { formatClock } from '../format.js';
 import { openDrawer } from './dialog.js';
+import { canOpenConsoleRoute } from '../state.js';
 
 export const NAV = [
   { id: 'overview', glyph: 'overview', key: 'o' },
@@ -69,11 +70,11 @@ export function createShell({ onLogout, onHelp }) {
       'div',
       { class: 'fx-nav-group' },
       h('span', { class: 'fx-nav-label', text: t(group.label) }),
-      h('ul', { class: 'fx-nav', role: 'list' }, group.ids.map((id) => h('li', {}, navLink(byId(id))))),
+      h('ul', { class: 'fx-nav', role: 'list' }, group.ids.filter(canOpenConsoleRoute).map((id) => h('li', {}, navLink(byId(id))))),
     ),
   );
 
-  const settingsLink = navLink(byId('settings'));
+  const settingsLink = canOpenConsoleRoute('settings') ? navLink(byId('settings')) : null;
   const brandHub = h('div', { class: 'fx-brand-hub', text: '' });
   const mobileHub = h('div', { class: 'fx-brand-hub', text: '' });
   const brand = (compact = false) =>
@@ -181,9 +182,11 @@ export function createShell({ onLogout, onHelp }) {
     const body = h('nav', { class: 'fx-sheet-nav', 'aria-label': t('nav.main') });
     for (const group of GROUPS) {
       body.append(h('div', { class: 'fx-sheet-label', text: t(group.label) }));
-      for (const id of group.ids) body.append(sheetLink(byId(id)));
+      for (const id of group.ids.filter(canOpenConsoleRoute)) body.append(sheetLink(byId(id)));
     }
-    body.append(h('div', { class: 'fx-sheet-label', text: t('nav.settings') }), sheetLink(byId('settings')));
+    if (canOpenConsoleRoute('settings')) {
+      body.append(h('div', { class: 'fx-sheet-label', text: t('nav.settings') }), sheetLink(byId('settings')));
+    }
     const drawer = openDrawer({
       title: t('nav.more'),
       body,

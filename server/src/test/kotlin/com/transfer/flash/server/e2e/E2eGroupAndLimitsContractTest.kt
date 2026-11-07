@@ -7,6 +7,7 @@ import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.relay.AckStatus
+import com.transfer.flash.core.hubprotocol.relay.QueueEvent
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
 import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
 import com.transfer.flash.core.enterprise.relay.RelaySessionState
@@ -94,6 +95,42 @@ class E2eGroupAndLimitsContractTest {
         assertEquals(HubErrorCodes.ERR_NOT_MEMBER, assertNotNull(awaitItem(outsider.acks) { it.id == "grp-3" }).reason, "no membership oracle")
         kotlinx.coroutines.delay(300)
         assertTrue(b.received.none { it.id == "grp-2" } && c.received.none { it.id == "grp-2" })
+    }
+
+    @Test
+    fun removingAGroupMemberRetiresQueuedGroupCopiesEvenIfTheyRejoinBeforeDrain() = runBlocking<Unit> {
+        val hub = newHub()
+        val directory = hub.services.directory
+        directory.createDepartment("eng", "Engineering", emptyList(), DirectoryActor.CONSOLE)
+        directory.createGroup("g-all", "All", "eng", GroupVisibility.LISTED, JoinMode.OPEN_IN_SCOPE, emptyList(), DirectoryActor.CONSOLE)
+        val sender = newDevice(hub, "dev-a").enrolAndConnect()
+        val recipient = newDevice(hub, "dev-b").enrolAndConnect()
+        suspend fun join(device: E2eDevice) {
+            val result = device.client.directory.requestJoin(hub.url, "g-all")
+            assertEquals(EnterpriseJoinStatus.JOINED, (result as com.transfer.flash.core.common.result.FlashResult.Success).value.status)
+        }
+        join(sender)
+        join(recipient)
+        recipient.client.relay.stop()
+        assertTrue(eventually { !recipient.hubSeesOnline() })
+        assertTrue(sender.client.relay.transport.sendFrame(groupSend("old-group", "g-all")))
+        assertTrue(sender.client.relay.sendEnvelope(recipient.id, envelope("direct", sender.id)))
+        assertTrue(eventually { hub.mailboxRows(recipient.id) == 2 })
+
+        directory.removeMemberFromGroup("g-all", recipient.id, DirectoryActor.CONSOLE)
+        join(recipient)
+        recipient.client.relay.start()
+        recipient.awaitConnected()
+        assertTrue(assertNotNull(awaitItem(recipient.received) { it.id == "direct" }).replay)
+        assertTrue(recipient.received.none { it.id == "old-group" })
+
+        assertNotNull(hub.services.engine.ttlSweeper).sweepOnce()
+        val dropped = assertNotNull(awaitItem(sender.queueStates) { it.id == "old-group" })
+        assertEquals(QueueEvent.DROPPED, dropped.state)
+        assertEquals(recipient.id, dropped.to)
+        assertTrue(sender.client.relay.transport.sendFrame(groupSend("new-group", "g-all")))
+        assertNotNull(awaitItem(recipient.received) { it.id == "new-group" })
+        assertTrue(recipient.received.none { it.id == "old-group" })
     }
 
     @Test

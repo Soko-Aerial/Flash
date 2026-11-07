@@ -219,6 +219,12 @@ class HubServices private constructor(
 
             val db = database ?: ServerDatabase("jdbc:sqlite:${File(dataDir, "flash-hub.db").absolutePath}")
             val identities = IdentityStore.open(db)
+            val dataSecrets = try {
+                loadHubDataKey(db, File(dataDir, "data.key").toPath())
+            } catch (e: Exception) {
+                if (database == null) db.close()
+                throw e
+            }
 
             // 3. The delegation, pinned to the root fingerprint (config first, then the first delegation ever accepted).
             val delegationFile = if (config.devEmbeddedRoot) keyStore.delegationFile.toFile() else config.delegationPath
@@ -246,7 +252,6 @@ class HubServices private constructor(
             val announcements = AnnouncementStore.open(db, clock)
             var routerRef: RelayFrameRouter? = null
             val audit = AuditLogger(db, AuditSigner(delegate.pair.private, delegate.publicKey), clock)
-            val dataSecrets = com.transfer.flash.server.auth.SecretBox.loadOrCreate(File(dataDir, "data.key").toPath())
             val admins = AdminAuthService(
                 printSetupTokenToConsole = true,
                 setupUrl = setupUrlFor(config),
@@ -289,6 +294,7 @@ class HubServices private constructor(
                 registry = DatabaseDeviceRegistry(db),
                 metrics = metrics,
                 secrets = dataSecrets,
+                enforceGroupMembership = true,
             )
             // OPS-01: scrapes and the console overview read a short-lived snapshot, never the pool, on their own thread.
             val mailboxStatsView = com.transfer.flash.server.observability.CachedMailboxStats(mailbox, clock = clock)

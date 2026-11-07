@@ -545,6 +545,7 @@ dialog.drawer { border-left-color: var(--c-line); }
 .fx-relay { grid-column: span 8; display: flex; flex-direction: column; min-width: 0; }
 .fx-waiting { grid-column: span 4; display: flex; flex-direction: column; min-width: 0; }
 .fx-ledger { grid-column: 1 / -1; display: grid; grid-template-columns: 5fr 4fr 3fr; min-width: 0; }
+.fx-overview-grid.is-scoped .fx-waiting { grid-column: 1 / -1; }
 .fx-relay-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 0; }
 .fx-live { display: inline-flex; align-items: center; gap: 6px; color: var(--c-muted); font-size: 12px; white-space: nowrap; }
 .fx-live .dot { color: var(--c-accent); animation: fx-live-pulse 2.4s ease-in-out infinite; }
@@ -582,6 +583,7 @@ dialog.drawer { border-left-color: var(--c-line); }
 .fx-wait-chevron { color: var(--c-muted); flex: none; }
 .fx-wait-note { margin: auto 20px 16px; padding-top: 12px; border-top: 1px solid var(--c-line); color: var(--c-muted); font-size: 12px; line-height: 17px; }
 .fx-ledger-col { min-width: 0; padding-bottom: 4px; }
+@media (min-width: 901px) { .fx-overview-grid.is-scoped .fx-ledger { grid-template-columns: 1fr 1fr; } }
 .fx-ledger-col + .fx-ledger-col { border-left: 1px solid var(--c-line); }
 .fx-ledger-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 16px 20px 8px; }
 .fx-ledger-title { font-size: 14px; font-weight: 600; }
