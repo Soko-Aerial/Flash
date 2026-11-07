@@ -1,5 +1,7 @@
 # Nearby Page (P4 tab)
 
+> **2026-11-06 component refinement:** [Current refinement plan](transfers-nearby-refinement.md) preserves the existing screen design. The separate workspace redesign was rejected/rolled back. Historical demo-only wiring notes below are superseded by the Android/desktop host implementation.
+
 **Status:** IMPLEMENTED
 **Component ID:** UI-048
 **Last updated:** 2026-08-25

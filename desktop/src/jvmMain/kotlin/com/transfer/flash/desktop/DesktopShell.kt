@@ -1397,27 +1397,30 @@ public fun DesktopShell(
             onVoiceRecordingStopped = { _ -> },
             onSendVoiceMessage = { localPath, durationMs, amplitudes ->
                 val peerId = nav.current.conversationId
-                if (peerId != null) {
+                if (peerId != null && engine.transfers != null) {
                     val fileName = "Voice message.wav"
-                    val size = runCatching {
-                        val f = if (localPath.startsWith("file:", ignoreCase = true)) {
-                            java.io.File(java.net.URI(localPath))
-                        } else {
-                            java.io.File(localPath)
+                    val peerName = conversationState.header.title
+                    val isGroup = conversationState.header.isGroup
+                    scope.launch {
+                        val file = withContext(Dispatchers.IO) {
+                            runCatching { engine.persistVoiceRecording(localPath, fileName) }.getOrNull()
                         }
-                        f.length()
-                    }.getOrDefault(0L)
-                    sendFileToPeer(
-                        peerId = peerId,
-                        peerName = conversationState.header.title,
-                        isGroup = conversationState.header.isGroup,
-                        uri = localPath,
-                        displayName = fileName,
-                        size = size,
-                        mimeType = "audio/wav",
-                        voiceDurationMs = durationMs,
-                        voiceAmplitudes = amplitudes,
-                    )
+                        if (file == null) {
+                            snackbarHostState.showSnackbar("Couldn’t save the voice message. Try recording again.")
+                            return@launch
+                        }
+                        sendFileToPeer(
+                            peerId = peerId,
+                            peerName = peerName,
+                            isGroup = isGroup,
+                            uri = file.toURI().toString(),
+                            displayName = fileName,
+                            size = file.length(),
+                            mimeType = "audio/wav",
+                            voiceDurationMs = durationMs,
+                            voiceAmplitudes = amplitudes,
+                        )
+                    }
                 }
             },
             conversationId = nav.current.conversationId,
@@ -1908,12 +1911,6 @@ public fun DesktopShell(
                         onChatTrustedClick = { trusted ->
                             chatRepository.openConversation(trusted.id)
                             nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
-                        },
-                        // 33a entry: voice call straight from the trusted row. Only trusted rows
-                        // offer it — the coordinator refuses untrusted peers anyway (Group Phase
-                        // 0 closure), so offering it elsewhere would be a button that always fails.
-                        onCallTrustedClick = { trusted ->
-                            placeVoiceCall(trusted.id, trusted.name)
                         },
                         // ADR-042: re-run pairing (v2) with a peer paired under the forceable v1 code.
                         onVerifyTrustedClick = { trusted ->

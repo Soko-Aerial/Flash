@@ -83,8 +83,8 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-044 | Network-state simulation UI | [error-states.md](error-states.md) | IMPLEMENTED | UI-030 |
 | UI-045 | Design-system quality gate | [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md) | NOT STARTED | All above |
 | UI-046 | Bottom navigation bar (Phase 8 shell) | [bottom-nav.md](bottom-nav.md) | IMPLEMENTED v2 hanging capsule + host wiring: reselect-to-top, scroll-under-capsule (device verification pending) | UI-001, UI-002, UI-037, UI-039, UI-033 |
-| UI-047 | Transfers page (P3 tab) | [transfers-page.md](transfers-page.md) | IMPLEMENTED (demo state; C5 wiring pending) | UI-046, UI-016 language, UI-025 |
-| UI-048 | Nearby page (P4 tab) | [nearby-page.md](nearby-page.md) | IMPLEMENTED (demo state; C3/C2 wiring pending) | UI-046, UI-030, UI-032 |
+| UI-047 | Transfers page (P3 tab) | [transfers-page.md](transfers-page.md), [component refinement](transfers-nearby-refinement.md) | IMPLEMENTED (host wired; refinement pending owner review) | UI-046, UI-016 language, UI-025 |
+| UI-048 | Nearby page (P4 tab) | [nearby-page.md](nearby-page.md), [component refinement](transfers-nearby-refinement.md) | IMPLEMENTED (host wired; refinement pending owner review) | UI-046, UI-030, UI-032 |
 | UI-049 | Settings page (P5 tab) | [settings-page.md](settings-page.md) | IMPLEMENTED (demo state; C1.4 wiring pending) | UI-046, UI-035/036, UI-039 |
 | UI-050 | Calling UI (voice/video call screen) | [calling-ui.md](calling-ui.md) | IMPLEMENTED as `:ui:callui` (`FlashCallScreen` over `:core:calling`, ADR-025; device QA pending) | UI-001, UI-002, UI-033, UI-037, UI-038 |
 | UI-050b | Group video grid (G1) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (not device-verified) | UI-050 |

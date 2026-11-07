@@ -921,6 +921,10 @@ This section must be updated by the AI as implementation progresses.
 
 **2026-11-07 — Hub rollout remediation HR1–HR4 implemented locally.** Scoped server queries, database/key restore validation (ADR-357), group mailbox retirement (ADR-358) and console workflows passed the final 118-server/83-Node gate and isolated Chrome verification. Follow `docs/plans/HUB-READINESS-REMEDIATION.md`. Next is HR5 LAN revocation propagation. HUBREADY-01..05 track real Hub and device acceptance separately.
 
+**2026-11-07 — Compact tabs and categorized file storage implemented.** Nearby has 64 dp paired tiles and a three-dot action menu. Transfers and Nearby use tighter spacing and descriptive headers. ADR-356 categorizes completed receives and keeps submitted voice recordings in persistent storage. APK and 83 checks green. See logs/handoff.md for TABREF-04 and RECEIVE-CAT device follow-up. Uncommitted atop Hub `f999b5a5`.
+
+**2026-11-06 — Transfers/Nearby component refinement in review, uncommitted atop Hub `f999b5a5`.** Owner rejected the broad redraw; original compact screens were restored and refined. Paired devices now use lightly rounded tiles and rectangular action buttons per owner steering. Full 102-test/APK/47-render gate and final paired sizing gate (JVM 26 + Android-host 26/APK/native, 3m5s) green. Phone/desktop/320 dp/200% captures checked; owner review next. Current authority: `docs/ui/transfers-nearby-refinement.md`; TABREF-01..03 device checks owed.
+
 **2026-11-06 — Hub workspace redesign implemented.** Organization/role/status header, compact sections and adaptive detail use existing Flash tokens and callbacks. Hub JVM 205 + Android-host 196 tests, APK assembly and desktop native renders green. Design: `docs/ui/hub-workspace-redesign.md`. HUBWORK-01..05 device/interaction checks owed. Next owner scope: minimal professional Transfers and Nearby, especially paired devices.
 
 **2026-11-06 - Chat redesign v2 merged into `dev` as `ca9ada63` from `design/chat-redesign`.** The approved mock and

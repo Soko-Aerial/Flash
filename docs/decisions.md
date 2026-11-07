@@ -8739,6 +8739,17 @@ same decision:
 - Still presentation only: no new storage, no new capability, and no app source touched. Confirmations, menu
   actions that do not navigate, and persistence remain outside this mock.
 
+
+## ADR-356 — Categorize completed received files under the configured receive root
+
+2026-11-07. The laptop exposed transport-specific storage. Direct transfers use a transfer-ID directory for their sink and resume state. Hub downloads stage under hub storage before binding publishes them to a transfer-ID directory. Swarm finalizes directly into the root. Desktop's outgoing voice recorder also supplies a system Temp file as the durable attachment source.
+
+Use one completion-time placement policy for direct, Hub and swarm files. Keep the configured root (`FlashReceived` on Windows/macOS and Android by default, XDG download `Flash` on Linux). Sort completed files into Voice messages, Images, Videos, Audio, Documents, Archives, Folders and Other. Preserve folder transfer subpaths under Folders. Reserve collision suffixes without overwriting an existing file. Validate the category/parent boundary and reject linked destination directories. Direct writes and verification still use the existing staging path. When publication succeeds, save the new path to transfer/chat history and remove empty staging parents. If direct publication fails, retain the assembled file at its existing path. Hub and swarm keep their existing placement failure handling. Retain old stored paths for history and resume compatibility.
+
+Desktop ownership records exact categorized files so a user-selected destination's category directory can also hold unrelated files. Continue honoring historical top-level ownership records. Persist newly sent voice clips in app-owned storage before their URI enters chat or a Hub upload, so retention of the recording cache cannot remove the source. Old Temp paths require the original files to be present and are not silently migrated.
+
+Android app-specific storage rules checked 2026-11-07 for API 24+ and the configured target. Keep the existing app-specific root, permission model and user export flow. See [Android Developers app-specific storage](https://developer.android.com/training/data-storage/app-specific). No protocol, encryption, acceptance or database schema change.
+
 ## ADR-357 — Bind the Hub data key to its database
 
 **Accepted and implemented 2026-11-07.** Hub remediation HR2 records an AES-GCM verifier in `hub_meta` before serving requests or writing sealed secrets. The verifier uses a dedicated AAD domain. Startup and `admin-recovery` refuse a missing or mismatched key. Older sealed stores authenticate a bounded sample of existing records before binding. A store that has never sealed data can create a key on first use. This retains the existing format and independent per-row validation and quarantine.

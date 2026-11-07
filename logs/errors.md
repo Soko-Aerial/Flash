@@ -16978,6 +16978,51 @@ Android debug APK assembled; desktop native render fixture passed.
 ### Status
 RESOLVED (verification scaffold only).
 
+
+## ERROR-992 — Windows edit helper re-encoded UTF-8 punctuation
+
+### Date / area
+2026-11-06 — development tooling, Nearby/Transfers Compose sources.
+
+### Symptoms and root cause
+A Python edit used Path.read_text() without encoding on Windows. The default cp1252 decoded existing UTF-8 punctuation incorrectly, so writing UTF-8 introduced mojibake into existing comments and status separators. `git diff` exposed changes such as a middle dot becoming an extra A-with-circumflex plus dot. This was an edit-tool defect, not a product encoding issue.
+
+### Failed attempts / working fix
+No product workaround. Recovered only the malformed sequences for non-ASCII characters present in the original Git blobs, then used explicit encoding='utf-8' for all subsequent reads/writes. Existing logic strings were restored before the test gate. Always specify encoding in repository edit helpers on Windows.
+
+### Verification
+Git diff confirms the existing status helpers no longer have punctuation changes. Native render and JVM/Android-host tests are recorded in the Transfers/Nearby progress entry.
+
+### Related files / status
+`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/{nearby,transfers}/Flash*Screen.kt`. RESOLVED (source recovery verified; final product gate separately recorded).
+
+
+## ERROR-993 — Paired tile row used the lazy placement helper on the wrong receiver
+
+### Date / area
+2026-11-06 — Nearby paired-tile UI compile.
+
+### Symptoms / error
+Both shared JVM and Android compilation failed at `FlashNearbyScreen.kt:457` with `Unresolved reference ... receiver type mismatch` for `Modifier.fillMaxWidth().flashAnimateItem(motion)`.
+
+### Root cause
+`flashAnimateItem` is a LazyItemScope helper that returns a Modifier, not an extension on Modifier. The previous per-item call was correct; the new grouped tile row accidentally chained it onto Modifier.
+
+### Working fix / verification
+Changed to `flashAnimateItem(motion).fillMaxWidth()` inside the lazy item scope. No dependency, animation policy or domain code changed. The final compile/build/test/render gate is recorded in the corresponding progress entry.
+
+### Status
+RESOLVED — shared JVM/Android compilation, APK assembly, 102 affected automated checks and the 47-case native matrix passed in `build-tabs-tiles-gate.log` (4m14s). Later tile sizing checks are recorded separately.
+
+
+## ERROR-994 — Storage placement compile references
+
+2026-11-07. The first shared build failed at `RealFlashTransferRepository.kt:1697` with unresolved `TAG`. The next build failed at `HubFileBinding.kt:285` with unresolved `FlashPathSanitizer`. The new completion logger used a tag constant the repository does not declare. Replacing Hub's receive placement had removed the sanitizer import while the send path still uses it. Switched the logger to the existing TRANSFER tag and restored the Hub import. Resolved. The final locked gate compiled shared JVM and Android and assembled the APK in `build-compact-receive-complete.log`.
+
+## ERROR-995 — Hub voice placement fixture waited for text-only auto-accept
+
+2026-11-07. The new Hub voice placement test timed out waiting for `voice downloaded`. The rig intentionally auto-accepts `text/plain` from its paired peer. The audio offer stayed Offered as designed. The fixture now uses the normal explicit accept path. The rerun passed all 21 Hub binding tests, including the voice category and duplicate clip check. Resolved.
+
 ## ERROR-996 — Multi-department heads get an empty announcement list
 
 ### Date / area

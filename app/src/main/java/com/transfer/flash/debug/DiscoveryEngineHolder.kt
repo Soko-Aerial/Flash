@@ -1194,6 +1194,11 @@ object DiscoveryEngineHolder {
             performanceMode = { performanceMode },
             // ADR-069 / FA-2: an accepted offer that cannot fit is refused by name instead of failing mid-write.
             freeSpaceBytes = { receivedDir.takeIf { it.exists() }?.usableSpace },
+            placeReceivedFile = { path, name ->
+                val root = receivedDir
+                val placed = com.transfer.flash.core.engine.ReceivedFilePlacement.publish(path, root.path, name, preserveFolders = true)
+                placed
+            },
         )
 
         // PC4 (ADR-046): presence sharing. Built before the chat repository, whose Online set it

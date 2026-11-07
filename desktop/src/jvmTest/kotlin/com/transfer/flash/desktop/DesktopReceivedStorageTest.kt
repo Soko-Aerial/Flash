@@ -105,6 +105,21 @@ class DesktopReceivedStorageTest {
     }
 
     @Test
+    fun clearingACategoryKeepsUnrelatedFilesInTheSameFolder() {
+        val engine = engineWithTempRoot()
+        val root = engine.receivedDirectory
+        val images = File(root, "Images").apply { mkdirs() }
+        val owned = File(images, "received.png").apply { writeBytes(ByteArray(2048)) }
+        val unrelated = File(images, "personal.png").apply { writeBytes(ByteArray(4096)) }
+        engine.receivedManifest.recordFile(root, owned)
+
+        assertEquals(2048L, DesktopHelpers.receivedFilesBytes(engine))
+        DesktopHelpers.clearReceivedFiles(engine)
+        assertTrue(!owned.exists())
+        assertTrue(unrelated.isFile)
+    }
+
+    @Test
     fun anEntryRecordedForAnEarlierRootIsNotDeletedUnderANewRoot() {
         val engine = engineWithTempRoot()
         val elsewhere = Files.createTempDirectory("flash-desktop-storage-old-root").toFile().also { tempDirs += it }

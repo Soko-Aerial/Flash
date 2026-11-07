@@ -255,12 +255,13 @@ class JvmPieceStorageTest {
         assertEquals("every finalize must get its own file", n, paths.toSet().size)
         // Each file holds exactly the bytes of the transfer that reported it.
         results.forEachIndexed { i, r -> assertArrayEquals("file for transfer $i", contents[i], File(r.finalPath!!).readBytes()) }
-        assertEquals(n, destDir.listFiles()!!.size)
+        assertEquals(n, File(destDir, "Images").listFiles()!!.size)
     }
 
     @Test
     fun `finalize never replaces a file the user already has, and leaves no placeholder behind on failure`() = runBlocking {
-        val userFile = File(destDir, "doc.txt").apply { writeText("MY OWN DOCUMENT") }
+        val documents = File(destDir, "Documents").apply { mkdirs() }
+        val userFile = File(documents, "doc.txt").apply { writeText("MY OWN DOCUMENT") }
         val content = "incoming".toByteArray()
         stagePartial("incoming", content)
 
