@@ -601,6 +601,9 @@ public class PttSessionEngine(
             return
         }
         members = freshMembers
+        // Clear the previous burst before opening capture. The sender may start after
+        // capture has already enqueued packets for this session.
+        while (audioOut.tryReceive().getOrNull() != null) Unit
         val rate = audioRateHz()
         val packetMs = if (rate <= 8000) 60 else 20
         val slot = arrayOfNulls<PttCaptureDevice>(1)
@@ -814,8 +817,6 @@ public class PttSessionEngine(
         // OPT-O12-02: the session id is fixed for the whole burst, so its UTF-8 form is built once here
         // instead of once per packet (`PttAudioFrame.encode` did that 50 times a second).
         val sessionBytes = sessionId.encodeToByteArray()
-        // Drain anything a previous session left behind.
-        while (audioOut.tryReceive().getOrNull() != null) Unit
         for (packet in audioOut) {
             if (!isActive) break
             val talking = floor as? PttFloorState.Talking
