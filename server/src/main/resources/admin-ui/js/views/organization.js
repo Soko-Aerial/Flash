@@ -11,7 +11,7 @@ import { openDialog, openDrawer, confirmDialog } from '../ui/dialog.js';
 import { toast, toastError } from '../ui/toast.js';
 import { setActiveTable } from '../shortcuts.js';
 import { devicePicker, loadDeviceNames, deviceLabel } from './devicepicker.js';
-import { statusBadge } from './devices.js';
+import { moveDevice, statusBadge } from './devices.js';
 import { isOrgAdmin } from '../state.js';
 import { icon } from '../icons.js';
 import { iconButton } from '../ui/widgets.js';
@@ -221,7 +221,7 @@ export function mountOrganization(container, ctx) {
     };
     async function removeMember(d) {
       try {
-        await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: null, moveToDepartment: true });
+        if (!(await moveDevice(d.deviceId, null))) return;
         memberRows = memberRows.filter((x) => x.deviceId !== d.deviceId);
         drawMembers();
         bumpMemberCount(-1);
@@ -236,8 +236,9 @@ export function mountOrganization(container, ctx) {
           exclude: () => new Set(memberRows.map((d) => d.deviceId)),
           onPick: async (d) => {
             try {
-              await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: dept.id, moveToDepartment: true });
-              memberRows = [...memberRows, d].sort((a, b) => memberName(a).localeCompare(memberName(b)));
+              const updated = await moveDevice(d.deviceId, dept.id);
+              if (!updated) return;
+              memberRows = [...memberRows, updated].sort((a, b) => memberName(a).localeCompare(memberName(b)));
               drawMembers();
               bumpMemberCount(1);
               toast(t('org.dept.memberAdded', { name: memberName(d) }), { kind: 'success' });
