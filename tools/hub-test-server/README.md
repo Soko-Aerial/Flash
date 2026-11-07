@@ -25,13 +25,16 @@ From the repo root, in PowerShell 5.1 (the owner's prompt) or any shell:
 ```text
 powershell -File tools\hub-test-server\deploy.ps1              # build + pack + upload + swap + wait for healthy
 powershell -File tools\hub-test-server\deploy.ps1 -SkipBuild   # reuse server\build\install\server
-powershell -File tools\hub-test-server\deploy.ps1 -Rollback    # app.prev back (add -RestoreData for data.bak)
+powershell -File tools\hub-test-server\deploy.ps1 -Rollback -RestoreData  # restore the matching app and pre-upgrade data
 ```
 
 It packs the build as one `.tgz` (a recursive `scp` of 57 jars is slow), keeps the previous code in `app.prev` and a copy of
 `data/` in `data.bak` (`data/` is root-owned, so the copy uses `sudo`; the step runs with `ssh -t` so a password prompt works),
-and fails unless the container reports `healthy`. The hub is only down for the swap. The agents' own ssh deploy is refused by
-the permission classifier, so the owner runs this.
+and fails unless the container reports `healthy`. The hub is only down for the swap. Before the
+deploy, preserve any existing `data.bak` and matching `app.prev` outside those rotating paths.
+Check `serverVersion` in `/api/v1/hub` after the swap. A binary-only rollback requires compatible
+schemas. Across identity schema v3, restore the matching pre-upgrade data and key with the old
+app. See the [operator guide](../../docs/deploy/HUB-SERVER-DEPLOYMENT.md#upgrades).
 
 ## What lives where
 

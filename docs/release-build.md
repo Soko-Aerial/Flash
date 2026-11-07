@@ -144,13 +144,11 @@ never paste them into a chat, issue or log. Passwords are never read by Gradle.
 signed with the same key as the installed app. If the key or password is lost, every existing install must be
 uninstalled, which deletes its chats, trust list and identity, before a new build can be installed.
 
-### Decision recorded 2026-10-20: 2.1.0 is signed with the release key
+### Release key for in-place Android upgrades
 
-Option 1 below applies to 2.1.0 (the release key already existed and signed the 2.1.0-beta build; the owner asked for an official
-release and has not asked for the debug key): `Flash-2.1.0.apk` is signed with `~/.flash-signing/flash-release.jks`
-(`CN=Flash, OU=Release`, certificate SHA-256 `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`, checked with
-`apksigner` on the 2.1.0-beta build of 2026-10-09). Testers on v2.0.0-beta uninstall once; the README and CHANGELOG say so.
-Re-check the certificate digest of the final APK before uploading it.
+Sign 2.2.0 with the same key as 2.1.0 in `~/.flash-signing/flash-release.jks`
+(`CN=Flash, OU=Release`). Verify that every signed APK has certificate SHA-256
+`b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af` before uploading.
 
 ### The v2.0.0-beta APK was signed with the debug key
 
@@ -165,15 +163,6 @@ the v2.0.0-beta release, is signed by `CN=Android Debug`, SHA-256
 - The debug key isn't secret (well-known passwords, and it's regenerated if that folder is deleted). It's fine
   for testing, not for public releases.
 
-Two ways forward. This is the owner's call:
-
-1. **Switch to a real release key now** (`-NewKeystore`), while the install base is small. Testers uninstall the
-   beta once.
-2. **Keep the debug key for the rest of the beta**, so testers can update in place. Point `keystore.properties`
-   at it (`storeFile=C:\Users\<you>\.android\debug.keystore`, `keyAlias=androiddebugkey`,
-   `storePassword=android`), and move to a real key before 1.0. Back that `debug.keystore` up: if it's
-   regenerated, the in-place update path is gone anyway.
-
 ## Windows installers
 
 `:desktop:packageMsi` and `:desktop:packageExe` use Compose Multiplatform's jpackage and WiX support. The first
@@ -187,9 +176,10 @@ These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers
 
 ## Environment the script sets up
 
-- **JDK 21.** This Gradle/AGP pair needs 21. Android Studio's bundled JBR 25 is too new. Search order:
+- **JDK 21 launcher and packaging tools.** Search order:
   `FLASH_JDK`, then `%USERPROFILE%\.gradle\jdks\*21*` (the Gradle-provisioned JBR 21), then `JAVA_HOME` if it's
-  a 21.
+  a 21. The script invokes Gradle through the workspace lock. The repository's daemon JVM
+  criteria select JDK 25 for local builds. The JitPack dry run uses the separate JDK 17 setup above.
 - **`JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=%USERPROFILE%\.gradle\afunix`**, only if `JAVA_TOOL_OPTIONS` isn't
   already set. It works around ERROR-017 ("Unable to establish loopback connection"). Every JVM then prints a
   harmless `Picked up JAVA_TOOL_OPTIONS` line.
@@ -202,9 +192,12 @@ These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers
   Include the app, desktop, server, radio, swarm, calling and call UI. Count the JUnit
   XML results and run the console Node suite. Use `:app:lintRelease` for the Android artifact.
 - For the app, verify the signed APK and Windows installers and complete REL-01–07,
-  MIG-01/02, RECEIVE-CAT-01/02, TABREF-04 and the pairing/trust regression cases.
+  MIG-01/02, RECEIVE-CAT-01/02, TABREF-04, SECAUD-22, W1-NACK-01, W1-REVOKE-03
+  and REL22-01/05. Use a release-signed 2.1.0 install with existing data for the
+  in-place upgrade check. Use a disposable install for the older debug-key check.
 - For the library beta, verify the JDK 17 install line and isolated Android/JVM consumers
-  before tagging. After tagging, repeat the consumer proof from JitPack.
+  before tagging. After tagging, repeat the consumer proof from JitPack (REL22-04)
+  and exercise the Android pairing facade (PAIRLIB-01).
 - For the Hub beta, deploy the candidate to the isolated test Hub with its prior backups
   preserved, verify the build version and complete HUBREADY-01–05 and REL22-02/03. See the
   [operator guide](deploy/HUB-SERVER-DEPLOYMENT.md).

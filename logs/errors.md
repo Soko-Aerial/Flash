@@ -16226,6 +16226,14 @@ the case at line 230), `logs/wave4-c-gate1-run3-2026-11-02.log`, `logs/wave4-c-p
 `logs/wave4-c-ptt-repeat2.log`.
 **OPEN — 1 red under the full gate, 2 of 2 green alone on the same tree; nothing changed.**
 
+**2026-11-07 release follow-up.** The forced 2.2.0 gate reproduced the exact timeout.
+The sender drained the shared queue when its coroutine started, which could discard
+the first packet after capture was already enabled. Changed the fixture to emit one packet
+synchronously on enablement. It reproduced the same timeout in the old implementation
+without a busy machine. Commit `40375e14` drains before opening capture and retains the
+sender's session-ID check. The forced PTT Android-host suite passed 125 tests, including
+the unchanged trusted-recipient assertion. The earlier load-only diagnosis is superseded.
+
 ## ERROR-974 — The router test fixture registered a session as *caught up* before starting its drain
 
 ### Date / area / environment
@@ -17110,10 +17118,27 @@ intermittent with cause unconfirmed.
 
 2026-11-07. Tests passed but the focused build failed while storing the configuration cache
 because `:server:processResources` captured its build script. The action now captures a
-local version string. Verify the cache-enabled packaging task separately.
+local version string. The cache-enabled `:server:installDist` recheck stored its graph
+and the deployed Hub reported the new version. Status: RESOLVED.
 
 ## ERROR-1007 — Release Gradle launcher unavailable while the development drive was disconnected
 
 2026-11-07. The Gradle junction and SDK target were absent, so the repository lock script
 stopped at its JBR check. Reconnecting the Projects drive restored the SDK and JBR paths.
 The baseline subsequently built successfully in 4m37s. Status: RESOLVED.
+
+## ERROR-1008 — Release lint could not infer the widget pinning API check
+
+2026-11-07. `:app:lintRelease` reported `NewApi` at `requestPinAppWidget` because
+the API 26 guard was in the boolean helper `isPinningSupported`. Annotated the helper
+with `ChecksSdkIntAtLeast` in `1b71d4e0`. The existing runtime check still refuses
+API 24–25. Lint reran with 0 errors, 150 warnings and 1 hint. The app unit suite
+also passed. Status: RESOLVED.
+
+## ERROR-1009 — Simulated radio harness missed an ACK in the release sweep
+
+2026-11-07. The final concurrent JVM sweep's `RadioLinkTestHarnessTest` burst accepted
+four frames but counted three ACKs before its five-second deadline. The first forced
+JVM sweep had passed this suite. All 274 radio JVM tests then passed in the isolated
+rerun on `1b71d4e0` with the existing deadline and assertions. Status: OPEN,
+intermittent simulated-radio failure with cause unconfirmed.

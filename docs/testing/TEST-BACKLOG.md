@@ -8043,3 +8043,10 @@ Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT
 - Exercise. Build with `com.github.Soko-Aerial.Flash` and tag `v2.2.0-beta.1` using JitPack, Google and Maven Central. Use the umbrella engine, calling UI and the granular messaging API.
 - Pass. Both platforms compile. The WebRTC track and enterprise join result are visible through their published dependencies.
 - Source. Release audit and `docs/release-build.md`. Status: TODO for the remote tag.
+
+### REL22-05 — PTT sends the first packet of a new burst
+
+- Setup. A paired and an unpaired peer on the same LAN. Connect the paired peer for PTT.
+- Exercise. Begin a burst and speak as soon as capture starts. Stop and start another burst with a different opening word.
+- Pass. The paired listener hears the opening syllable on both bursts. Old audio does not carry into the second burst and the unpaired device receives no PTT audio.
+- Source. ERROR-975 and `40375e14`. Status: TODO on physical hosts. The first-packet ordering is covered in the host tests.

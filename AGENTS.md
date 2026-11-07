@@ -918,9 +918,11 @@ This section must be updated by the AI as implementation progresses.
 ## Current Phase
 
 **2026-11-07 — 2.2.0 release consolidation on `codex/release-2.2.0`.** Nearby and Transfers
-baseline captured. Security and scope corrections, version bumps, changelog, consumer and
-operator docs are in the release branch. JDK 17 scratch publication and isolated consumer
-compiles passed. See `logs/handoff.md` for the release gate and acceptance status.
+owner-approved. Security and scope corrections, version bumps, changelog, consumer and
+operator docs are in the release branch. Product commit `1b71d4e0` passed the release test
+slices, lint, JDK 17 scratch publication and isolated consumers. Signed app builds and
+Windows installers are in `dist/2.2.0`. Hub 2.2.0-beta.1 is healthy on the isolated test host.
+The owner will run the phone pass. See `logs/handoff.md` for remaining release acceptance.
 
 **2026-11-07 — Hub remediation HR1–HR5 implemented.** Signed LAN revocation updates persist across restart and gate cached organisation and linked-group trust (ADR-359). Locked HR5 gate 1,035 tests green, APK assembled and desktop compiled. HUBREADY-01..05 remain owed on real hosts. Next HR6 device identity replacement. See `docs/plans/HUB-READINESS-REMEDIATION.md`.
 
