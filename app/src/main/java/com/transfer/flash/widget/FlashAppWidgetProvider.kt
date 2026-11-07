@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import android.widget.RemoteViews
+import androidx.annotation.ChecksSdkIntAtLeast
 import com.transfer.flash.MainActivity
 import com.transfer.flash.R
 
@@ -111,6 +112,7 @@ class FlashAppWidgetProvider : AppWidgetProvider() {
         /**
          * Returns true if pinning widgets is supported by the device's launcher (API 26+).
          */
+        @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.O)
         fun isPinningSupported(context: Context): Boolean {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
             val manager = context.getSystemService(AppWidgetManager::class.java) ?: return false
