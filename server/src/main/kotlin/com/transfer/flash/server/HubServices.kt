@@ -342,11 +342,13 @@ class HubServices private constructor(
                 if (revocationService.isDelegationRevoked(cert.serial)) {
                     log.error("This hub's delegation (serial {}) was REVOKED by the organisation root: it will issue no certificate until a new delegation is installed.", cert.serial)
                 }
+                // Startup must retire directory memberships before serving any request. Live notifications are
+                // asynchronous and cannot repair a process that stopped after persisting a revocation.
+                reconcileDirectory(identities, directory, revocationService)
                 revocationService.onRevoked { deviceId, _, _ ->
                     bearerTokens.revokeDevice(deviceId)
                     directory.removeDevice(deviceId)
                 }
-                reconcileDirectory(identities, directory)
                 directory.statementSigner = OrgMemberStatementSigner { deviceId, subjectPublicKey, departmentId, role, nowMs, serial ->
                     val d = delegations.current ?: return@OrgMemberStatementSigner null
                     val statement = OrgMemberStatement.issue(
@@ -544,13 +546,24 @@ class HubServices private constructor(
             return installed
         }
 
-        /** After a restart the directory must contain every ACTIVE device (a crash between the two writes must not lose one). */
-        internal fun reconcileDirectory(identities: IdentityStore, directory: OrganizationDirectory) {
+        /** Repair a crash between the registry/revocation write and the corresponding directory write. */
+        private fun reconcileDirectory(
+            identities: IdentityStore,
+            directory: OrganizationDirectory,
+            revocations: SqliteRevocationService,
+        ) {
             var offset = 0
             while (true) {
-                val page = identities.listDevices(status = DeviceStatus.ACTIVE, limit = 500, offset = offset)
+                val page = identities.listDevices(limit = 500, offset = offset)
                 if (page.isEmpty()) break
                 for (device in page) {
+                    if (device.status != DeviceStatus.ACTIVE ||
+                        revocations.isRevoked(device.serial, device.deviceId) ||
+                        revocations.isDelegationRevoked(device.delegationSerial)
+                    ) {
+                        directory.removeDevice(device.deviceId)
+                        continue
+                    }
                     if (directory.getDepartmentMember(device.deviceId) != null) continue
                     directory.applyEnrollment(
                         DepartmentMember(

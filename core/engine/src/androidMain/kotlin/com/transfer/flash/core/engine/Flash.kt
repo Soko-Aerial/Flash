@@ -529,6 +529,7 @@ private class Wiring(
             localDeviceId = { localId },
             revocationsProvider = hubRevocations::current,
             permitsOrg = hubRevocations::permitsOrg,
+            revocationLoaded = { hubRevocations.scopeId() != null },
         )
         val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
             dao = db.orgDirectoryDao(),

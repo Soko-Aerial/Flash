@@ -312,7 +312,7 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                     expiresAtMs = req.expiresAtMs,
                     clearExpiry = req.clearExpiry,
                     actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
-                    actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
+                    actorDeptId = if (isOrgAdmin) null else existing.departmentId,
                     actorRef = session.username,
                     clientRequestId = null,
                 )
@@ -373,7 +373,7 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 store.deleteAnnouncement(
                     id,
                     actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
-                    actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
+                    actorDeptId = if (isOrgAdmin) null else existing.departmentId,
                     actorRef = session.username,
                 )
             } catch (_: AnnouncementForbiddenException) {
@@ -418,7 +418,7 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 store.pinAnnouncement(
                     id,
                     actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
-                    actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
+                    actorDeptId = if (isOrgAdmin) null else existing.departmentId,
                     actorRef = session.username,
                 )
             } catch (_: AnnouncementForbiddenException) {
@@ -471,7 +471,7 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 store.unpinAnnouncement(
                     id,
                     actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
-                    actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
+                    actorDeptId = if (isOrgAdmin) null else existing.departmentId,
                     actorRef = session.username,
                 )
             } catch (_: AnnouncementForbiddenException) {

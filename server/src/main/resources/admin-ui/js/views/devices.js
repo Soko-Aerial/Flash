@@ -463,7 +463,11 @@ export function mountDevices(container, ctx) {
     saveDept.addEventListener('click', () =>
       withBusy(saveDept, async () => {
         try {
-          const updated = await api.put('/devices/' + encodeURIComponent(device.deviceId), { department: dept.value || null, moveToDepartment: true });
+          const path = '/devices/' + encodeURIComponent(device.deviceId);
+          const change = { department: dept.value || null, moveToDepartment: true };
+          const updated = await guarded('device.move', device.deviceId,
+            (id) => api.put(path, change, { stepUp: id }), { rethrow: true });
+          if (!updated) return;
           replaceDevice(updated);
           toast(t('devices.move.done', { n: 1 }), { kind: 'success' });
           renderDrawer(body, updated);

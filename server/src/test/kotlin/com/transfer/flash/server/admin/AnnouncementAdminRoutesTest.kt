@@ -8,6 +8,7 @@ import com.transfer.flash.core.hubprotocol.rest.AnnouncementSearchResponseDto
 import com.transfer.flash.core.hubprotocol.rest.ErrorBody
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.hubprotocol.rest.PostAnnouncementRequestDto
+import com.transfer.flash.core.hubprotocol.rest.UpdateAnnouncementRequestDto
 import com.transfer.flash.server.announcements.AnnouncementStore
 import com.transfer.flash.server.auth.HubRateLimits
 import com.transfer.flash.server.config.ServerConfig
@@ -20,6 +21,7 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -110,6 +112,26 @@ class AnnouncementAdminRoutesTest {
             contentType(ContentType.Application.Json)
             setBody(HubRestCodec.encode(body))
         }
+
+    @Test
+    fun multiDepartmentHeadCanEditAnAnnouncementInEachAssignedDepartment() = testApplication {
+        val r = Realm()
+        r.admins.setHeadDepartments("head-a", listOf("dept-a", "dept-b"), "boss")
+        mount(r)
+        val head = client.loginAs(r, "head-a", headPassword, r.headTotp)
+        for (dept in listOf("dept-a", "dept-b")) {
+            val created = client.postA("/announcements", head, PostAnnouncementRequestDto("department", dept, "Original", "Updates"))
+            assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+            val item = HubRestCodec.decode<AnnouncementItemDto>(created.bodyAsText())
+            val updated = client.put("/admin/api/v1/announcements/${item.id}") {
+                withSession(head)
+                contentType(ContentType.Application.Json)
+                setBody(HubRestCodec.encode(UpdateAnnouncementRequestDto(expectedSeq = item.seq, title = "Updated")))
+            }
+            assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+            assertEquals("Updated", HubRestCodec.decode<AnnouncementItemDto>(updated.bodyAsText()).title)
+        }
+    }
 
     @Test
     fun previewCleansTextExtractsLinksAndShowsHonestyNotice() = testApplication {

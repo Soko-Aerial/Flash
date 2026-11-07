@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap
 object StepUpActions {
     const val REVOKE_DEVICE = "device.revoke"
     const val UNREVOKE_DEVICE = "device.unrevoke"
+    const val MOVE_DEVICE = "device.move"
     const val DELEGATION_INSTALL = "delegation.install"
     const val DELEGATION_RELOAD = "delegation.reload"
     const val ADMIN_CREATE = "admin.create"
@@ -31,7 +32,7 @@ object StepUpActions {
     const val APPROVER_CHANGE = "approver.change"
 
     val ALL: Set<String> = setOf(
-        REVOKE_DEVICE, UNREVOKE_DEVICE, DELEGATION_INSTALL, DELEGATION_RELOAD, ADMIN_CREATE, ADMIN_DISABLE, SETTINGS_CHANGE,
+        REVOKE_DEVICE, UNREVOKE_DEVICE, MOVE_DEVICE, DELEGATION_INSTALL, DELEGATION_RELOAD, ADMIN_CREATE, ADMIN_DISABLE, SETTINGS_CHANGE,
         REVOCATION_INSTALL, RECOVERY_REGENERATE, SIGNER_REPLACE, APPROVER_CHANGE,
     )
 
