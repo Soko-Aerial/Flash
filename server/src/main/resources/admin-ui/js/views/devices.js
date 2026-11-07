@@ -28,6 +28,13 @@ export function statusBadge(status) {
   return badge(t('status.unenrolled'), 'warn');
 }
 
+export function moveDevice(deviceId, department) {
+  const path = '/devices/' + encodeURIComponent(deviceId);
+  const change = { department, moveToDepartment: true };
+  return guarded('device.move', deviceId,
+    (id) => api.put(path, change, { stepUp: id }), { rethrow: true });
+}
+
 async function sha256Hex(b64) {
   try {
     const d = await globalThis.crypto.subtle.digest('SHA-256', base64ToBytes(b64));
@@ -384,7 +391,8 @@ export function mountDevices(container, ctx) {
         let ok = 0;
         for (const d of targets) {
           try {
-            const updated = await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: sel.value || null, moveToDepartment: true });
+            const updated = await moveDevice(d.deviceId, sel.value || null);
+            if (!updated) break;
             const i = all.findIndex((x) => x.deviceId === d.deviceId);
             if (i >= 0) all[i] = updated;
             ok += 1;
@@ -394,7 +402,7 @@ export function mountDevices(container, ctx) {
           }
         }
         dlg.close();
-        toast(t('devices.move.done', { n: ok }), { kind: ok ? 'success' : 'error' });
+        if (ok) toast(t('devices.move.done', { n: ok }), { kind: 'success' });
         table.selection.clear();
         fillDepartments();
         apply();
@@ -463,10 +471,7 @@ export function mountDevices(container, ctx) {
     saveDept.addEventListener('click', () =>
       withBusy(saveDept, async () => {
         try {
-          const path = '/devices/' + encodeURIComponent(device.deviceId);
-          const change = { department: dept.value || null, moveToDepartment: true };
-          const updated = await guarded('device.move', device.deviceId,
-            (id) => api.put(path, change, { stepUp: id }), { rethrow: true });
+          const updated = await moveDevice(device.deviceId, dept.value || null);
           if (!updated) return;
           replaceDevice(updated);
           toast(t('devices.move.done', { n: 1 }), { kind: 'success' });
