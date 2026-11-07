@@ -451,7 +451,7 @@ class RealFlashChatRepositoryHubFileTest {
         }
         assertTrue(alice.groupFrames.isEmpty(), "the bare group message frame must never follow a file ticket")
         assertTrue(alice.relay.sent.none { it.type == HubChatBridge.GROUP_FRAME }, "and not through the hub either")
-        assertEquals("SENT", alice.db.messageDao().getByLocalId(groupMessageId)!!.status)
+        awaitUntil("the group message marked sent") { alice.db.messageDao().getByLocalId(groupMessageId)?.status == "SENT" }
         assertEquals(1, alice.db.outboxDao().observeCount().first())
     }
 

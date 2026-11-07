@@ -7937,3 +7937,37 @@ not a substitute for the following real-host checks. No phone was operated in th
 - Pass: list positions/selection behave consistently; read marking only follows visible announcements; drafts survive
   failure; no duplicate conversation/join action; existing privacy and link-confirmation behavior is preserved.
 - Status: TODO.
+
+## 2026-11-07 — Hub rollout review follow-up
+
+Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT-04/12/14`, `ANN-01/10/11`, `CONSOLE-D02..07`, and `HUBWORK-01..05` for existing drills.
+
+### HUBREADY-01 — Multi-department head paging and search
+- Setup. A head assigned to departments A and B, with members, invites and announcements in both and enough newer rows from department C to fill a page. Include a head assigned only to A and an org admin as controls.
+- Exercise. Sign in through the console, use list, search, page and department filters, and open direct links to out-of-scope resources.
+- Pass. A and B appear in the multi-department head's permitted views. Department C is excluded from items, counts and cursors. Explicit in-scope filters work. The single-department and org-admin controls retain their access.
+- Status. TODO.
+
+### HUBREADY-02 — Restore with matching, absent and mismatched data keys
+- Setup. A disposable Hub snapshot with a sealed mailbox row, a TOTP admin, a pending sealed file and a revoked device. Store the matching data key separately.
+- Exercise. Restore with the matching key. Repeat with the key missing and with a different valid-format key. Use a fresh disposable destination for each case.
+- Pass. A matching restore preserves admin sign-in, queued delivery, file integrity and revocation. Missing or mismatched keys are reported before serving and never silently replace the key for existing sealed data.
+- Status. TODO.
+
+### HUBREADY-03 — Queued group delivery after removal
+- Setup. Three enrolled group members, with one offline. Send a group message and file while they are offline and verify the queue. Remove that device from the group while keeping it enrolled.
+- Exercise. Reconnect the former member, send again from an active member and inspect the recipient traffic, sender outcome and file read response.
+- Pass. No new group messages arrive and pending file downloads are refused. Pre-removal mailbox rows follow the documented policy. If removal cuts off undelivered data, those rows are retired without sending their payload or reporting delivery.
+- Status. TODO.
+
+### HUBREADY-04 — Signed revocation relay with the Hub unreachable
+- Setup. Three enrolled peers with fresh offline leases and TLS LAN sessions. Use an Android and desktop for A and B and repeat with the roles switched. Keep B and C cut off from the Hub. Revoke C by device ID and sync only A.
+- Exercise. Connect A and B and look for `org.revocation.lan result=APPLIED` on B. Repeat with an already connected pair and allow the ten-minute rate window plus the next poll. Restart B offline. Attempt an organisation-only send and linked-group traffic from C. Repeat with a stale and invalid update, and with an old peer that has no `rvg1`.
+- Pass. B denies C's organisation trust and linked-group traffic before and after restart. Stale and invalid lists do not change that decision. Check direct manual pairing separately under its existing policy. With a root-signed delegation cutoff, previously certified A and B can relay the cutoff while the lease remains valid.
+- Status. TODO on physical hosts. Automated signed-cache, TLS binding, exchange and roster cases run separately.
+
+### HUBREADY-05 — Console provisioning, recovery and join confirmation on a real Hub
+- Setup. An isolated Hub with a production-style root and delegation, an organisation admin, two departments, an enrolled device, a join request and enough announcements for multiple pages.
+- Exercise. Create a head using the console's browser confirmation key and one-time credentials. Sign in as the head, confirm restricted routes and actions, then change the head's departments while that browser is open and refresh its session. Cancel and then confirm a join request. Import a stale, wrong-signed and valid root-signed revocation list. Verify older announcements and Overview audit status at narrow and wide widths.
+- Pass. The console shows only scoped data and actions. One-time credentials work for the head. The cancelled approval does not change membership. The signed-list import requires step-up and only the newer root-signed list installs. Announcement pages retain all tied entries and display their shown count.
+- Status. TODO. Isolated Chrome fixture exercised UI wiring and server tests covered the routes. Real Hub acceptance remains owed.

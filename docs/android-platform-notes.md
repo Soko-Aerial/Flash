@@ -967,3 +967,9 @@ https://developer.android.com/develop/background-work/services/fgs (fetched 2026
 - **Project implication:** `FlashBackgroundService.onCreate` now promotes first, before constructing or starting
   `TranssionHiberKeepAlive`; the keep-alive start is dispatched to `Dispatchers.Default`. This is a platform deadline, not a
   device-specific workaround. The 2026-10-26 Infinix log is the evidence (`ERROR-984` bundle).
+
+## 2026-11-07 — Offline Hub revocation state in app-private storage
+
+**Verified against Android Developers for API 21+, including Flash's minSdk 24.** `Context.getNoBackupFilesDir()` supplies an internal directory excluded from automatic remote backup and needs no extra permissions. Flash derives the current directory path at runtime and stores signed revocation state beneath it. This preserves the list across process restart and avoids restoring an older list from Android's automatic backup. [Android Developers Context reference](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir())
+
+The existing Android file helper keeps the temporary and destination files in the same directory, checks rename success and now syncs revocation-list writes before replacement. The Windows Android-host JVM uses atomic NIO replacement because Windows `File.renameTo` failed when a destination already existed. Physical Android replacement remains part of HUBREADY-04. [Android Developers File reference](https://developer.android.com/reference/java/io/File#renameTo(java.io.File))

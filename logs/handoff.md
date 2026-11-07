@@ -1,5 +1,17 @@
 # Current Handoff
 
+> **2026-11-07 — Hub HR1–HR5 implementation complete on `dev`.** Android app/SDK and desktop persist verified per-root revocation state and exchange it through authenticated LAN sessions. The restored HR5 gate passed 1,035 tests, APK assembly and desktop compile. HUBREADY-01..05 remain owed on real hosts. Use the HR6 handoff in `docs/plans/HUB-READINESS-REMEDIATION.md` to start fresh-identity replacement.
+
+> **2026-11-07 — Hub remediation HR1–HR4 implemented locally.** Scoped server listings, data-key restore validation, group mailbox retirement, and console scope/provisioning/revocation import/approval/paging are in the working tree. The console Chrome fixture and Node suite passed. Real Hub/browser-device acceptance remains HUBREADY-01..05. Next HR5, signed LAN revocation propagation. See `docs/plans/HUB-READINESS-REMEDIATION.md` for the precise stopping point.
+
+> **2026-11-07 — Hub remediation HR3 implemented.** Group removal now retires undelivered Hub group mailbox copies across rejoin, and leaves direct mail deliverable. Locked server gate 103/103. Both trigger-removal mutations failed. Authority: ADR-358 and `docs/plans/HUB-READINESS-REMEDIATION.md`. HUBREADY-03 remains owed. Next HR4, scoped console workflows and announcement paging.
+
+> **2026-11-07 — Hub remediation HR2 implemented.** Startup and `admin-recovery` validate the matching `data.key`, and legacy sealed/unsealed cases are covered. Locked server gate 46/46. Authority: ADR-357 and `docs/plans/HUB-READINESS-REMEDIATION.md`. HUBREADY-02 operator drill remains owed. Next HR3, queued group delivery after removal.
+
+> **2026-11-07 — Hub remediation HR1 implemented.** Scoped SQL paging and announcement visibility passed 79 server tests, with two reproduced regressions and two scope-removal mutations. Authority: `docs/plans/HUB-READINESS-REMEDIATION.md`. HUBREADY-01 remains owed after HR4. HR2 is the current phase.
+
+> **2026-11-07 — Hub rollout review recorded.** `docs/audit/2026-11-07-hub-feature-readiness.md` separates implemented features, incomplete workflows and operational gates. Follow up on LAN revocation propagation, department-head provisioning and scoped queries, restore/key validation, device identity replacement and the console revocation-list installer. ANN-01/10 still need a system notification producer. Group mailbox replay after removal needs an explicit policy. HUBREADY-01..04 cover the new acceptance cases. Product code and deployment were unchanged by this review.
+
 > **2026-11-06 — HUB WORKSPACE REDESIGN IMPLEMENTED on `dev` (commit follows this record).** Design and evidence: `docs/ui/hub-workspace-redesign.md`, ten native fixture captures in `docs/ui/hub-workspace-renders/`. Hub JVM 205 + Android-host 196 tests green; Android debug assembly and desktop render green. No device verification; HUBWORK-01..05 owed. Owner requested a focused Hub commit, then Transfers and Nearby with minimal professional paired-device rows. Next: research/design UI-047/048 before edits. Existing user photos remain untouched. No push.
 
 

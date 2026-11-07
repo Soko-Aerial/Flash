@@ -5,6 +5,7 @@ import com.transfer.flash.server.admin.AuditSigner
 import com.transfer.flash.server.admin.AdminAuthService
 import com.transfer.flash.server.auth.HubKeyStore
 import com.transfer.flash.server.config.ServerConfig
+import com.transfer.flash.server.identity.IdentityStore
 import com.transfer.flash.server.storage.ServerDatabase
 import org.slf4j.LoggerFactory
 import java.io.File
@@ -159,7 +160,9 @@ internal fun adminRecovery(args: Array<String>): Int {
     val dataDir = File(config.dataDir)
     val delegate = HubKeyStore(dataDir.toPath()).loadOrCreateDelegateKey()
     ServerDatabase("jdbc:sqlite:${File(dataDir, "flash-hub.db").absolutePath}").use { db ->
-        val admins = AdminAuthService(printSetupTokenToConsole = false, db = db)
+        IdentityStore.open(db)
+        val dataSecrets = loadHubDataKey(db, File(dataDir, "data.key").toPath())
+        val admins = AdminAuthService(printSetupTokenToConsole = false, db = db, secrets = dataSecrets)
         val creds = admins.breakGlassReset(username)
         AuditLogger(db, AuditSigner(delegate.pair.private, delegate.publicKey))
             .log(actor = "console", action = "ADMIN_BREAK_GLASS", details = "Break-glass reset of admin ${creds.username} from the server console")

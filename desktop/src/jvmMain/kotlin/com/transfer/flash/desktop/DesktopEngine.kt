@@ -108,12 +108,15 @@ import com.transfer.flash.core.engine.FlashEngine
 import com.transfer.flash.core.engine.FlashDesktop
 import com.transfer.flash.core.engine.FlashInboundRouter
 import com.transfer.flash.core.engine.FlashPathSanitizer
+import com.transfer.flash.core.engine.bindLanSession
 import com.transfer.flash.core.engine.FlashSessionCoordinator
 import com.transfer.flash.core.engine.FlashConfig
 import com.transfer.flash.core.engine.FlashReadiness
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import com.transfer.flash.core.enterprise.JvmFileEnterpriseTrustStore
 import com.transfer.flash.core.enterprise.EnterpriseHub
+import com.transfer.flash.core.enterprise.HubRevocationCache
+import com.transfer.flash.core.enterprise.HubRevocationGossip
 import com.transfer.flash.core.messaging.hub.FlashRelayHubPort
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
@@ -1350,6 +1353,7 @@ public class DesktopEngine(
             )
         }
 
+        var bindRevocationSession: ((WsSession) -> HubRevocationGossip.Session)? = null
         val network = JvmWsFlashNetwork(
             localDeviceId = localId,
             localFriendlyName = friendlyName,
@@ -1357,12 +1361,12 @@ public class DesktopEngine(
             // PC5 (ADR-048): the tier's pacing, adjusted by the connection mode (ECO / BOOST).
             transportProfile = { connectionPolicy().transport },
             localFeatures = {
-            if (swarmBinding != null) {
-                setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
-            } else {
-                setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
-            }
-        },
+                buildSet {
+                    addAll(setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1"))
+                    if (swarmBinding != null) add("sw1")
+                    if (bindRevocationSession != null) add(HubRevocationGossip.FEATURE)
+                }
+            },
         )
         networkImpl = network
 
@@ -1494,6 +1498,12 @@ public class DesktopEngine(
         runCatching {
             val db = openEncryptedFlashDatabase(File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME), chatDbKey())
             chatDb = db
+            val hubRevocations = HubRevocationCache(
+                directory = File(stateDir, "hub/revocations").path,
+                credentials = enterpriseTrustStore::getCredentials,
+                verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+            )
+            runBlocking { hubRevocations.load() }
 
             val hub = EnterpriseHub(
                 deviceId = localId,
@@ -1531,6 +1541,9 @@ public class DesktopEngine(
                 dao = db.orgDirectoryDao(),
                 trustStore = trustStore,
                 isEnrolled = { enterpriseTrustStore.isEnrolled },
+                permitsOrg = hubRevocations::permitsOrg,
+                revocations = hubRevocations::current,
+                enrolledRoot = { enterpriseTrustStore.credentials.value?.rootFingerprint },
                 localDeviceId = localId,
                 ownFingerprintProvider = {
                     crypto.identityPublicKeyEncoded.let {
@@ -1544,12 +1557,17 @@ public class DesktopEngine(
             // Plan B B4: the hub-signed group rosters (hub groups keep working on the LAN). The chat is built below; the holder
             // lets the directory sync's refresh reach it once it exists.
             var hubRosterChat: RealFlashChatRepository? = null
-            val hubRevocations = com.transfer.flash.core.enterprise.HubRevocationCache { hub.session.fetchRevocations() }
+            val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
+                orgPeerResolver.onRevocationsChanged()
+                hubRosterChat?.refreshHubGroupRosters()
+            })
             val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
                 dao = db.orgDirectoryDao(),
                 credentialsProvider = { enterpriseTrustStore.credentials.value },
                 verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
                 revocationsProvider = { hubRevocations.current() },
+                permitsOrg = hubRevocations::permitsOrg,
+                revocationLoaded = { hubRevocations.scopeId() != null },
                 localDeviceId = { localId },
             )
             // Plan B B1: the one caller of the directory sync, and the unenrol / other-organisation wipe (ORGT-U50..U55).
@@ -1565,17 +1583,18 @@ public class DesktopEngine(
                 credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
                 relayConnected = hub.relay.state.map { it.canSend },
                 syncOnce = { force ->
-                hubRevocations.refresh()
-                orgDirectorySync.syncOnce(force)
-            },
+                    hubRevocations.refresh(hub.session::fetchRevocations)
+                    orgPeerResolver.onRevocationsChanged()
+                    orgDirectorySync.syncOnce(force)
+                },
                 clearSnapshot = { orgDirectorySync.clearSnapshot() },
                 refreshResolver = {
+                    hubRevocations.load()
                     orgPeerResolver.refreshFromSnapshot()
-                    hubGroupRosters.refresh()
-                    hubRosterChat?.refreshHubGroupRosters()
+                    val chat = hubRosterChat
+                    if (chat == null) hubGroupRosters.refresh() else chat.refreshHubGroupRosters()
                 },
                 clearResolver = {
-                hubRevocations.clear()
                     orgPeerResolver.clear()
                     hubRosterChat?.clearHubGroupRosters()
                     hubGroupRosters.clear()
@@ -1839,6 +1858,11 @@ public class DesktopEngine(
             chatImpl?.onGroupOfferRefused = { groupId, groupName, message ->
                 FlashLog.i(TAG_WS, "Group offer refused: $groupId ($groupName)")
                 onGroupOfferRefused?.invoke(groupId, groupName, message)
+            }
+            bindRevocationSession = { session ->
+                revocationGossip.bindLanSession(session, orgPeerResolver) {
+                    network.activeSessions.value[session.peerDeviceId] === session
+                }
             }
             boot("chat repository opened (${File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME).absolutePath})")
         }.onFailure { e ->
@@ -2167,6 +2191,8 @@ public class DesktopEngine(
                             onPairingHello = { pairing.onSessionUp(it) },
                         )
                         sessionJobs[session] = scope.launch {
+                            val gossip = bindRevocationSession?.invoke(session)
+                            if (gossip != null) launch { gossip.announceWhileConnected() }
                             launch {
                                 session.incomingBinary.collect { data ->
                                     handleInboundBinary(session.peerDeviceId.value, data) { bytes ->
@@ -2176,7 +2202,7 @@ public class DesktopEngine(
                             }
                             launch {
                                 session.incomingText.collect { text ->
-                                    handleInboundText(session.peerDeviceId.value, text)
+                                    if (gossip?.receive(text) != true) handleInboundText(session.peerDeviceId.value, text)
                                 }
                             }
                         }

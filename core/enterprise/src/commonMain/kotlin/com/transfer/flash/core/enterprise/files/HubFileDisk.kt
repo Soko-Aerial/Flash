@@ -14,8 +14,8 @@ internal expect object HubFileDisk {
     /** The whole file, or null when it does not exist or is longer than [maxBytes]. */
     fun readAll(path: String, maxBytes: Int): ByteArray?
 
-    /** Writes [bytes] to a sibling temporary file, syncs it, then replaces [path] with it. */
-    fun replaceAtomically(path: String, bytes: ByteArray)
+    /** Writes [bytes] to a sibling temporary file, optionally syncs the file, then replaces [path]. */
+    fun replaceAtomically(path: String, bytes: ByteArray, sync: Boolean = false)
 
     /** Deletes [path] when present. */
     fun delete(path: String)

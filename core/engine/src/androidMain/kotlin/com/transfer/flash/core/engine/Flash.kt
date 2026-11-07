@@ -19,6 +19,9 @@ import com.transfer.flash.core.discovery.nsd.NsdTransport
 import com.transfer.flash.core.engine.store.EncryptedDatabaseRecovery
 import com.transfer.flash.core.engine.store.RoomRememberedEndpointStore
 import com.transfer.flash.core.engine.store.RoomTransferStore
+import com.transfer.flash.core.enterprise.HubGroupRosters
+import com.transfer.flash.core.enterprise.HubRevocationCache
+import com.transfer.flash.core.enterprise.HubRevocationGossip
 import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
@@ -87,6 +90,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
@@ -312,9 +316,9 @@ private class Wiring(
             transportProfile = { connectionPolicy(engine).transport },
             localFeatures = {
             if (facade?.swarm != null) {
-                setOf("sw1", "gs1", "cv1", PairingWireCodec.FEATURE_PAIR_REVOKE)
+                setOf("sw1", "gs1", "cv1", "hrs1", PairingWireCodec.FEATURE_PAIR_REVOKE, HubRevocationGossip.FEATURE)
             } else {
-                setOf("gs1", "cv1", PairingWireCodec.FEATURE_PAIR_REVOKE)
+                setOf("gs1", "cv1", "hrs1", PairingWireCodec.FEATURE_PAIR_REVOKE, HubRevocationGossip.FEATURE)
             }
         }, // cv1 = FEATURE_VIDEO_UPGRADE (ADR-078); pr1 = PAIR_REVOKE (ADR-351)
             onUsableNetwork = {
@@ -507,10 +511,27 @@ private class Wiring(
             allowed = { modes.dialFilter.value },
             log = { Log.i(TAG, it) },
         )
+        val verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto)
+        val hubRevocations = HubRevocationCache(
+            directory = File(appContext.noBackupFilesDir, "hub-revocations").path,
+            credentials = enterpriseTrustStore::getCredentials,
+            verifier = verifier,
+        )
+        val hubGroupRosters = HubGroupRosters(
+            dao = db.orgDirectoryDao(),
+            credentialsProvider = enterpriseTrustStore::getCredentials,
+            verifier = verifier,
+            localDeviceId = { localId },
+            revocationsProvider = hubRevocations::current,
+            permitsOrg = hubRevocations::permitsOrg,
+        )
         val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
             isEnrolled = { enterpriseTrustStore.isEnrolled },
+            permitsOrg = hubRevocations::permitsOrg,
+            revocations = hubRevocations::current,
+            enrolledRoot = { enterpriseTrustStore.credentials.value?.rootFingerprint },
             localDeviceId = localId,
             ownFingerprintProvider = {
                 crypto.identityPublicKeyEncoded.let {
@@ -521,9 +542,6 @@ private class Wiring(
             },
         )
         orgPeerResolverRef = orgPeerResolver
-        scope.launch {
-            orgPeerResolver.refreshFromSnapshot()
-        }
 
         val chatImpl = RealFlashChatRepository(
             scope = scope,
@@ -531,6 +549,8 @@ private class Wiring(
             localDisplayName = identity.friendlyName,
             isOrgPeer = { peerId -> if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false },
             orgPeerResolver = orgPeerResolver,
+            hubGroupRosters = hubGroupRosters,
+            enterpriseTrustStore = enterpriseTrustStore,
             conversationDao = db.conversationDao(),
             messageDao = db.messageDao(),
             outboxDao = db.outboxDao(),
@@ -639,6 +659,22 @@ private class Wiring(
             },
         )
         presenceChat = chatImpl
+        val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
+            orgPeerResolver.onRevocationsChanged()
+            chatImpl.refreshHubGroupRosters()
+        })
+        scope.launch {
+            enterpriseTrustStore.credentials.map { it?.rootFingerprint }.distinctUntilChanged().collect { root ->
+                if (root == null) {
+                    orgPeerResolver.clear()
+                    chatImpl.clearHubGroupRosters()
+                } else {
+                    hubRevocations.load()
+                    orgPeerResolver.refreshFromSnapshot()
+                    chatImpl.refreshHubGroupRosters()
+                }
+            }
+        }
         // Pairing (`FlashEngine.pairing`): the same coordinator the desktop runs, so a library consumer (a watch, a
         // headless device) can pair without copying the app's private driver. Its session-up hello and the inbound
         // `FLASH_PAIR` frames are wired below; before this, those frames fell through the router and were dropped.
@@ -789,8 +825,13 @@ private class Wiring(
                             resumeRoamKilledSends(transferImpl, networkImpl, session.peerDeviceId.value)
                         }
                         sessionJobs[session] = scope.launch {
+                            val gossip = revocationGossip.bindLanSession(session, orgPeerResolver) {
+                                networkImpl.activeSessions.value[session.peerDeviceId] === session
+                            }
+                            launch { gossip.announceWhileConnected() }
                             launch {
-                                session.incomingText.collect { text ->
+                                session.incomingText.collect textFrames@{ text ->
+                                    if (gossip.receive(text)) return@textFrames
                                     handleInboundText(
                                         chatImpl,
                                         transferImpl,

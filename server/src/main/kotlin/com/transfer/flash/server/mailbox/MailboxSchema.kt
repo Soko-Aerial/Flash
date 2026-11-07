@@ -32,6 +32,7 @@ import java.sql.Connection
  */
 object MailboxSchema {
     const val COMPONENT = "mailbox"
+    internal const val GROUP_MEMBER_REMOVED = "group_member_removed"
 
     /** Rows migrated from v1 get this lifetime counted from the migration time. */
     const val MIGRATED_TTL_MS: Long = MailboxLimits.DEFAULT_TTL_MS
@@ -57,6 +58,33 @@ object MailboxSchema {
         val migrator = Migrator(database)
         migrator.register(COMPONENT, steps(clock))
         migrator.migrate()
+    }
+
+    /** The production hub has both stores in one database, so a membership deletion can retire mailbox rows atomically. */
+    internal fun migrateGroupAuthorization(database: ServerDatabase) {
+        val retire = "UPDATE mailbox_envelopes SET expires_at = 0, undeliverable_reason = '$GROUP_MEMBER_REMOVED'"
+        val migration = Migration(1, "retire queued group messages when a membership is deleted") { conn ->
+            conn.createStatement().use { st ->
+                st.execute("CREATE INDEX IF NOT EXISTS idx_mailbox_group_target ON mailbox_envelopes(group_id, target_device_id) WHERE group_id IS NOT NULL")
+                st.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS retire_group_mailbox_membership AFTER DELETE ON dir_group_members BEGIN
+                      $retire WHERE group_id = OLD.group_id AND target_device_id = OLD.device_id
+                        AND undeliverable_reason IS NULL;
+                    END
+                    """.trimIndent(),
+                )
+                st.execute(
+                    """
+                    $retire WHERE group_id IS NOT NULL AND undeliverable_reason IS NULL AND NOT EXISTS (
+                        SELECT 1 FROM dir_group_members AS member WHERE member.group_id = mailbox_envelopes.group_id
+                          AND member.device_id = mailbox_envelopes.target_device_id
+                    )
+                    """.trimIndent(),
+                )
+            }
+        }
+        Migrator(database).apply { register("mailbox_group_authorization", listOf(migration)) }.migrate()
     }
 
     private fun baseline(conn: Connection) {

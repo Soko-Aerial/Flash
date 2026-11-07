@@ -55,6 +55,15 @@ export function isSignedIn() {
   return !!session.user;
 }
 
+export function isOrgAdmin() {
+  const role = (session.role || '').toUpperCase();
+  return role === 'ORG_ADMIN' || role === 'ADMIN';
+}
+
+export function canOpenConsoleRoute(route) {
+  return isOrgAdmin() || (route !== 'audit' && route !== 'settings');
+}
+
 /** Milliseconds left of the absolute session lifetime, on the hub's clock. */
 export function msLeft(now = Date.now()) {
   return session.expiresAtMs - (now + session.skewMs);

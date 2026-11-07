@@ -72,9 +72,12 @@ import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import com.transfer.flash.core.engine.FlashPathSanitizer
+import com.transfer.flash.core.engine.bindLanSession
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.enterprise.AndroidPreferencesEnterpriseTrustStore
 import com.transfer.flash.core.enterprise.EnterpriseHub
+import com.transfer.flash.core.enterprise.HubRevocationCache
+import com.transfer.flash.core.enterprise.HubRevocationGossip
 import com.transfer.flash.core.messaging.hub.FlashRelayHubPort
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -928,9 +931,9 @@ object DiscoveryEngineHolder {
             transportProfile = { connectionPolicy().transport },
             localFeatures = {
             if (swarmBinding != null) {
-                setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+                setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1", HubRevocationGossip.FEATURE)
             } else {
-                setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+                setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1", HubRevocationGossip.FEATURE)
             }
         },
         )
@@ -1264,6 +1267,12 @@ object DiscoveryEngineHolder {
 
         val enterpriseTrustStore = AndroidPreferencesEnterpriseTrustStore(appContext)
         enterpriseTrustStoreRef = enterpriseTrustStore
+        val hubRevocations = HubRevocationCache(
+            directory = File(appContext.noBackupFilesDir, "hub-revocations").path,
+            credentials = enterpriseTrustStore::getCredentials,
+            verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+        )
+        hubRevocations.load()
 
         val debuggable = (appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         hubContentViaHubFlag.value = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
@@ -1303,6 +1312,9 @@ object DiscoveryEngineHolder {
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
             isEnrolled = { enterpriseTrustStore.isEnrolled },
+            permitsOrg = hubRevocations::permitsOrg,
+            revocations = hubRevocations::current,
+            enrolledRoot = { enterpriseTrustStore.credentials.value?.rootFingerprint },
             localDeviceId = identity.deviceId.value,
             ownFingerprintProvider = {
                 crypto.identityPublicKeyEncoded.let {
@@ -1316,12 +1328,17 @@ object DiscoveryEngineHolder {
         // Plan B B4: the hub-signed group rosters (hub groups keep working on the LAN). The chat is built below; the holder
         // lets the directory sync's refresh reach it once it exists.
         var hubRosterChat: RealFlashChatRepository? = null
-        val hubRevocations = com.transfer.flash.core.enterprise.HubRevocationCache { hub.session.fetchRevocations() }
+        val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
+            orgPeerResolver.onRevocationsChanged()
+            hubRosterChat?.refreshHubGroupRosters()
+        })
         val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
             dao = db.orgDirectoryDao(),
             credentialsProvider = { enterpriseTrustStore.credentials.value },
             verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
             revocationsProvider = { hubRevocations.current() },
+            permitsOrg = hubRevocations::permitsOrg,
+            revocationLoaded = { hubRevocations.scopeId() != null },
             localDeviceId = { identity.deviceId.value },
         )
         // Plan B B1: the one caller of the directory sync. It also deletes the snapshot when the enrolment ends or
@@ -1338,17 +1355,18 @@ object DiscoveryEngineHolder {
             credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
             relayConnected = hub.relay.state.map { it.canSend },
             syncOnce = { force ->
-            hubRevocations.refresh()
+                hubRevocations.refresh(hub.session::fetchRevocations)
+                orgPeerResolver.onRevocationsChanged()
             orgDirectorySync.syncOnce(force)
         },
             clearSnapshot = { orgDirectorySync.clearSnapshot() },
             refreshResolver = {
+                hubRevocations.load()
                 orgPeerResolver.refreshFromSnapshot()
-                hubGroupRosters.refresh()
-                hubRosterChat?.refreshHubGroupRosters()
+                val chat = hubRosterChat
+                if (chat == null) hubGroupRosters.refresh() else chat.refreshHubGroupRosters()
             },
             clearResolver = {
-            hubRevocations.clear()
                 orgPeerResolver.clear()
                 hubRosterChat?.clearHubGroupRosters()
                 hubGroupRosters.clear()
@@ -2017,8 +2035,13 @@ object DiscoveryEngineHolder {
                             resumeRoamKilledSends(transferImpl, networkImpl, session.peerDeviceId.value)
                         }
                         sessionJobs[session] = appScope.launch {
+                            val gossip = revocationGossip.bindLanSession(session, orgPeerResolver) {
+                                networkImpl.activeSessions.value[session.peerDeviceId] === session
+                            }
+                            launch { gossip.announceWhileConnected() }
                             launch {
-                                session.incomingText.collect { text ->
+                                session.incomingText.collect textFrames@{ text ->
+                                    if (gossip.receive(text)) return@textFrames
                                     handleInboundText(
                                         chatImpl,
                                         transferImpl,

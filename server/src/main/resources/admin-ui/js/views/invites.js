@@ -16,6 +16,7 @@ import { toast, toastError } from '../ui/toast.js';
 import { setActiveTable } from '../shortcuts.js';
 import { downloadText } from './setup.js';
 import { icon } from '../icons.js';
+import { isOrgAdmin, session } from '../state.js';
 
 const PRESETS = [
   { minutes: 60, key: 'invites.ttl.1h' },
@@ -62,6 +63,8 @@ export function printCards(items, hubName) {
 }
 
 export function mountInvites(container, ctx) {
+  const orgAdmin = isOrgAdmin();
+  const canInvite = orgAdmin || session.departments?.length > 0;
   let invites = [];
   let departments = [];
   let groups = [];
@@ -134,7 +137,7 @@ export function mountInvites(container, ctx) {
     pageHeader({
       title: t('invites.title'),
       subtitle: t('invites.sub'),
-      actions: [button({ label: t('invites.bulk'), icon: 'upload', on: { click: () => openBulk() } }), button({ label: t('invites.create'), icon: 'plus', variant: 'primary', on: { click: () => openCreate() } })],
+      actions: canInvite ? [button({ label: t('invites.bulk'), icon: 'upload', on: { click: () => openBulk() } }), button({ label: t('invites.create'), icon: 'plus', variant: 'primary', on: { click: () => openCreate() } })] : [],
     }),
     toolbar,
     resultLine,
@@ -163,8 +166,10 @@ export function mountInvites(container, ctx) {
   async function loadSupport() {
     try {
       [departments, groups] = await Promise.all([api.get('/departments'), api.get('/groups')]);
-      const s = await api.get('/settings');
-      defaults = { ttl: s.inviteDefaultTtlMinutes || 1440, uses: s.inviteDefaultMaxUses || 1 };
+      if (orgAdmin) {
+        const s = await api.get('/settings');
+        defaults = { ttl: s.inviteDefaultTtlMinutes || 1440, uses: s.inviteDefaultMaxUses || 1 };
+      }
     } catch (e) {
       /* the create dialog works without them; it explains what is missing */
     }
@@ -187,9 +192,13 @@ export function mountInvites(container, ctx) {
   // ------------------------------------------------------------------ create
   async function openCreate() {
     if (!departments.length && !groups.length) await loadSupport();
-    const dept = selectInput([{ value: '', label: t('invites.create.noDept') }, ...departments.map((d) => ({ value: d.id, label: d.name }))], '', { ariaLabel: t('invites.create.department') });
+    const departmentOptions = departments.map((d) => ({ value: d.id, label: d.name }));
+    if (orgAdmin) departmentOptions.unshift({ value: '', label: t('invites.create.noDept') });
+    const dept = selectInput(departmentOptions, departmentOptions[0]?.value || '', { ariaLabel: t('invites.create.department') });
     const df = field({ label: t('invites.create.department'), control: dept, hint: t('invites.create.department.hint') });
-    const role = selectInput([{ value: 'member', label: t('role.member') }, { value: 'dept_admin', label: t('role.dept_admin') }, { value: 'admin', label: t('role.admin') }], 'member', { ariaLabel: t('invites.create.role') });
+    const roleOptions = [{ value: 'member', label: t('role.member') }];
+    if (orgAdmin) roleOptions.push({ value: 'dept_admin', label: t('role.dept_admin') }, { value: 'admin', label: t('role.admin') });
+    const role = selectInput(roleOptions, 'member', { ariaLabel: t('invites.create.role') });
     const rf = field({ label: t('invites.create.role'), control: role, hint: t('invites.create.role.hint') });
     const roleWarn = h('div', {}, );
     role.addEventListener('change', () => {
@@ -217,6 +226,7 @@ export function mountInvites(container, ctx) {
     const groupBox = h('fieldset', { class: 'fieldset' }, h('legend', { text: t('invites.create.groups') }));
     const groupBoxes = new Map();
     function drawGroups() {
+      groupBoxes.clear();
       const list = groups.filter((g) => !dept.value || g.departmentId === dept.value);
       mount(groupBox, h('legend', { text: t('invites.create.groups') }));
       if (!list.length) {
@@ -246,6 +256,7 @@ export function mountInvites(container, ctx) {
     const run = () =>
       withBusy(submit, async () => {
         mount(message);
+        if (!orgAdmin && !dept.value) return mount(message, banner({ tone: 'bad', text: t('scope.noDepartments') }));
         const ttl = preset.value === 'custom' ? Number.parseInt(custom.value, 10) : Number.parseInt(preset.value, 10);
         const maxUses = Number.parseInt(uses.value, 10);
         if (!(ttl >= 5 && ttl <= 43200)) return mount(message, banner({ tone: 'bad', text: t('invites.ttl.minutes.hint') }));

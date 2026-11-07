@@ -7,7 +7,8 @@ import com.transfer.flash.server.storage.ServerDatabase
  * [MailboxMessage] and later receives [QueuedMessage]s back, byte for byte.
  *
  * Delivery contract (ADR-112): a stored message stays until the RECIPIENT acknowledges it ([acknowledge], driven by
- * `FLASH_RECV_ACK`) or it expires. Reading a page ([fetchPage]) never removes anything, so a message sent to a socket
+ * `FLASH_RECV_ACK`), it expires, or its recipient loses the group membership that authorised delivery. Reading a page
+ * ([fetchPage]) never removes anything, so a message sent to a socket
  * that died before the client stored it is simply delivered again on the next connect.
  */
 interface MailboxStore {
@@ -22,6 +23,9 @@ interface MailboxStore {
      */
     suspend fun fetchPageDetailed(target: String, afterSeq: Long, limit: Int): MailboxPage = MailboxPage(fetchPage(target, afterSeq, limit))
 
+    /** Revalidates a fetched group row before handing it off. Direct mail follows its existing receipt rules. */
+    suspend fun mayReplay(row: QueuedMessage): Boolean = true
+
     /**
      * Deletes [target]'s stored copy of [msgId] and returns who sent it. With [origin] only that sender's copy goes; without it only
      * the OLDEST copy goes (two senders may use the same id, one acknowledgement must never destroy both: REV-08).
@@ -35,7 +39,7 @@ interface MailboxStore {
     suspend fun acknowledgeBatch(target: String, msgIds: List<String>, origin: String? = null): List<AckedRow> =
         msgIds.flatMap { acknowledge(target, it, origin) }
 
-    /** Deletes up to [limit] expired rows and returns them so the senders can be told. */
+    /** Deletes up to [limit] expired or membership-retired rows and returns them so the senders can be told. */
     suspend fun deleteExpired(limit: Int = 500): List<ExpiredRow>
 
     /** Counts a message that could not be kept even though the mailbox accepted responsibility for it. */

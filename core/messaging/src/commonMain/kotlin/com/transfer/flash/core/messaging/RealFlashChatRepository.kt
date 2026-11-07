@@ -575,7 +575,11 @@ public class RealFlashChatRepository(
 
     /** The raw LAN sinks. The outbox uses these directly; everything else goes through the hub-aware wrappers below. */
     private val lanTransportSink: MessageTransportSink? = transportSink
-    private val lanGroupTransportSink: GroupTransportSink? = groupTransportSink
+    private val lanGroupTransportSink: GroupTransportSink? = groupTransportSink?.let { sink ->
+        GroupTransportSink { target, frame ->
+            !isRevokedForHubGroup(frame.groupId, target) && sink.send(target, frame)
+        }
+    }
 
     /** The chat's whole relationship with the hub (null without a hub). */
     private val hubBridge: HubChatBridge? = hubRelay?.let { relay ->
@@ -736,7 +740,8 @@ public class RealFlashChatRepository(
         hubBridge.sendDirect(target, hubFrameId(frame), timeSource.nowMs(), frame)
     }
 
-    private val groupTransportSink: GroupTransportSink? = if (hubBridge == null) groupTransportSink else GroupTransportSink { target, frame ->
+    private val groupTransportSink: GroupTransportSink? = if (hubBridge == null) lanGroupTransportSink else GroupTransportSink { target, frame ->
+        if (isRevokedForHubGroup(frame.groupId, target)) return@GroupTransportSink false
         val lan = lanGroupTransportSink?.send(target, frame) == true
         if (lan) return@GroupTransportSink true
         val chatLevel = frame is GroupWireFrame.Message || frame is GroupWireFrame.Receipt ||
@@ -1385,8 +1390,14 @@ public class RealFlashChatRepository(
         if (hubBridge != null && hubRelay != null) {
             val hubSink = object : HubInboundSink {
                 override suspend fun direct(frame: MessageWireFrame, from: String) = handleDirectFrame(frame, from, vetSender = false)
-                override suspend fun group(frame: GroupWireFrame, from: String) = onInboundGroupWireFrame(from, frame)
-                override suspend fun hubFile(frame: HubFileFrame, from: String): Boolean = onInboundHubFile(frame, from)
+                override suspend fun group(frame: GroupWireFrame, from: String) {
+                    requireHubGroupRevocations(frame.groupId)
+                    onInboundGroupWireFrame(from, frame)
+                }
+                override suspend fun hubFile(frame: HubFileFrame, from: String): Boolean {
+                    frame.groupId?.let(::requireHubGroupRevocations)
+                    return onInboundHubFile(frame, from)
+                }
             }
             scope.launch(ioDispatcher) {
                 hubRelay.deliveries.collect { delivery -> hubBridge.handleInbound(delivery, hubSink) }
@@ -3611,6 +3622,7 @@ public class RealFlashChatRepository(
      * `from` field cannot claim another trusted member's identity.
      */
     public suspend fun onInboundGroupWireFrame(peerDeviceId: String, frame: GroupWireFrame) {
+        if (isRevokedForHubGroup(frame.groupId, peerDeviceId)) return
         if (frame is GroupWireFrame.GsHello ||
             frame is GroupWireFrame.GsChallenge ||
             frame is GroupWireFrame.GsProof ||
@@ -5835,9 +5847,19 @@ public class RealFlashChatRepository(
      * Public so a host can hand the same predicate to the call layer (a vouched member may join a group call).
      */
     public suspend fun isGroupPeerTrusted(groupId: String, deviceId: String): Boolean =
-        isTrustedPeer(deviceId) ||
+        !isRevokedForHubGroup(groupId, deviceId) && (isTrustedPeer(deviceId) ||
             signedGroups?.isVouchedMember(groupId, deviceId, peerIdentityKey(deviceId)) == true ||
-            isHubGroupMemberPeer(groupId, deviceId)
+            isHubGroupMemberPeer(groupId, deviceId))
+
+    private fun isRevokedForHubGroup(groupId: String, deviceId: String): Boolean =
+        enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true &&
+            (hubGroupRosters?.revocationBlocks(groupId) == true || orgPeerResolver?.isRevokedColleague(deviceId) == true)
+
+    private fun requireHubGroupRevocations(groupId: String) {
+        if (enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true) {
+            check(hubGroupRosters?.revocationStateReady() != false) { "Hub revocation state unavailable" }
+        }
+    }
 
     /**
      * Plan B section 10 gate for a hub group (one linked to the hub that has a hub-signed roster): [deviceId] is an active
@@ -6061,6 +6083,7 @@ public class RealFlashChatRepository(
      * a member the caller is not paired with and has no session to yet can still be dialed and invited.
      */
     public suspend fun isGroupCallMember(groupId: String, deviceId: String): Boolean {
+        if (isRevokedForHubGroup(groupId, deviceId)) return false
         val members = groupMemberDao ?: return isGroupPeerTrusted(groupId, deviceId)
         if (isRemovedHere(members, groupId)) return false
         if (members.member(groupId, deviceId)?.isActive != true) return false
@@ -6665,7 +6688,10 @@ public class RealFlashChatRepository(
         val pending = if (roster == null) {
             allPending
         } else {
-            allPending.filter { roster.member(message.conversationId, it.memberId)?.isActive != false }
+            allPending.filter {
+                !isRevokedForHubGroup(message.conversationId, it.memberId) &&
+                    roster.member(message.conversationId, it.memberId)?.isActive != false
+            }
         }
         if (pending.isEmpty()) {
             if (deliveries.deliveredCount(item.localId) == 0) {
@@ -8026,13 +8052,16 @@ public class RealFlashChatRepository(
         frame: GroupWireFrame.Message,
     ): Boolean {
         val bridge = hubBridge
+        if (isRevokedForHubGroup(frame.groupId, memberId)) return false
         val lanOk = lan.send(memberId, frame)
         if (bridge == null || !linked) return lanOk
         if (!lanOk) return bridge.canCarry(memberId, group = true) && bridge.sendGroup(memberId, messageId, sentAt, frame)
         scheduleHubFallback("$messageId|$memberId", pending = {
             groupDeliveryDao?.pendingForMessage(messageId)?.any { it.memberId == memberId } == true
         }) {
-            if (bridge.canCarry(memberId, group = true) && !bridge.isHubAccepted(messageId)) bridge.sendGroup(memberId, messageId, sentAt, frame)
+            if (!isRevokedForHubGroup(frame.groupId, memberId) &&
+                bridge.canCarry(memberId, group = true) && !bridge.isHubAccepted(messageId)
+            ) bridge.sendGroup(memberId, messageId, sentAt, frame)
         }
         return true
     }

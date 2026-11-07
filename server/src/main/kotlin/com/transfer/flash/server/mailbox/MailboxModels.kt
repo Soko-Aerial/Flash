@@ -109,4 +109,4 @@ data class MailboxPage(val messages: List<QueuedMessage>, val quarantined: List<
 data class AckedRow(val origin: String, val msgId: String, val createdAt: Long)
 
 /** A row removed because it expired undelivered; the sender can be told. */
-data class ExpiredRow(val origin: String, val target: String, val msgId: String)
+data class ExpiredRow(val origin: String, val target: String, val msgId: String, val membershipRemoved: Boolean = false)

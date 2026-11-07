@@ -14,6 +14,7 @@ import com.transfer.flash.core.hubprotocol.relay.RelayLimits
 import com.transfer.flash.server.auth.RevocationService
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.mailbox.EnqueueResult
+import com.transfer.flash.server.mailbox.ExpiredRow
 import com.transfer.flash.server.mailbox.MailboxMessage
 import com.transfer.flash.server.mailbox.MailboxStore
 import com.transfer.flash.server.observability.LogSanitizer
@@ -60,9 +61,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   (meaning "handed over", see `AckStatus.DELIVERED`). It stays in the session's in-flight table until the recipient's
  *   `FLASH_RECV_ACK`; if the session ends first, the message is spilled into the mailbox.
  * - an offline recipient (or one still being drained) gets a durable mailbox row and the sender is told `QUEUED`.
- * - the mailbox row, or the in-flight entry, is deleted ONLY by the recipient's `FLASH_RECV_ACK`; then the sender is
- *   sent `FLASH_QUEUE_STATE state=DELIVERED`. An expired row produces `state=EXPIRED` (see `TtlSweeper`), a lost one
- *   `state=DROPPED`.
+ * - `FLASH_RECV_ACK` retires the mailbox row or in-flight entry and tells the sender `FLASH_QUEUE_STATE state=DELIVERED`.
+ *   An expired row produces `state=EXPIRED`. An unreadable or membership-retired row produces `state=DROPPED`.
  * - a reconnecting device is drained from the mailbox in pages, oldest first, `replay=true`; a message may therefore be
  *   delivered more than once and CLIENTS DEDUPE BY MESSAGE ID.
  * - while a device has mailbox rows waiting, live messages for it also go through the mailbox, so a newer message
@@ -380,10 +380,8 @@ public class RelayFrameRouter(
     // =====================================================================================================
 
     /**
-     * `FLASH_RECV_ACK`: the device says it has durably stored [RelayFrame.RecvAck.msgId] (REL-02). This is the ONLY thing
-     * that deletes a mailbox row or an in-flight entry, and it can only touch the sending device's OWN copies (the
-     * delete is keyed by the authenticated device id), so a device can not acknowledge, and so destroy, someone else's
-     * messages. Idempotent. The original sender is told `FLASH_QUEUE_STATE state=DELIVERED`.
+     * `FLASH_RECV_ACK`: the device says it has durably stored [RelayFrame.RecvAck.msgId] (REL-02). This can only touch
+     * the authenticated recipient's own deliverable copies. Idempotent. The sender is told `FLASH_QUEUE_STATE state=DELIVERED`.
      */
     private suspend fun handleRecvAck(recipient: RelaySession, ack: RelayFrame.RecvAck) {
         val ackFrom = ack.from?.takeIf { it.isNotBlank() }
@@ -422,6 +420,11 @@ public class RelayFrameRouter(
     public fun notifyExpired(originId: String, recipientId: String, msgId: String) {
         val origin = connectionPool.get(originId) ?: return
         offerFrame(origin, RelayFrame.QueueState(id = msgId, to = recipientId, state = QueueEvent.EXPIRED, ts = clock()))
+    }
+
+    internal fun notifyRetired(row: ExpiredRow) {
+        if (row.membershipRemoved) notifyDropped(row.origin, row.target, row.msgId)
+        else notifyExpired(row.origin, row.target, row.msgId)
     }
 
     /** Tells each online sender that a message it queued could not be opened and will not be delivered (RLY-01; the row is quarantined). */
@@ -530,53 +533,42 @@ public class RelayFrameRouter(
         }
     }
 
-    /** Pushes every mailbox row after the session's cursor, page by page, until a page comes back empty. */
-    private suspend fun drainPages(session: RelaySession) {
+    /** Pushes authorised mailbox rows after the session's cursor, in order, until a page comes back empty. */
+    private suspend fun drainPages(session: RelaySession): Int {
+        var pushed = 0
         while (session.isOpen) {
             val fetched = mailboxQueue.fetchPageDetailed(session.deviceId, session.cursor, policy.drainPageSize)
             reportQuarantined(fetched.quarantined)
             val page = fetched.messages
             // A page of only quarantined rows (the fetch gave up skipping) is not the end: ask again, the marked rows are excluded now.
-            if (page.isEmpty() && fetched.quarantined.isEmpty()) return
+            if (page.isEmpty() && fetched.quarantined.isEmpty()) break
             for (row in page) {
+                if (!mailboxQueue.mayReplay(row)) {
+                    session.cursor = row.seq
+                    continue
+                }
                 val deliver = RelayFrame.Deliver(
                     from = row.origin, id = row.msgId, type = row.type, sentAt = row.sentAt,
                     payload = row.payload, replay = true, group = row.group,
                 )
                 if (!session.enqueue(RelayFrameCodec.encode(deliver))) {
                     session.fail("send_timeout")
-                    return
+                    return pushed
                 }
                 session.cursor = row.seq
+                pushed++
                 metrics.inc(RelayMetrics.REDELIVERIES)
                 metrics.inc(RelayMetrics.FRAMES_OUT, 1, "kind" to "FLASH_DELIVER")
             }
         }
+        return pushed
     }
 
     /**
      * Drains [session]'s mailbox to completion before returning (tests and callers that must wait). Returns the number
      * of rows pushed. Production code uses [requestDrain].
      */
-    public suspend fun drainMailboxForDevice(session: RelaySession): Int {
-        var pushed = 0
-        while (session.isOpen) {
-            val fetched = mailboxQueue.fetchPageDetailed(session.deviceId, session.cursor, policy.drainPageSize)
-            reportQuarantined(fetched.quarantined)
-            val page = fetched.messages
-            if (page.isEmpty() && fetched.quarantined.isEmpty()) break
-            for (row in page) {
-                val deliver = RelayFrame.Deliver(
-                    from = row.origin, id = row.msgId, type = row.type, sentAt = row.sentAt,
-                    payload = row.payload, replay = true, group = row.group,
-                )
-                if (!session.enqueue(RelayFrameCodec.encode(deliver))) return pushed
-                session.cursor = row.seq
-                pushed++
-            }
-        }
-        return pushed
-    }
+    public suspend fun drainMailboxForDevice(session: RelaySession): Int = drainPages(session)
 
     // =====================================================================================================
     // Session lifecycle

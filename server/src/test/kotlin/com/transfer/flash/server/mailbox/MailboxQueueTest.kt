@@ -1,5 +1,10 @@
 package com.transfer.flash.server.mailbox
 
+import com.transfer.flash.server.directory.DepartmentMember
+import com.transfer.flash.server.directory.DirectoryActor
+import com.transfer.flash.server.directory.GroupVisibility
+import com.transfer.flash.server.directory.JoinMode
+import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.storage.ServerDatabase
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -17,6 +22,7 @@ import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -113,6 +119,30 @@ class MailboxQueueTest {
     }
 
     // ---- enqueue / fetch / ack ----------------------------------------------------------------------------
+
+    @Test
+    fun groupMembershipInvalidatesPrefetchedRowsAndRefusesLateQueueWrites() = runTest {
+        val db = memoryDb()
+        val directory = OrganizationDirectory.open(db, clock = clock)
+        directory.createDepartment("eng", "Engineering", emptyList(), DirectoryActor.CONSOLE)
+        directory.createGroup("g", "Group", "eng", GroupVisibility.LISTED, JoinMode.OPEN_IN_SCOPE, emptyList(), DirectoryActor.CONSOLE)
+        directory.registerMember(DepartmentMember("bob", "eng", "Bob"))
+        directory.addMemberToGroup("g", "bob", DirectoryActor.CONSOLE)
+        assertIs<EnqueueResult.Queued>(queue(db).enqueue(msg("orphan", group = "removed-group")))
+        val guarded = MailboxQueue(db, clock = clock, enforceGroupMembership = true)
+        assertIs<EnqueueResult.Queued>(guarded.enqueue(msg("group", group = "g")))
+        val prefetched = guarded.fetchPage("bob", 0, 10).single()
+        assertEquals("group", prefetched.msgId)
+        assertTrue(guarded.mayReplay(prefetched))
+
+        directory.removeMemberFromGroup("g", "bob", DirectoryActor.CONSOLE)
+        assertFalse(guarded.mayReplay(prefetched))
+        assertEquals(EnqueueResult.UnknownRecipient, guarded.enqueue(msg("late", group = "g")))
+        assertTrue(guarded.acknowledge("bob", "group", "alice").isEmpty())
+        directory.addMemberToGroup("g", "bob", DirectoryActor.CONSOLE)
+        assertFalse(guarded.mayReplay(prefetched))
+        assertEquals(setOf("orphan", "group"), guarded.deleteExpired().filter { it.membershipRemoved }.map { it.msgId }.toSet())
+    }
 
     @Test
     fun rowsComeBackInArrivalOrderNotClientClockOrder() = runTest {
