@@ -54,6 +54,8 @@ internal class FakePttAudio : PttAudioPlatform {
     @Volatile
     var playoutStarts: Boolean = true
 
+    var onPacketsEnabled: (FakeCapture) -> Unit = {}
+
     val captures = Recorder<FakeCapture>()
     val playouts = Recorder<FakePlayout>()
     val events = Recorder<String>()
@@ -63,7 +65,7 @@ internal class FakePttAudio : PttAudioPlatform {
         packetMs: Int,
         onPacket: (pcm: ByteArray, captureTsMs: Long) -> Unit,
         onCaptureLost: () -> Unit,
-    ): PttCaptureDevice = FakeCapture(requestedRateHz, packetMs, onPacket, onCaptureLost, captureStart, events)
+    ): PttCaptureDevice = FakeCapture(requestedRateHz, packetMs, onPacket, onCaptureLost, captureStart, events, onPacketsEnabled)
         .also { captures.add(it) }
 
     override fun createPlayout(
@@ -82,6 +84,7 @@ internal class FakeCapture(
     private val onCaptureLost: () -> Unit,
     private val startResult: PttCaptureStart,
     private val events: Recorder<String>,
+    private val onPacketsEnabled: (FakeCapture) -> Unit,
 ) : PttCaptureDevice {
     @Volatile
     var started: Boolean = false
@@ -101,6 +104,7 @@ internal class FakeCapture(
     override fun enablePackets() {
         packetsEnabled = true
         events.add("capture.enablePackets")
+        onPacketsEnabled(this)
     }
 
     override fun stop() {
