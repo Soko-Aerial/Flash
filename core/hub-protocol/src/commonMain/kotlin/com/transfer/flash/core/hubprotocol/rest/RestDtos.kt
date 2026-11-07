@@ -254,6 +254,7 @@ public data class HubInfo(
      * a bigger file before uploading and names this number in the refusal.
      */
     public val maxFileBytes: Long = 0L,
+    public val serverVersion: String? = null,
 )
 
 

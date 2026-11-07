@@ -5,6 +5,14 @@ plugins {
     application
 }
 
+version = "2.2.0-beta.1"
+
+tasks.processResources {
+    val hubVersion = project.version.toString()
+    inputs.property("hubVersion", hubVersion)
+    filesMatching("flash-server-version.txt") { expand("version" to hubVersion) }
+}
+
 application {
     mainClass.set("com.transfer.flash.server.MainKt")
 }

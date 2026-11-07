@@ -392,6 +392,7 @@ private fun Route.overviewRoutes(d: AdminApiDeps) {
                 revocations = if (scope is ConsoleScope.Org) rev?.let { RevocationStatusDto(it.listVersion, it.revokedSerials, it.revokedDeviceIds, it.unpublishedChanges, it.canSign, it.revokedDelegations.sorted()) } else null,
                 audit = if (scope is ConsoleScope.Org) AuditHeadDto(head?.first, head?.second, d.audit.size()) else AuditHeadDto(),
                 deviceQuota = if (scope is ConsoleScope.Org) d.config.deviceQuota else 0,
+                serverVersion = com.transfer.flash.server.ServerVersion.value,
             ),
         )
     }

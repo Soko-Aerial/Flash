@@ -341,6 +341,7 @@ public class FlashServerEngine(
         val b = StringBuilder(512)
         b.append('{')
         b.append("\"status\":\"").append(healthLevel().wire).append('"')
+        b.append(",\"serverVersion\":").append(kotlinx.serialization.json.JsonPrimitive(com.transfer.flash.server.ServerVersion.value))
         b.append(",\"uptimeSeconds\":").append((clock() - serverStartTime) / 1000)
         b.append(",\"sessions\":").append(connectionPool.activeCount)
         b.append(",\"openConnections\":").append(relayFrameRouter.openConnections)
