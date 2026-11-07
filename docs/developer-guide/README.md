@@ -19,13 +19,16 @@ docs/developer-guide/
 │   │   ├── core-common.md                     # Domain models, FlashResult, FlashPerformanceMode, byte math
 │   │   ├── core-persistence.md                # Room encrypted SQLite, DAOs, entities, schema migrations
 │   │   ├── core-security.md                   # ECDH P-256 pairing, AES-256-GCM framing (E2eFrameCodec), KeyStore
-│   │   ├── core-discovery.md                  # NSD (mDNS/DNS-SD) LAN discovery, Wi-Fi Direct p2p
+│   │   ├── core-discovery.md                  # LAN discovery via NSD, multicast and directed broadcast
 │   │   ├── core-network.md                    # WebSockets over TLS, keepalives, JvmNetworkWatcher
 │   │   ├── core-transfer.md                   # MultiStreamDispatcher, ReceivePipeline, Chunker, resume bit-vectors
 │   │   ├── core-messaging.md                  # RealFlashChatRepository, wire framing (FLASH_MSG, RCPT, READ, etc.)
 │   │   ├── core-calling.md                    # WebRTC 1:1 and mesh group calls, ICE restart, signaling
 │   │   ├── core-ptt.md                        # Push-To-Talk voice messaging engine, half-duplex arbitration
 │   │   ├── core-swarm.md                      # Group swarm file transfer (sans-IO engine, FSW1 frames, FlashSwarm facade)
+│   │   ├── core-radio.md                      # Experimental radio gateway and hardware integration
+│   │   ├── core-enterprise.md                 # Experimental Hub client and directory types
+│   │   ├── core-hub-protocol.md               # Internal Hub contract shared by client and server
 │   │   └── core-engine.md                     # FlashEngine, DesktopEngine, DiscoveryEngineHolder orchestrators
 │   └── ui/
 │       ├── ui-theme.md                        # FlashTheme, design tokens, colors, typography, shapes, icons, motion
@@ -47,7 +50,7 @@ docs/developer-guide/
 ## 2. Quick Navigation by Use-Case
 
 * **New to the project?** Start with [getting-started/beginner-guide.md](getting-started/beginner-guide.md).
-* **Making pairing work in your own host?** Read [guides/pairing-and-trust.md](guides/pairing-and-trust.md) -- what the library provides, the six wiring points, the trust writes, and the gaps (the `Flash.create` facade cannot pair yet).
+* **Making pairing work in your own host?** Read [guides/pairing-and-trust.md](guides/pairing-and-trust.md) -- the Android facade consent flow and the wiring for a custom transport.
 * **Integrating a specific module?** Check the dedicated guides in [modules/core/](modules/core/) or [modules/ui/](modules/ui/).
 * **Building for low-RAM / embedded hardware (<512MB RAM)?** Read [scenarios/scenario-1-ultra-low-resource.md](scenarios/scenario-1-ultra-low-resource.md).
 * **Extending Flash with custom transports (e.g. BLE, LoRa) or custom storage?** Read [scenarios/scenario-2-custom-extensions.md](scenarios/scenario-2-custom-extensions.md).

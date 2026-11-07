@@ -917,6 +917,11 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-07 — 2.2.0 release consolidation on `codex/release-2.2.0`.** Nearby and Transfers
+baseline captured. Security and scope corrections, version bumps, changelog, consumer and
+operator docs are in the release branch. JDK 17 scratch publication and isolated consumer
+compiles passed. See `logs/handoff.md` for the release gate and acceptance status.
+
 **2026-11-07 — Hub remediation HR1–HR5 implemented.** Signed LAN revocation updates persist across restart and gate cached organisation and linked-group trust (ADR-359). Locked HR5 gate 1,035 tests green, APK assembled and desktop compiled. HUBREADY-01..05 remain owed on real hosts. Next HR6 device identity replacement. See `docs/plans/HUB-READINESS-REMEDIATION.md`.
 
 **2026-11-07 — Hub rollout remediation HR1–HR4 implemented locally.** Scoped server queries, database/key restore validation (ADR-357), group mailbox retirement (ADR-358) and console workflows passed the final 118-server/83-Node gate and isolated Chrome verification. Follow `docs/plans/HUB-READINESS-REMEDIATION.md`. Next is HR5 LAN revocation propagation. HUBREADY-01..05 track real Hub and device acceptance separately.

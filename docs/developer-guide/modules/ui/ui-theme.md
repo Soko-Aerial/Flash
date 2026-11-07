@@ -8,7 +8,7 @@ The `:ui:theme` module provides the visual design system, color palettes, typogr
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:ui-theme:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:ui-theme:v2.2.0-beta.1")
 }
 ```
 

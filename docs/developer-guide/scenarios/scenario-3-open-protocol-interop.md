@@ -72,7 +72,7 @@ offset size field
 | ACK_BATCH | receiver -> sender | `string transferId, string fileId, int32 count, int32 indexes[count]` (ascending received-and-verified chunks; a missing index is the implicit NACK) |
 | COMPLETE | receiver -> sender | `string transferId, string fileId, uint8 verified` |
 
-Rules: `chunkSize` is 16 KiB to 256 KiB (default 64 KiB; the sender's profile may use up to 4 streams); the receiver verifies each
+Rules: `chunkSize` is 16 KiB to 1 MiB (default 64 KiB; the sender's profile may use up to 4 streams); the receiver verifies each
 chunk's SHA-256 before writing it; after the last chunk it re-hashes the whole file against `fileSha256Hex` and answers
 `COMPLETE verified=0` on a mismatch (ADR-068); a resume sends only the chunks missing from the receiver's ACK set. The receiver gates an
 offer behind an accept (the sender parks after `FILE_START` until the receiver sends `RESUME`). `ChunkFrame.parse` returns null for

@@ -17088,3 +17088,32 @@ OPEN.
 2026-11-07. The broad JVM gate exposed `HUBFILE-P4-U50` reading PENDING after both tickets were observable. The fake relay records a sent ticket before the real outbox updates the message to SENT. The fixture now waits for that existing state transition, with the same bounded helper it uses for ticket delivery. The product send path is unchanged.
 
 **Status.** RESOLVED in the restored HR5 JVM gate.
+
+## ERROR-1004 — Startup revocation left a stale Hub roster
+
+2026-11-07, SEC-NEW-01. The startup import preceded listener registration and the old
+reconciliation only re-added active devices. Reconciled durable revocation state
+synchronously before serving requests (ADR-360). The regression covers a hashed device
+revocation, a current-serial revocation, group mailbox retirement and restart. The initial
+fixture used an unsealed reader for a sealed test mailbox and falsely lost the direct
+control row. Using the same Hub data key for both test queues fixed the fixture. The
+44-test recheck passed. REL22-02 is owed on the test Hub. Status: RESOLVED in host tests.
+
+## ERROR-1005 — Hub sealing-key lifecycle test timed out once in the full server run
+
+2026-11-07. `E2eHostSealingLifecycleTest.aDeviceThatLeavesAndComesBackGetsANewKeyAndAColleaguesPinNoticesTheChange`
+timed out waiting for the new key to publish. It passed in the 44-test recheck without a
+product or fixture change for that case. Recheck in the forced server gate. Status: OPEN,
+intermittent with cause unconfirmed.
+
+## ERROR-1006 — Server version resource expansion captured the Gradle script
+
+2026-11-07. Tests passed but the focused build failed while storing the configuration cache
+because `:server:processResources` captured its build script. The action now captures a
+local version string. Verify the cache-enabled packaging task separately.
+
+## ERROR-1007 — Release Gradle launcher unavailable while the development drive was disconnected
+
+2026-11-07. The Gradle junction and SDK target were absent, so the repository lock script
+stopped at its JBR check. Reconnecting the Projects drive restored the SDK and JBR paths.
+The baseline subsequently built successfully in 4m37s. Status: RESOLVED.

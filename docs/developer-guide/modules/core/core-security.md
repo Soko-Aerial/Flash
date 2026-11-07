@@ -8,7 +8,7 @@ The `:core:security` module provides the cryptographic engine, device identity g
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-security:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-security:v2.2.0-beta.1")
 }
 ```
 
@@ -108,14 +108,15 @@ println("Encrypted wire output: $wireFrame") // "FLASH_SEC payload=..."
 
 ---
 
-## 5. Pairing: What the Module Gives You and What the Host Supplies
+## 5. Pairing through the engine or a custom transport
 
-The primitives above are not a pairing feature by themselves. `:core:security` ships the handshake as a
-driver-plus-wire-codec (`DefaultFlashPairingProtocol`, `PairingWireCodec`, `FlashPairingFrames`,
-`PairingSessionStateMachine`), the full JVM driver (`FlashPairingCoordinator`, `jvmMain` only) and the consent UI
-(`FlashPairingDialog` in `:ui:chat`) -- but the identity material, the non-blocking transport send, the 1 s clock
-tick and the three trust writes (`trustPeer`, `markVerified`, `saveSessionKey`) are host decisions, and the
-`Flash.create` facade exposes none of them yet.
+On Android, `Flash.create(context).pairing` gives you the UI-free `FlashPairing` contract.
+The engine handles HELLO, inbound `FLASH_PAIR`, deadlines, and the trust and session-key writes.
+Present the comparison code and pass the user's decision to the pairing interface.
 
-The procedure, the six wiring points, the wire sequence, the failure semantics and the known gaps are in
-[guides/pairing-and-trust.md](../../guides/pairing-and-trust.md).
+`FlashPairingCoordinator` is available on Android and JVM from `commonMain`. For a custom
+transport, supply the coordinator with identity material, a `FlashTrustStore`, a coroutine scope
+and a non-blocking send. Wire each authenticated session edge and each inbound pairing frame.
+For a lower-level implementation, `DefaultFlashPairingProtocol` owns the handshake state machine.
+
+See the [pairing guide](../../guides/pairing-and-trust.md) for the consent flow and both wiring options.

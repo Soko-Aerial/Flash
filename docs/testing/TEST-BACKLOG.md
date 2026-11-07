@@ -8015,3 +8015,31 @@ Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT
 - Exercise. Create a head using the console's browser confirmation key and one-time credentials. Sign in as the head, confirm restricted routes and actions, then change the head's departments while that browser is open and refresh its session. Cancel and then confirm a join request. Import a stale, wrong-signed and valid root-signed revocation list. Verify older announcements and Overview audit status at narrow and wide widths.
 - Pass. The console shows only scoped data and actions. One-time credentials work for the head. The cancelled approval does not change membership. The signed-list import requires step-up and only the newer root-signed list installs. Announcement pages retain all tied entries and display their shown count.
 - Status. TODO. Isolated Chrome fixture exercised UI wiring and server tests covered the routes. Real Hub acceptance remains owed.
+
+### REL22-01 — Submitted voice recordings are excluded from Android backups
+
+- Setup. Use disposable Android 11 and Android 12+ installs. Send a voice recording and confirm it plays from the original conversation after restart.
+- Exercise. Use the legacy Auto Backup path on Android 11, then cloud backup and device-to-device transfer on Android 12+. Inspect the restored app files.
+- Pass. No file below `files/sent` reaches the restore destination. The original phone still plays the submitted recording.
+- Source. SEC-NEW-02 and ADR-356. Status: TODO.
+
+### REL22-02 — Offline root revocation on the beta distribution
+
+- Setup. Enrol three disposable devices on a test Hub. Give them a shared group. Queue a group message and direct message for a device that is offline.
+- Exercise. Stop the Hub, drop a newer root-signed revocation list naming the offline device into `revocations/`, and restart. Repeat on a copy using the device's current certificate serial. Check the group roster and queued copies immediately. Restart again.
+- Pass. The revoked member is absent from the directory and roster at first access and after restart. The group copy is retired and the direct copy follows the direct-mail retention policy. The unaffected member stays in the group.
+- Source. SEC-NEW-01 and ADR-358. Status: TODO on test Hub. Automated in `HubServicesTest`.
+
+### REL22-03 — Device moves and multi-department approvals in the browser
+
+- Setup. Test Hub with an organisation admin who has a browser confirmation key, a multi-department head, and a device with a pending join request.
+- Exercise. Cancel a move, then confirm a move through the device drawer, a bulk action, and department membership editing. As the head, try to approve the request after the requester has moved out of the head's scope. Edit a head-authored announcement in each assigned department.
+- Pass. Cancelling changes no data. Every move requires a fresh confirmation. The old bearer and session are retired on scope change. Out-of-scope approval fails, and in-scope announcement edits succeed.
+- Source. SEC-NEW-03/04/08. Status: TODO on test Hub. Route coverage is automated.
+
+### REL22-04 — Published beta resolves from the current JitPack coordinate
+
+- Setup. Empty Maven cache for Flash modules and an external Android/JVM consumer on JDK 17.
+- Exercise. Build with `com.github.Soko-Aerial.Flash` and tag `v2.2.0-beta.1` using JitPack, Google and Maven Central. Use the umbrella engine, calling UI and the granular messaging API.
+- Pass. Both platforms compile. The WebRTC track and enterprise join result are visible through their published dependencies.
+- Source. Release audit and `docs/release-build.md`. Status: TODO for the remote tag.

@@ -1,12 +1,9 @@
-# Pairing a Host: Driving the FLASH_PAIR v2 Handshake
+# Pairing and trust
 
-This page shows how to make two Flash devices **pair**: both users see the same six-digit code, confirm it, and each side records trust, a "verified" mark and an encryption key. It also states plainly what the library does **not** do for you, because pairing is the one subsystem where every host still supplies the driver.
-
-> **Verified against the code 2026-10-20** (`dev` at `de2aba4d`). Signatures quoted here were read from source, not from memory; see [section 12](#12-where-these-facts-come-from) for the files. Anything marked *(gap)* is a real hole in the current API or docs, listed in [section 11](#11-documentation-and-api-gaps-found-2026-10-20).
-
-**Read this first:** if you are building on the `Flash.create` / `FlashDesktop.create` facade, **pairing is not reachable yet**. [Section 3](#3-which-integration-shape-are-you-in) explains why in one paragraph and what to do instead. If you are assembling the engine graph yourself (the way `:app` and `:desktop` do), [section 4](#4-shape-a-the-host-graph-what-ships-today) is the recipe.
-
----
+On Android, `Flash.create(context)` exposes pairing through `FlashEngine.pairing`. Start with
+[the facade integration](#shape-b----the-facade-flashcreate). Custom engine graphs and
+standalone transports can use the shared coordinator below. The pairing API was checked against
+source on 2026-11-07.
 
 ## 1. What "paired" Means Here (three layers)
 
@@ -15,9 +12,9 @@ Flash records three different things about a peer, and they are **not** intercha
 | Layer | Stored by | Written by | What it means |
 |---|---|---|---|
 | **TLS pin** | `FlashTrustStore.savePin(deviceId, fingerprintHex)` | the transport, on first contact (TOFU, `TofuPinVerifier`) | "this device id always presents this identity key on the wire" |
-| **Paired** | `trustPeer(deviceId, friendlyName)` | **you**, when pairing completes (or a directory one-tap) | "the user agreed to talk to this device" |
-| **Verified** | `markVerified(deviceId)` | **you**, on a v2 pairing only | "the code the user compared covered both TLS identities" |
-| **E2E session key** | `saveSessionKey(deviceId, key)` | **you**, after the ECDH exchange | "frames to this peer are AES-GCM sealed, not merely inside TLS" |
+| **Paired** | `trustPeer(deviceId, friendlyName)` | the coordinator on success, or a directory one-tap | "the user agreed to talk to this device" |
+| **Verified** | `markVerified(deviceId)` | the coordinator on a verified v2 pairing | "the code the user compared covered both TLS identities" |
+| **E2E session key** | `saveSessionKey(deviceId, key)` | the coordinator after the ECDH exchange | "frames to this peer are AES-GCM sealed, not merely inside TLS" |
 
 Two consequences that catch people out:
 
@@ -39,47 +36,40 @@ Everything below is `:core:security` unless stated otherwise.
 | `PairingWireCodec` | `FLASH_PAIR` text encoding/decoding, `PROTOCOL_VERSION = 2` | `commonMain`, marked `@FlashInternalApi` |
 | `FlashPairingFrame` / `FlashPairingEvent` / `PairingPhase` / `PairingSessionState` / `PairingTimeouts` | wire frames, UI events, state | `commonMain` |
 | `PairingV2` / `NumericComparisonCode` | commitment, code derivation, code-hash compare | `commonMain`, **`internal`** |
-| `FlashPairingCoordinator` | the complete driver (hello cache, 3 s fingerprint wait, tick, trust writes, UI state) | **`jvmMain` only** |
+| `FlashPairingCoordinator` | the complete driver (hello cache, 3 s fingerprint wait, tick, trust writes, UI state) | `commonMain` (Android and JVM) |
 | `FlashPairingDialog`, `FlashPairingPhase`, `FlashPairingRequestUi`, `FlashPairingMath` | the consent UI (UI-032) | `:ui:chat` `commonMain` |
 | `AndroidPreferencesTrustStore(context)`, `AndroidPreferencesIdentityStore(context)`, `KeystoreFlashCrypto(context)` | Android trust/identity/crypto | `:core:security` `androidMain` |
 
-**Three things only you can supply:**
-
-1. **Your identity material** -- fingerprint, device id, name, model.
-2. **A transport that carries `FLASH_PAIR` text** and reports whether the peer is reachable.
-3. **The trust writes on success** -- `trustPeer`, `markVerified`, `saveSessionKey`.
-
-**And one thing nobody can give you on Android:** there is no Android build of `FlashPairingCoordinator`. It lives in `jvmMain`, so it is in the desktop artifact only. Android hosts run their own twin -- today that is `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt` (~430 lines, including its UI mapper). *(gap G-3)*
-
-Because `PairingV2` and `NumericComparisonCode` are `internal`, **you cannot derive the six-digit code yourself**. Use the protocol; do not re-implement the comparison.
+A host assembling its own graph supplies identity material, an authenticated session and a
+trust store. The shared coordinator writes trust and drives the handshake. Hosts using the
+lower-level protocol alone own those writes as well. Use the coordinator or protocol to derive
+the comparison code.
 
 ---
 
-## 3. Which Integration Shape Are You In?
-
-```
-Do you call Flash.create(...) or FlashDesktop.create(...) and hold only a FlashEngine?
-    yes -> Shape B (facade). Pairing is NOT available. See below.
-    no  -> do you build the engine graph yourself (or are you patching :app / :desktop)?
-             yes -> Shape A (host graph). Section 4. This is what ships.
-             no  -> Shape C (standalone modules over your own socket). Section 5.
-```
+## 3. Which integration shape are you in?
 
 ### Shape B -- the facade (`Flash.create`)
 
-`FlashEngine` exposes `chats`, `transfers`, `discovery`, `network`, `trustStore`, and attach seams for PTT, calling and swarm. It does **not** expose:
+The Android factory handles session HELLO, inbound `FLASH_PAIR`, timeouts and trust writes.
+The host presents the code, asks for consent, and observes the result.
 
-* **your identity** -- no `deviceId`, no public key, no fingerprint *(gap G-1)*;
-* **an inbound hook** -- `FlashInboundRouter.routeInboundText(..., pairingHandler = ...)` exists and the facade routes every inbound text frame through it, but `Flash.create` passes `pairingHandler = null`, and `FlashSession` only offers `send`/`sendText`, no inbound stream *(gap G-2)*;
-* **injection** -- `FlashConfig` has `displayName`, `enableResume`, `autoAcceptIncoming`, `receivedFilesPath`. It cannot take your crypto or your trust store.
+```kotlin
+val pairing = requireNotNull(engine.pairing)
+pairing.beginPair(peerId, peerName)
 
-So a facade-only consumer can **read** trust (`engine.trustStore.isTrusted / isVerified / getPin`) and therefore *honour* a pairing made elsewhere, but cannot *make* one. That is not a documentation problem; it is a missing seam.
+// Collect pairing.pairing for the current phase and numericCode.
+// On the responding device, call acceptLocal() only when the user confirms the codes match.
+pairing.acceptLocal()
+```
 
-Three workarounds, in order of honesty:
+Use `declineLocal()` when the user refuses, `trustedPeers` to display saved peers, `messages`
+for short status updates, and `revoke(peerId)` to remove trust. The initiator confirmation is
+handled by the coordinator. Pair over a live session. `FlashDesktop.create` delegates to
+the registered desktop host, so check the nullable `pairing` property on that host.
 
-1. **Recover the identity from the same public stores the facade uses** and drive the protocol yourself -- `KeystoreFlashCrypto(context)` (fixed Keystore alias `flash_identity`, so it is the same key the facade uses), `AndroidPreferencesIdentityStore(context).getIdentity()` (same persisted device id and name), `engine.trustStore` (public). This works **today**, but it is an implicit contract: nothing stops a future `Flash.create` from choosing another store. Treat it as a stopgap, log it, and ask for G-1/G-2.
-2. **Send pairing frames beside the engine** -- impossible without an inbound hook; do not try to read them out of the chat repository.
-3. **Move the host graph into your app** (Shape A). Correct, but you inherit the graph assembly.
+Use [the host-graph recipe](#4-shape-a-the-host-graph-what-ships-today) when supplying custom
+session, identity, or trust-store components.
 
 ### Shape C -- your own transport
 
@@ -184,7 +174,7 @@ scope.launch {
 
 ### 4.6 The driver itself
 
-**On JVM (desktop, tooling, tests): use the shipped one.**
+Use the shared coordinator on Android or JVM.
 
 ```kotlin
 val pairing = FlashPairingCoordinator(
@@ -203,7 +193,6 @@ val pairing = FlashPairingCoordinator(
 
 It already implements the parts below that are easy to get wrong: the hello cache and its answer, the 3 s fingerprint wait with 400 ms re-asks, the v1 refusal, the tick, the `PAIR_CONFIRM` on accept, the three trust writes, `trustedPeers` as an observable flow, and user-facing failure sentences. You still call `onSessionUp`, feed `onInbound`, and supply `sendToPeer`. Read `core/security/src/jvmTest/.../FlashPairingCoordinatorTest.kt` -- it wires two coordinators straight into each other and is the executable specification.
 
-**On Android: copy `:app`'s twin.** Same constructor plus `timeSource`, same behaviour, ~430 lines, and it publishes `PairingUiModel` ready for `FlashPairingDialog`. *(gap G-3: this twin should be hoisted into `commonMain` once and shared, exactly as the JVM coordinator was.)*
 
 ### 4.7 The six rules the driver obeys (write them down before you write your own)
 
@@ -449,24 +438,12 @@ Also: `PairingWireCodec` and the `:core:security` pairing package are **evaluati
 
 ---
 
-## 11. Documentation and API Gaps Found (2026-10-20)
+## 11. Integration boundaries
 
-The guide *explains the crypto* (`modules/core/core-security.md`) and the *frozen signatures* (`docs/architecture/public-api.md` section `FlashPairingProtocol`), but until this page there was **no procedure** anywhere in the developer guide. What is still missing, in order of impact:
-
-| # | Gap | Impact | Suggested fix |
-|---|---|---|---|
-| G-1 | `FlashEngine` exposes no local identity, and `FlashConfig` cannot inject one | a facade consumer cannot obtain `localFingerprintHex`/`localDeviceId` without knowing the internal stores | add `identity` (id + public key or fingerprint) to `FlashEngine` |
-| G-2 | No public inbound hook for `FLASH_PAIR` (`pairingHandler` exists only inside `FlashInboundRouter`; `FlashSession` has no inbound stream) | a facade consumer cannot receive pairing frames at all | add `FlashEngine.onInboundPairingText(peer, text)` (mirroring `onInboundCallText`) or a `attachPairing` seam |
-| G-3 | No Android build of `FlashPairingCoordinator` (it is `jvmMain`); the Android twin lives in `:app` | every Android consumer copies ~430 lines, and the copies drift | hoist the coordinator to `commonMain` (the JVM one was hoisted for exactly this reason) |
-| G-4 | No published JVM `FlashTrustStore` implementation (the desktop one is in `:desktop`) | a library consumer must write pin/verify/session-key persistence from scratch | publish the desktop store, or document `AndroidPreferencesTrustStore`'s JVM sibling |
-| G-5 | `PairingUiMapper` (engine `PairingPhase` -> `FlashPairingPhase`) is in `:app` | every host re-derives the mapping and can get the `Failed`/`AwaitingPeerReveal` conflation wrong | move it next to `FlashPairingDialog` in `:ui:chat` |
-| G-6 | `PairingWireCodec` is `@FlashInternalApi` while `FlashPairingProtocol` is documented *Stable* | a consumer needs an opt-in annotation to interoperate, and gets no stability promise | decide: promote the codec to stable, or state that host integration is evaluation-only |
-| G-7 | `full-stack-app.md` says pairing is "host work that this sample leaves out", and no sample pairs | the first thing a consumer tries does not exist | extend `sample:consumer` with the shape in section 4 (compile-only is enough) |
-| G-8 | `modules/core/core-security.md` documents primitives but never mentions `DefaultFlashPairingProtocol`, the coordinator, or the trust-write obligations | the module page reads as if pairing were a library call | add a "Pairing: what the host supplies" section linking here |
-
-None of these are behaviour defects in the handshake itself; the protocol, the codec and both drivers agree, and the JVM coordinator has an end-to-end test. They are all *surfacing* problems.
-
----
+`FlashConfig` configures the platform factory's name, transfer resume, incoming acceptance
+and receive path. Use an explicitly assembled host graph for custom identity, trust storage
+or transport. The library's Android pairing flow still has the physical-device acceptance
+check `PAIRLIB-01` in the test backlog.
 
 ## 12. Where These Facts Come From
 
@@ -475,7 +452,7 @@ None of these are behaviour defects in the handshake itself; the protocol, the c
 | Protocol, events, phases, timeouts | `core/security/src/commonMain/.../pairing/FlashPairingProtocol.kt`, `PairingSessionStateMachine.kt`, `FlashPairingFrames.kt` |
 | Wire lines and field names | `core/security/src/commonMain/.../pairing/PairingWireCodec.kt` |
 | v2 commitment / code derivation | `core/security/src/commonMain/.../pairing/PairingV2.kt` (section 6 quotes it) |
-| Full JVM driver | `core/security/src/jvmMain/.../pairing/FlashPairingCoordinator.kt` |
+| Shared driver | `core/security/src/commonMain/.../pairing/FlashPairingCoordinator.kt` |
 | Executable specification | `core/security/src/jvmTest/.../pairing/FlashPairingCoordinatorTest.kt` |
 | Android twin + UI mapper | `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`, `PairingUiMapper.kt` |
 | Reference graph assembly (identity, TLS pins, router, session-up) | `core/engine/src/androidMain/.../Flash.kt` lines 239-300; `app/.../debug/DiscoveryEngineHolder.kt` lines ~700-800, 1560-1600, 1880-1900, 2400-2470 |

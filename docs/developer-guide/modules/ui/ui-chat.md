@@ -8,7 +8,7 @@ The `:ui:chat` module contains the complete messaging user interface for Flash. 
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:ui-chat:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:ui-chat:v2.2.0-beta.1")
 }
 ```
 

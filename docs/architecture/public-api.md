@@ -1,27 +1,10 @@
 # Flash Public API Specification
 
-**Date:** 2026-09-11  
-**Version:** `1.3.0`  
-**Status:** IMPLEMENTED — every signature below was re-verified against module source on 2026-09-11
-(this revision adds the §7/§10 calling seam: `FlashEngine.calls`, `attachCalling`/`detachCalling`,
-`onInboundCallText`/`onCallSignalingLost`/`onCallSignalingRestored`, and the `compileOnly` contract
-behind them; the previous revision added the §6 group members, §7 group calling and §14 `:core:ptt`).
-
-Scope is the surface a third-party consumer compiles against. Internal wiring is deliberately
-absent: `internal` declarations, `@FlashInternalApi` members, Room entities/DAOs, and the
-WebSocket/TCP transport classes are not supported API. If it is not listed here, do not depend
-on it.
-
-
-> **Status note 2026-10-09 (docs verification).** This specification was last fully re-verified on 2026-09-11 (version 1.3.0 of the
-> document, not the library; the library is `2.1.0-beta`). On 2026-10-09 these parts were re-checked against the code and corrected:
-> §8 `FlashCrypto` (it no longer uses `java.security` types), §9 `FlashDatabase` (schema version 13, 25 entities), §10 `FlashEngine`
-> (`AutoCloseable`, no `settings` member, plus the swarm and friendly-name members) and §10 `FlashConfig` (already current). The remaining
-> sections are **not re-verified since 2026-09-11**; features added after that date (group swarm `:core:swarm`, group membership by id +
-> secret, group history sync ADR-100, screen share ADR-102, call media failures ADR-078/079) are only partly reflected here. For a module
-> the developer guide pages in `docs/developer-guide/modules/` were verified on 2026-10-09 and are the better starting point; when the two
-> disagree, the source code wins.
----
+This reference describes the Android and JVM library surface. The messaging, calling,
+persistence version and engine sections were checked against the 2.2.0-beta.1 source on
+2026-11-07. Earlier sections retain their original scope. Follow the linked Kotlin
+declarations for exact signatures and overloads. APIs marked `@FlashInternalApi` are
+implementation seams and can change between builds.
 
 ## 1. Design Rules & Stability Annotations
 
@@ -373,448 +356,101 @@ this document listed them as public.
 ## 6. Core Messaging Module (`:core:messaging`)
 
 ### `FlashChatRepository`
-- **Stability:** Experimental (`core-messaging` is published but its API may still change)
-- **Purpose:** Chat list, one open conversation, sending, reactions, drafts, and selection-mode
-  bulk actions. Backend-agnostic: `:ui:chat` renders whatever implements this.
-- **Shape:** the repository exposes **two render-ready `StateFlow`s**, not entity collections. It
-  is a presenter, not a DAO — the Room-backed implementation maps rows to UI models once, and the
-  UI layer never touches a domain model. Everything that mutates is `fun` returning `Unit`; the
-  result is observed on the state flows rather than returned.
-- **Definition:**
-  ```kotlin
-  public interface FlashChatRepository {
-      public val chatListState: StateFlow<FlashChatListUiState>
-      public val conversationState: StateFlow<FlashConversationUiState>
 
-      public fun openConversation(conversationId: String)
-      public fun closeConversation()
+The [interface declaration](../../core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt)
+is the signature reference. The repository coordinates a selected conversation and exposes
+reactive state. A UI renders the snapshots and passes user actions back to the repository.
 
-      public fun sendText(text: String)
-      public fun sendReply(text: String, replyToId: String, replyToPreview: String)
-      public fun sendAttachment(
-          conversationId: String, transferId: String, fileName: String, mimeType: String,
-          sizeBytes: Long, localPath: String?,
-          voiceDurationMs: Long = 0L, voiceAmplitudes: List<Int> = emptyList(),
-      )
-      public fun openAttachmentPicker()
-
-      public fun saveDraft(text: String)
-      public fun setTyping(isTyping: Boolean)
-      public fun toggleReaction(messageId: String, emoji: String)
-      public suspend fun searchMessageBodies(query: String): Set<String>
-      public suspend fun searchConversationMessages(conversationId: String, query: String, limit: Int = 100): List<String>
-
-      public fun deleteMessage(localId: String)
-      public fun deleteMessages(localIds: Set<String>)
-
-      // Chat-list selection mode (UI-013)
-      public fun enterListSelectionMode(conversationId: String)
-      public fun toggleListSelection(conversationId: String)
-      public fun clearListSelection()
-      public fun archiveConversation(conversationId: String)
-      public fun archiveConversations(ids: Set<String>)
-      public fun unarchiveConversation(conversationId: String)
-      public fun unarchiveConversations(ids: Set<String>)
-      public fun deleteConversations(ids: Set<String>)
-      public fun setConversationsPinned(ids: Set<String>, pinned: Boolean)
-      public fun setConversationsMuted(ids: Set<String>, muted: Boolean)
-      public fun markConversationUnread(conversationId: String)
-      public fun markConversationsRead(ids: Set<String>)
-
-      // Groups (ADR-030)
-      public suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String>
-      public suspend fun addGroupMembers(groupId: String, memberIds: Set<String>): FlashResult<Unit>
-      public suspend fun leaveGroup(groupId: String): FlashResult<Unit>
-      public suspend fun groupMembers(groupId: String): List<FlashGroupMemberUi>
-
-      // Group media (F4)
-      public suspend fun beginGroupAttachment(
-          groupId: String, recipientDeviceId: String, fileName: String, mimeType: String,
-          sizeBytes: Long, wireFileId: String,
-      ): Pair<String, String>?
-      public suspend fun beginGroupAttachment(
-          groupId: String, recipientDeviceId: String, messageId: String, transferId: String,
-          wireFileId: String, fileName: String, mimeType: String, sizeBytes: Long,
-      ): Boolean
-      public fun sendGroupAttachment(
-          conversationId: String, messageId: String, transferId: String, fileName: String,
-          mimeType: String, sizeBytes: Long, localPath: String?,
-          voiceDurationMs: Long = 0L, voiceAmplitudes: List<Int> = emptyList(),
-      )
-      public fun getRecipientTransferIds(messageId: String): Set<String>
-  }
-  ```
-  Conversation ids are plain `String`s here (the peer device id for a 1:1 thread, the group id for
-  a group thread), not `FlashConversationId` — that value class belongs to the domain models below.
-
-- **Groups (ADR-030).** `createGroup` / `addGroupMembers` / `leaveGroup` return `FlashResult<String>`
-  / `FlashResult<Unit>` and are the only members here that talk to the network: membership is an
-  operation log fanned out to trusted members (`FLASH_GROUP`, see `docs/protocol.md`), so a failure
-  is a real error and not a state the UI can read off a flow. Max six members including the creator;
-  only trusted (paired) peers may be added; `leaveGroup` persists a tombstone so a replayed `add`
-  cannot silently rejoin. `groupMembers` returns the roster for a group (names, online flags,
-  `FlashMemberRole`); it is suspend because it reads the store, and a lightweight implementation
-  returns an empty list.
-- **Group media (F4).** Two `beginGroupAttachment` overloads exist and the *shorter one is the
-  legacy compatibility hook*: it cannot supply the complete identity tuple, so its default returns
-  `null`. The four-id overload (`messageId` + `transferId` + `wireFileId` + recipient) is the one a
-  host calls per recipient; `sendGroupAttachment` then writes the sender's single row under the
-  shared `messageId`, and `getRecipientTransferIds` maps that row back to the per-recipient
-  transfers so progress can be aggregated.
-
-- **Every method except the two state flows, `openConversation`, `closeConversation`,
-  `sendText`, `openAttachmentPicker` and the three list-selection calls has a default body**, so a
-  minimal implementation is small. `SampleFlashChatRepository` is a public in-memory
-  implementation shipped for previews and for hosts substituting demo state (ADR-020). The group
-  defaults are *inert rather than functional* — `createGroup`/`addGroupMembers`/`leaveGroup` return
-  an `Unknown("Groups unavailable")` failure, `groupMembers` is empty, and both
-  `beginGroupAttachment` overloads decline — so a lightweight host compiles and reports honestly
-  instead of silently accepting a group it cannot deliver.
+| Area | Entry points |
+|---|---|
+| Conversation and timeline | `chatListState`, `conversationState`, `openConversation(id, targetMessageId)`, `loadMoreHistory`, `closeConversation` |
+| Text and attachments | `sendText`, `sendTextTo`, `sendReply(text, replyToId, replyToPreview)`, `sendAttachment`, `sendGroupAttachment`, `retryMessage` |
+| User state | `saveDraft`, `setTyping`, `toggleReaction`, `setMessagePinned`, `observeMessageInfo`, deletion, list selection, archive, mute, pin and read-state actions |
+| Search | `searchChats`, `searchConversationMessages`, `searchMessageBodies`, `observeRecentSearches`, `recordRecentSearch`, `clearRecentSearches` |
+| Groups | Create and invite, join approval, membership and admin actions, group settings, history selection, group attachment and swarm linkage |
+| Hub | Directory colleagues and groups, linked groups, joins, announcements, `hubState`, people/departments/groups flows, `hubDeliveryNotes` and `hubDropped` |
+| Radio | `setRadioPolicy`, `radioDeliveryNotes`, `stopRadioRetry` |
 
 ### UI state models (what the flows carry)
-```kotlin
-public data class FlashChatListUiState(
-    val items: List<FlashChatListItemUi> = emptyList(),
-    val selectionMode: Boolean = false,
-    val selectedIds: Set<String> = emptySet(),
-)
 
-public data class FlashConversationUiState(
-    val header: FlashChatHeaderUiState,
-    val messages: List<FlashMessageUi>,
-    val draftText: String = "",
-)
-```
-| Type | Purpose |
-|---|---|
-| `FlashMessageUi` | One row: text, images, files, voice notes, reactions, quoted reply, delivery status, grouping position, and `callEvent`. |
-| `FlashCallEventUi`, `FlashCallEventKind` | A call row in the thread (UI-050). Kinds: `Outgoing`, `Incoming`, `Missed`, `Unanswered`; derived `missed` and `durationLabel` ("7:04"). |
-| `FlashChatListItemUi` | One chat-list row: preview, unread count, pinned/muted/typing, presence, sort order. |
-| `FlashChatHeaderUiState` | Conversation header: title, avatar, presence, transport, encryption, group member summary, `showCallActions`. |
-| `FlashAttachment`, `FlashFileAttachmentUi`, `FlashImageAttachmentUi`, `FlashVoiceAttachmentUi`, `FlashAttachmentProgress`, `FlashFileTransferStatus` | Attachment rendering + live transfer state inside a bubble. |
-| `FlashReaction`, `FlashQuotedReplyUi` | Reaction chips and the reply quote card. |
-| `FlashGroupMemberUi`, `FlashMemberRole` | Group member rows (UI-029). |
-| `FlashMessageGroupPosition`, `FlashListPreviewDelivery`, `FlashNetworkTransport` | Bubble grouping, list-preview tick, transport badge. |
+`FlashChatListUiState` carries conversation rows and selection state. `FlashConversationUiState`
+carries the selected conversation, timeline, draft, and per-conversation state. `FlashMessageInfoUi`
+is delivered separately by `observeMessageInfo(messageId)`.
 
 ### Domain models
-`FlashMessage`, `FlashConversation`, `FlashConversationDetail`, `FlashMessageId`,
-`FlashConversationId`, `FlashMessageStatus` are the persistence-facing shapes. They are public
-and stable, but note that **the repository does not expose them** — it exposes the `*Ui` models
-above. Use these when writing your own store, not when consuming `FlashChatRepository`.
 
-```kotlin
-public data class FlashMessage(
-    val id: FlashMessageId,
-    val conversationId: FlashConversationId,
-    val senderId: FlashDeviceId,
-    val senderName: String,
-    val text: String,
-    val timestamp: Long,
-    val isMine: Boolean,
-    val status: FlashMessageStatus = FlashMessageStatus.Sent,
-    val attachments: List<FlashAttachment> = emptyList(),
-)
-
-public enum class FlashMessageStatus { Pending, Sent, Delivered, Read, Failed }
-```
+See the [messaging module guide](../developer-guide/modules/core/core-messaging.md) for the
+repository's persistence and transport seams. Enterprise directory and join result types are
+compile-time dependencies of the Hub methods, so `core-messaging` exports `core-enterprise`.
+A standalone repository can leave Hub and radio integration unwired. Check the operation's
+result before presenting it as available.
 
 ---
 
 ## 7. Core Calling Module (`:core:calling`)
 
-1:1 voice and video calling (C7, ADR-025). Media rides WebRTC; signaling rides whatever duplex
-text transport the host already owns.
-
-**Reachable through `Flash.create`, but opt-in and host-built.** `FlashEngine` exposes
-`engine.calls` and `engine.attachCalling(...)`; the facade routes inbound `FLASH_CALL` frames to the
-attached engine and drives its signaling-recovery window from the sessions it observes. The engine
-itself is the host's to construct, because calling needs three things only an app can provide — a
-signaling channel it already owns, runtime `RECORD_AUDIO`/`CAMERA` grants, and a
-`microphone|camera` foreground service declared in its own manifest — so `Flash.create` wires no
-calling factory and `calls` is null until [`attachCalling`](#flashengine) is called. A consumer
-depends on `core-calling` directly (it is `compileOnly` on the engine — see §10) and wires the
-seams below. Permission list: README → Permissions.
-
 ### `FlashCalling`
-- **Stability:** Experimental
-- **Purpose:** the entire call surface — place, answer, end, and control at most one call at a
-  time.
-- **Definition:**
-  ```kotlin
-  public interface FlashCalling {
-      public val activeCall: StateFlow<FlashCallUiState?>
-      public val ongoingGroupCalls: StateFlow<Map<String, OngoingGroupCallUi>>
-      public val media: FlashCallMedia?
 
-      public suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean
-      public suspend fun accept(): Boolean
-      public suspend fun decline(): Boolean
-      public suspend fun hangUp(): Boolean
-
-      public fun toggleMute(): Boolean
-      public fun toggleCamera(): Boolean
-      public suspend fun switchCamera()
-      public fun setSpeaker(on: Boolean)
-      public fun setVideoFocus(peerId: String?): Unit = Unit   // G3: pin a group participant's video
-      // FlashCallUiState (G5): compactVideo, videoFocusPeerId, videoMainPeerId — all defaulted, additive
-      public fun setShowFewerVideos(on: Boolean): Unit = Unit  // G6: cap receiving at one video
-      // FlashCallEndReason.FULL and FlashGroupCallLimits (MAX_VIDEO_PARTICIPANTS 8, MAX_VOICE_PARTICIPANTS 12;
-      //   G7, ADR-050). Adding FULL is source-breaking for an exhaustive `when` over FlashCallEndReason.
-      // FlashCallUiState (G6): healthWarning: FlashCallHealthWarning? (WARM, HOT, CPU, SOFTWARE_DECODE),
-      //   showingFewerVideos — defaulted, additive
-
-      // Group calls
-      public suspend fun startGroupCall(
-          groupId: String, groupName: String, memberIds: List<String>, video: Boolean,
-      ): Boolean
-      public suspend fun joinGroupCall(
-          groupId: String, callId: String, memberIds: List<String>, video: Boolean = false,
-      ): Boolean
-      public suspend fun queryGroupCall(groupId: String, memberIds: List<String>)
-
-      public suspend fun onInboundText(peerId: String, text: String): Boolean
-      public fun onSignalingLost(peerId: String)
-      public fun onSignalingRestored(peerId: String)
-  }
-  ```
-- **Why `Boolean` and not `FlashResult`:** every failure here is one of two things the caller
-  already knows how to handle — "there is no call to act on" or "local media could not be
-  acquired" — and both collapse to false. There is no error payload a call UI would render, so
-  the module does not invent one. This is the one deviation from §1.5 in the published API.
-- **`activeCall` is the only thing a navigation layer needs.** It goes non-null on
-  DIALING/RINGING and back to null a short grace window after ENDED, so a host pushes and pops
-  its call route off that single flow — no manual push/pop pairing to get wrong.
+The [calling interface](../../core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashCalling.kt)
+exposes `activeCall`, `media`, `ongoingGroupCalls`, outgoing calls, group join and query, answer,
+decline, hang-up, mute, camera/speaker controls, reactions and screen presentation. For example,
+`startCall(peerId: String, peerName: String, video: Boolean): Boolean` and
+`accept(audioOnly: Boolean = false): Boolean` are suspend functions. A second inbound invitation
+while a call is live receives a busy response.
 
 ### The two host seams
 
-Signaling is plain text (`FLASH_CALL …`, see `docs/protocol.md`), so any duplex text channel
-works. The module never opens a socket of its own; it is handed both directions:
-
-- **outbound** — a `sendFrame(peerId, text) -> Boolean` lambda supplied at construction. Every
-  frame the module emits goes through it. Always the host's, engine or not.
-- **inbound** — `onInboundText(peerId, text)` returns true when the text was a `FLASH_CALL` frame
-  it consumed, false when it is not a call frame at all. **A `FlashEngine` consumer does not call
-  this one.** `Flash.create` recognizes the `FLASH_CALL` prefix itself and routes the frame to the
-  attached engine through `FlashEngine.onInboundCallText`, which is the same call without the
-  `FlashCalling` type on the dispatch path (`compileOnly`, §10) — and a recognized call frame is
-  never handed to another handler whether or not anything consumed it. Only a host that depends on
-  `core-calling` *without* the umbrella chains it ahead of its own text handlers itself:
-  `if (calling.onInboundText(id, t)) return`.
-
-`onSignalingLost(peerId)` closes the loop for transport death — without it a call sits waiting
-for frames that can no longer arrive. Call it from the transport's disconnect callback. It opens a
-**recovery window** rather than ending the call (ERROR-033): a mesh Wi-Fi roam takes the signaling
-session down as a matter of course, and the transport redials it in seconds, so ending the call on
-the spot made a two-second radio outage indistinguishable from a hang-up. `onSignalingRestored`
-closes that window and lets the session renegotiate — the ICE restart offer that rebuilds the media
-path needs this channel to travel on, so a host that calls only `onSignalingLost` has a call that
-survives the grace period and then dies anyway. Call `onSignalingRestored` whenever a session comes
-up, not only after a loss. **Also already done for a `FlashEngine` consumer:** the facade watches
-the same live sessions the rest of the engine does, so `FlashEngine.onCallSignalingLost` /
-`onCallSignalingRestored` fire on every session-down/up edge without the host wiring anything.
-
-`attachCalling` can only be called once — a second attach is ignored, like `attachPtt`. Detaching
-(`detachCalling()`, and `close()`) stops routing without ending a call: `FlashCalling` exposes no
-shutdown, and the media, audio route and foreground service belong to the host, so hang-up stays
-with the host's own `hangUp()`.
-
-There is a **third, optional seam**: `CallCoordinator(prioritiseVoice: () -> Boolean = { true })`.
-It gates the audio-priority work of ERROR-031 / D8 — the audio sender's `Priority.HIGH` /
-high `bitratePriority`, video's demotion to `Priority.LOW`, and the adaptive governor that steps
-video down when audio degrades. It is a **lambda, not a value**, for two reasons: `:core:calling`
-must not depend on persistence (ADR-024), and it is read once per stats sample, so flipping the
-user's "Prioritise voice quality" switch takes effect on the call in progress rather than the next
-one. Default `{ true }`; returning false restores symmetric treatment of the two streams. The
-video bitrate ceiling is *not* gated on it — a ceiling is written into the description both ends
-must agree on, so wire content must not depend on which device has a switch flipped.
-
-And a **fourth**: `CallCoordinator(performanceMode: () -> FlashPerformanceMode = { HIGH })`
-(ERROR-033). Capture resolution, Opus packetization and the call-recovery windows all come from the
-tier, so a 2 GB API-27 handset stops asking for 1080p30 and stops paying ~100 packets/second of
-header overhead for 25 kbit/s of speech. A lambda for the same two reasons, read once per session,
-and defaulted to `HIGH` — whose profiles *are* the pre-tiering constants, so a caller that does not
-tier behaves exactly as before. Unlike `prioritiseVoice` this one **does** change wire content, which
-is why the SDP work is split in two: `CallSdp.tuneLocal` asserts our own tier into the description we
-send, and `tuneRemote` reads the peer's declaration and reconciles it by taking the longer frame and
-the smaller ceiling of the two. Both endpoints therefore converge on byte-identical parameters
-whichever of them offered, even when their tiers differ.
+A host supplies `CallCoordinator` with an outbound `sendFrame` callback and passes incoming
+`FLASH_CALL` text to `onInboundText`. Forward both `onSignalingLost` and `onSignalingRestored`
+on transport edges so a roaming peer can renegotiate. The host obtains runtime media
+permissions and configures physical audio routing. An engine may expose a host-attached
+`FlashCalling` via `calls`.
 
 ### Group calling (N participants)
 
-Group calls ride the same `FLASH_CALL` prefix and the same two seams as a 1:1 call, with five
-extra actions (`ginvite`, `gaccept`, `gdecline`, `gjoin`, `ghangup`) plus `gpresence`/`gquery` for
-"is a call already running in this group?" — see the `docs/protocol.md` Calling section. The wire
-difference matters to a host: the *sender* is not always the caller, so receivers must resolve the
-participant from the frame's `from` and not from the transport peer they received it through.
-
-- **`ongoingGroupCalls`** is `StateFlow<Map<String, OngoingGroupCallUi>>` keyed by `groupId`.
-  Non-empty means some peer announced a live call in that group, which is what a conversation
-  header renders its "rejoin" banner from. It is a separate flow from `activeCall` on purpose: a
-  device can be *in* a group call and still be told about another group's call.
-- **`startGroupCall(groupId, groupName, memberIds, video)`** invites every member in `memberIds`
-  and returns false when a call is already live or local media could not be acquired. The session
-  is a full mesh: each pair negotiates its own `PeerConnection` leg, with a glare-free offer
-  election so two members starting at once do not both offer.
-- **`joinGroupCall(groupId, callId, memberIds, video)`** joins a call announced through
-  `ongoingGroupCalls` (the banner's action), and **`queryGroupCall(groupId, memberIds)`** fans one
-  `gquery` out to the group's trusted members — used when presence was missed but the group is
-  open. Both are no-ops when the member list has no trusted peer other than the local device.
-- **Leaving is per leg.** A member dropping out closes only its own legs; the call continues for
-  everyone else, and the sole remaining member gets a solo-grace window before the call ends
-  rather than an immediate teardown.
-- **`activeCall` is still the single call in flight** (1:1 or group): a group call publishes
-  `FlashCallUiState.peerId = groupId` and `peerName = groupName`, so the same `FlashCallScreen` and
-  the same navigation push/pop logic work for both. §13's `FlashCallScreen` signature is unchanged
-  by group support.
-- **`OngoingGroupCallUi`** (in `:core:calling`, `model` package):
-  ```kotlin
-  public data class OngoingGroupCallUi(
-      public val callId: String,
-      public val groupId: String,
-      public val groupName: String,
-      public val initiatorId: String,
-      public val video: Boolean,
-      public val participantCount: Int = 1,
-      public val lastSeenTimestamp: Long = System.currentTimeMillis(),
-  )
-  ```
-  `lastSeenTimestamp` is local bookkeeping, not wire data: the coordinator sweeps the map every
-  5 s and drops any entry not re-announced within 12 s, so a stale banner cannot outlive the call
-  that produced it.
+`startGroupCall(groupId, groupName, memberIds, video)` and
+`joinGroupCall(groupId, callId, memberIds, video)` take `List<String>` device IDs.
+`queryGroupCall` discovers a current call through peers, and `ongoingGroupCalls` exposes
+advertised calls by group ID. Group video supports focus, fewer videos, raised hands and reactions.
 
 ### `FlashCallMedia`
-- **Stability:** Experimental
-- **Purpose:** renderable tracks and live quality metrics for the active call. Split out from
-  `FlashCallUiState` because tracks and stats are live platform objects, not data a `data class`
-  can carry.
-- **Definition:**
-  ```kotlin
-  public interface FlashCallMedia {
-      public val stats: StateFlow<FlashCallStats?>
-      public val localVideoTrack: StateFlow<VideoTrack?>
-      public val remoteVideoTrack: StateFlow<VideoTrack?>
-  }
-  ```
-- **Read-only by design:** controls live on `FlashCalling`, so a UI layer can bind video and a
-  latency readout without also being handed the ability to mutate the call.
-- **Tracks are flows, not values,** because a track's identity changes mid-call —
-  renegotiation, a camera flip, or the peer enabling video all swap the object. A renderer must
-  re-bind on every emission and must **not** release its renderer on a track change:
-  `EglRenderer.release()` is terminal and leaves the surface permanently black.
 
-> **The `VideoTrack` exception (§1.2).** `VideoTrack` is `com.shepeliev.webrtckmp.VideoTrack` —
-> the one third-party type Flash lets cross a published boundary. A renderer has to be handed
-> the real track, and any wrapper would have to expose it again to be useful. `:core:calling`
-> declares webrtc-kmp with `api()` so consumers get the type transitively; the trade-off is
-> ~30 MB of native WebRTC in the APK, which is why calling is a separate artifact rather than
-> part of `core-engine`.
+- `stats: StateFlow<FlashCallStats?>`
+- `localVideoStreamTrack: StateFlow<VideoStreamTrack?>`
+- `remoteVideoStreamTrack: StateFlow<VideoStreamTrack?>`
+- `remoteVideoTracks: StateFlow<Map<String, VideoStreamTrack>>` for group calls
+
+`VideoStreamTrack` is `com.shepeliev.webrtckmp.VideoStreamTrack`, supplied by Flash's published
+WebRTC fork. Rebind on each track emission and release the renderer when leaving the screen.
+`FlashCallStats` includes sampled network and media quality such as RTT, loss, bitrate and video
+dimensions. Refer to the [call model definitions](../../core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/model/FlashCallModels.kt)
+for fields and units.
 
 ### `FlashCallUiState`
-- **Stability:** Experimental
-- **Purpose:** immutable snapshot of the active call.
-- **Definition:**
-  ```kotlin
-  public data class FlashCallUiState(
-      public val callId: String,
-      public val peerId: String,          // doubles as the conversation id
-      public val peerName: String,
-      public val direction: FlashCallDirection,
-      public val video: Boolean,
-      public val state: FlashCallState,
-      public val endReason: FlashCallEndReason? = null,
-      public val connectedAt: Long? = null,   // epoch ms when media started
-      public val micMuted: Boolean = false,
-      public val cameraOff: Boolean = false,
-      public val speakerOn: Boolean = false,
-      public val videoLimitReason: String? = null,
-  )
-  ```
-  `videoLimitReason` is non-null while the audio-protective governor has traded video quality away
-  to protect the voice stream (ERROR-031 / D8) — e.g. "Video paused to protect the call audio". It
-  is user-facing copy, not a code: a picture that gets worse **on purpose** has to be
-  distinguishable from a picture that gets worse because the app is broken, so a UI that renders
-  video should render this string too. Null means no concession is in effect, including whenever
-  the "Prioritise voice quality" setting is off. Distinct from `cameraOff`, which is the *user's*
-  choice and is never set by the governor.
+
+Observe `activeCall` for lifecycle, call ID, peer, local control state, group participants,
+media notices, and screen-sharing state. `listShareSources`, `shareUsesSystemPicker`,
+`startScreenShare`, and `stopScreenShare` are capability-dependent. Android screen
+presentation is experimental in the Flash app and requires the host's MediaProjection integration.
 
 ### `FlashCallState`, `FlashCallDirection`, `FlashCallEndReason`
-- **Stability:** Experimental
-- **Definition:**
-  ```kotlin
-  public enum class FlashCallState { DIALING, RINGING, CONNECTING, ACTIVE, ENDED }
-  public enum class FlashCallDirection { OUTGOING, INCOMING }
-  public enum class FlashCallEndReason { NORMAL, DECLINED, NO_ANSWER, DISCONNECTED, ERROR }
-  ```
-- One state machine per call. `DIALING` is outgoing-only, `RINGING` incoming-only; both converge
-  on `CONNECTING` once accepted, then `ACTIVE` when media flows. `ENDED` is terminal and always
-  carries an `endReason`.
 
-### `FlashCallStats`
-- **Stability:** Experimental
-- **Purpose:** transport metrics sampled from `PeerConnection.getStats()` about once a second —
-  the source of the call screen's latency badge.
-- **Definition:**
-  ```kotlin
-  public data class FlashCallStats(
-      public val rttMs: Int? = null,
-      public val audioJitterMs: Int? = null,
-      public val videoJitterMs: Int? = null,
-      public val fps: Int? = null,
-      public val remoteWidth: Int? = null,
-      public val remoteHeight: Int? = null,
-      public val inboundKbps: Int? = null,
-      public val outboundKbps: Int? = null,
-      public val sendWidth: Int? = null,
-      public val sendHeight: Int? = null,
-      public val packetLoss: Double? = null,   // fraction 0..1
-  ) {
-      public val hasData: Boolean
-      public val remoteResolutionLabel: String?   // "1080p"-style, null before first frame
-  }
-  ```
-- **Every field is nullable and `null` means "not measured yet", never zero.** WebRTC publishes
-  each report only once it exists: RTT needs the first RTCP round trip on the selected candidate
-  pair, framerate and resolution need a decoded frame, and bitrate needs two samples to
-  difference. Gate the readout on `hasData` rather than rendering zeros.
-- `sendWidth`/`sendHeight` are the encoder's current frame size, which is how adaptive
-  downscaling becomes visible: capture is requested at 1080p and the encoder steps down under
-  bandwidth or CPU constraint.
+States are `DIALING`, `RINGING`, `CONNECTING`, `ACTIVE`, and `ENDED`. Direction is
+`OUTGOING` or `INCOMING`. End reasons are `NORMAL`, `DECLINED`, `NO_ANSWER`, `DISCONNECTED`,
+`ERROR`, `MIC_DENIED`, `MIC_UNAVAILABLE`, and `FULL`. Audio-only fallbacks and camera failures
+are represented separately by `FlashCallNotice` and `FlashCameraProblem`.
 
 ### `FlashCallLogEntry`
-- **Stability:** Experimental
-- **Purpose:** a finished call, handed to the host so it can write a chat row.
-- **Definition:**
-  ```kotlin
-  public data class FlashCallLogEntry(
-      public val callId: String,
-      public val peerId: String,          // doubles as the conversation id
-      public val peerName: String,
-      public val direction: FlashCallDirection,
-      public val video: Boolean,
-      public val endReason: FlashCallEndReason,
-      public val durationMs: Long,        // how long media flowed; 0 when never connected
-      public val endedAt: Long,           // epoch ms
-  ) {
-      public val missed: Boolean          // durationMs <= 0 && direction == INCOMING
-  }
-  ```
-- **Deliberately messaging-free.** `:core:calling` must not depend on `:core:messaging`
-  (port/adapter inversion, ADR-024), so this is a plain record: the host receives it and writes
-  the chat row itself.
-- **No wire frame carries this.** Both devices already hold every field locally when a call
-  ends, so each writes its own row — no protocol change was needed. Consequence: `missed`
-  cannot distinguish "declined" from "the caller gave up", because the wire does not (both end
-  `NORMAL`). They read the same way in a call log.
+
+Use the `CallCoordinator(onCallLog = ...)` callback to persist finished call entries or
+publish a flow owned by your host. `FlashCalling` exposes live call state.
 
 ### Cost and dependency notes
-- `api(libs.webrtc.kmp)` — webrtc-kmp is re-exported, so `VideoTrack` needs no extra
-  declaration downstream.
-- **~30 MB of native WebRTC** per supported ABI. A consumer that does not call should simply not
-  depend on this module; nothing else in Flash pulls it in — `:core:engine` is the closest thing to
-  an exception and it is `compileOnly`, which is why a `core-engine` consumer still has to add
-  `core-calling` to place a call and still has no WebRTC on its runtime classpath without it.
-- Ships **no** `AndroidManifest.xml`, like every other library module (§1.7) — the permissions
-  and the foreground service are the app's to declare.
+
+Calling adds WebRTC and platform media access. Consumers using it on desktop supply the
+native libwebrtc runtime for their OS/architecture. See the
+[calling guide](../developer-guide/modules/core/core-calling.md) and
+[release build guide](../release-build.md#publishing-the-library-jitpack-and-the-webrtc-fork).
 
 ---
 
@@ -1058,7 +694,7 @@ an entity appearing in consumer code as a layering bug, not as a supported call.
 - **Stability:** Internal-ish — reachable, but reserved for `:core:engine` wiring.
 - **Definition:**
   ```kotlin
-  @Database(entities = [ /* 25 entities */ ], version = 13, exportSchema = true)
+  @Database(entities = [ /* 32 entities */ ], version = 23, exportSchema = true)
   public abstract class FlashDatabase : RoomDatabase() {
       public abstract fun messageDao(): MessageDao
       // conversationDao, receiptDao, outboxDao, transferDao, transferChunkDao,
@@ -1085,7 +721,7 @@ an entity appearing in consumer code as a layering bug, not as a supported call.
   delivery status only ever moves forwards. Prefer it to `updateStatus` for anything on a retry
   path.
 - v2 added the attachment columns to `MessageEntity`, v3 the reply columns. Later steps (4 to 13) added groups, swarm content and
-  tombstones (7), group secrets, invites, join requests, rotations (8 to 10), settings/preferences and history sync (13); the schema JSON
+  tombstones (7), group secrets and join flows (8 to 10), history sync (13), Hub state, transfer metadata and source identity (through 23). The schema JSON
   per version is in `core/persistence/schemas/`. The DAO list in the block above is abbreviated; the real database has many more.
 
 ### `FlashDatabaseOpener` / `PassphraseProvider`
@@ -1132,7 +768,7 @@ an entity appearing in consumer code as a layering bug, not as a supported call.
 
 ### `FlashSettingsDataStore`
 - **Stability:** Stable
-- **Purpose:** every user preference Flash persists. Reachable as `FlashEngine.settings`.
+- **Purpose:** Android preference storage. Reachable through the Android `FlashEngine.settings` extension.
 - **Definition:**
   ```kotlin
   public class FlashSettingsDataStore(
@@ -1247,179 +883,44 @@ an entity appearing in consumer code as a layering bug, not as a supported call.
 
 ## 10. Core Engine Module (`:core:engine`)
 
-The facade that turns eight modules into one object (C7.0, ADR-010). This is the only module that
-knows how the others wire together; it declares `:core:discovery`, `:core:network`,
-`:core:transfer`, `:core:messaging`, `:core:security`, `:core:persistence` and `:core:common` with
-`api()`, so a consumer of `core-engine` gets every published type transitively and adds one
-dependency, not eight. Two more are declared on the **android** target rather than in commonMain:
-`:core:ptt` as `api`, and `:core:calling` as **`compileOnly`** (ADR-033) — `FlashCalling` is part of
-the engine's public API, but the dependency is not published, so `core-engine` never drags native
-WebRTC into a consumer that does not call. Nothing outside `androidMain` names either module. They
-were placed there because both were plain AGP Android libraries with no JVM variant, which a
-commonMain entry breaks at variant selection (ERROR-049); `:core:ptt` (ADR-058) and `:core:calling`
-have since become KMP, so the placement is now a choice that waits for the engine refactor rather
-than a constraint.
-
 ### `Flash` / `FlashConfig`
-- **Stability:** Stable
-- **Purpose:** one call that assembles and starts a working engine.
-- **Definition:**
-  ```kotlin
-  public object Flash {
-      public fun create(context: Context, config: FlashConfig = FlashConfig()): FlashEngine
-  }
 
-  public data class FlashConfig(
-      public val displayName: String? = null,
-      public val enableResume: Boolean = true,
-      public val autoAcceptIncoming: Boolean = false,
-      public val receivedFilesPath: String? = null,
-  )
-  // Android source-compat shims (androidMain): FlashConfig(receivedFilesDir = File) factory,
-  // FlashConfig.copy(receivedFilesDir = File), and the receivedFilesDir extension property.
-  // FlashEngine.settings is an extension (throws on a non-Android engine); settingsOrNull returns null.
-  // AndroidFlashEngine (what Flash.create returns) extends DefaultFlashEngine and is java.io.Closeable.
-  // Binary compatibility with 0.x JitPack artifacts is NOT preserved (ADR-099, ERROR-125).
-  ```
-  ```kotlin
-  val engine = Flash.create(context, FlashConfig(autoAcceptIncoming = true))
-  // …observe engine.discovery.discoveredEndpoints, then:
-  engine.transfers.sendFile(peerDevice, uri, "photo.jpg", sizeBytes)
-  engine.close()   // onDestroy / ViewModel.onCleared
-  ```
-- **Every field defaults**, so `Flash.create(context)` is a complete engine. `displayName = null`
-  falls back to the persisted identity name (`"Flash Device"` on first run);
-  `receivedFilesPath = null` (or the legacy `receivedFilesDir = null`) means `<externalFilesDir>/FlashReceived`.
-  `autoAcceptIncoming` applies to paired peers only. On Desktop, `displayName` is an in-memory override
-  that never overwrites the persisted device name.
-- **`create` opens the encrypted database synchronously — call it off the main thread.** Everything
-  else (network server, NSD advertise/browse, data-channel server, proactive auto-connect) starts
-  asynchronously on the shared scope right after it returns.
-- `enableResume = false` drops the `TransferStore` only; the chat/settings database is opened
-  regardless, because chats and settings require it. Transfers still work in-session, they just
-  restart rather than resume after a process death.
-- `autoAcceptIncoming` is the inbound-offer gate: false (the default, matching the app) means every
-  inbound file arrives as an OFFER and the sender parks until
-  `FlashTransferRepository.acceptIncoming`; true is the zero-friction quick-start path.
+`Flash.create(context, config = FlashConfig())` opens the Android engine and starts the
+transport. Construct it off the main thread and call `close()` when the owning scope ends.
+The common [configuration](../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashConfig.kt)
+accepts `displayName`, `enableResume`, `autoAcceptIncoming` and `receivedFilesPath`.
+Android also has the legacy `receivedFilesDir: File` overload. Automatic acceptance is
+limited to trusted peers. Desktop resume is in-session.
+
+On JVM, `FlashDesktop.create(config)` needs a registered JVM host factory. Use
+`engine.awaitReady()` before relying on a live transport. A host implementing
+`FlashReadiness` exposes `ready` and `startError` as state flows. The Windows application
+provides a factory in its own module.
 
 ### `FlashEngine`
-- **Stability:** Stable
-- **Purpose:** the aggregate accessor surface for ViewModels and UI.
-- **Definition:**
-  ```kotlin
-  public interface FlashEngine : AutoCloseable {
-      public val chats: FlashChatRepository
-      public val transfers: FlashTransferRepository
-      public val discovery: FlashDiscovery
-      public val network: FlashNetwork
-      public val trustStore: FlashTrustStore
-      public val ptt: FlashPtt?
 
-      public fun attachPtt(
-          hasMicPermission: () -> Boolean = { true },
-          isCallActive: () -> Boolean = { false },
-          audioRateHz: () -> Int = { 16_000 },
-      ): FlashPtt?
+The [common interface](../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt)
+extends `FlashBaseEngine`, with `discovery`, `network`, `trustStore`,
+`updateFriendlyName` and `close`. It adds `chats`, `transfers`, optional `pairing`,
+and attach/detach methods for PTT, calling and swarm. See the
+[pairing guide](../developer-guide/guides/pairing-and-trust.md) for the Android factory's
+consent flow.
 
-      public fun attachPtt(engine: FlashPtt)
-      public fun detachPtt()
-      public fun updateFriendlyName(name: String): Boolean = false
-
-      public val calls: FlashCalling?
-
-      public fun attachCalling(engine: FlashCalling)
-      public fun detachCalling()
-
-      public suspend fun onInboundCallText(peerDeviceId: String, text: String): Boolean
-      public fun onCallSignalingLost(peerDeviceId: String)
-      public fun onCallSignalingRestored(peerDeviceId: String)
-      public fun busyCallPeerIds(): Set<String> = emptySet()
-
-      public val swarm: FlashSwarm?                    // group file swarm, optional (ADR-070..075)
-      public fun attachSwarm(config: FlashSwarmConfig = FlashSwarmConfig()): FlashSwarm?
-      public fun attachSwarm(swarm: FlashSwarm)
-      public fun detachSwarm()
-  }
-  // `settings` is NOT a member: on Android it is an extension property on the engine returned by Flash.create (see the FlashConfig note).
-  ```
-- **Five repository/service properties and three optional subsystems (`ptt`, `calls`, `swarm`)**, every one an abstraction from §3–§9. The facade adds no behaviour of its own — it is composition, not a god object.
-- **`ptt` is the one optional subsystem, and it is attached rather than created.** PTT needs a
-  microphone grant and a foreground service that only an app can declare, so `Flash.create` wires a
-  factory and waits: `attachPtt(hasMicPermission, isCallActive, audioRateHz)` builds a
-  `PttSessionEngine` from the facade's own identity/trust/live-session state plus those three host
-  policy lambdas, attaches it, and returns it; a second call returns the attached instance. It
-  returns **null** for a hand-assembled `DefaultFlashEngine`, which has no wiring to attach to —
-  that host calls the other overload, `attachPtt(engine)`, with an engine it built itself (ignored
-  when one is already attached). `detachPtt()` shuts the attached engine down and is idempotent;
-  `close()` calls it, so a host only needs it to stop PTT while keeping the engine alive.
-- **Inbound PTT is routed for you, attached or not.** `FLASH_PTT` / `FLASH_PTSS` text frames go to
-  `FlashPtt.onInboundText`, `PTT1` binary frames to `FlashPtt.onInboundBinary` **before** the
-  transfer parser, and all four cases (`consumed`, `rejected-but-consumed`, `no engine attached`,
-  `unrelated text`) end the same way: a recognized PTT frame never reaches the chat or transfer
-  handlers. With no engine attached the frames are recognized and dropped with a warning.
-- **There is one `calls` property, and it is attached rather than created — deliberately.**
-  `attachCalling(engine)` takes a `FlashCalling` the host built; there is no lambda overload and no
-  `callsFactory`, because a `CallCoordinator` is assembled from the host's `sendFrame` transport
-  seam, its scope and its audio policy, and the permissions, audio route and foreground service are
-  the host's. A factory could only pretend to build one. Attaching twice keeps the first engine
-  (mirrors `attachPtt`); `detachCalling()` stops routing and is idempotent; `close()` calls it, and
-  detaching is explicitly **not** hang-up (the call's lifetime is the host's).
-- **Inbound calling is routed for you, attached or not.** `Flash.create` recognizes the
-  `FLASH_CALL` prefix itself and hands the frame to `onInboundCallText` — the same routing the other
-  families get, with one extra rule: a recognized call frame is consumed or dropped, never passed to
-  the PTT, chat, group or transfer parsers, because `CallCoordinator.onInboundText` legitimately
-  answers false for frames that belong to calling anyway (a stale call id, a `gquery` with no live
-  call). With no engine attached the frame is dropped with a warning. The recognition is a plain
-  prefix test, not `CallFrameCodec.decode`: `:core:calling` is `compileOnly`, so the codec's class is
-  not guaranteed to exist at runtime and this runs on every inbound text frame.
-- **`onCallSignalingLost` / `onCallSignalingRestored` are the facade's, not the host's.**
-  `Flash.create` observes the live sessions it already tracks and forwards both edges, which is what
-  closes ERROR-033's recovery window instead of leaving every roam to burn the full grace period.
-  Both are no-ops when nothing is attached, as is `onInboundCallText` (it answers false) — the
-  three are typed without `FlashCalling` precisely so an engine with no calling classes on the
-  runtime classpath can take the call without resolving one.
-- **`close()` is not optional and is idempotent.** An engine from `Flash.create` owns a shared
-  `CoroutineScope` plus NSD, Wi-Fi, data-channel and database resources; `close()` cancels the scope
-  and releases them. Call it from `onDestroy` or `ViewModel.onCleared`.
+| Need | Available seam |
+|---|---|
+| Change discovery mode | `CompositeDiscovery.setMode(FlashDiscoveryMode)` on a custom graph. On Android `DiscoveryModeSetting.setDiscoveryMode(canonicalName)` is a persistence API. |
+| Tune performance | A custom host supplies `FlashPerformanceMode` to the components it assembles. The factory's `FlashConfig` carries the four fields listed above. |
+| Access Android settings | Import the Android extension `com.transfer.flash.core.engine.settings` or `settingsOrNull`. The common contract has no settings member. Cross-platform consumers own their settings storage. |
+| Inject a sink or trust store | Supply repositories and a `FlashTrustStore` to `DefaultFlashEngine`, or assemble the lower-level modules using their host seams. |
+| Attach a custom swarm | Use `attachSwarm(swarm)` or supply `swarmFactory` when constructing `DefaultFlashEngine`, then call `attachSwarm(config)`. |
+| Attach calling or PTT | Use the corresponding attach method. Forward calling text and session-edge events when the host owns the transport. |
 
 ### `DefaultFlashEngine`
-- **Stability:** Stable
-- **Purpose:** the hand-assembly path, for a consumer that wants to substitute one subsystem.
-- **Definition:**
-  ```kotlin
-  public class DefaultFlashEngine(
-      override val chats: FlashChatRepository,
-      override val transfers: FlashTransferRepository,
-      override val discovery: FlashDiscovery,
-      override val network: FlashNetwork,
-      override val trustStore: FlashTrustStore,
-      override val settings: FlashSettingsDataStore,
-      private val onClose: () -> Unit = {},
-      private val pttFactory: ((
-          hasMicPermission: () -> Boolean,
-          isCallActive: () -> Boolean,
-          audioRateHz: () -> Int,
-      ) -> FlashPtt)? = null,
-  ) : FlashEngine
-  ```
-- **The second documented exception to §1.1.** It is public because substituting a subsystem is a
-  supported use case, and a factory that took all six dependencies would be the same class with
-  extra ceremony.
-- **`onClose` defaults to a no-op.** `Flash.create` passes the coordinated teardown; a
-  hand-assembled engine owns its own scopes and lifecycles, so it should not have someone else's
-  teardown imposed on it. `close()` still runs at most once, and detaches the calling engine before
-  shutting the attached PTT engine down.
-- **`pttFactory` is null by default**, which is exactly what makes `attachPtt(lambdas)` return null
-  on a hand-assembled engine instead of pretending it built something. `Flash.create` is the only
-  caller that passes one. There is deliberately **no** `callsFactory` counterpart: calling has no
-  lambda overload to serve, so `calls` is null on every engine until a host attaches its own.
 
-### Also public
-`KeystorePassphraseProvider(context)` — the AndroidKeyStore-wrapped implementation of
-`PassphraseProvider` (§9), living here rather than in `:core:persistence` so that module stays
-Keystore-free. `RoomTransferStore` — the Room-backed `TransferStore` adapter. Both are wiring
-parts: `Flash.create` already installs them, and they are public only so hand-assembly can too.
-`AutoConnectGate` is `internal`.
+The common aggregate takes the repositories, discovery, network and trust store from the
+caller. Optional constructor callbacks let the caller supply PTT/swarm factories, name
+updates and close handling. Android's compatibility factory and extensions expose the
+Android settings store for engines built with it.
 
 ---
 

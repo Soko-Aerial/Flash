@@ -12,10 +12,9 @@ Two companions:
 - `docs/security.md` — the threat model this guide refers to (SEC-04, SEC-06, SEC-16,
   REV-10, REV-12, REV-16).
 
-Everything below was checked against the code on **2026-10-19**
-(`server/src/main/kotlin/com/transfer/flash/server/config/ServerConfig.kt`, `Main.kt`,
-`server/Dockerfile`, `core/hub-protocol/.../HubContract.kt`). Numbers and default values
-are the ones in that code; re-read those files if a build is much newer than this date.
+The `2.2.0-beta.1` Hub has a separate release tag, `server-v2.2.0-beta.1`. Use disposable
+data for the operator beta. The production profile describes the hardening required for
+a future rollout. See the [readiness plan](../plans/HUB-READINESS-REMEDIATION.md) for open gates.
 
 ---
 
@@ -27,11 +26,12 @@ public port:
 | What | Path | Notes |
 |---|---|---|
 | Relay (device-to-device chat, files, presence, calls signalling) | `/flash-relay` | WebSocket |
-| REST API (enrol, directory, announcements, groups) | `/api/v1/...`, `/admin/api/v1/...` | bearer token |
+| Client REST API (enrol, directory, announcements, groups) | `/api/v1/...` | bearer token after authentication |
 | Enrolment landing page | `/enroll` | the page a phone opens from an invite link |
 | Liveness | `/health` | public, status only |
 
-and, on a **second** listener (loopback by default), the **admin console** at `/admin/`.
+and, on a **second** listener (loopback by default), the **admin console** at `/admin/`
+with its session-authenticated API at `/admin/api/v1/...`.
 
 State lives in one data directory: a SQLite database, the hub's delegate key, a
 sealing/key-encryption key (`data.key`), the delegation certificate, and the one-time
@@ -64,8 +64,8 @@ Deliberately **out of scope** here:
 - It is **not** a general file server, VPN, or chat bridge to other networks.
 - It never holds the organisation **root** key in a production deployment (see §5). The
   *test* profile does, and says so loudly.
-- Group message **encryption at rest on the hub** is parked (FO-27). Announcements are
-  stored in plain text on the hub **by design** (ADR-138) and the console says so.
+- The Hub can read Hub-linked group messages (FO-27). Announcements are stored in
+  plain text by design (ADR-138). Sealed file payloads use a separate encryption path.
 - Presence over the hub is served by REST (`PersonDto.online`, `online` on directory
   members). There is no separate presence push.
 
@@ -78,7 +78,7 @@ Deliberately **out of scope** here:
 | Root key | on the server (`FLASH_DEV_EMBEDDED_ROOT=true`) | offline, on a machine you control (`keytool init-root`) |
 | Delegation | minted by the hub on first start | `keytool issue-delegation` → `delegation.cert` |
 | Root pin | not set | `FLASH_REQUIRE_ROOT_PIN=true` + `FLASH_ROOT_FINGERPRINT=<hex>` |
-| TLS | a tunnel or proxy in front (`tlsMode=proxy`), or `none` for a LAN demo | your own certificate, `tlsMode=proxy` behind nginx/Caddy, or `tlsMode=self` |
+| TLS | a tunnel or proxy in front (`tlsMode=proxy`), or `none` for a LAN demo | `tlsMode=proxy` behind nginx/Caddy, or `tlsMode=self` with a certificate trusted by clients |
 | `FLASH_ALLOW_INSECURE` | `true` | **unset** |
 | Admin console | loopback + SSH tunnel | loopback + SSH tunnel (or an authenticated proxy) |
 
@@ -94,8 +94,8 @@ The `myserver` deployment recorded in `tools/hub-test-server/` is the **test** c
 - **A JRE 21** (the image uses `eclipse-temurin:21.0.5_11-jre-alpine`), or Docker.
 - **A public HTTPS address.** Devices enrol against `FLASH_EXTERNAL_URL`, and every invite
   link and QR code carries it. It must be `https://` unless `FLASH_ALLOW_INSECURE=true`.
-- **A TLS terminator**: a reverse proxy you already run, a Cloudflare tunnel, or the hub
-  itself (`tlsMode=self`, self-signed, fingerprint printed at start-up).
+- **A TLS terminator**: a reverse proxy, a Cloudflare tunnel, or the hub itself with
+  `tlsMode=self` and a keystore containing a trusted certificate and its chain.
 - **Two reachable ports**: the public one (default `8443`) and the management one (default
   `8444`, loopback only).
 - Disk: the SQLite database plus the offline mailbox. Small. Count on a few hundred MB for
@@ -153,7 +153,7 @@ The root key **never goes on the server** (SEC-04). Do this on your own machine:
 
 ```bash
 # 1. The root key pair. Keep the file and its pass-phrase offline.
-server keytool init-root --out ./root --no-passphrase   # (omit --no-passphrase to be prompted)
+server keytool init-root --out ./root  # prompts for a passphrase
 # prints, among other things, the ROOT FINGERPRINT (SHA-256 hex) — write it down.
 
 # 2. The hub's own key pair must exist first. Start the hub once (it creates
@@ -162,7 +162,7 @@ server keytool init-root --out ./root --no-passphrase   # (omit --no-passphrase 
 
 # 3. Issue the hub a delegation.
 server keytool issue-delegation \
-  --root-key ./root/root.key \
+  --root-key ./root/root-identity.pk8 \
   --server-pub /path/to/server-identity.pub \
   --scopes enrol:member,enrol:dept_admin,revoke:member \
   --max-devices 1000 --valid-days 365 \
@@ -296,10 +296,12 @@ FLASH_TLS_KEYSTORE_PASSWORD=...
 FLASH_EXTERNAL_URL=https://hub.example.com:8443
 ```
 
-Without a keystore the hub generates a self-signed certificate in the data directory and
-prints its SHA-256 fingerprint at start-up so a client can pin it. Devices enrol by invite
-link, which carries the pinned root identity, so a self-signed hub works; but a public
-CA certificate is friendlier and is what `proxy` + nginx/Caddy gives you.
+Use a certificate whose hostname matches `FLASH_EXTERNAL_URL` and whose chain is trusted
+by the shipped Android and desktop clients. The generated self-signed certificate is for
+isolated testing with a client configured to trust it. Shipped clients use platform HTTPS
+trust and have no option to import the printed TLS fingerprint. The invite pins the
+organisation signing root, which is a separate key used to verify Hub credentials.
+[Android HTTPS trust defaults, checked 2026-11-07](https://developer.android.com/privacy-and-security/security-config).
 
 ### Plain HTTP: `tlsMode=none`
 
@@ -384,7 +386,7 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
 | File | What it is | If lost |
 |---|---|---|
 | `flash-hub.db` | devices, directory, groups, announcements, audit, mailbox, sealed-file index | organisation must be re-enrolled |
-| `data.key` | seals authenticator seeds and queued mailbox payloads | **startup refuses a missing or mismatched key** for a bound database. Restore the matching key to recover sealed data. |
+| `data.key` | seals authenticator seeds and queued mailbox payloads | Startup refuses a missing or mismatched key for a bound database. Restore the matching key. If every copy is lost, the sealed data is unrecoverable and the Hub must be provisioned with a fresh database. |
 | `files/` | the sealed file payloads, one directory per `fileId` (ADR-215) | the index survives and every download answers `503` until the sweeper removes those rows after retention |
 | `server-identity.pk8` / `server-identity.pub` | the hub's own delegate key pair (owner-only) | issue a new delegation; devices re-enrol |
 | `delegation.cert` | the root-signed delegation | re-issue from the root |
@@ -410,8 +412,9 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
 
 - **Health**: `GET /health` (public, status only). Because the hub probes itself, the Docker
   healthcheck is `server healthcheck`.
-- **Detail and metrics**: `GET /health/detail`, `GET /metrics` — only a direct loopback
-  caller, or anyone holding `FLASH_MANAGEMENT_TOKEN`.
+- **Detail and metrics.** `GET /health/detail` and `GET /metrics` require a direct loopback
+  caller or `FLASH_MANAGEMENT_TOKEN`. Check `serverVersion` in `/health/detail`, the active
+  Hub's `/api/v1/hub` response, or Console → **Settings → About** after deployment.
 - **Audit**: Console → **Audit**. Entries are chained and signed with the delegate key.
 - **Rate limits** (per device or per address, whichever the route uses): sign-in/verify,
   enrolment, admin login, directory sync, people listing, announcements, and sealed-file
@@ -437,20 +440,25 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
   the department's **admins**; it does not list its members.
 - **Membership is changed from Devices**: Console → **Devices** → open the device → the
   **Department** field → Save. Several devices at once: tick them → **Move to department**.
-- Only an **organisation administrator** may move a device between departments. A department
-  head sees only their own department's devices, so a device with **no** department is
-  invisible to them.
-- A device's **certificate and bearer token keep the department they were issued with** until
-  the device renews (`IdentityStore.setDepartment`, "registry department only"). The registry
-  and the directory change immediately; department-scoped behaviour on that device catches up
-  at its next renewal. Plan a move rather than expecting it to be instant end to end.
+- Only an **organisation administrator** may move a device between departments. Each move
+  requires step-up confirmation, including bulk actions. Department heads see devices in their
+  assigned departments and can approve join requests only for devices currently in their scope.
+- The registry and directory change immediately. The hub invalidates the previous bearer and
+  closes the device's relay session when its department changes. Reconnection picks up the
+  new registry scope. The certificate's department field updates when it is renewed.
 
 ### Upgrades
 
-Replace the distribution (or pull the new image) and restart. Schema migrations are applied
-by each component at start-up, are idempotent, **fail closed** (the hub will not start on a
-failed step) and refuse to run older code against a newer schema — so take a backup first and
-do not roll back a binary onto a database a newer binary has already migrated.
+Stop the hub and take a consistent pre-upgrade snapshot of its data directory. Keep the
+matching `data.key` under separate access controls. Keep the old distribution with the
+snapshot. Install the candidate, start it, verify its version and run the restore and
+enrolment checks on the isolated test hub.
+
+The identity schema reaches v3 on this release line. An older binary will refuse newer
+schema state at startup. To roll back across that boundary, stop the new hub, preserve its
+current data for investigation, and restore the **entire pre-upgrade data directory**
+along with its matching key and old distribution. This restore rolls back all Hub writes
+since the snapshot.
 
 ---
 
@@ -517,8 +525,10 @@ Why it is built the way it is, and what to copy from it into a production layout
 - It carries `FLASH_ALLOW_INSECURE=true` and `FLASH_DEV_EMBEDDED_ROOT=true` because it is a
   **test** hub. Production must use §5 and §12.
 
-Its README documents the `scp` refresh, including `sed -i 's/\r$//'` for scripts that
-arrived through a Windows shell pipe.
+Its [deployment README](../../tools/hub-test-server/README.md) gives the build and swap
+commands. Preserve any existing `data.bak` under a dated sibling directory before running
+`deploy.ps1`, which replaces that slot. Verify the candidate version via the loopback
+management endpoint before running HUBREADY-01–05.
 
 ---
 

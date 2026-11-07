@@ -8,7 +8,7 @@ The `:core:transfer` module contains the high-throughput, multi-stream chunked f
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-transfer:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.1")
 }
 ```
 
@@ -20,7 +20,7 @@ Chunked transfer rides the same WebSocket mesh as chat (ADR-016); this module is
 through the `FLASH_XFER` / `FLASH_FILE_ACK` text messages (`protocol/WsTransferMessages`) and binary chunk frames (`ChunkFrame`, framing v2).
 
 1. **Send side (`MultiStreamDispatcher`, `SendPipeline`):**
-   * `Chunker` plans the chunks: default **64 KiB**, clamped to **16 KiB..256 KiB**, and `adaptiveSize` grows the size with measured throughput (256 KiB at 64 MiB/s and above). (Some KDoc in the module still says "up to 1 MB"; the code clamps at 256 KiB.)
+   * `Chunker` plans the chunks: default **64 KiB**, bounded to **16 KiB–1 MiB**. `adaptiveSize` uses the measured throughput and the active profile ceiling.
    * One *materializer* reads the file sequentially and routes each serialized chunk to `N` worker streams (static assignment `index % N`). The stream count comes from `FlashTransferProfile`: **LOW 1, MEDIUM 2, HIGH 4** (the profile also sets chunk base size and queue depths).
    * At-least-once on the wire, exactly-once write: when a stream dies its unconfirmed frames are redistributed to the survivors.
    * Pause is cooperative: the materializer parks before its next chunk while acknowledgements keep being tracked.
