@@ -527,7 +527,7 @@ public class DesktopEngine(
             val storage = JvmPieceStorage(
                 partialDir = File(stateDir, "swarm/partial"),
                 destinationDir = canonicalRoot,
-                onPlaced = { placed -> receivedManifest.record(canonicalRoot, placed) },
+                onPlaced = { placed -> receivedManifest.recordFile(canonicalRoot, placed) },
             )
             val stateStore = RoomSwarmStateStore(db.swarmDao())
             val binding = SwarmHostBinding(
@@ -1000,6 +1000,17 @@ public class DesktopEngine(
      */
     public val receivedDirectory: File get() = _canonicalRoot
 
+    /** Moves a submitted voice clip out of the recording cache before it is referenced by chat history. */
+    internal fun persistVoiceRecording(uri: String, fileName: String): File {
+        val source = if (uri.startsWith("file:", ignoreCase = true)) File(java.net.URI(uri)) else File(uri)
+        return File(com.transfer.flash.core.engine.ReceivedFilePlacement.publish(
+            source = source.path,
+            root = File(stateDir, "sent").path,
+            fileName = fileName,
+            mime = "audio/wav",
+        ))
+    }
+
     /** What this engine wrote under the received folder; "Clear received files" deletes only this (brutal-review F8). */
     internal val receivedManifest = ReceivedFilesManifest(File(stateDir, "received-files.txt"))
 
@@ -1419,6 +1430,12 @@ public class DesktopEngine(
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
             performanceMode = { _settings.value.performanceMode ?: FlashPerformanceMode.HIGH },
             freeSpaceBytes = { canonicalRoot.takeIf { it.exists() }?.usableSpace },
+            placeReceivedFile = { path, name ->
+                val root = canonicalRoot
+                val placed = com.transfer.flash.core.engine.ReceivedFilePlacement.publish(path, root.path, name, preserveFolders = true)
+                receivedManifest.recordFile(root, File(placed))
+                placed
+            },
         )
         transferImpl = transfer
 
@@ -1825,7 +1842,7 @@ public class DesktopEngine(
                     outgoingRetried = c::hubFileRetried,
                     openSource = fileOpener,
                     receivedDirectory = { canonicalRoot.path },
-                    onPlaced = { placed -> receivedManifest.record(canonicalRoot, File(placed)) },
+                    onPlaced = { placed -> receivedManifest.recordFile(canonicalRoot, File(placed)) },
                     isDirectlyReachable = { peerId ->
                         network.activeSessions.value.containsKey(FlashDeviceId(peerId)) ||
                             discovery.discoveredEndpoints.value.any { it.deviceId.value == peerId }

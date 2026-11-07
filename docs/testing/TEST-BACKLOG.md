@@ -7938,6 +7938,50 @@ not a substitute for the following real-host checks. No phone was operated in th
   failure; no duplicate conversation/join action; existing privacy and link-confirmation behavior is preserved.
 - Status: TODO.
 
+
+## Existing Transfers/Nearby component refinement — 2026-11-06
+
+Source: `docs/ui/transfers-nearby-refinement.md` (UI-047/048). The earlier workspace redesign was rejected and rolled back. Native sample renders do not establish real network or accessibility correctness.
+
+### TABREF-01 — Transfer states and actions on devices
+- Setup: Android + Windows, two physical peers; incoming, queued, moving, paused, failed, cancelled and completed transfers; group file with holder/wait states.
+- Steps: accept/decline; pause/resume singly and in bulk; cancel sent/received files; dismiss/confirm group cancellation; retry a failure; dismiss cancelled rows; clear failures/history; open/share received files. Disconnect/reconnect; test 0-byte and long-name files; switch tabs during transfer.
+- Pass: original control placement and callbacks preserved; actions affect the intended file; only retryable rows offer Retry; errors/wait reasons readable; progress and status remain truthful; send/group confirmations preserved; last row clears shell inset.
+- Status: TODO.
+
+### TABREF-02 — Discovery, trust and connection states on devices
+- Setup: Android + Windows, verified/unverified saved peers, colleague and newly discovered peer; hosts with Call/Verify/manual-connect callbacks present and absent.
+- Steps: Pair / Message / Chat, Call where supported, Verify again, Revoke through existing host flow; scan network (running/done/refused); connect by IP; quiet network for 30 seconds; pause discovery; turn network off; run all pairing consent/expiry outcomes.
+- Pass: original explicit actions remain visible in rectangular tile buttons and target correct peers; paired tiles resize from one to three columns; names/device-kind badges fit; legacy pairing remains Not verified; saved pairings do not claim current presence; quiet hint/results/actions retain timing and availability; pairing consent unchanged.
+- Status: TODO.
+
+### TABREF-03 — Component layout, accessibility and lifecycle
+- Setup: both tabs, 320–1440 dp widths, short landscape, long names/non-Latin names, 100%/200% text, light/dark, TalkBack, keyboard and reduced motion.
+- Steps: inspect every page/row state; traverse actions; resize and rotate; scroll and return after tab switches; exercise dialogs; inspect loading placeholders and error recovery.
+- Pass: compact original design remains recognizable; names/status wrap; controls are 48 dp and reachable without overlapping; heading/action semantics useful; no unexpected animation or lost list position. Existing shared shell label clipping at 200% text is tracked by HUBWORK-04.
+- Status: TODO.
+
+
+## 2026-11-07 — compact tabs and categorized received files
+
+### TABREF-04 — Laptop density and paired menu
+- Setup. Windows laptop at default and increased display/font scale, Android narrow phone. Paired verified and unverified devices.
+- Exercise. Inspect Transfers and Nearby headers, compare with Chats/Hub/Settings, resize the tile grid, open the three-dot menu with pointer and keyboard, copy the device ID, verify when eligible and revoke a test pairing. Open a chat and start its existing call action.
+- Pass. Normal tiles use a single action row. Expanded fonts wrap cleanly. The menu is anchored, dismisses and routes actions to the correct peer. All supported transfer/discovery states remain accessible.
+- Status. TODO.
+
+### RECEIVE-CAT-01 — File types and custom receive folder
+- Setup. Two paired devices and a Hub account, Android and Windows. Use a custom desktop save location with a pre-existing personal file in Images.
+- Exercise. Receive images, videos, audio, a document, an archive and a folder over direct, Hub and swarm paths where supported. Receive duplicate names concurrently. Pause and resume an in-progress file from an older build. Open/share completed files and use the received-files clear action only in the disposable test folder.
+- Pass. New files land in their categories, folder structure survives, duplicate names receive suffixes, chat/history point to real bytes, legacy transfers still resume and the personal file survives clear.
+- Status. TODO.
+
+### RECEIVE-CAT-02 — Voice clip durability and restart
+- Setup. Android and Windows peers with Hub-only and direct delivery available. Use disposable recordings.
+- Exercise. Send/receive a voice message over each route, restart Flash, and play the received and sent copies. Check the received category and share/open via the normal UI. Simulate a placement failure in an isolated test destination and retry.
+- Pass. Received clips are in Voice messages, newly submitted recordings survive the recording cache lifetime, duplicates coexist, and a failed direct placement still points to the retained file.
+- Status. TODO.
+
 ## 2026-11-07 — Hub rollout review follow-up
 
 Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT-04/12/14`, `ANN-01/10/11`, `CONSOLE-D02..07`, and `HUBWORK-01..05` for existing drills.

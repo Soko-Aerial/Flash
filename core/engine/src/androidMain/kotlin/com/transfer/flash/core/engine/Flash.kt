@@ -394,6 +394,11 @@ private class Wiring(
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
             freeSpaceBytes = { receivedDir.takeIf { it.exists() }?.usableSpace },
+            placeReceivedFile = { path, name ->
+                val root = receivedDir
+                val placed = com.transfer.flash.core.engine.ReceivedFilePlacement.publish(path, root.path, name, preserveFolders = true)
+                placed
+            },
         )
         transferRef = transferImpl
         // PC4 (ADR-046): presence sharing, the same wiring as the app holder. Built before the

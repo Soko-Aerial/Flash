@@ -104,6 +104,8 @@ public class RealFlashTransferRepository(
      * a source check. Production Android and desktop wiring pass a provider.
      */
     private val sourceIdentityProvider: SourceIdentityProvider? = null,
+    /** Host placement for a finished receive. A failure retains the assembled file at its original path. */
+    private val placeReceivedFile: ((path: String, fileName: String) -> String)? = null,
 ) : FlashTransferRepository, AutoCloseable {
 
     override fun close() {
@@ -1683,34 +1685,31 @@ public class RealFlashTransferRepository(
             WholeFileCheck.MISMATCH
         }
         when (check) {
-            WholeFileCheck.MATCH -> {
-                // O07-02: Atomically rename .part staging file to final destination once whole-file verification matches
-                val finalPath = if (!localPath.isNullOrBlank() && localPath.endsWith(".part")) {
-                    val target = localPath.removeSuffix(".part")
-                    try {
-                        fileSystem.atomicMove(localPath.toPath(), target.toPath())
-                        target
-                    } catch (_: Exception) {
-                        localPath
+            WholeFileCheck.MATCH, WholeFileCheck.UNVERIFIABLE -> {
+                val finalPath = when {
+                    localPath.isNullOrBlank() -> localPath
+                    placeReceivedFile != null -> {
+                        val name = _internalTransfers.value.firstOrNull { it.id.value == transferId }?.fileName
+                            ?: localPath.toPath().name
+                        try {
+                            placeReceivedFile.invoke(localPath, name)
+                        } catch (_: okio.IOException) {
+                            FlashLog.w("TRANSFER", "Could not organize completed receive for transferId=$transferId")
+                            localPath
+                        }
                     }
-                } else {
-                    localPath
-                }
-                onIncomingCompleted(transferId, verified = true, localPath = finalPath)
-            }
-            WholeFileCheck.UNVERIFIABLE -> {
-                val finalPath = if (!localPath.isNullOrBlank() && localPath.endsWith(".part")) {
-                    val target = localPath.removeSuffix(".part")
-                    try {
-                        fileSystem.atomicMove(localPath.toPath(), target.toPath())
-                        target
-                    } catch (_: Exception) {
-                        localPath
+                    localPath.endsWith(".part") -> {
+                        val target = localPath.removeSuffix(".part")
+                        try {
+                            fileSystem.atomicMove(localPath.toPath(), target.toPath())
+                            target
+                        } catch (_: okio.IOException) {
+                            localPath
+                        }
                     }
-                } else {
-                    localPath
+                    else -> localPath
                 }
-                onIncomingCompleted(transferId, verified = false, localPath = finalPath)
+                onIncomingCompleted(transferId, verified = check == WholeFileCheck.MATCH, localPath = finalPath)
             }
             WholeFileCheck.MISMATCH -> {
                 if (!localPath.isNullOrBlank()) {

@@ -7,6 +7,7 @@ import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.engine.FlashPathSanitizer
+import com.transfer.flash.core.engine.ReceivedFilePlacement
 import com.transfer.flash.core.engine.concurrent.PlatformLock
 import com.transfer.flash.core.enterprise.files.HubDownloadOutcome
 import com.transfer.flash.core.enterprise.files.HubDownloadRequest
@@ -54,7 +55,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okio.FileSystem
-import okio.IOException
 import okio.Path.Companion.toPath
 
 /**
@@ -68,7 +68,7 @@ import okio.Path.Companion.toPath
  *   LAN path exactly as before. A send the hub cannot carry (no sealing key, too large, an older hub) becomes a Failed row
  *   with the plan's sentence, never a silent fallback that could leave the key readable.
  * - **Receiving.** The chat stores incoming tickets as OFFERED rows; Accept (or [autoDownload]) downloads, verifies and
- *   moves the file to `<receivedDirectory>/<transferId>/<name>`.
+ *   moves the file to `<receivedDirectory>/<category>/<name>`.
  * - **Rows and control.** Every row is published to the Transfers screen (and so to the bubble) through
  *   [RealFlashTransferRepository.attachExternalRows]; pause, resume, cancel, accept and decline come back through its
  *   [ExternalTransferControl].
@@ -96,7 +96,7 @@ public class HubFileBinding(
     /** A Failed outgoing file was retried: the chat puts its message back to waiting (`hubFileRetried`, C-07). */
     private val outgoingRetried: suspend (transferId: String) -> Unit = {},
     private val openSource: FileSourceOpener,
-    /** Where received files go; each one gets its own sub-directory named by its transfer id. */
+    /** Root for completed received files. */
     private val receivedDirectory: () -> String,
     /** True when the peer has a live session or is seen by discovery: then the direct path sends. */
     private val isDirectlyReachable: (peerId: String) -> Boolean,
@@ -496,6 +496,7 @@ public class HubFileBinding(
                 val placed = withContext(workerDispatcher) { runCatching { place(outcome.path, row) }.getOrNull() }
                     ?: return failIncoming(row, HubFileError.LocalStorage("place"), sender)
                 if (dao.markDownloaded(id, placed, now) == 1) {
+                    runCatching { onPlaced(placed) }
                     FlashProbe.emit("hubfile.receive.done", "id" to FlashProbe.short(row.fileId), "bytes" to outcome.plainBytes)
                 } else {
                     // Cancelled while the last chunk arrived: the cancel wins, and its file goes.
@@ -518,23 +519,13 @@ public class HubFileBinding(
         return false
     }
 
-    /** Moves a verified file out of the engine's store to `<receivedDirectory>/<transferId>/<name>`. Blocking. */
-    private fun place(enginePath: String, row: HubFileEntity): String {
-        val dir = receivedDirectory().toPath() / row.transferId
-        fileSystem.createDirectories(dir)
-        val target = dir / FlashPathSanitizer.sanitizeFileName(row.fileName)
-        fileSystem.delete(target, mustExist = false)
-        val from = enginePath.toPath()
-        try {
-            fileSystem.atomicMove(from, target)
-        } catch (e: IOException) {
-            // Another volume (Android's app-specific external storage): copy, then remove the engine's copy.
-            fileSystem.copy(from, target)
-            fileSystem.delete(from, mustExist = false)
-        }
-        runCatching { onPlaced(target.toString()) }
-        return target.toString()
-    }
+    private fun place(enginePath: String, row: HubFileEntity): String = ReceivedFilePlacement.publish(
+        source = enginePath,
+        root = receivedDirectory(),
+        fileName = row.fileName,
+        mime = row.mime,
+        fileSystem = fileSystem,
+    )
 
     private fun progressSink(transferId: String): (HubTransferProgress) -> Unit {
         var firstAtMs = Long.MIN_VALUE

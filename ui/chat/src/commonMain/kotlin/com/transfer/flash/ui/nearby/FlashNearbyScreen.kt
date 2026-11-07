@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.transfer.flash.ui.nearby
 
 import androidx.compose.animation.AnimatedContent
@@ -10,6 +12,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,7 +39,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -260,14 +275,6 @@ fun FlashNearbyScreen(
     onAcceptPairing: (FlashPairingRequestUi) -> Unit = {},
     onDeclinePairing: (FlashPairingRequestUi) -> Unit = {},
     /**
-     * Voice-call action for trusted rows (Phase 33a). Nullable on purpose, like the
-     * search/group icon params elsewhere: a host that does not implement calling passes
-     * nothing and the row shows no Call button, rather than a rendered button that does
-     * nothing. The desktop passes it; Android keeps its header call buttons and is
-     * unchanged.
-     */
-    onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)? = null,
-    /**
      * Manual connection by IP and Port. When supplied, allows entering host/port directly.
      */
     onManualConnect: ((host: String, port: Int) -> Unit)? = null,
@@ -278,7 +285,7 @@ fun FlashNearbyScreen(
     onScanNetwork: (() -> Unit)? = null,
     /**
      * Re-runs pairing (protocol v2) with a trusted peer whose pairing was made with v1 (ADR-042).
-     * Nullable like [onCallTrustedClick]: without it an unverified row shows the label but no action.
+     * Without it an unverified row shows the label but no verification action.
      */
     onVerifyTrustedClick: ((NearbyTrustedPeerUi) -> Unit)? = null,
 ) {
@@ -313,7 +320,6 @@ fun FlashNearbyScreen(
                         onChatClick = onChatClick,
                         onRevokeClick = onRevokeClick,
                         onChatTrustedClick = onChatTrustedClick,
-                        onCallTrustedClick = onCallTrustedClick,
                         onVerifyTrustedClick = onVerifyTrustedClick,
                         onManualConnectClick = onManualConnectClick,
                         onScanNetworkClick = onScanNetwork,
@@ -367,7 +373,6 @@ private fun PopulatedContent(
     onChatClick: (NearbyPeerUi) -> Unit,
     onRevokeClick: (NearbyTrustedPeerUi) -> Unit,
     onChatTrustedClick: (NearbyTrustedPeerUi) -> Unit,
-    onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
     onVerifyTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
     onManualConnectClick: (() -> Unit)?,
     onScanNetworkClick: (() -> Unit)?,
@@ -386,84 +391,90 @@ private fun PopulatedContent(
         }
     }
     val sortedPeers = remember(state.peers) { FlashNearbyMath.sortedPeers(state.peers) }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        state = listState,
-        contentPadding = PaddingValues(
-            start = FlashSpacing.space16,
-            end = FlashSpacing.space16,
-            top = FlashSpacing.space16,
-            bottom = FlashSpacing.space16 + bottomInset,
-        ),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-    ) {
-        item(key = "header") { HeaderBlock(state, onManualConnectClick, onScanNetworkClick) }
-        item(key = "identity") { IdentityCard(state.identity) }
-        if (state.discoveryQuiet && quietLongEnough) {
-            item(key = "quiet-hint") {
-                QuietNetworkHint(
-                    scan = state.scan,
-                    onScanNetworkClick = onScanNetworkClick,
-                    onManualConnectClick = onManualConnectClick,
-                    modifier = flashAnimateItem(motion),
-                )
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val tileColumns = ((maxWidth - FlashSpacing.space32).value /
+            (360f * LocalDensity.current.fontScale.coerceAtLeast(1f))).toInt().coerceIn(1, 3)
+        val pairedRows = remember(state.trustedPeers, tileColumns) { state.trustedPeers.chunked(tileColumns) }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = PaddingValues(
+                start = FlashSpacing.space16,
+                end = FlashSpacing.space16,
+                top = FlashSpacing.space16,
+                bottom = FlashSpacing.space16 + bottomInset,
+            ),
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        ) {
+            item(key = "header") { HeaderBlock(state, onManualConnectClick, onScanNetworkClick) }
+            item(key = "identity") { IdentityCard(state.identity) }
+            if (state.discoveryQuiet && quietLongEnough) {
+                item(key = "quiet-hint") {
+                    QuietNetworkHint(
+                        scan = state.scan,
+                        onScanNetworkClick = onScanNetworkClick,
+                        onManualConnectClick = onManualConnectClick,
+                        modifier = flashAnimateItem(motion),
+                    )
+                }
             }
-        }
-        if (sortedPeers.isNotEmpty()) {
-            item(key = "label-discovered") { SectionLabel("DISCOVERED") }
-            items(sortedPeers, key = { "peer-${it.id}" }) { peer ->
-                // Peers appear and vanish as discovery runs, so the list item itself animates
-                // (an AnimatedVisibility pinned to `visible = true` could never play).
-                PeerRow(
-                    peer = peer,
-                    modifier = flashAnimateItem(motion),
-                    onAction = {
-                        // Trusted peers and colleagues open chat; untrusted peers start pairing.
-                        haptics(FlashHaptic.Tick)
-                        if (FlashNearbyMath.isDirectAction(peer.isTrusted, peer.isColleague)) {
-                            onChatClick(peer)
-                        } else {
-                            onPairClick(peer)
-                        }
-                    },
-                )
-            }
-        } else if (state.isScanning && state.trustedPeers.isEmpty()) {
-            item(key = "scan-hint") {
-                FlashText(
-                    text = "Looking for devices…",
-                    style = FlashTheme.typography.metadataDefault,
-                    color = FlashTheme.colors.textTertiary,
-                )
-            }
-        }
-        if (state.trustedPeers.isNotEmpty()) {
-            item(key = "label-trusted") { SectionLabel("TRUSTED PEERS") }
-            items(state.trustedPeers, key = { "trusted-${it.id}" }) { trusted ->
-                TrustedRow(
-                    trusted = trusted,
-                    modifier = flashAnimateItem(motion),
-                    onChat = {
-                        haptics(FlashHaptic.Tick)
-                        onChatTrustedClick(trusted)
-                    },
-                    onCall = onCallTrustedClick?.let { handler ->
-                        {
+            if (sortedPeers.isNotEmpty()) {
+                item(key = "label-discovered") { SectionLabel("Discovered") }
+                items(sortedPeers, key = { "peer-${it.id}" }) { peer ->
+                    // Peers appear and vanish as discovery runs, so the list item itself animates
+                    // (an AnimatedVisibility pinned to `visible = true` could never play).
+                    PeerRow(
+                        peer = peer,
+                        modifier = flashAnimateItem(motion),
+                        onAction = {
+                            // Trusted peers and colleagues open chat; untrusted peers start pairing.
                             haptics(FlashHaptic.Tick)
-                            handler(trusted)
+                            if (FlashNearbyMath.isDirectAction(peer.isTrusted, peer.isColleague)) {
+                                onChatClick(peer)
+                            } else {
+                                onPairClick(peer)
+                            }
+                        },
+                    )
+                }
+            } else if (state.isScanning && state.trustedPeers.isEmpty()) {
+                item(key = "scan-hint") {
+                    FlashText(
+                        text = "Looking for devices…",
+                        style = FlashTheme.typography.metadataDefault,
+                        color = FlashTheme.colors.textTertiary,
+                    )
+                }
+            }
+            if (state.trustedPeers.isNotEmpty()) {
+                item(key = "label-trusted") { SectionLabel("Paired devices") }
+                items(pairedRows, key = { "trusted-row-${it.first().id}" }) { devices ->
+                    Row(flashAnimateItem(motion).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                        verticalAlignment = Alignment.Top) {
+                        devices.forEach { trusted ->
+                            TrustedTile(
+                                trusted = trusted,
+                                modifier = Modifier.weight(1f),
+                                onChat = {
+                                    haptics(FlashHaptic.Tick)
+                                    onChatTrustedClick(trusted)
+                                },
+                                onRevoke = {
+                                    haptics(FlashHaptic.Confirm)
+                                    onRevokeClick(trusted)
+                                },
+                                onVerify = onVerifyTrustedClick?.takeIf { !trusted.verified }?.let { handler ->
+                                    {
+                                        haptics(FlashHaptic.Tick)
+                                        handler(trusted)
+                                    }
+                                },
+                            )
                         }
-                    },
-                    onRevoke = {
-                        haptics(FlashHaptic.Confirm)
-                        onRevokeClick(trusted)
-                    },
-                    onVerify = onVerifyTrustedClick?.takeIf { !trusted.verified }?.let { handler ->
-                        {
-                            haptics(FlashHaptic.Tick)
-                            handler(trusted)
-                        }
-                    },
-                )
+                        repeat(tileColumns - devices.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
             }
         }
     }
@@ -475,50 +486,61 @@ private fun HeaderBlock(
     onManualConnectClick: (() -> Unit)? = null,
     onScanNetworkClick: (() -> Unit)? = null,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    val title: @Composable () -> Unit = {
         Column {
             FlashText(
                 text = "Nearby",
+                modifier = Modifier.semantics { heading() },
                 style = FlashTheme.typography.headingMedium,
                 color = FlashTheme.colors.textPrimary,
+            )
+            FlashText(
+                text = "Discover devices and manage pairings.",
+                style = FlashTheme.typography.captionDefault,
+                color = FlashTheme.colors.textSecondary,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ScanningDot(active = state.isScanning)
                 Spacer(Modifier.width(FlashSpacing.space8))
                 FlashText(
-                    // Count trusted (paired) peers too: once a peer is paired it leaves the DISCOVERED
-                    // list for the TRUSTED section, so counting only `peers` made the header snap back
-                    // to "Scanning…" even though a device was clearly connected.
                     text = FlashNearbyMath.statusLine(
-                        state.isScanning,
-                        state.peers.size + state.trustedPeers.size,
-                        state.isLoading,
-                    ),
+                        state.isScanning, state.peers.size, state.isLoading,
+                    ) + if (state.trustedPeers.isNotEmpty()) " · ${state.trustedPeers.size} paired" else "",
                     style = FlashTheme.typography.metadataDefault,
                     color = FlashTheme.colors.textSecondary,
                 )
             }
             ScanCaption(state.scan, Modifier.padding(top = FlashSpacing.space4))
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (onScanNetworkClick != null) {
-                ScanNetworkTextAction(running = state.scan is NearbyNetworkScan.Running, onClick = onScanNetworkClick)
+    }
+    val actions: @Composable () -> Unit = {
+        if (onScanNetworkClick != null) {
+            ScanNetworkTextAction(running = state.scan is NearbyNetworkScan.Running, onClick = onScanNetworkClick)
+        }
+        if (onManualConnectClick != null) {
+            IconButton(
+                onClick = onManualConnectClick,
+                modifier = Modifier.size(FlashDimensions.minTouchTarget),
+            ) {
+                FlashIcon(
+                    icon = FlashIcons.Connection,
+                    tint = FlashTheme.colors.accentFill,
+                    contentDescription = "Connect by IP",
+                )
             }
-            if (onManualConnectClick != null) {
-                IconButton(
-                    onClick = onManualConnectClick,
-                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Connection,
-                        tint = FlashTheme.colors.accentPrimary,
-                        contentDescription = "Connect by IP",
-                    )
-                }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        if (maxWidth < 340.dp || LocalDensity.current.fontScale >= 1.3f) {
+            Column {
+                title()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically) { actions() }
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { title() }
+                Row(verticalAlignment = Alignment.CenterVertically) { actions() }
             }
         }
     }
@@ -553,7 +575,7 @@ private fun ScanningDot(active: Boolean) {
                 scaleY = scale
             }
             .clip(CircleShape)
-            .background(if (active) colors.accentPrimary else colors.textTertiary),
+            .background(if (active) colors.accentFill else colors.textTertiary),
     )
 }
 
@@ -578,18 +600,18 @@ private fun IdentityCard(identity: NearbyIdentityUi) {
             Modifier
                 .size(FlashDimensions.avatarLg)
                 .clip(CircleShape)
-                .background(colors.accentPrimary.copy(alpha = 0.10f)),
+                .background(colors.accentFill.copy(alpha = 0.10f)),
             contentAlignment = Alignment.Center,
         ) {
             FlashIcon(
                 icon = FlashIcons.Device,
-                tint = colors.accentPrimary,
+                tint = colors.accentFill,
                 size = FlashDimensions.iconLg,
                 contentDescription = null,
             )
         }
         Spacer(Modifier.width(FlashSpacing.space12))
-        Column {
+        Column(Modifier.weight(1f)) {
             FlashText(
                 text = identity.displayName,
                 style = FlashTheme.typography.bodyEmphasis,
@@ -598,7 +620,7 @@ private fun IdentityCard(identity: NearbyIdentityUi) {
             FlashText(
                 text = FlashNearbyMath.identitySubtitle(identity),
                 style = FlashTheme.typography.metadataDefault,
-                color = colors.textTertiary,
+                color = colors.textSecondary,
             )
         }
     }
@@ -686,8 +708,7 @@ private fun PeerRow(
                 style = FlashTheme.typography.bodyDefault,
                 color = colors.textPrimary,
             )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+            FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
             ) {
                 FlashTransportBadge(transport = peer.transport)
@@ -697,12 +718,13 @@ private fun PeerRow(
                 }
             }
         }
+        Spacer(Modifier.width(FlashSpacing.space8))
         Box(
             Modifier
-                .height(FlashDimensions.minTouchTarget)
+                .heightIn(min = FlashDimensions.minTouchTarget)
                 .flashPressScale(connectInteraction)
                 .clip(FlashShapes.bubbleGrouped)
-                .background(colors.accentPrimary)
+                .background(colors.accentFill)
                 .clickable(
                     interactionSource = connectInteraction,
                     indication = null,
@@ -715,7 +737,7 @@ private fun PeerRow(
             FlashText(
                 text = ctaLabel,
                 style = FlashTheme.typography.captionEmphasis,
-                color = colors.textOnAccent,
+                color = colors.onAccentFill,
             )
         }
     }
@@ -740,7 +762,7 @@ fun FlashColleagueBadge(
         FlashText(
             text = FlashOrgStrings.chipText(orgName),
             style = FlashTheme.typography.captionEmphasis,
-            color = colors.accentPrimary,
+            color = colors.accentFill,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -748,135 +770,103 @@ fun FlashColleagueBadge(
 }
 
 @Composable
-private fun TrustedRow(
+private fun TrustedTile(
     trusted: NearbyTrustedPeerUi,
     modifier: Modifier = Modifier,
     onChat: () -> Unit,
-    onCall: (() -> Unit)?,
     onRevoke: () -> Unit,
-    /** Non-null only for an unverified (v1) pairing whose host can re-run pairing. */
     onVerify: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
-    val verifyInteraction = remember { MutableInteractionSource() }
-    val chatInteraction = remember { MutableInteractionSource() }
-    val callInteraction = remember { MutableInteractionSource() }
-    val revokeInteraction = remember { MutableInteractionSource() }
-    Row(
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(FlashShapes.radius12))
-            .background(colors.backgroundSurfaceSubtle)
-            .padding(start = FlashSpacing.space12, end = FlashSpacing.space4),
-        verticalAlignment = Alignment.CenterVertically,
+    val tileShape = RoundedCornerShape(FlashShapes.radius12)
+    val identity: @Composable () -> Unit = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FlashIcon(
+                icon = if (trusted.verified) FlashIcons.Verified else FlashIcons.Encryption,
+                tint = if (trusted.verified) colors.statusOnline else colors.textSecondary,
+                size = FlashDimensions.iconSm,
+                contentDescription = if (trusted.verified) "Verified pairing" else null,
+            )
+            Column(Modifier.weight(1f).padding(start = FlashSpacing.space8)) {
+                FlashText(trusted.name, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary)
+                val detail = listOfNotNull(
+                    "Not verified".takeUnless { trusted.verified },
+                    when (trusted.deviceKind) {
+                        FlashDeviceKind.DESKTOP -> "PC"
+                        FlashDeviceKind.PHONE -> "Phone"
+                        FlashDeviceKind.UNKNOWN -> null
+                    },
+                ).joinToString(" · ")
+                if (detail.isNotEmpty()) {
+                    FlashText(detail, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
+                }
+            }
+        }
+    }
+    val actions: @Composable () -> Unit = { PairedTileActions(trusted, onChat, onRevoke, onVerify) }
+    BoxWithConstraints(
+        modifier.clip(tileShape).background(colors.backgroundSurface)
+            .border(FlashDimensions.borderHairline, colors.borderSubtle, tileShape)
+            .padding(start = FlashSpacing.space12, end = FlashSpacing.space4, top = FlashSpacing.space8, bottom = FlashSpacing.space8),
     ) {
-        // ADR-042: a v1 pairing's code could have been forced, so it is not presented as verified.
-        FlashIcon(
-            icon = if (trusted.verified) FlashIcons.Verified else FlashIcons.Encryption,
-            tint = if (trusted.verified) colors.statusOnline else colors.textTertiary,
-            size = FlashDimensions.iconSm,
-            contentDescription = if (trusted.verified) null else "Not verified",
-        )
-        Spacer(Modifier.width(FlashSpacing.space8))
-        Column(Modifier.weight(1f)) {
-            FlashText(
-                text = trusted.name,
-                style = FlashTheme.typography.captionDefault,
-                color = colors.textSecondary,
-            )
-            if (!trusted.verified) {
-                FlashText(
-                    text = "Not verified",
-                    style = FlashTheme.typography.metadataDefault,
-                    color = colors.textTertiary,
-                )
+        if (maxWidth < 250.dp || LocalDensity.current.fontScale >= 1.3f) {
+            Column {
+                identity()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { actions() }
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { identity() }
+                actions()
             }
         }
-        if (onVerify != null) {
-            Box(
-                Modifier
-                    .height(FlashDimensions.minTouchTarget)
-                    .flashPressScale(verifyInteraction)
-                    .clickable(
-                        interactionSource = verifyInteraction,
-                        indication = null,
-                        onClickLabel = "Verify again",
-                        onClick = onVerify,
-                    )
-                    .padding(horizontal = FlashSpacing.space12),
-                contentAlignment = Alignment.Center,
-            ) {
-                FlashText(
-                    text = "Verify",
-                    style = FlashTheme.typography.captionEmphasis,
-                    color = colors.accentPrimary,
-                )
-            }
+    }
+}
+
+@Composable
+private fun PairedTileActions(
+    trusted: NearbyTrustedPeerUi,
+    onChat: () -> Unit,
+    onRevoke: () -> Unit,
+    onVerify: (() -> Unit)?,
+) {
+    val colors = FlashTheme.colors
+    val clipboard = LocalClipboardManager.current
+    var expanded by remember(trusted.id) { mutableStateOf(false) }
+    Box(
+        Modifier.heightIn(min = FlashDimensions.minTouchTarget)
+            .clickable(role = Role.Button, onClickLabel = "Chat with ${trusted.name}", onClick = onChat),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.clip(RoundedCornerShape(FlashShapes.radius8)).background(colors.accentFill)
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)) {
+            FlashText("Chat", style = FlashTheme.typography.captionEmphasis, color = colors.onAccentFill)
         }
-        FlashDeviceKindBadge(kind = trusted.deviceKind, modifier = Modifier.padding(end = FlashSpacing.space8))
-        Box(
-            Modifier
-                .height(FlashDimensions.minTouchTarget)
-                .flashPressScale(chatInteraction)
-                .clip(FlashShapes.bubbleGrouped)
-                .background(colors.accentPrimary)
-                .clickable(
-                    interactionSource = chatInteraction,
-                    indication = null,
-                    onClickLabel = "Chat",
-                    onClick = onChat,
-                )
-                .padding(horizontal = FlashSpacing.space16),
-            contentAlignment = Alignment.Center,
+    }
+    Box {
+        IconButton(onClick = { expanded = true }, modifier = Modifier.size(FlashDimensions.minTouchTarget)) {
+            FlashIcon(FlashIcons.More, contentDescription = "More actions for ${trusted.name}", tint = colors.textSecondary)
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            shape = RoundedCornerShape(FlashShapes.radius12),
+            containerColor = colors.backgroundSurface,
         ) {
-            FlashText(
-                text = "Chat",
-                style = FlashTheme.typography.captionEmphasis,
-                color = colors.textOnAccent,
+            DropdownMenuItem(
+                text = { FlashText("Copy device ID", style = FlashTheme.typography.bodyDefault, color = colors.textPrimary) },
+                onClick = { expanded = false; clipboard.setText(AnnotatedString(trusted.id)) },
             )
-        }
-        // Voice call (Phase 33a). Rendered only when the host supplies the action — an
-        // untrusted peer can never reach this row, so no trust check is needed here; the
-        // coordinator itself refuses untrusted peers as well (Group Phase 0 closure).
-        // Text-style rather than filled, so the row keeps one primary CTA.
-        if (onCall != null) {
-            Box(
-                Modifier
-                    .height(FlashDimensions.minTouchTarget)
-                    .flashPressScale(callInteraction)
-                    .clickable(
-                        interactionSource = callInteraction,
-                        indication = null,
-                        onClickLabel = "Call",
-                        onClick = onCall,
-                    )
-                    .padding(horizontal = FlashSpacing.space12),
-                contentAlignment = Alignment.Center,
-            ) {
-                FlashText(
-                    text = "Call",
-                    style = FlashTheme.typography.captionEmphasis,
-                    color = colors.accentPrimary,
+            if (onVerify != null) {
+                DropdownMenuItem(
+                    text = { FlashText("Verify pairing", style = FlashTheme.typography.bodyDefault, color = colors.textPrimary) },
+                    onClick = { expanded = false; onVerify() },
                 )
             }
-        }
-        Box(
-            Modifier
-                .height(FlashDimensions.minTouchTarget)
-                .flashPressScale(revokeInteraction)
-                .clickable(
-                    interactionSource = revokeInteraction,
-                    indication = null,
-                    onClickLabel = "Revoke",
-                    onClick = onRevoke,
-                )
-                .padding(horizontal = FlashSpacing.space12),
-            contentAlignment = Alignment.Center,
-        ) {
-            FlashText(
-                text = "Revoke",
-                style = FlashTheme.typography.captionEmphasis,
-                color = colors.textError,
+            HorizontalDivider(color = colors.borderSubtle)
+            DropdownMenuItem(
+                text = { FlashText("Revoke pairing", style = FlashTheme.typography.bodyDefault, color = colors.textError) },
+                onClick = { expanded = false; onRevoke() },
             )
         }
     }
@@ -887,15 +877,15 @@ private fun SectionLabel(text: String) {
     FlashText(
         text = text,
         style = FlashTheme.typography.captionEmphasis,
-        color = FlashTheme.colors.textTertiary,
-        modifier = Modifier.padding(top = FlashSpacing.space8),
+        color = FlashTheme.colors.textSecondary,
+        modifier = Modifier.padding(top = FlashSpacing.space8).semantics { heading() },
     )
 }
 
 @Composable
 private fun RadiosOffPanel(modifier: Modifier) {
     Column(
-        modifier.padding(horizontal = FlashSpacing.space32, vertical = FlashSpacing.space40),
+        modifier.verticalScroll(rememberScrollState()).padding(horizontal = FlashSpacing.space32, vertical = FlashSpacing.space40),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         FlashText(
@@ -921,7 +911,7 @@ private fun ScanningEmptyPanel(
     onScanNetworkClick: (() -> Unit)? = null,
 ) {
     Column(
-        modifier.fillMaxSize().padding(horizontal = FlashSpacing.space32),
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = FlashSpacing.space32, vertical = FlashSpacing.space24),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -942,9 +932,9 @@ private fun ScanningEmptyPanel(
             Spacer(Modifier.height(FlashSpacing.space16))
             Box(
                 Modifier
-                    .height(FlashDimensions.minTouchTarget)
+                    .heightIn(min = FlashDimensions.minTouchTarget)
                     .clip(FlashShapes.bubbleGrouped)
-                    .background(FlashTheme.colors.accentPrimary)
+                    .background(FlashTheme.colors.accentFill)
                     .clickable(onClick = onManualConnectClick)
                     .padding(horizontal = FlashSpacing.space16),
                 contentAlignment = Alignment.Center,
@@ -952,7 +942,7 @@ private fun ScanningEmptyPanel(
                 FlashText(
                     text = "Connect by IP",
                     style = FlashTheme.typography.captionEmphasis,
-                    color = FlashTheme.colors.textOnAccent,
+                    color = FlashTheme.colors.onAccentFill,
                 )
             }
         }
@@ -961,7 +951,7 @@ private fun ScanningEmptyPanel(
             Spacer(Modifier.height(FlashSpacing.space8))
             Box(
                 Modifier
-                    .height(FlashDimensions.minTouchTarget)
+                    .heightIn(min = FlashDimensions.minTouchTarget)
                     .clip(FlashShapes.bubbleGrouped)
                     .background(FlashTheme.colors.backgroundSurfaceStrong)
                     .clickable(enabled = !running, onClick = onScanNetworkClick)
@@ -971,7 +961,7 @@ private fun ScanningEmptyPanel(
                 FlashText(
                     text = if (running) "Scanning…" else "Scan network",
                     style = FlashTheme.typography.captionEmphasis,
-                    color = if (running) FlashTheme.colors.textTertiary else FlashTheme.colors.accentPrimary,
+                    color = if (running) FlashTheme.colors.textTertiary else FlashTheme.colors.accentFill,
                 )
             }
         }
@@ -1016,7 +1006,7 @@ private fun QuietNetworkHint(
             )
         }
         if (onScanNetworkClick != null || onManualConnectClick != null) {
-            Row {
+            FlowRow {
                 if (onScanNetworkClick != null) {
                     HintAction(
                         label = if (scanning) "Scanning…" else "Scan network",
@@ -1036,7 +1026,7 @@ private fun QuietNetworkHint(
 private fun HintAction(label: String, enabled: Boolean, onClick: () -> Unit) {
     Box(
         Modifier
-            .height(FlashDimensions.minTouchTarget)
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(end = FlashSpacing.space16),
         contentAlignment = Alignment.CenterStart,
@@ -1044,7 +1034,7 @@ private fun HintAction(label: String, enabled: Boolean, onClick: () -> Unit) {
         FlashText(
             text = label,
             style = FlashTheme.typography.captionEmphasis,
-            color = if (enabled) FlashTheme.colors.accentPrimary else FlashTheme.colors.textTertiary,
+            color = if (enabled) FlashTheme.colors.accentFill else FlashTheme.colors.textTertiary,
         )
     }
 }
@@ -1054,7 +1044,7 @@ private fun HintAction(label: String, enabled: Boolean, onClick: () -> Unit) {
 private fun ScanNetworkTextAction(running: Boolean, onClick: () -> Unit) {
     Box(
         Modifier
-            .height(FlashDimensions.minTouchTarget)
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .clickable(enabled = !running, onClick = onClick)
             .padding(horizontal = FlashSpacing.space8),
         contentAlignment = Alignment.Center,
@@ -1062,7 +1052,7 @@ private fun ScanNetworkTextAction(running: Boolean, onClick: () -> Unit) {
         FlashText(
             text = if (running) "Scanning…" else "Scan network",
             style = FlashTheme.typography.captionEmphasis,
-            color = if (running) FlashTheme.colors.textTertiary else FlashTheme.colors.accentPrimary,
+            color = if (running) FlashTheme.colors.textTertiary else FlashTheme.colors.accentFill,
         )
     }
 }
@@ -1103,7 +1093,7 @@ private fun LoadingRows(modifier: Modifier) {
                     .fillMaxWidth()
                     .height(FlashDimensions.chatListRowHeight)
                     .clip(RoundedCornerShape(FlashShapes.radius12))
-                    .background(FlashTheme.colors.backgroundSurfaceSubtle),
+                    .background(FlashTheme.colors.backgroundSurfaceStrong),
             )
         }
     }

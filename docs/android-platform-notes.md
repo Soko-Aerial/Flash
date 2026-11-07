@@ -968,6 +968,10 @@ https://developer.android.com/develop/background-work/services/fgs (fetched 2026
   `TranssionHiberKeepAlive`; the keep-alive start is dispatched to `Dispatchers.Default`. This is a platform deadline, not a
   device-specific workaround. The 2026-10-26 Infinix log is the evidence (`ERROR-984` bundle).
 
+### 9. App-specific receive and voice storage (ADR-356) — verified documentation
+
+Checked 2026-11-07 for the app's API 24+ support. Android distinguishes persistent app-specific files from cache files and provides app-specific external storage without new broad storage permission. Flash uses its existing app-specific FlashReceived directory for completed receives and a dedicated private sent voice directory for submitted recordings. FileProvider grants use the existing receive roots and the new narrow `sent/Voice messages/` root. Export uses the existing sharing flow. Device playback and export remain RECEIVE-CAT-02. [Android Developers app-specific storage](https://developer.android.com/training/data-storage/app-specific)
+
 ## 2026-11-07 — Offline Hub revocation state in app-private storage
 
 **Verified against Android Developers for API 21+, including Flash's minSdk 24.** `Context.getNoBackupFilesDir()` supplies an internal directory excluded from automatic remote backup and needs no extra permissions. Flash derives the current directory path at runtime and stores signed revocation state beneath it. This preserves the list across process restart and avoids restoring an older list from Android's automatic backup. [Android Developers Context reference](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir())

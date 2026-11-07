@@ -2187,46 +2187,46 @@ private fun FlashShell(
             onVoiceRecordingStarting = DiscoveryEngineHolder::beginVoiceNote,
             onVoiceRecordingStopped = DiscoveryEngineHolder::endVoiceNote,
             onSendVoiceMessage = { localPath, durationMs, amplitudes ->
-                // B9: a captured voice note rides the same P2P transfer pipeline as any
-                // file, then lands as an inline playback card via sendAttachment (audio/*).
                 val peerId = conversationId
                 val transfers = engine.transfers
                 if (peerId != null && transfers != null) {
                     val fileName = "Voice message.m4a"
-                    val size = runCatching {
-                        android.net.Uri.parse(localPath).path?.let { java.io.File(it).length() } ?: 0L
-                    }.getOrDefault(0L)
-                    if (conversationState.header.isGroup) {
-                        scope.launch(Dispatchers.IO) {
-                            groupFileSender.send(
-                                groupId = peerId,
-                                uri = localPath,
-                                displayName = fileName,
-                                sizeBytes = size,
-                                mimeType = "audio/mp4",
-                                voiceDurationMs = durationMs,
-                                voiceAmplitudes = amplitudes,
-                            )
+                    val isGroup = conversationState.header.isGroup
+                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+                    val target = FlashDevice(
+                        id = FlashDeviceId(peerId),
+                        friendlyName = conversationState.header.title,
+                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                    )
+                    scope.launch(Dispatchers.IO) {
+                        val file = runCatching {
+                            val source = requireNotNull(android.net.Uri.parse(localPath).path)
+                            val root = java.io.File(toastContext.filesDir, "sent")
+                            java.io.File(com.transfer.flash.core.engine.ReceivedFilePlacement.publish(
+                                source, root.path, fileName, "audio/mp4",
+                            ))
+                        }.getOrNull()
+                        if (file == null) {
+                            withContext(Dispatchers.Main) {
+                                android.widget.Toast.makeText(toastContext,
+                                    "Couldn’t save the voice message. Try recording again.", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
                         }
-                    } else {
-                        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
-                        val targetDevice = FlashDevice(
-                            id = FlashDeviceId(peerId),
-                            friendlyName = conversationState.header.title,
-                            transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                        )
-                        scope.launch(Dispatchers.IO) {
-                            val transferId = transfers.sendFile(targetDevice, localPath, fileName, size).getOrNull()
+                        val uri = android.net.Uri.fromFile(file).toString()
+                        val size = file.length()
+                        if (isGroup) {
+                            groupFileSender.send(
+                                groupId = peerId, uri = uri, displayName = fileName, sizeBytes = size, mimeType = "audio/mp4",
+                                voiceDurationMs = durationMs, voiceAmplitudes = amplitudes,
+                            )
+                        } else {
+                            val transferId = transfers.sendFile(target, uri, fileName, size).getOrNull()
                             if (transferId != null) {
                                 chatRepository.sendAttachment(
-                                    conversationId = peerId,
-                                    transferId = transferId.value,
-                                    fileName = fileName,
-                                    mimeType = "audio/mp4",
-                                    sizeBytes = size,
-                                    localPath = localPath,
-                                    voiceDurationMs = durationMs,
-                                    voiceAmplitudes = amplitudes,
+                                    conversationId = peerId, transferId = transferId.value, fileName = fileName,
+                                    mimeType = "audio/mp4", sizeBytes = size, localPath = uri,
+                                    voiceDurationMs = durationMs, voiceAmplitudes = amplitudes,
                                 )
                             }
                         }
