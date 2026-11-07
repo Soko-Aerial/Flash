@@ -986,3 +986,11 @@ cloud backup and device-to-device sections. A file-domain exclusion applies recu
 under `filesDir`. Flash excludes `sent` in all three applicable sections, so existing and new
 submitted recordings keep their local playback paths. Physical restore verification is
 REL22-01. [Android Developers Auto Backup documentation](https://developer.android.com/identity/data/autobackup).
+
+## 2026-11-07 — Widget pinning API guard
+
+**Verified against Android Developers.** `AppWidgetManager.requestPinAppWidget` and its
+launcher capability query require Android 8.0 (API 26). Flash still supports API 24–25.
+The widget helper returns false below API 26 and annotates that guarantee for release lint.
+[AppWidgetManager](https://developer.android.com/reference/android/appwidget/AppWidgetManager#requestPinAppWidget(android.content.ComponentName,%20android.os.Bundle,%20android.app.PendingIntent))
+and [ChecksSdkIntAtLeast](https://developer.android.com/reference/kotlin/androidx/annotation/ChecksSdkIntAtLeast).

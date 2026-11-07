@@ -11,7 +11,7 @@ Flash records three different things about a peer, and they are **not** intercha
 
 | Layer | Stored by | Written by | What it means |
 |---|---|---|---|
-| **TLS pin** | `FlashTrustStore.savePin(deviceId, fingerprintHex)` | the transport, on first contact (TOFU, `TofuPinVerifier`) | "this device id always presents this identity key on the wire" |
+| **TLS pin** | `FlashTrustStore.savePin(deviceId, fingerprintHex)` | outbound TOFU or the coordinator after verified inbound pairing | "this device id always presents this identity key on the wire" |
 | **Paired** | `trustPeer(deviceId, friendlyName)` | the coordinator on success, or a directory one-tap | "the user agreed to talk to this device" |
 | **Verified** | `markVerified(deviceId)` | the coordinator on a verified v2 pairing | "the code the user compared covered both TLS identities" |
 | **E2E session key** | `saveSessionKey(deviceId, key)` | the coordinator after the ECDH exchange | "frames to this peer are AES-GCM sealed, not merely inside TLS" |
@@ -19,7 +19,7 @@ Flash records three different things about a peer, and they are **not** intercha
 Two consequences that catch people out:
 
 * **`isTrusted` is not `isEncrypted`.** The hub's directory one-tap pairing (`FlashChatRepository.pairColleagueFromDirectory`) marks a colleague paired and verified against the hub-signed statement, but its own KDoc says it *grants no encryption key, so frames stay plain inside TLS until a code pairing is done*. If your product promises end-to-end encryption, the six-digit code is what delivers it.
-* **The TLS pin is not yours to write.** The transport pins on first contact and refuses a changed key afterwards. Pairing *reads* the pin (`peerIdentityPin`) to make sure the code covers the key TLS actually authenticated. If no pin exists for that peer, v2 pairing fails closed with `identity-mismatch` -- which in practice means: **pair over a live, already-connected session**, never as the very first frame of a handshake you have not authenticated yet.
+* **Compare the key from the live TLS session.** The driver uses the peer's stored pin or, on a first inbound connection, the observed TLS leaf. It promotes that observed key to a pin only after pairing succeeds. If neither source supplies the peer's key, pairing fails with `identity-mismatch`.
 
 Format note: the fingerprint is `FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded))` -- uppercase, colon-separated. The protocol normalizes on compare (`NumericComparisonCode.normalizeHex` lowercases and keeps hex digits only), so grouped and raw hex are both accepted; just be consistent in your own logs.
 
@@ -59,13 +59,13 @@ val pairing = requireNotNull(engine.pairing)
 pairing.beginPair(peerId, peerName)
 
 // Collect pairing.pairing for the current phase and numericCode.
-// On the responding device, call acceptLocal() only when the user confirms the codes match.
+// On each device, call acceptLocal() only when its user confirms the codes match.
 pairing.acceptLocal()
 ```
 
 Use `declineLocal()` when the user refuses, `trustedPeers` to display saved peers, `messages`
-for short status updates, and `revoke(peerId)` to remove trust. The initiator confirmation is
-handled by the coordinator. Pair over a live session. `FlashDesktop.create` delegates to
+for short status updates, and `revoke(peerId)` to remove trust. The coordinator sends the
+initiator's wire confirmation after both users accept. Pair over a live session. `FlashDesktop.create` delegates to
 the registered desktop host, so check the nullable `pairing` property on that host.
 
 Use [the host-graph recipe](#4-shape-a-the-host-graph-what-ships-today) when supplying custom
@@ -346,16 +346,16 @@ Pair tapped: beginRequest(peerId, name, fp_R)
       ---- req   rid, did, name, model, fp_I, epk_I, ts, v=2, cm=H(fp_I, epk_I, N_I) --->
       <--- nonce rid, fp_R, epk_R, N_R ---------------------
       ---- reveal rid, N_I --------------------------------> R opens cm; both now show code6
-                                                            R's user is asked, compares, Accepts
+Both users compare the code and accept locally.
       <--- acc   rid ---------------------------------------
-      ---- con   rid, ch=H(code6) -------------------------> R verifies ch, then:
+      ---- con   rid, ch=H(code6) -------------------------> I has accepted too; R verifies ch
       <--- paired rid, fp_R, epk_R -------------------------  I verifies fp_R/epk_R match the nonce frame
    both Confirmed: trustPeer + markVerified + saveSessionKey(ecdh(epk, peer epk))
 ```
 
 * `code6 = H("flash-pair-v2-code" || fp_I || fp_R || epk_I || epk_R || N_I || N_R) mod 10^6` -- **role-ordered**, so a reflected session derives a different code.
 * The commitment is what stops a man-in-the-middle steering the code: `R` must reveal `N_R` before seeing `N_I`; `I` is committed to `N_I` before it sees `N_R`. A match therefore survives with probability 10^-6.
-* Both sides also require the peer's claimed fingerprint to equal the **TLS pin** for that connection (ADR-042), which is why a pairing without a pin fails.
+* Both sides require the claimed fingerprint to match the authenticated TLS key for the session (ADR-042). A first inbound connection can use its observed TLS leaf until the coordinator persists the pin after pairing.
 * Timeouts: `requestExpiryMs = 30_000`, `decisionWindowMs = 30_000` (`PairingTimeouts`). The wire itself has no timeout field; expiry is local and neutral (`Expired`, not `Failed`).
 
 Field naming trap: `FlashPairingFrame.Paired.peerFingerprintHex` is filled by the **sender with its own** fingerprint, even though the name reads from the receiver's side. The initiator compares it against what the responder announced in `nonce`, which is what makes the check meaningful.

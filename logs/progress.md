@@ -16,6 +16,39 @@
 - Updated the changelog, developer/API guides and operator instructions. Owner UI review,
   the forced release gates, release-device checks and isolated Hub rollout are tracked in
   the handoff and test backlog before tagging.
+- Owner approved the compact Nearby and Transfers screens and opted to run the phone
+  checks personally. The physical cases remain pending the owner's results.
+- Forced `:server:test :server:installDist :server:distZip` on `302c7b95` passed in
+  4m53s, 27 tasks, JUnit XML 675 tests, zero failures, errors or skips. Deployed that
+  distribution to the isolated test Hub on `myserver`, after preserving the previous
+  `data.bak` and `app.prev` under `release-220-20261107T160937Z`. Health detail and Hub
+  info report `2.2.0-beta.1`, console serves HTTP 200. HUBREADY-01–05 remain owed.
+- The first forced JVM run found one failure in 3,896 tests, ERROR-975. The sender could
+  discard the first current-burst packet during its startup drain. The new fixture
+  reproduces the failure before the fix and passes after `40375e14`. The expanded forced
+  Android-host gate with the fix passed 4,294 tests, no failures, errors or skips, in
+  10m27s (287 tasks).
+- The release packaging build passed in 9m06s. `dist/2.2.0` contains signed and unsigned
+  universal and ABI-specific APKs, the Windows MSI/EXE and checksums. All four signed APKs
+  match the recorded release certificate, are aligned for 16 KB pages and report code 5.
+  Their packaged backup rules exclude `sent` in all three sections. The extracted MSI
+  contains the current desktop jar and notices, and omits the radio test classes.
+- Final release code and verification metadata `1b71d4e0`. Ran every JVM and Android-host
+  test task with task-level `--rerun` and `--no-build-cache`, reusing valid compile outputs.
+  JUnit XML after the isolated radio rerun: 3,630 core/UI JVM, 266 desktop and 675 Hub
+  tests, no failures or errors and two POSIX-only skips. The concurrent JVM run had one
+  simulator failure. All 274 radio tests passed in isolation (ERROR-1009). The desktop/Hub
+  slice completed in 7m23s, built the debug APK and Android instrumentation classes, and
+  captured all 58 native fixtures. The final Android-host/app sweep passed 4,294 in
+  7m32s with no failures, errors or skips. Console Node suite 83/83.
+- Release lint passed with 0 errors, 150 warnings and one hint after documenting the
+  API guard in code (ERROR-1008). The final Android package rebuilt in 5m53s, and the
+  version, signature, alignment and all dist SHA-256 entries were rechecked. Final
+  universal APK SHA-256 is `e53c47709769fe69e400baebd1cd71be21be6aeb3fabb746cf6b6c2400a55461`.
+- Repeated the exact JDK 17 publication task list after the PTT fix. Strict local
+  sample resolution and both isolated consumer compiles passed with the refreshed
+  artifacts. The current owner device pass and the remaining real Hub acceptance
+  are pending. The release tags are reserved in the release plan and still unpublished.
 
 ## 2026-11-07 — Hub remediation HR5
 

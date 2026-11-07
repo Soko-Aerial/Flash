@@ -1,6 +1,9 @@
 # Transfers and Nearby — refine the existing components
 
-**Status: IMPLEMENTED — awaiting owner review** · UI-047 / UI-048 · 2026-11-06
+**Status: ACCEPTED for 2.2.0** · UI-047 / UI-048 · 2026-11-07
+
+The owner approved the compact Nearby and Transfers screens on 2026-11-07.
+Physical-device checks remain TABREF-01–04.
 
 ## Direction and evidence
 The owner rejected the workspace redesign and requested rollback, followed by component-by-component refinement of the previous screens, including their different states. Both production files were restored from `f999b5a5` before this design. The committed Hub remains separate. Historical rejected direction: `transfers-nearby-redesign.md`; original native evidence: `transfers-nearby-baseline/`.

@@ -43,6 +43,7 @@ one umbrella artifact (`core-engine`) that wires everything together:
 // settings.gradle.kts
 dependencyResolutionManagement {
     repositories {
+        google()
         mavenCentral()
         maven { url = uri("https://jitpack.io") }
     }

@@ -26,6 +26,7 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
   no longer crashes Android.
 - Discovery, transfer, startup, messaging, calls and desktop received performance and
   reliability work. Release builds produce a universal Android APK and per-ABI APKs.
+- Push-to-talk keeps the first microphone packet when capture starts before the sender.
 - The LAN TLS trust manager checks the pinned leaf certificate on Android and JVM. This
   closes a critical impersonation issue in peer certificate-chain handling (ERROR-815).
 

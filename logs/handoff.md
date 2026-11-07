@@ -2,9 +2,24 @@
 
 > **2026-11-07 — 2.2.0 release candidate on `codex/release-2.2.0`.** App/desktop 2.2.0,
 > code 5, SDK/Hub 2.2.0-beta.1. Security fixes, release docs and JDK 17 publication dry run
-> complete. Local isolated consumers passed on Android and JVM. Owner sign-off on the
-> compact tabs and physical acceptance remain release gates. Use `docs/release-build.md`
-> and the REL22/HUBREADY cases before publishing.
+> complete. Local isolated consumers passed on Android and JVM. The owner approved the
+> compact tabs and will run the phone checks. Use `docs/release-build.md` and the REL22/HUBREADY
+> cases for the remaining acceptance before publishing.
+> Candidate `302c7b95` passed the forced server gate (675 tests) and is running on the
+> isolated `myserver` test Hub. Health and Hub info report `2.2.0-beta.1`; console HTTP 200.
+> The old backup and previous distribution were preserved under
+> `~/flash-hub/release-220-20261107T160937Z/` before the swap. The ordinary `data.bak`
+> slot now holds the pre-swap test data. The rest of the real-host acceptance is owed.
+> PTT first-packet fix `40375e14` passed the focused JVM regression and the forced
+> Android-host gate (4,294 tests). Signed APKs and Windows installers are in
+> `dist/2.2.0`. The Hub distribution is `server/build/distributions/server-2.2.0-beta.1.zip`.
+> Final product commit `1b71d4e0`: 4,571 JVM/desktop/Hub test cases, zero failures after
+> the isolated 274-case radio rerun and two expected POSIX-only skips. Android host
+> 4,294/4,294, Node 83/83, lint zero errors. The JDK 17 publication rehearsal, isolated
+> consumers, strict dependency verification and signed package checks passed. See
+> ERROR-1009 for the intermittent radio simulation and the progress entry for commands.
+> **Next:** record the owner's signed device and upgrade results and finish HUBREADY-01–05
+> before the public tags. Then verify actual JitPack resolution for the beta tag (REL22-04).
 
 > **2026-11-07 — Hub HR1–HR5 implementation complete on `dev`.** Implementation commit `165c1f4d`. Clean-checkout verification passed 788 Gradle tests and 83 console tests, Android APK assembly and desktop compilation. Android app/SDK and desktop persist verified per-root revocation state and exchange it through authenticated LAN sessions. The restored HR5 gate passed 1,035 tests, APK assembly and desktop compile. HUBREADY-01..05 remain owed on real hosts. Use the HR6 handoff in `docs/plans/HUB-READINESS-REMEDIATION.md` to start fresh-identity replacement.
 
