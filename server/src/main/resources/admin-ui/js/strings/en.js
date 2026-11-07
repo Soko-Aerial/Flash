@@ -1051,6 +1051,7 @@ export default {
   'settings.about.hub': 'Hub',
   'settings.about.serverId': 'Hub ID',
   'settings.about.console': 'Console version',
+  'settings.about.serverVersion': 'Hub version',
   'settings.about.origin': 'Address in your browser',
   'settings.about.secure': 'Secure page',
   'settings.about.secure.yes': 'Yes',

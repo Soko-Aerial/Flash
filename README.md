@@ -17,12 +17,13 @@ is no backend to run and nothing to sign up for. Free and open source under Apac
 Built as a set of small Kotlin Multiplatform library modules (Android and desktop JVM targets) so you can
 take the whole engine or just the transport pieces you need. Supports **Android 7.0 (API 24) and up**.
 
-[![](https://jitpack.io/v/Kali452345/Flash.svg)](https://jitpack.io/#Kali452345/Flash)
+[![](https://jitpack.io/v/Soko-Aerial/Flash.svg)](https://jitpack.io/#Soko-Aerial/Flash)
 
 ## Get the app
 
-The latest Android APK and Windows installers (`Flash-2.1.0.msi`, `Flash-2.1.0.exe`) are on the
-[Releases page](https://github.com/Kali452345/Flash/releases), with a `SHA256SUMS.txt` to check them against.
+Download the signed Android APK and the Windows installers from the
+[Releases page](https://github.com/Soko-Aerial/Flash/releases). The 2.2.0 release uses
+`Flash-2.2.0.msi` and `Flash-2.2.0.exe`. Verify downloads against the release’s `SHA256SUMS.txt`.
 
 - **Android 7.0 (API 24) or newer.** Allow "install unknown apps" for your browser or file manager, then open the APK.
   **If you have `v2.0.0-beta` installed, uninstall it first** (this deletes its chats and pairings): that build was signed with a
@@ -30,7 +31,7 @@ The latest Android APK and Windows installers (`Flash-2.1.0.msi`, `Flash-2.1.0.e
 - **Windows 10/11.** Per-user install, no administrator rights. The installers are not code-signed yet, so SmartScreen shows
   "unknown publisher": choose *More info*, then *Run anyway*.
 - Both devices must be on the same Wi-Fi network (or one phone's hotspot) to find each other.
-- The Flash Hub (organisation server) and the Radio gateway are experimental and not part of this release; see
+- The Flash Hub ships on a separate experimental server beta line. The Radio gateway and Android screen presenter are experimental. See
   [CHANGELOG.md](CHANGELOG.md).
 
 ## Install the library
@@ -51,12 +52,12 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.1")
 }
 ```
 
-The install snippet targets the `v2.1.0-beta.3` tag; what changed since `v2.0.0-beta` is in [CHANGELOG.md](CHANGELOG.md). See [Published modules](#published-modules) if
-you want only the lightweight transport pieces without the encrypted database.
+This branch targets the library beta tag `v2.2.0-beta.1`. Use these coordinates once that tag is available on JitPack.
+See [the changelog](CHANGELOG.md) for upgrade notes and [published modules](#published-modules) for smaller dependencies.
 
 ## Quick start
 
@@ -182,13 +183,13 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta.3")
-    implementation("com.github.Kali452345.Flash:ui-callui:v2.1.0-beta.3")   // optional in-call screen
+    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.2.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.1")   // optional in-call screen
 }
 ```
 
 `core-calling` brings the WebRTC bindings with it. Since 2.1.0-beta those are Flash's own published artifact,
-`com.github.Kali452345.Flash:webrtc-kmp-android` (and `webrtc-kmp-jvm` for desktop), a vendored fork of
+`com.github.Soko-Aerial.Flash:webrtc-kmp-android` (and `webrtc-kmp-jvm` for desktop), a vendored fork of
 `com.shepeliev:webrtc-kmp` (Apache-2.0; the changes are listed in `third_party/webrtc-kmp/MODIFICATIONS.md`) that is
 built and published in the same JitPack build as the other modules, so there is nothing extra to add. A **desktop JVM**
 app that places calls must also choose the native libwebrtc for its operating system, for example
@@ -435,7 +436,7 @@ Take the umbrella, or compose only the lightweight pieces:
 | `core-common` | Supported — lightweight | No | Shared models/results (usually transitive). |
 | `core-discovery` | Supported — lightweight | No | Peer discovery/advertising only. |
 | `core-network` | Supported — lightweight | No | Connection/session transport only. |
-| `core-enterprise` | Supported (optional) | No | Enterprise hub client: enrolment, directory, relay client, trust stores. Depends on core-hub-protocol and core-security, not on core-network. |
+| `core-enterprise` | Experimental Hub integration | No | Enrolment, directory, relay and trust. Messaging exports it for the Hub return types. |
 | `core-transfer` | Supported — lightweight | No | Chunked file transfer without a database (DB-less resume off). |
 | `core-security` | Supported — lightweight | No | Trust store / pairing primitives. |
 | `core-hub-protocol` | Internal — shipped (pulled in by `core-security` and `core-enterprise`) | No | The enterprise-hub wire contract: certificates, relay frames, REST DTOs and signing bytes shared by the hub server and its clients (ADR-107). Not a public API; do not depend on it directly. |
@@ -443,6 +444,7 @@ Take the umbrella, or compose only the lightweight pieces:
 | `core-messaging` | Experimental — shipped (API may change) | Yes (transitive) | Chat repository; pulled in transitively by `core-engine`. Don't depend on it directly yet. |
 | `core-calling` | Experimental — shipped | No (but ~30 MB WebRTC) | Voice/video calls. Reachable via `Flash.create` (`engine.attachCalling(...)`) — but the umbrella declares it `compileOnly`, so **add it yourself**; see [Voice & video calls](#voice--video-calls). |
 | `core-ptt` | Experimental — shipped (API may change) | No | Push-to-talk floor, capture, playout and PTT wire codecs. Reachable via `Flash.create` (`engine.attachPtt(...)`) — see [Push-to-talk](#push-to-talk-ptt). |
+| `core-radio` | Experimental — shipped (API may change) | No | KISS/AX.25 radio gateway and hardware links. See the [radio module guide](docs/developer-guide/modules/core/core-radio.md). |
 | `core-swarm` | Experimental — shipped (API may change) | No | Sans-IO group swarm file transfer engine, piece math, manifest builder/codec, and FSW1 wire frames. Reachable via `FlashEngine.attachSwarm(...)` — pulled in transitively by `core-engine`. |
 | `ui-theme` | Experimental — shipped | No | The Flash design system (colors, typography, motion, icons) for Compose. |
 | `ui-platform-shims` | Experimental — shipped | No | Platform seams (back handling, clipboard, file picking, permissions, image decode, audio playback, voice capture) that `ui-chat` compiles against. Transitive — depend on it only if you are reimplementing the chat UI. |
@@ -481,7 +483,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.1")
 }
 ```
 

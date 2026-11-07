@@ -41,27 +41,25 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 
 ## Where the version lives (change all of them together)
 
-| What | File | Current (2026-10-09) |
+| What | File | 2.2 release train |
 |---|---|---|
-| Library version, every JitPack module and the `webrtc-kmp` fork | `gradle.properties` -> `flashLibraryVersion` | `2.1.0-beta.2` |
-| Android `versionName` / `versionCode` | `app/build.gradle.kts` | `2.1.0` / `4` (2026-10-20) |
-| Windows installer `packageVersion` (MSI/EXE need a numeric `x.y.z`, so no `-beta`) | `desktop/build.gradle.kts` | `2.1.0` |
-| Desktop sample consumer's dependency | `sample/consumer-desktop/build.gradle.kts` | `2.1.0-beta.2` |
-| README install snippets, installer names | `README.md` | `v2.1.0-beta.2`, `Flash-2.1.0.*` |
-| Release notes | `CHANGELOG.md` | `[2.1.0]` |
+| Android version name and code | `app/build.gradle.kts` | `2.2.0` / `5` |
+| Windows installer version | `desktop/build.gradle.kts` | `2.2.0` |
+| KMP library and WebRTC fork | `gradle.properties` → `flashLibraryVersion` | `2.2.0-beta.1` |
+| Hub server distribution | `server/build.gradle.kts` | `2.2.0-beta.1` |
+| Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.2.0-beta.1` |
+| Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.2.0-beta.1` |
 
-The app (`2.1.0`) and the library (`2.1.0-beta.2`) are versioned separately on purpose: the git tag `v2.1.0` is the app release (GitHub
-release with the APK and installers) and must not be taken to mean the library is at 2.1.0; JitPack builds `v2.1.0` only if someone
-requests it. The library is published by the tag `v2.1.0-beta.2` (`v2.1.0-beta.1` is already built on JitPack and a tag name is never reused).
-
-`versionCode` must go up for Android to accept the APK as an update (it was 2 in `v2.0.0-beta`). The library version is
-only the Maven version for local builds; JitPack replaces it with the git tag, so the tag (`v2.1.0-beta.2`) and
-`flashLibraryVersion` should say the same thing.
+The Android and Windows tag is `v2.2.0`. The JitPack tag is `v2.2.0-beta.1`, under
+`com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.1`. The independent Hub distribution tag is
+`server-v2.2.0-beta.1`. Use the release checklist in the changelog and test backlog before
+publishing each artifact. Never reuse a tag. Keep the Android release signing key and increase
+`versionCode` for each upgrade.
 
 ## Publishing the library (JitPack) and the WebRTC fork
 
 JitPack runs the `install:` line of `jitpack.yml` (`./gradlew ... publishToMavenLocal -x test -x lint`), scans `~/.m2`,
-and rewrites `com.transfer.flash` to `com.github.<user>.<repo>` and every version to the tag. Fifteen Flash modules are
+and rewrites `com.transfer.flash` to `com.github.<user>.<repo>` and every version to the tag. Eighteen Flash modules are
 published, **plus the vendored WebRTC bindings fork** (ADR-103):
 
 - `third_party/webrtc-kmp` is an included build (ADR-034). `core:calling` and `ui:callui` `api`-depend on it, so their
@@ -80,12 +78,15 @@ published, **plus the vendored WebRTC bindings fork** (ADR-103):
 **Proof before tagging (never against the real `~/.m2`):** run the exact install line into a throwaway repository and look
 at the POMs, as ADR-103 did:
 
-```bash
-./gradlew -Dmaven.repo.local=<scratch>/m2 :webrtc-kmp:webrtc-kmp:publishToMavenLocal ...same line as jitpack.yml... -x test -x lint
-```
+In a disposable checkout, apply the `before_install` step from `jitpack.yml` and select JDK 17
+as the Gradle daemon JVM. Run the exact `install:` task list with `-Dmaven.repo.local=<scratch>/m2`.
+On the shared Windows PC, invoke the list through `tools/flash-gradle.cmd` (AGENTS.md §36).
 
-Then point a consumer project at only that repository plus Google and Maven Central and resolve
-`core-calling`/`ui-callui` for both Android and JVM. Release-only failures (ProGuard, publication-block version
+Then point consumers at that repository plus Google and Maven Central. Resolve
+`core-calling` and `ui-callui` for Android and JVM, and compile against a published
+`core-messaging` method that returns an enterprise type. Regenerate
+`gradle/verification-metadata.xml` with `--write-verification-metadata sha256` when resolving
+the new local sample coordinates, review the additions, and repeat with strict verification. Release-only failures (ProGuard, publication-block version
 overrides) are invisible to debug builds, so do this on JDK 17 as JitPack does (`jdk: openjdk17`).
 
 The `RadioLinkTest*` classes (the serial-radio tester, ADR-101) are excluded from the desktop jar and installers. The
@@ -181,7 +182,7 @@ so SmartScreen shows "unknown publisher". Signing them needs a code-signing cert
 script doesn't do yet. The Linux `.deb` target in `desktop/build.gradle.kts` can only be built on Linux, so the
 script doesn't attempt it.
 
-These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers were built with (`packageVersion` 2.1.0 now builds `Flash-2.1.0.msi` / `.exe`).
+These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers were built with (`packageVersion` 2.2.0 builds `Flash-2.2.0.msi` / `.exe`).
 `packageRelease*` (ProGuard) has never been verified for this app.
 
 ## Environment the script sets up
@@ -195,5 +196,17 @@ These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers
 - **Android SDK** comes from `sdk.dir` in `local.properties`, else `ANDROID_HOME` or `ANDROID_SDK_ROOT`.
   `apksigner` and `zipalign` come from the newest `build-tools` there. They're only needed for signing.
 
-No tests run: this is a packaging script, not a verification gate. Run the test sweep from
-`logs/handoff.md` before cutting a release.
+## 2.2 release checks
+
+- Run the forced JVM and Android-host gates on the candidate commit through the build lock.
+  Include the app, desktop, server, radio, swarm, calling and call UI. Count the JUnit
+  XML results and run the console Node suite. Use `:app:lintRelease` for the Android artifact.
+- For the app, verify the signed APK and Windows installers and complete REL-01–07,
+  MIG-01/02, RECEIVE-CAT-01/02, TABREF-04 and the pairing/trust regression cases.
+- For the library beta, verify the JDK 17 install line and isolated Android/JVM consumers
+  before tagging. After tagging, repeat the consumer proof from JitPack.
+- For the Hub beta, deploy the candidate to the isolated test Hub with its prior backups
+  preserved, verify the build version and complete HUBREADY-01–05 and REL22-02/03. See the
+  [operator guide](deploy/HUB-SERVER-DEPLOYMENT.md).
+
+Use the [test backlog](testing/TEST-BACKLOG.md) for steps and pass conditions.
