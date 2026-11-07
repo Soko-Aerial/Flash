@@ -16,6 +16,7 @@ import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode
+import com.transfer.flash.server.directory.JoinRequestResult
 import com.transfer.flash.server.directory.MemberRole
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.identity.IdentityStore
@@ -39,6 +40,7 @@ import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -52,6 +54,23 @@ class DepartmentHeadScopeTest {
 
     private val bossPassword = "BossPassword123!"
     private val headPassword = "HeadPassword123!"
+
+    @Test
+    fun approvingAJoinChecksTheRequestersCurrentDepartment() = testApplication {
+        val r = Realm()
+        mount(r)
+        val head = client.loginAs(r, "head-a", headPassword, r.headTotp)
+        val boss = client.loginAs(r, "boss", bossPassword, r.bossTotp)
+        val request = assertIs<JoinRequestResult.Pending>(
+            r.directory.requestJoinGroup("g-a", "dev-a1", "dept-a", "please"),
+        ).request
+        r.directory.registerMember(r.directory.getDepartmentMember("dev-a1")!!.copy(departmentId = "dept-b"))
+        val path = "/admin/api/v1/join-requests/${request.id}/approve"
+        assertEquals(HttpStatusCode.Forbidden, client.post(path) { withSession(head) }.status)
+        assertFalse("dev-a1" in r.directory.getGroup("g-a")!!.memberDeviceIds)
+        assertEquals(HttpStatusCode.OK, client.post(path) { withSession(boss) }.status)
+        assertTrue("dev-a1" in r.directory.getGroup("g-a")!!.memberDeviceIds)
+    }
 
     private class Sess(val cookie: String, val csrf: String)
 

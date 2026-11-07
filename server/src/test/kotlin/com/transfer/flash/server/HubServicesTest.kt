@@ -21,6 +21,9 @@ import com.transfer.flash.server.auth.generateEcKeyPair
 import com.transfer.flash.server.auth.sign
 import com.transfer.flash.server.auth.toBase64Spki
 import com.transfer.flash.server.config.ServerConfig
+import com.transfer.flash.server.directory.DirectoryActor
+import com.transfer.flash.server.directory.GroupVisibility
+import com.transfer.flash.server.directory.JoinMode
 import com.transfer.flash.server.mailbox.MailboxMessage
 import com.transfer.flash.server.mailbox.MailboxQueue
 import com.transfer.flash.server.storage.update
@@ -315,6 +318,50 @@ class HubServicesTest {
 
         val second = build()
         assertNotNull(second.directory.getDepartmentMember("dev-keep"), "startup reconciliation re-adds ACTIVE devices")
+    }
+
+    @Test
+    fun startupRootRevocationsRetireGroupCopiesBeforeServingAndStayRetiredOnRestart() = testApplication {
+        provision()
+        val first = build()
+        application { first.engine.configureApplication(this) }
+        first.directory.createDepartment("eng", "Engineering", emptyList(), DirectoryActor.CONSOLE)
+        first.directory.createGroup("g-eng", "Engineering", "eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY, emptyList(), DirectoryActor.CONSOLE)
+        enrol(first, "by-id", FlashCrypto.generateEcKeyPair())
+        val serial = enrol(first, "by-serial", FlashCrypto.generateEcKeyPair()).deviceCert.serial
+        enrol(first, "keep", FlashCrypto.generateEcKeyPair())
+        for (device in listOf("by-id", "by-serial", "keep")) {
+            first.directory.addMemberToGroup("g-eng", device, DirectoryActor.CONSOLE)
+        }
+        val initialVersion = assertNotNull(first.directory.getGroup("g-eng")).version
+        val secrets = SecretBox.loadOrCreate(File(dir, "data.key").toPath())
+        val queued = MailboxQueue(first.database, secrets = secrets, enforceGroupMembership = true)
+        assertTrue(queued.enqueue(MailboxMessage("keep", "by-id", "group", "MSG_TEXT", "queued", 1, group = "g-eng")).isStored)
+        assertTrue(queued.enqueue(MailboxMessage("keep", "by-id", "direct", "MSG_TEXT", "queued", 1)).isStored)
+        first.database.close()
+
+        val rootKey = File(dir.parentFile, "root-${dir.name}/${KeyTool.ROOT_PRIV}").toPath()
+        KeyTool(PrintStream(ByteArrayOutputStream()), PassphraseSource { _, _ -> null }).revoke(
+            rootKeyFile = rootKey,
+            delegationSerials = emptySet(),
+            deviceSerials = setOf(serial),
+            deviceIds = setOf("by-id"),
+            outFile = File(dir, "revocations/startup.signed").toPath(),
+        )
+
+        val second = build()
+        assertNull(second.directory.getDepartmentMember("by-id"))
+        assertNull(second.directory.getDepartmentMember("by-serial"))
+        val retired = assertNotNull(second.directory.getGroup("g-eng"))
+        assertEquals(setOf("keep"), retired.memberDeviceIds.toSet())
+        assertTrue(retired.version > initialVersion)
+        val remaining = MailboxQueue(second.database, secrets = secrets, enforceGroupMembership = true).fetchPage("by-id", 0, 10)
+        assertEquals(listOf("direct"), remaining.map { it.msgId })
+        second.database.close()
+
+        val third = build()
+        assertEquals(retired, third.directory.getGroup("g-eng"))
+        assertNull(third.directory.getDepartmentMember("by-serial"), "an ACTIVE registry row with a revoked serial must not reappear")
     }
 
     // ------------------------------------------------------------------------------------------ delegation lifecycle

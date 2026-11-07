@@ -443,6 +443,15 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
             call.guarded {
                 val device = d.identities.device(id) ?: return@guarded call.notFound()
                 if (scope !is ConsoleScope.Org && !scope.allows(device.department)) return@guarded call.notFound()
+                val target = b.department?.trim()?.ifEmpty { null }
+                if (b.moveToDepartment) {
+                    // Cross-department moves are org-admin work; a head may only rename.
+                    if (scope !is ConsoleScope.Org) {
+                        return@guarded call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Only an organisation administrator can move a device.")
+                    }
+                    if (target != null && d.directory.getDepartment(target) == null) throw com.transfer.flash.server.directory.DirectoryNotFoundException("department")
+                    if (!call.stepUpOk(d, session, StepUpActions.MOVE_DEVICE, id)) return@guarded
+                }
                 val changes = ArrayList<String>()
                 if (b.name != null) {
                     require(b.name.isNotBlank() && b.name.length <= IdentityStore.MAX_NAME)
@@ -450,12 +459,6 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
                     changes += "name"
                 }
                 if (b.moveToDepartment) {
-                    // Cross-department moves are org-admin work; a head may only rename.
-                    if (scope !is ConsoleScope.Org) {
-                        return@guarded call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Only an organisation administrator can move a device.")
-                    }
-                    val target = b.department?.trim()?.ifEmpty { null }
-                    if (target != null && d.directory.getDepartment(target) == null) throw com.transfer.flash.server.directory.DirectoryNotFoundException("department")
                     val previous = d.directory.getDepartmentMember(id)?.departmentId
                     val registryBefore = device.department.orEmpty()
                     d.identities.setDepartment(id, target)
