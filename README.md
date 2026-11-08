@@ -57,7 +57,7 @@ dependencies {
 }
 ```
 
-This branch targets the library beta tag `v2.2.0-beta.3`. Use these coordinates once that tag is available on JitPack.
+The SDK beta `v2.2.0-beta.3` is available on JitPack. The Android and JVM consumer compiles passed against this tag.
 For a direct download, the [SDK beta.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
 includes a Maven repository ZIP, a SHA-256 manifest, and instructions for `com.transfer.flash` coordinates.
 See [the changelog](CHANGELOG.md) for upgrade notes and [published modules](#published-modules) for smaller dependencies.

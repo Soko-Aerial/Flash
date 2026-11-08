@@ -21,6 +21,13 @@
   reported asset digests matched the local files.
 - The beta.3 JDK 17 publication and isolated Android/JVM consumer compiles passed locally with
   the umbrella engine, granular messaging, calling UI and WebRTC and enterprise types.
+- JitPack's cold Linux build from candidate `13e0fa3f` passed in 3m20s and published artifacts.
+  Tagged the same commit as `v2.2.0-beta.3` and published the GitHub prerelease. The stable app,
+  Hub beta and beta.2 Maven ZIP remain downloadable.
+- JitPack reported `ok` for the public beta.3 tag and listed 57 modules on Linux/JDK 17.
+  The first external consumer attempt got HTTP 429 while JitPack was building the tag. After
+  publication, the single-worker retry passed both Android and JVM consumer compiles in 2m16s
+  against the public repository. REL22-04 is closed.
 
 ## 2026-11-08 — Cut the Flash 2.2.0 release
 
