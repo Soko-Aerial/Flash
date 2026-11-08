@@ -16621,6 +16621,11 @@ Still owed:
 - Old peers without `pr1` still use the outbox budget.
 - Device runs: `W1-NACK-01` (queued message fails), `W1-REVOKE-03` (auto-redial cannot re-pin; manual Pair clears the
   tombstone) and `W1-TITLE-01` (the name survives a revoke; an unknown peer reads "Unknown device").
+- **2026-11-08 device result (ERROR-1011):** the negative ack is **not effective on the Android host**. After A
+  revoked B offline and B reconnected, A logged nine no-key drops but B received no `PAIR_REVOKE`, stayed Connected,
+  kept `paired_`/`pin_`, and kept the message Sent for 3+ minutes. `DiscoveryEngineHolder.kt:2643-2645` logs the drop
+  and returns without calling `onUnreadableSecuredFrame`; only `FlashInboundRouter`/`Flash.kt` have the resend. The
+  old revocation *notice* path is unchanged; do not claim the negative ack is device-verified.
 
 ### Verification
 First device run (2026-11-04, Infinix X6882B + TECNO SPARK 40): security half passed (no pin/pairing/session key on A; all `FLASH_SEC` dropped; A's chat never got `afterrevoke`); UX half failed (B Connected/sent, retry loop) — this is the report.
@@ -16640,7 +16645,8 @@ Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-pai
 - `docs/testing/TEST-BACKLOG.md` `W1-REVOKE-02`
 
 ### Status
-FIXED FOR THE NOTICE, THE HEADER LABEL AND THE NEGATIVE ACK (device run for the ack still owed); **PARTIAL**: old-peer budget and TOFU re-pin remain.
+FIXED FOR THE NOTICE AND THE HEADER LABEL; the negative ack works in the router/KMP path but **fails on the Android host**
+(ERROR-1011, device run 2026-11-08). **PARTIAL**: old-peer budget and TOFU re-pin remain.
 
 ## ERROR-983 - W1 control escaping let a hub file name/group id carry a literal control escape
 
@@ -17142,3 +17148,205 @@ four frames but counted three ACKs before its five-second deadline. The first fo
 JVM sweep had passed this suite. All 274 radio JVM tests then passed in the isolated
 rerun on `1b71d4e0` with the existing deadline and assertions. Status: OPEN,
 intermittent simulated-radio failure with cause unconfirmed.
+
+## ERROR-1010 — The pairing initiator's consent card is not rendered on the Nearby tab
+
+2026-11-08. Area: Android pairing UI (SECAUD-22, SEC-D03-01/D03-06).
+
+**Environment:** Infinix X6882B (Android 14, API 34) and Samsung SM-G986U1 (Android 13,
+API 33); 2.2.0 debug build `versionCode 5` from
+`app/build/outputs/apk/debug/app-universal-debug.apk` (2026-11-07 17:03), working tree
+`64092bf3` with product code at `1b71d4e0`. The signed release APK could not be installed
+over the existing debug-signed install (see the release blocker in `logs/handoff.md`).
+
+**Symptoms:** Tapping **Pair** on the initiator while the Nearby tab is open sends the
+request (log `FLASH_PAIRING beginPair ... fingerprintKnown=true` plus the pairing frames),
+and the responder shows the consent card with the 6-digit code and "Accept only if <peer>
+shows the same code." The initiator shows **no card at all** for the whole 30-second
+window. Switching the initiator to Chats makes the card appear immediately; both cards
+then show the same code and both Accept actions complete the pairing.
+
+**Evidence:** `pair-step1-samsung-nearby.png` (initiator on Nearby, no card),
+`pair-step1-infinix-card.png` (responder card), `pair-step2-samsung-card.png` (initiator
+card after switching to Chats), `pair-step2-infinix-waiting.png`; Samsung log
+03:45:53.583 (`beginPair`) and 03:46:08.626 (responder accept) in the 2026-11-08 evidence
+folder.
+
+**Root cause:** Not proven. `MainActivity` deliberately suppresses the global pairing
+dialog while the destination is `NearbyDevices` (`MainActivity.kt` around line 3560) and
+expects `FlashNearbyScreen` to render `NearbyUiState.pairingRequest`. On this build that
+card did not surface while the tab stayed open. The trust model itself is intact: both
+sides must accept, and accepting one side alone does not pair.
+
+**Workaround:** Leave Nearby (open Chats) after tapping Pair; both consent cards render
+and the pairing completes.
+
+**Impact:** SECAUD-22 FAIL as written: from the screen where pairing starts, the initiator
+sees nothing and may believe Pair did nothing. No trust bypass was observed.
+
+**Code fix:** Android now renders the coordinator's consent card once at the app shell, including
+Nearby. Nearby no longer supplies a second card. Both Accept actions, decline and expiry still
+go through the existing coordinator. The failure observed on the previous APK remains recorded.
+
+**Status:** OPEN — code fix implemented; SECAUD-22 device retest owed. **Retest 2026-11-08 (second run):** the initiator card rendered over Nearby with matching codes on several Samsung-initiated attempts (e.g. `573 299` at 12:46), and the 12:49 retry paired after both accepts (its card code was not captured before accepting). The symptom still recurred intermittently: the 12:48 attempt logged `beginPair` but showed no initiator card for its whole 30 s window, the 12:46 responder-first accept left the initiator card gone, and two attempts at 12:24:38.562 / 12:25:38.859 ended with `Pairing stopped: the security check failed...` (ERROR-1013). Status updated after the 2026-11-08 release-closeout fix: **RESOLVED for the original defect.** The instrumented runs showed the shell-level card rendering over Nearby on every one of 8 pairing cycles (both initiator directions × both accept orders), and the code-less `AwaitingPeerNonce` card was a second, separate mapping bug now fixed (`PairingUiMapper`: AwaitingPeerNonce/AwaitingPeerReveal → Idle). The 12:48 no-card case did not recur after the fix; three later cards were dismissed by `declineLocal` (scrim/back; UI-032 intentionally allows first-contact dismissal), with no protocol reset or trust change (see ERROR-1013). SECAUD-22 Android half PASS; Windows half handled by the interop stage. Evidence: `release-final-20261108T131525Z\android-code.md`, `pair-samsung.log`, `pair-infinix.log`.
+
+**Related files:** `app/src/main/java/com/transfer/flash/MainActivity.kt`,
+`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/nearby/FlashNearbyScreen.kt`,
+`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashPairingFlow.kt`.
+
+## ERROR-1011 — Android's legacy inbound path drops an unreadable FLASH_SEC without ADR-351's negative ack
+
+2026-11-08. Area: Android security / revoked-peer notification (W1-NACK-01,
+W1-REVOKE-03, ADR-351).
+
+**Environment:** same two phones and 2.2.0 debug build as ERROR-1010. A = Infinix
+X6882B, B = Samsung SM-G986U1, newly paired for the test.
+
+**Symptoms:** A revoked B while B was offline. B queued `queued-nack`, later reconnected,
+and A logged nine `Received FLASH_SEC frame from ... with no stored session key; dropping`
+lines between 04:08:17 and 04:11:20. B never received a `PAIR_REVOKE`: it kept
+`paired_adb2d87d`, kept `pin_adb2d87d`, had no `revoked_adb2d87d`, stayed **Connected**,
+and kept the message at **Sent** for more than three minutes. It became **Failed** only
+at 04:11:57, when B was locally revoked during cleanup, with the misleading sentence
+"The other device no longer trusts you." At 04:07:42 A failed **2 queued message(s)** with that
+same wrong-direction sentence when A revoked locally; the two file bubbles then showed Failed even
+though both transfers had completed.
+
+**Root cause (code-level):** `FlashInboundRouter` and the KMP engine implement the
+negative ack (`onUnreadableSecuredFrame`), but the Android host's legacy handler
+`DiscoveryEngineHolder.handleInboundText` logs the drop and returns without invoking it
+(`app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:2643-2645`). The
+host still advertises `pr1` in its HELLO, so the sender has no way to learn otherwise.
+The security half still holds: A dropped the frames and never stored the message.
+
+**Evidence:** `key-log-excerpts.txt` section 4; `run-infinix.log` 04:08:17.806 through
+04:11:20.745; `run-samsung.log` 04:08:17.750 and 04:11:57.212; prefs key dumps (names
+only) from both devices; screenshots of B's Connected header and Sent message.
+
+**Verification:** W1-NACK-01 FAIL; W1-REVOKE-03 FAIL; W1-TITLE-01 PARTIAL (the title kept
+"Flash Hippo", but the header never showed Not paired until B was locally revoked).
+
+**Code fix:** The Android host now resends `PAIR_REVOKE` when an authenticated current session
+advertises `pr1`, the sender has a local revocation tombstone, and its sealed frame has no key.
+The coordinator limits resends to one per peer per 10 seconds, ignores duplicate received revokes,
+and distinguishes a local forget from a remote revoke in the outbox log. Sealed frames still drop.
+
+**Status:** OPEN — code fix implemented; W1-NACK-01, W1-REVOKE-03 and W1-TITLE-01 device retests owed. **Retest 2026-11-08 (second run): RESOLVED.** A revoked B while B was offline; B reconnected, logged `Flash Hippo no longer trusts you. Pair again to reconnect.` (12:37:04.087) and failed its queued `retest-nack` at 12:37:04.102 (`Failed 1 queued message(s) ... The other device no longer trusts you. ...`). A logged `Received FLASH_SEC frame from 9a644186... with no stored session key; dropping` at 12:37:03.514 and resent the revoke once. B wrote `revoked_adb2d87d...` with no pin/pairing, kept **Not paired** and the friendly title through a restart, and a manual Pair at 12:49 restored the pin and delivered texts both ways. W1-NACK-01 / W1-REVOKE-03 / W1-TITLE-01 all PASS. Evidence: `retest-20261108T121940Z\phone-report.md`.
+
+**Related files:** `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`,
+`core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashInboundRouter.kt`,
+`core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/Flash.kt`,
+`app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`.
+
+## ERROR-1012 — Transfer rows call waiting-for-acceptance "Paused" and flip delivered files to Failed after a local revoke
+
+2026-11-08. Area: Android transfer UI state truthfulness (TABREF-01).
+
+**Symptoms:** (a) While the receiver had not accepted a 512 MB send, the sender's bubble
+read `waiting for receiver to accept • 0% • Paused (Tap to resume)` and offered Resume,
+although the user had never paused it. (b) After A revoked B, the two already-delivered
+attachments (1 MB and 512 MB, both completed and hash-verified on B) changed from Sent to
+`Failed to send. Double-tap to retry.` with a Failed icon. The local revoke also failed
+A's own completed file receipts with "The other device no longer trusts you."
+
+**Evidence:** screenshots `big-resumed-infinix.png` / `big-resumed-samsung.png` and the
+04:02–04:07 UI states in the 2026-11-08 evidence folder; `run-infinix.log` 04:07:42.798;
+`run-samsung.log` 04:11:57.212.
+
+**Root cause:** Not investigated. The row state folds "awaiting acceptance" into the
+paused branch, and the revoke path fails any pending receipt even when the transfer
+already completed. The direction of the failure sentence is also wrong for a local
+revoke.
+
+**Impact:** TABREF-01 cannot claim "progress and status remain truthful"; Retry on an
+already-delivered file may re-send it. No corruption was observed.
+
+**Code fix:** The chat and Transfers views identify the sender's consent wait separately from a
+manual pause. Only the receiver can release the parked offer. Revoke cleanup uses the outbox rows
+for the affected peer instead of treating every `SENT` row as a pending message; it leaves LAN
+transfer bubbles alone. This prevents future false failures and does not rewrite old message history.
+
+**Status:** OPEN — code fix implemented; TABREF-01 device retest owed. **Retest 2026-11-08 (second run): RESOLVED for the direct 1:1 Android slice.** The 8 MiB offer showed `Waiting for the other device to accept` / `Awaiting acceptance` with only **Cancel transfer** (no Pause/Resume) for ~46 s; the transfer completed (`transfer.summary result=completed`, `chunkVerified=true wholeFile=MATCH`, SHA-256 `918c4b1f...12ac7` on both) and the completed file stayed **Sent** on the sender and completed on the receiver after the offline revoke. TABREF-01 itself stays PARTIAL for the group/bulk/cancel/Windows halves. Evidence: `retest-20261108T121940Z\phone-report.md`.
+
+**Related files:** `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/`
+(transfer bubble state), `core/transfer/...` (transfer state mapping).
+
+## ERROR-1013 — Intermittent Samsung-initiated pairing fails the security check or shows no initiator card
+
+### Date
+2026-11-08
+
+### Area
+Android pairing (SECAUD-22 / SEC-D03-01), initiator side
+
+### Symptoms
+- 12:24:38.562 and 12:25:38.859: tapping **Pair** on the Samsung logged `beginPair` and then `Pairing stopped: the security check failed...` within ~300 ms; neither device showed a usable consent card and no trust changed.
+- 12:46: both cards showed `573 299`; the Infinix accepted and showed `Waiting for Flash Olive to confirm...`, then the Samsung card disappeared within ~2 s with no failure line and no pairing.
+- 12:48:00.815: `beginPair` logged; the Infinix card appeared (`275 414`) but the Samsung never rendered its card for the whole 30 s window.
+
+### Environment
+- Infinix X6882B, Android 14 / API 34 (A)
+- Samsung SM-G986U1, Android 13 / API 33 (B)
+- 2.2.0 debug build, versionCode 5, APK `77b1e108b0551c1a1bca0ddd70e8d046f83f1ee5cca3a6d49d085d8be24123d8` (same debug signer as the previous install)
+- `test LAN` (5 GHz); <Phone A LAN IP> / <Phone B LAN IP>
+
+### Error
+```text
+11-08 12:24:38.562 I/FLASH_PAIRING(20733): Pairing stopped: the security check failed. If this keeps happening, something may be interfering with the connection.
+11-08 12:25:38.859 I/FLASH_PAIRING(20733): Pairing stopped: the security check failed. If this keeps happening, something may be interfering with the connection.
+```
+The 12:46 and 12:48 attempts produced no failure line at all.
+
+### Root cause
+**Proven on 2026-11-08 with an instrumented debug build** (`2dfdf77d...`): the failure is an **identity mismatch caused by the revoked-tombstone interaction**, not a timeout. After a revoke, `AndroidPreferencesTrustStore.savePin` deliberately refuses to store a pin for the revoked peer (ADR-353). The next outbound TLS handshake therefore recorded no pin, and the pairing initiator's `PeerNonce` check (`PairingV2.matchesPinnedIdentity(claimed, null)`) failed before any code was derived:
+
+```text
+13:31:24.126 beginPair peer=adb2d87d ... storedPin=false observedPin=false
+13:31:24.264 pairing.pin none peer=adb2d87d
+13:31:24.265 ui=Declined|Failed|...|0|...
+13:31:24.266 event.failed reason=identity-mismatch req=925cc993 phase=Failed
+```
+
+The same phone could pair later only if it had received an inbound connection from the peer in the meantime (which populated the in-memory observed-key map) — hence the intermittent "it works after a while" behavior. The earlier unproven hypothesis (a race/timing issue) is superseded. A separate UI mapping bug also existed: `PairingUiMapper` mapped the initiator's code-less `AwaitingPeerNonce` phase to `AwaitingPeerConfirmation`, so the shell could render a code-less "Waiting for <peer> to confirm" card instead of no card.
+
+### Failed attempts
+1. Immediate Samsung→Infinix retry at 12:25 — the same failure, 60 s after the first.
+2. Accept on the responder first (12:46) — the initiator card vanished, no pairing.
+3. Tap Pair and wait (12:48) — the initiator card never appeared.
+4. Accept on the initiator first, then the responder (12:49) — SUCCESS.
+
+### Working fix
+- `core/network/src/commonMain/.../TofuPinVerifier.kt`: on a first-use connection the verifier now always reports the key the connection actually presented to the pairing observed-key map, in both dial directions, in addition to the optional pin write. The pairing coordinator already prefers the stored pin and falls back to `observedPeerPin`; a refused pin write (revoked peer) no longer starves the numeric comparison. No pin is written for a revoked peer; the tombstone, both accepts, the numeric comparison and the TLS fail-closed check are unchanged.
+- `app/src/main/java/com/transfer/flash/pairing/PairingUiMapper.kt`: `AwaitingPeerNonce` (and `AwaitingPeerReveal`) map to `Idle`; the consent card appears only once a real code exists (`AwaitingLocalDecision`/`RequestReceived`).
+- Focused regressions: `FlashPinVerifierTest.tofuPinVerifierObservesFirstConnectKeyWhenThePinWriteIsRefused` and the mapper assertions in `PairingUiMapperTest`.
+- Concise diagnostics remain in `PairingCoordinator`/`MainActivity` (frame type, short request id, phase transition, real failure reason, shell phase; no fingerprints, nonces, codes or secrets).
+
+### Verification
+Successful pairing 12:49:47–12:49:50: both cards were up and both accepts landed inside the window (the code was not captured before accepting), then `paired_adb2d87d` + `pin_adb2d87d` on the Samsung and `paired_9a644186` + `pin_9a644186` on the Infinix; texts delivered both ways at 12:50–12:51. The FAIL condition remains reproducible only intermittently.
+
+**Device-confirmed after the fix (debug APK `2dfdf77d...`, both phones, data preserved):**
+- 8 pairing cycles = both initiator directions × both accept orders × 2 repetitions, **all PASS**:
+  matching cards, one-sided accept pairs nothing, both accepts reach Paired, `paired_` written on
+  both sides, text delivered.
+- Every initiator logged `storedPin=false observedPin=true` after a revoke and its nonce reached
+  `AwaitingLocalDecision`; no `identity-mismatch` occurred after the fix.
+- The critical manual re-pair after an **offline revoke** succeeded (cards `538 889`, both accepts,
+  trust restored, texts `postrevive-b2a`/`postrevive-a2b` delivered both ways).
+- W1-NACK-01 / W1-REVOKE-03 / W1-TITLE-01 re-verified on the same build (see the 2026-11-08
+  release-closeout results entry). Three pairing cards were dismissed by `declineLocal` with no
+  ADB input during the session; the only callers are the dialog's scrim/back dismissal, which
+  UI-032 intentionally allows. No protocol reset or trust change occurred in those cases; they are
+  recorded as external/physical input, not the fixed defect.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/tls/TofuPinVerifier.kt`
+- `core/network/src/androidHostTest/kotlin/com/transfer/flash/core/network/tls/FlashPinVerifierTest.kt`
+- `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`
+- `app/src/main/java/com/transfer/flash/pairing/PairingUiMapper.kt`
+- `app/src/test/java/com/transfer/flash/pairing/PairingUiMapperTest.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (diagnostics)
+- `docs/testing/TEST-BACKLOG.md` (SECAUD-22, W1-REVOKE-03)
+- `release-final-20261108T131525Z\android-code.md`, `pair-samsung.log`, `pair-infinix.log`
+
+### Status
+RESOLVED 2026-11-08 — proven cause, fix and focused regressions in the working tree; device-verified with the 8-cycle matrix and the post-revoke manual re-pair. No commit/push was made.

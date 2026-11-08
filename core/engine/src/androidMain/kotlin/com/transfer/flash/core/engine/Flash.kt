@@ -600,7 +600,9 @@ private class Wiring(
                         } else {
                             0f
                         },
-                        status = when (t.state) {
+                        status = if (t.isAwaitingReceiverAcceptance) {
+                            com.transfer.flash.core.messaging.model.FlashFileTransferStatus.AwaitingAcceptance
+                        } else when (t.state) {
                             com.transfer.flash.core.transfer.model.FlashTransferState.Completed,
                             com.transfer.flash.core.transfer.model.FlashTransferState.Verifying ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Downloaded

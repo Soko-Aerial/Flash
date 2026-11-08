@@ -27,7 +27,12 @@ public class TofuPinVerifier(
     private val recordPin: ((deviceId: String, fingerprintHex: String) -> Unit)? = null,
     /** SHA-256 of this device's own identity SPKI, hex; null disables the own-key rule. */
     ownFingerprintHex: String? = null,
-    /** Told the key of an unsolicited inbound first contact, which is accepted but never recorded as a pin. */
+    /**
+     * Told the key a first-use connection presented, in either direction. It is accepted for that
+     * connection but never recorded as a trust-store pin by this callback. The pairing numeric
+     * comparison uses it: after a revoke the pin store deliberately refuses an automatic write
+     * (ADR-353), and the code still has to cover the key TLS authenticated on this connection.
+     */
     private val observeInbound: ((deviceId: String, fingerprintHex: String) -> Unit)? = null,
 ) : FlashPinVerifier {
 
@@ -56,8 +61,13 @@ public class TofuPinVerifier(
         }
 
         return if (known.isNullOrBlank()) {
-            // First connect: trust on first use and record the pin
-            if (record) recordPin?.invoke(deviceId, presented) else observeInbound?.invoke(deviceId, presented)
+            // First connect: trust on first use and record the pin when this device dialled.
+            if (record) recordPin?.invoke(deviceId, presented)
+            // Always report the key this connection actually presented. The pin write above can be
+            // refused (ADR-353: a revoked peer is not re-pinned until a deliberate pairing clears the
+            // tombstone); the pairing code must still bind to the TLS-authenticated key, or a manual
+            // re-pair after a revoke fails its identity check before the users ever see a code.
+            observeInbound?.invoke(deviceId, presented)
             true
         } else {
             constantTimeEquals(known, presented)

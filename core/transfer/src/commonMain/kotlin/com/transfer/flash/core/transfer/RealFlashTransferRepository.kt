@@ -472,7 +472,7 @@ public class RealFlashTransferRepository(
         sourceUri = fileUri,
         wireFileId = fileId,
         peerDeviceId = targetDevice.id.value,
-        errorMessage = if (requireReceiverAcceptance) "waiting for receiver to accept" else null,
+        errorMessage = TransferFailureText.RECEIVER_ACCEPT_WAIT_REASON.takeIf { requireReceiverAcceptance },
         isEncrypted = isPeerEncrypted(targetDevice.id.value),
     )
 
@@ -848,6 +848,9 @@ public class RealFlashTransferRepository(
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
+        if (transfer.isAwaitingReceiverAcceptance) {
+            return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown(TransferFailureText.WAITING_FOR_ACCEPT))
+        }
         val jobPresent = registryLock.withLock { transferId.value in runningJobs }
         runCatching {
             FlashLog.i(
@@ -926,6 +929,12 @@ public class RealFlashTransferRepository(
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
+
+        // Only the receiver's RESUME can release an unaccepted offer, even if a stale sender UI
+        // or notification still has a Resume action for the internally paused worker.
+        if (transfer.isAwaitingReceiverAcceptance) {
+            return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown(TransferFailureText.WAITING_FOR_ACCEPT))
+        }
 
         // Terminal transfers have nothing to resume.
         if (transfer.state == FlashTransferState.Completed) {
@@ -1058,18 +1067,19 @@ public class RealFlashTransferRepository(
         // re-arm the acceptance gate so FILE_START is sent as an offer and chunks are parked.
         // If the peer is the one that asked for the resume (notifyPeer == false), the receiver has already
         // explicitly requested/accepted the transfer, so we do not re-park.
-        if (requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer) {
+        val waitingForAcceptance = requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer
+        if (waitingForAcceptance) {
             registryLock.withLock { pauseIntents.add(transferId) }
         }
         updateTransferState(transferId) {
             it.copy(
                 state = FlashTransferState.Queued,
-                errorMessage = if (requireReceiverAcceptance && transfer.bytesDone == 0L) "waiting for receiver to accept" else null,
+                errorMessage = TransferFailureText.RECEIVER_ACCEPT_WAIT_REASON.takeIf { waitingForAcceptance },
             )
         }
         // Tell the peer before the relaunch: a receiver that paused its own intake must re-open
         // the gate, otherwise the fresh dispatcher blocks on backpressure with nothing draining.
-        if (notifyPeer) {
+        if (notifyPeer && !waitingForAcceptance) {
             emitOutgoing(transferId, transfer.peerDeviceId, ACTION_RESUME)
         }
         val job = repositoryScope.launch(workerDispatcher) {
@@ -1189,7 +1199,7 @@ public class RealFlashTransferRepository(
                             state = FlashTransferState.Paused,
                             speedBytesPerSec = 0L,
                             etaSeconds = -1L,
-                            errorMessage = "paused by receiver",
+                            errorMessage = if (it.isAwaitingReceiverAcceptance) it.errorMessage else "paused by receiver",
                         )
                     }
                 }

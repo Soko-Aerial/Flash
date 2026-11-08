@@ -4,6 +4,9 @@ package com.transfer.flash.pairing
 
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.time.FlashTimeSource
+import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.security.pairing.FlashPairingFrame
 import com.transfer.flash.core.security.pairing.PairingWireCodec
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.core.security.trust.VouchVerdict
@@ -34,7 +37,7 @@ import org.junit.Test
  */
 class PairingCoordinatorHelloTest {
 
-    private class RecordingTrustStore : FlashTrustStore {
+    private class RecordingTrustStore(var revoked: Boolean = false) : FlashTrustStore {
 
         // Vouched pins (ADR-044 V2): this fake does not exercise them.
 
@@ -45,6 +48,7 @@ class PairingCoordinatorHelloTest {
         override fun revokeVouch(deviceId: FlashDeviceId, groupId: String) = Unit
 
         override fun isTrusted(deviceId: FlashDeviceId): Boolean = false
+        override fun isRevoked(deviceId: FlashDeviceId): Boolean = revoked
         override fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit> =
             FlashResult.Success(Unit)
         override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> =
@@ -53,19 +57,54 @@ class PairingCoordinatorHelloTest {
     }
 
     /** [sent] records every line this device put on the wire, in order. */
-    private fun coordinator(sent: MutableList<String>): PairingCoordinator = PairingCoordinator(
+    private fun coordinator(
+        sent: MutableList<String>,
+        trustStore: RecordingTrustStore = RecordingTrustStore(),
+        timeSource: FlashTimeSource = SystemTimeSource,
+        features: () -> Set<String> = { emptySet() },
+    ): PairingCoordinator = PairingCoordinator(
         localFingerprintHex = OUR_FP,
         localDeviceId = LOCAL_ID,
         localName = "Phone",
         localModel = "Pixel",
         ephemeralPublicKey = byteArrayOf(1, 2, 3),
-        trustStore = RecordingTrustStore(),
+        trustStore = trustStore,
+        timeSource = timeSource,
+        peerFeatures = { features() },
         scope = CoroutineScope(Dispatchers.Default),
         sendToPeer = { _, text ->
             synchronized(sent) { sent += text }
             true
         },
     )
+
+    @Test
+    fun unreadableFramesResendOnlyToRevokedPr1PeersOncePerWindow() {
+        val sent = mutableListOf<String>()
+        val trustStore = RecordingTrustStore()
+        var supportsRevoke = true
+        var now = 50_000L
+        val coordinator = coordinator(
+            sent, trustStore,
+            object : FlashTimeSource { override fun nowMs(): Long = now },
+            features = { if (supportsRevoke) setOf(PairingWireCodec.FEATURE_PAIR_REVOKE) else emptySet() },
+        )
+        coordinator.onUnreadableSecuredFrame(PEER_ID)
+        assertTrue(sent.isEmpty())
+        trustStore.revoked = true
+        supportsRevoke = false
+        coordinator.onUnreadableSecuredFrame(PEER_ID)
+        assertTrue(sent.isEmpty())
+
+        supportsRevoke = true
+        coordinator.onUnreadableSecuredFrame(PEER_ID)
+        now += 9_999L
+        coordinator.onUnreadableSecuredFrame(PEER_ID)
+        assertEquals(listOf(PairingWireCodec.encode(FlashPairingFrame.PairRevoke())), sent)
+        now += 1L
+        coordinator.onUnreadableSecuredFrame(PEER_ID)
+        assertEquals(2, sent.size)
+    }
 
     @Test
     fun onInbound_requestHello_answersWithAPlainHello() {

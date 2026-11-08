@@ -967,7 +967,7 @@ public class DesktopEngine(
         }
     }
 
-    public val appVersionName: String = "1.0.0-desktop"
+    public val appVersionName: String = DesktopAppVersion.current()
 
     /**
      * The wire protocol label shown in Settings → About.
@@ -1700,7 +1700,9 @@ public class DesktopEngine(
                             } else {
                                 0f
                             },
-                            status = when (t.state) {
+                            status = if (t.isAwaitingReceiverAcceptance) {
+                                FlashFileTransferStatus.AwaitingAcceptance
+                            } else when (t.state) {
                                 FlashTransferState.Completed,
                                 FlashTransferState.Verifying ->
                                     FlashFileTransferStatus.Downloaded

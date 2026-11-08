@@ -1620,9 +1620,24 @@ private fun FlashShell(
     // toasts so tapping Pair always gives feedback instead of silently doing nothing. Keyed on the
     // coordinator instance so collection (re)starts once the engine boots.
     LaunchedEffect(engine.pairing) {
+        android.util.Log.i(
+            "FLASH_PAIRING",
+            "shell.coordinator bound=${engine.pairing != null}",
+        )
         engine.pairing?.messages?.collect { message ->
             Toast.makeText(toastContext, message, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    // Diagnostic for ERROR-1010/1013: one line per visible phase, not per countdown second. Proves
+    // whether the shell's consent-card model is null while the coordinator still holds an active
+    // request (drawing/binding problem) or null together (protocol problem).
+    LaunchedEffect(pairingModel?.phase) {
+        android.util.Log.i(
+            "FLASH_PAIRING",
+            "shell.model phase=${pairingModel?.phase?.name ?: "null"} " +
+                "peer=${pairingModel?.request?.peerName ?: "-"}",
+        )
     }
 
     var pendingShareRecipient by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -1950,9 +1965,6 @@ private fun FlashShell(
                     trusted = trustedPeers,
                     discovered = discoveredRows,
                 ),
-                pairingRequest = pairingModel?.request,
-                pairingPhase = pairingModel?.phase ?: FlashPairingPhase.Idle,
-                pairingSecondsLeft = pairingModel?.secondsLeft ?: 0,
                 scan = sweepState.toNearbyScan(),
                 discoveryQuiet = FlashNearbyMath.discoveryQuiet(
                     pairedPeers = trustedPeers.size,
@@ -2826,8 +2838,6 @@ private fun FlashShell(
                 chatRepository.openConversation(trusted.id)
                 nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
             },
-            onAcceptPairing = { engine.pairing?.acceptLocal() },
-            onDeclinePairing = { engine.pairing?.declineLocal() },
             onManualConnect = { host, port ->
                 scope.launch {
                     val net = engine.network
@@ -3557,17 +3567,17 @@ private fun FlashShell(
             )
         }
 
-        if (nav.current.destination != FlashDestination.NearbyDevices) {
-            pairingModel?.request?.let { request ->
-                FlashPairingDialog(
-                    request = request,
-                    phase = pairingModel?.phase ?: FlashPairingPhase.Idle,
-                    secondsLeft = pairingModel?.secondsLeft ?: 0,
-                    onAccept = { engine.pairing?.acceptLocal() },
-                    onDecline = { engine.pairing?.declineLocal() },
-                    onDismiss = { engine.pairing?.declineLocal() },
-                )
-            }
+        // ERROR-1010: one shell-level card serves every tab, including Nearby. It reads the live
+        // coordinator directly so a tab transition cannot hide or duplicate an active request.
+        pairingModel?.request?.let { request ->
+            FlashPairingDialog(
+                request = request,
+                phase = pairingModel?.phase ?: FlashPairingPhase.Idle,
+                secondsLeft = pairingModel?.secondsLeft ?: 0,
+                onAccept = { engine.pairing?.acceptLocal() },
+                onDecline = { engine.pairing?.declineLocal() },
+                onDismiss = { engine.pairing?.declineLocal() },
+            )
         }
 
         // C7 (calling): full-screen call overlay. Topmost sibling so it renders above

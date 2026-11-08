@@ -10,6 +10,8 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## Unreleased
 
+## 2.2.0 - 2026-11-08
+
 ### Flash for Android and Windows 2.2.0
 
 - Redesigned conversations with a new header, composer, message layout, icons and an app-wide
@@ -21,6 +23,10 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 - Safer pairing revocation and delivery. A peer that misses the first revoke can receive
   it again, and affected queued messages fail visibly. Paired LAN peers can exchange verified
   Hub revocation lists while the Hub is unreachable.
+- Pairing approval appears on Nearby without changing tabs, and manual re-pairing after a
+  revoke checks the identity from the current TLS connection. A file offer waiting for consent
+  no longer shows Resume, and revoke no longer marks completed LAN transfers as failed.
+- The Windows About screen reports 2.2.0 and the empty Transfers page shows its heading.
 - Resume checks that the source still matches the original file. A changed source cancels
   the attempt so old and new chunks cannot be mixed. Retrying a restored empty transfer
   no longer crashes Android.
@@ -40,6 +46,14 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
   matrix covers chats, pairings, groups, and an interrupted transfer on real installs.
 - Existing received files stay where their transfer records point. New files use categories
   under the same selected receive root. Restarted transfers validate the source before resuming.
+
+### Release verification
+
+- The release-wide host and console suites passed after reruns of two timing-sensitive tests.
+  Pairing passed on two Android phones with the debug build and between Android and Windows.
+- Signed Android clean-install and in-place upgrade checks, Windows MSI/EXE install and upgrade,
+  and the full Android–Windows file-transfer check were not completed. Keep a backup before an
+  upgrade you rely on. The Windows installers are not Authenticode-signed.
 
 ### KMP library 2.2.0-beta.1
 

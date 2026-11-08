@@ -130,6 +130,10 @@ data class FlashTransferItemUi(
     val isGroupFile: Boolean = false,
 )
 
+private val FlashTransferItemUi.isAwaitingReceiverAcceptance: Boolean
+    get() = direction == FlashTransferDirection.Send && state == FlashTransferState.Queued &&
+        errorMessage == com.transfer.flash.core.transfer.TransferFailureText.WAITING_FOR_ACCEPT
+
 data class TransfersUiState(
     val offers: List<FlashTransferItemUi> = emptyList(),
     val active: List<FlashTransferItemUi> = emptyList(),
@@ -239,7 +243,9 @@ object FlashTransfersMath {
     fun statusLine(item: FlashTransferItemUi): String = when (item.state) {
         FlashTransferState.Offered -> "Wants to send you this file"
         FlashTransferState.Queued -> {
-            if (item.waitReason != null) {
+            if (item.isAwaitingReceiverAcceptance) {
+                com.transfer.flash.core.transfer.TransferFailureText.WAITING_FOR_ACCEPT
+            } else if (item.waitReason != null) {
                 com.transfer.flash.ui.chat.FlashSwarmUiMath.receiverStatusLine(
                     waitReason = item.waitReason,
                     holdersOnline = item.holdersOnline,
@@ -321,11 +327,24 @@ fun FlashTransfersScreen(
         when (page) {
             TransfersPageState.Error -> ErrorPanel(surface)
             TransfersPageState.Loading -> LoadingRows(surface)
-            TransfersPageState.Empty -> FlashEmptyState(
-                kind = FlashStateCopy.EmptyKind.TransfersFirstRun,
-                modifier = surface,
-                onAction = onFindDevices,
-            )
+            TransfersPageState.Empty -> Column(modifier = surface) {
+                // The empty state is still the Transfers page: keep the same page heading the
+                // populated list shows (one shared composable, so the two cannot drift apart),
+                // then let the empty panel take the remaining height.
+                HeaderWithChips(
+                    state = state,
+                    modifier = Modifier.padding(
+                        start = FlashSpacing.space16,
+                        end = FlashSpacing.space16,
+                        top = FlashSpacing.space12,
+                    ),
+                )
+                FlashEmptyState(
+                    kind = FlashStateCopy.EmptyKind.TransfersFirstRun,
+                    modifier = Modifier.weight(1f).padding(top = FlashSpacing.space16),
+                    onAction = onFindDevices,
+                )
+            }
             TransfersPageState.Populated -> PopulatedSections(
                 state = state,
                 onPauseResumeClick = onPauseResumeClick,
@@ -524,7 +543,9 @@ private fun PopulatedSections(
                         style = FlashTheme.typography.captionEmphasis,
                         color = FlashTheme.colors.textTertiary,
                     )
-                    if (state.active.size > 1) {
+                    if (state.active.size > 1 && state.active.any {
+                            it.state == FlashTransferState.Active || it.state == FlashTransferState.Paused
+                        }) {
                         val anyActiveRunning = state.active.any { it.state == FlashTransferState.Active }
                         Box(
                             modifier = Modifier
@@ -557,7 +578,7 @@ private fun PopulatedSections(
                     item = item,
                     modifier = flashAnimateItem(motion),
                     trailing = {
-                        AnimatedContent(
+                        if (!item.isAwaitingReceiverAcceptance) AnimatedContent(
                             targetState = item.state == FlashTransferState.Paused,
                             transitionSpec = { statusSwap },
                             label = "pauseResumeSwap",
@@ -568,7 +589,7 @@ private fun PopulatedSections(
                                 onClick = { onPauseResumeClick(item) },
                             )
                         }
-                        Spacer(Modifier.width(FlashSpacing.space8))
+                        if (!item.isAwaitingReceiverAcceptance) Spacer(Modifier.width(FlashSpacing.space8))
                         RowIcon(
                             icon = FlashIcons.Close,
                             description = "Cancel",
@@ -671,7 +692,7 @@ private fun PopulatedSections(
 }
 
 @Composable
-private fun HeaderWithChips(state: TransfersUiState) {
+private fun HeaderWithChips(state: TransfersUiState, modifier: Modifier = Modifier) {
     val motion = FlashTheme.motion
     // Aggregate throughput ROLLS to its new value instead of snapping, so a burst reads as
     // acceleration and a pause reads as a drop. animateFloatAsState is a single value animation
@@ -694,7 +715,7 @@ private fun HeaderWithChips(state: TransfersUiState) {
         derivedStateOf { FlashTransfersMath.formatSpeed(rolledSpeed.value.toLong()) }
     }
 
-    Column {
+    Column(modifier = modifier) {
         FlashText(
             text = "Transfers",
             modifier = Modifier.semantics { heading() },

@@ -1,5 +1,100 @@
 # Current Handoff
 
+> **2026-11-08 — REL22-FINAL-ANDROID: pairing root-cause fixed and verified; signed release build in
+> progress; Windows installer/upgrade gates still blocked.** Working tree on `codex/release-2.2.0`
+> (`64092bf3` + uncommitted release fixes). Instrumented reproduction proved ERROR-1013 was an
+> **identity mismatch**, not a timing race: after a revoke the pin store refuses the automatic write
+> (ADR-353), so a first outbound pairing had no stored/observed key and failed before the code.
+> Fix: `core/network/.../TofuPinVerifier.kt` reports the first-use key to the pairing observed-key
+> map in both directions; `PairingUiMapper` no longer renders the code-less `AwaitingPeerNonce`
+> phase as "waiting for peer". Focused regressions added (`FlashPinVerifierTest`,
+> `PairingUiMapperTest`). **Device result:** 8/8 pairing cycles PASS (both directions × both accept
+> orders × 2), W1-NACK-01/W1-REVOKE-03/W1-TITLE-01 PASS, TABREF-01 affected slice PASS (8 MiB
+> `555b7383…` matched, completed file stayed completed after revoke). **Interop:** Android↔Windows
+> SECAUD-22 PASS (desktop `Flash Jaguar` ↔ phone, code `915 696`); Windows→Android chat PASS;
+> the Windows→Android file was offered and accepted but the desktop engine auto-closed at 15:08:39
+> before data flow (no bytes), and phone→desktop was not run (phone in owner use). Details:
+> `release-final-20261108T131525Z\interop-result.md`. **Release:** `tools/build-release.ps1 -Target
+> all -Apk signed -NoDaemon` completed (12m15s, exit 0) from the stabilized tree; old `dist/2.2.0`
+> is preserved in `baseline-2.2.0-dist/`. Signed `Flash-2.2.0.apk` SHA-256
+> `2e5b257c…80b6`, v2+v3, release cert `b695f4d6…e89af`, versionName 2.2.0 / code 5; per-ABI APKs
+> and both installers rebuilt. The stale pre-fix unsigned APKs were moved out of `dist` and the
+> sums regenerated. **Verdict: HOLD for publication** — REL-02/03/MIG-01 (debug-signed phones, no
+> disposable Android device), REL-05/MIG-02 (no disposable Windows Sandbox/VM), the released-wide
+> forced suites and signed-artifact acceptance remain; beta JitPack is a post-tag check. **Do not
+> commit, uninstall, clear or publish.** Evidence and exact statuses: `android-report.md`,
+> `candidate.md`, `desktop-report.md`, `interop-result.md`.
+
+> **2026-11-08 — REL22-PHONE-RETEST PASSED on the two phones; Windows halves and a focused
+> ERROR-1010/1013 repro remain.** The fixed universal debug APK (`77b1e108…123d8`) was installed
+> with `adb install -r` on the Infinix X6882B and Samsung SM-G986U1, data preserved. With a manual
+> test pair and an 8 MiB synthetic file: **SECAUD-22 Android half PASS** (initiator card over
+> Nearby, matching codes, one-sided accept paired nothing, both accepts paired, decline changed no
+> trust); **W1-NACK-01 PASS** (offline revoke → on reconnect B logged `Flash Hippo no longer trusts
+> you…` 12:37:04.087 and failed its queued text 12:37:04.102; A logged the no-key drop and resent);
+> **W1-REVOKE-03 PASS** (B held `revoked_adb2d87d…`, no pin; manual Pair at 12:49 cleared it, saved
+> the pin, texts delivered); **W1-TITLE-01 PASS** (friendly title + Not paired survived a restart);
+> **TABREF-01 retested slice PASS** (waiting row with no Pause/Resume, accept → complete,
+> `wholeFile=MATCH`, SHA-256 `918c4b1f…12ac7`, completed file stayed Sent after the revoke).
+> **Still open:** ERROR-1010/ERROR-1013 — Samsung-initiated pairing failed twice with `security
+> check failed` (12:24/12:25), once with no initiator card for the whole window (12:48) and once
+> after a responder-first accept (12:46); the 12:49 retry succeeded, so it is intermittent.
+> **Windows:** read `desktop-ready.md` (`HANDOFF: YES`), attempted Android↔Windows pairing (cards
+> matched `949 262`), but the phone accept landed after the card expired and the isolated desktop
+> auto-closed at its 12:53:48Z deadline; no trust changed. Windows SECAUD-22 and interop remain
+> owed. **State:** the test pair Flash Hippo ↔ Flash Olive is left in place; pre-existing Fox/
+> Hedgehog/Raspberry pairings untouched; synthetic files deleted; logcat stopped. **Docs updated:**
+> TEST-BACKLOG retest block and five case statuses; ERROR-1011/1012 resolved; ERROR-1010 retest
+> note; ERROR-1013 added. Evidence:
+> `%LOCALAPPDATA%\FlashTestEvidence\retest-20261108T121940Z\phone-report.md`.
+> **Next:** re-open the isolated desktop for the Windows halves; then a protocol-log repro of
+> ERROR-1010/1013. `dist/2.2.0` still predates the fixes and the signed install remains blocked.
+
+> **2026-11-08 — Three 2.2.0 device findings fixed in code; phone retest owed.** On
+> `codex/release-2.2.0` atop `64092bf3`, Android now hosts one pairing consent card across tabs
+> (ERROR-1010) and resends the existing rate-limited revoke notice to a capable, revoked peer
+> when its sealed frame arrives without a key (ERROR-1011). Sender-side consent wait no longer
+> shows Pause/Resume; revoke fails only messages still in the outbox, leaving LAN file bubbles
+> alone (ERROR-1012). No wire or schema change. The locked gate passed 1,855 tests, Android engine
+> and desktop compile, and debug APK assembly. The new universal debug APK is
+> `app/build/outputs/apk/debug/app-universal-debug.apk`, SHA-256
+> `77b1e108b0551c1a1bca0ddd70e8d046f83f1ee5cca3a6d49d085d8be24123d8` (same debug signer as the
+> prior phone run). OpenCode found no ADB devices on the follow-up. Next: data-preserving retest
+> SECAUD-22, W1-NACK-01/W1-REVOKE-03/W1-TITLE-01 and TABREF-01. Rebuild signed artifacts before
+> release acceptance; the APK in `dist/2.2.0` predates the fixes and still cannot upgrade the two
+> existing debug-signed installs. Do not uninstall or clear them.
+
+> **2026-11-08 — 2.2.0 SIGNED DEVICE PASS BLOCKED; 2.2.0 DEBUG FUNCTIONAL BATCH DONE; 3 OPEN DEFECTS.**
+> FLASH-REL22-DEVICE on `codex/release-2.2.0`, HEAD `64092bf3`/product `1b71d4e0`; no commit, push, tag,
+> release or deployment. Infinix X6882B (Android 14) + Samsung SM-G986U1 (Android 13) both held a
+> **debug-signed 2.1.0** (cert `703647c1…`), so the release-signed `dist/2.2.0/Flash-2.2.0.apk`
+> (cert `b695f4d6…`, versionName 2.2.0 / code 5) was refused on both with
+> `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall/clear was not authorized, so **REL-02/03/07, the
+> release-key MIG-01 and the signed halves of REL-06 are blocked**. REL-01 PASS (checksum + v2/v3 +
+> release certificate). A data-preserving **debug 2.2.0** install was then used (`adb install -r`
+> Success, firstInstallTime unchanged, chats/pairings intact, no migration error); **the phones now
+> carry that debug 2.2.0 build**, and the signed release still cannot install over it without an
+> uninstall (which remains unauthorized).
+> **Findings:** **ERROR-1010 / SECAUD-22 FAIL** — the pairing initiator's consent card is not rendered
+> on the Nearby tab (it appears only after switching to Chats; both codes then match and both accepts
+> are required, so the trust model itself holds). **ERROR-1011 / W1-NACK-01, W1-REVOKE-03 FAIL and
+> W1-TITLE-01 PARTIAL** — the Android legacy inbound handler (`DiscoveryEngineHolder.kt:2643-2645`)
+> logs `Received FLASH_SEC … no stored session key; dropping` but does not call the ADR-351 negative
+> ack that `FlashInboundRouter`/`Flash.kt` implement. A revoked peer stayed Connected/Sent for 3+
+> minutes (9 drops, no `PAIR_REVOKE`), kept `paired_`/`pin_`, and only failed on a local revoke.
+> A's local tombstone was correct (`revoked_…`, no pin). **ERROR-1012 / TABREF-01 PARTIAL** — a
+> waiting-for-acceptance row read "Paused (Tap to resume)" before any pause, and two already-delivered
+> files flipped to Failed after the revoke. Direct 1 MB and 512 MB A→B transfers completed (512 MB
+> paused at 57% and resumed) with matching SHA-256; TABREF-02/03 PARTIAL, RECEIVE-CAT-01 PARTIAL
+> (direct `.bin` → `FlashReceived/Other`); TABREF-04, RECEIVE-CAT-02 and REL22-01..05 blocked/not run.
+> Test files were deleted and the test pairing was revoked on both phones (baseline Raspberry/Fox/
+> Hedgehog pairings untouched); test-created `revoked_<peer>` tombstones remain and clear on manual Pair.
+> Evidence: `%LOCALAPPDATA%\FlashTestEvidence\20261108T033000Z\report.md` and
+> `key-log-excerpts.txt`.
+> **Next:** fix ERROR-1011 (wire the negative ack into the Android host) and re-run W1-NACK-01/
+> W1-REVOKE-03/W1-TITLE-01; then ERROR-1010 and ERROR-1012. The owner must decide how to run the signed
+> release pass (compatible phone, or uninstall on a disposable device — do not clear these phones).
+
 > **2026-11-07 — 2.2.0 release candidate on `codex/release-2.2.0`.** App/desktop 2.2.0,
 > code 5, SDK/Hub 2.2.0-beta.1. Security fixes, release docs and JDK 17 publication dry run
 > complete. Local isolated consumers passed on Android and JVM. The owner approved the

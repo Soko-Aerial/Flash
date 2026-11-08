@@ -199,6 +199,9 @@ class RealFlashChatRepositoryColleagueTest {
         override suspend fun dueForDelivery(now: Long, limit: Int): List<OutboxEntity> =
             outbox.values.filter { it.nextAttemptAt <= now }.take(limit)
 
+        override suspend fun unacknowledgedToPeer(peerId: String, senderId: String): List<String> =
+            error("This outbox fake has no message store")
+
         override suspend fun makePendingDue(now: Long) {
             outbox.replaceAll { _, v -> v.copy(attempts = 0, nextAttemptAt = now) }
         }

@@ -16,10 +16,13 @@ object PairingUiMapper {
 
     fun corePhaseToUi(phase: PairingPhase): FlashPairingPhase = when (phase) {
         PairingPhase.Idle -> FlashPairingPhase.Idle
-        // v2 (ADR-042): the responder has no code until the initiator opens its commitment, which is
-        // milliseconds away, so no dialog yet. The initiator is simply "waiting for the other device".
-        PairingPhase.AwaitingPeerReveal -> FlashPairingPhase.Idle
-        PairingPhase.AwaitingPeerNonce -> FlashPairingPhase.AwaitingPeerConfirmation
+        // v2 (ADR-042): neither side has a code before both nonces are known. The responder waits for
+        // the initiator's reveal; the initiator waits for the responder's nonce. Rendering
+        // AwaitingPeerNonce as "Waiting for <peer> to confirm" showed an empty code and no Accept
+        // action, which reads as a broken/absent consent card (ERROR-1010). Keep both code-less
+        // phases off the dialog; the consent card appears at AwaitingLocalDecision with the real code.
+        PairingPhase.AwaitingPeerReveal,
+        PairingPhase.AwaitingPeerNonce -> FlashPairingPhase.Idle
         // Both devices show the actionable consent card before they accept: the responder in RequestReceived /
         // AwaitingLocalDecision, the initiator in AwaitingLocalDecision (SEC-D03-01).
         PairingPhase.RequestReceived,

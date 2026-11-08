@@ -291,6 +291,9 @@ internal class InMemoryOutboxDao : OutboxDao {
     override suspend fun dueForDelivery(now: Long, limit: Int): List<OutboxEntity> =
         queue.values.filter { it.nextAttemptAt <= now }.sortedBy { it.nextAttemptAt }.take(limit)
 
+    override suspend fun unacknowledgedToPeer(peerId: String, senderId: String): List<String> =
+        error("This outbox fake has no message store")
+
     override suspend fun makePendingDue(now: Long) {
         queue.keys.forEach { localId ->
             queue[localId]?.let { queue[localId] = it.copy(attempts = 0, nextAttemptAt = now) }

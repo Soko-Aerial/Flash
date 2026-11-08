@@ -28,7 +28,7 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
     peerName = peerName,
     bytesTotal = bytesTotal,
     bytesDone = bytesDone,
-    state = when (state) {
+    state = if (isAwaitingReceiverAcceptance) UiState.Queued else when (state) {
         // #5: an inbound OFFER awaiting the user's Accept/Decline gets its own Offers section.
         DomainState.Offered -> UiState.Offered
         DomainState.Queued -> UiState.Queued

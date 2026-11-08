@@ -6825,27 +6825,22 @@ public class RealFlashChatRepository(
 
     /**
      * ADR-351 negative ack: the peer no longer trusts us. Fail its queued messages now instead of
-     * waiting for [OUTBOX_GIVE_UP_AFTER_MS], and stop treating it as online. A direct conversation's
-     * id is the peer device id, so the conversation read is the pending set.
+     * waiting for [OUTBOX_GIVE_UP_AFTER_MS], and stop treating it as online. LAN attachment bubbles
+     * track their own transfer and have no outbox row, even when their message status is SENT.
      */
     override fun failPendingToPeer(peerDeviceId: String, reason: String) {
         currentConnectedPeers.remove(peerDeviceId)
         groupProofSessions?.onSessionDown(peerDeviceId)
-        scope.launch {
-            val pending = runCatching {
-                messageDao.observeConversation(peerDeviceId).first()
-                    .filter {
-                        it.conversationId == peerDeviceId && it.senderId == localDeviceId &&
-                            it.status != "DELIVERED" && it.status != "READ" && it.status != "FAILED"
-                    }
-                    .map { it.localId }
-            }.getOrDefault(emptyList())
-            for (localId in pending) {
-                messageDao.updateStatusIfUnacknowledged(localId, "FAILED")
-                outboxDao.delete(localId)
-            }
-            if (pending.isNotEmpty()) {
-                FlashLog.w("CHAT", "Failed ${pending.size} queued message(s) to $peerDeviceId: $reason")
+        scope.launch(ioDispatcher) {
+            runInTransaction {
+                val pending = outboxDao.unacknowledgedToPeer(peerDeviceId, localDeviceId)
+                for (localId in pending) {
+                    messageDao.updateStatusIfUnacknowledged(localId, "FAILED")
+                    outboxDao.delete(localId)
+                }
+                if (pending.isNotEmpty()) {
+                    FlashLog.w("CHAT", "Failed ${pending.size} queued message(s) to $peerDeviceId: $reason")
+                }
             }
         }
     }
