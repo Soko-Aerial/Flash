@@ -12,6 +12,9 @@
   Updated the developer guide and release instructions to use the new SDK version.
 - Published SDK beta.2 on GitHub at `22385edb` and linked it from the beta.1 notes. Triggered the
   JitPack build. REL22-04 stays open until both consumers build against the public coordinate.
+- Beta.2 passed the earlier classpath check on Linux but failed on the missing Linux AAPT2 classifier
+  checksum (ERROR-1015). Added the exact digest from Google Maven and will verify a cold commit
+  build before cutting another beta.
 
 ## 2026-11-08 — Cut the Flash 2.2.0 release
 
