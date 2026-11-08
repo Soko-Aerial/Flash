@@ -8,6 +8,12 @@
 - The release includes the device-confirmed Android pairing/revoke/transfer fixes and the
   Windows About and empty Transfers fixes. The test evidence remains in the local evidence
   directory. Prepare the app, SDK and Hub as separate artifacts/tags.
+- Published all three releases from `322a92aa`: stable `v2.2.0` (four signed APKs, MSI, EXE and
+  SHA-256 manifest), SDK prerelease `v2.2.0-beta.1` and Hub prerelease `server-v2.2.0-beta.1`
+  (ZIP and SHA-256 manifest). Verified GitHub asset sizes and SHA-256 digests when supplied.
+- Built the SDK via JitPack's exact publish task list under JDK 17 in a scratch repository
+  (57 artifact directories) and compiled isolated Android and JVM consumers. Keep the
+  post-tag remote resolution and manual acceptance items open until verified.
 
 ## 2026-11-08 — REL22-FINAL-ANDROID: pairing root-cause, fix, 8-cycle matrix, interop, release closeout
 

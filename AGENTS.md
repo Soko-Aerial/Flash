@@ -917,6 +917,11 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0`, SDK prerelease `v2.2.0-beta.1` and Hub
+prerelease `server-v2.2.0-beta.1` all point to `322a92aa`. The release-wide host gate passed,
+and the SDK's JDK 17 publication and isolated consumer builds passed. The owner authorized
+publication with remaining manual checks open. See `logs/handoff.md` and the test backlog.
+
 **2026-11-08 — Release device findings addressed in the `codex/release-2.2.0` working tree.**
 ERROR-1010/1011/1012 have code fixes for Nearby pairing consent, Android revoke notices and truthful
 transfer status. Device retests are owed; no phones were available in the follow-up. The signed
