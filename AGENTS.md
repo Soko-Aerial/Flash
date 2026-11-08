@@ -917,10 +917,11 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0`, SDK prerelease `v2.2.0-beta.1` and Hub
-prerelease `server-v2.2.0-beta.1` all point to `322a92aa`. The release-wide host gate passed,
-and the SDK's JDK 17 publication and isolated consumer builds passed. The owner authorized
-publication with remaining manual checks open. See `logs/handoff.md` and the test backlog.
+**2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0` and Hub prerelease
+`server-v2.2.0-beta.1` point to `322a92aa`. The release-wide host gate passed. SDK beta.1
+failed on JitPack (ERROR-1014); beta.2 adds the missing verification metadata and passed
+the local JDK 17 publish rehearsal. The owner authorized publication with remaining manual
+checks open. See `logs/handoff.md` and the test backlog for live SDK status and release acceptance.
 
 **2026-11-08 — Release device findings addressed in the `codex/release-2.2.0` working tree.**
 ERROR-1010/1011/1012 have code fixes for Nearby pairing consent, Android revoke notices and truthful

@@ -8,7 +8,7 @@ The `:core:transfer` module contains the high-throughput, multi-stream chunked f
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.2")
 }
 ```
 

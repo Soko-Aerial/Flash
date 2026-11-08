@@ -8,7 +8,7 @@ The `:core:persistence` module manages relational database storage, encrypted ta
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-persistence:v2.2.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-persistence:v2.2.0-beta.2")
 }
 ```
 
