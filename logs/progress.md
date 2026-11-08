@@ -15,6 +15,12 @@
 - Beta.2 passed the earlier classpath check on Linux but failed on the missing Linux AAPT2 classifier
   checksum (ERROR-1015). Added the exact digest from Google Maven and will verify a cold commit
   build before cutting another beta.
+- The cold rehearsal at `4e3bb7de` passed AAPT2 and found the Linux Compose Desktop POM (ERROR-1016).
+  Verified the POM's checksum against Maven Central. Uploaded the beta.2 Maven repository ZIP and
+  manifest to GitHub; all 304 archive files matched the verified local publication, and GitHub's
+  reported asset digests matched the local files.
+- The beta.3 JDK 17 publication and isolated Android/JVM consumer compiles passed locally with
+  the umbrella engine, granular messaging, calling UI and WebRTC and enterprise types.
 
 ## 2026-11-08 — Cut the Flash 2.2.0 release
 

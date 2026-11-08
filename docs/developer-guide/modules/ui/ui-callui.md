@@ -8,7 +8,7 @@ The `:ui:callui` module provides the user interface for voice and video calling.
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.3")
 }
 ```
 

@@ -16,7 +16,7 @@ Android app and by the Windows desktop app.
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-ptt:v2.2.0-beta.2")   // JitPack coordinate; a mavenLocal build uses group com.transfer.flash
+    implementation("com.github.Soko-Aerial.Flash:core-ptt:v2.2.0-beta.3")   // JitPack coordinate; a mavenLocal build uses group com.transfer.flash
 }
 ```
 

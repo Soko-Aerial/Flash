@@ -8281,11 +8281,11 @@ Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT
 ### REL22-04 — Published beta resolves from the current JitPack coordinate
 
 - Setup. Empty Maven cache for Flash modules and an external Android/JVM consumer on JDK 17.
-- Exercise. Build with `com.github.Soko-Aerial.Flash` and tag `v2.2.0-beta.2` using JitPack, Google and Maven Central. Use the umbrella engine, calling UI and the granular messaging API.
+- Exercise. Build with `com.github.Soko-Aerial.Flash` and tag `v2.2.0-beta.3` using JitPack, Google and Maven Central. Use the umbrella engine, calling UI and the granular messaging API.
 - Pass. Both platforms compile. The WebRTC track and enterprise join result are visible through their published dependencies.
-- Source. Release audit and `docs/release-build.md`. Status: OWED 2026-11-08 — JitPack failed to
-  publish beta.1 because four JUnit metadata checksums were missing (ERROR-1014). The beta.2
-  JDK 17 publication rehearsal passed locally. Verify the public tag with both consumer builds.
+- Source. Release audit and `docs/release-build.md`. Status: OWED 2026-11-08 — the beta.2 Maven ZIP
+  is available on GitHub; JitPack exposed Linux checksum gaps (ERROR-1014..1016). Rehearse the
+  beta.3 commit cold, then verify the public tag with both consumer builds.
 
 ### REL22-05 — PTT sends the first packet of a new burst
 

@@ -17375,4 +17375,16 @@ RESOLVED 2026-11-08 — proven cause, fix and focused regressions in the working
   but not the Linux classifier. The Windows rehearsal cannot exercise it.
 - **Fix:** Add the Linux JAR's exact SHA-256, checked against the Google Maven sidecar. Keep strict
   verification and beta.2's original tag. Validate the fix on JitPack by commit before cutting a tag.
-- **Status:** OPEN pending the cold commit build.
+- **Status:** RESOLVED. The cold rehearsal at `4e3bb7de` passed AAPT2 verification and stopped
+  at a separate Linux Compose dependency check (ERROR-1016).
+
+## ERROR-1016 — Cold Linux publish reaches Compose Desktop's Linux POM
+
+- **Date / area:** 2026-11-08, JitPack rehearsal of `4e3bb7de`.
+- **Symptom / cause:** KMP metadata transformation resolved `:ui:platform-shims:jvmTestCompileClasspath`
+  during configuration caching and rejected `org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3`'s
+  POM. Only the Windows POM was recorded. Its Linux Skiko runtime dependency was already covered.
+- **Fix:** Add the Linux Compose POM's SHA-256, checked against Maven Central's published sidecar.
+  Strict verification stays enabled. The [SDK beta.2 ZIP](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
+  is available while the JitPack path is repaired.
+- **Status:** OPEN pending the cold candidate build. See REL22-04 for the published-coordinate check.

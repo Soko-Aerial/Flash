@@ -7,9 +7,12 @@
 > latest stable release. Its six artifacts match the uploaded checksum manifest; the signed
 > universal APK SHA-256 is `68f13dd5835984d73fff0f887428e1d854a19e8e557e210aa0fd1568011f912f`.
 > SDK beta.1 failed JitPack's cold build (ERROR-1014). [SDK beta.2](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
-> points to `22385edb` and adds four verified JUnit metadata checksums. The JDK 17 publish task list,
-> isolated Android/JVM compiles and desktop Maven sample passed against beta.2 locally. Verify remote JitPack and both
-> consumer builds under REL22-04. The Hub ZIP and checksum were uploaded without a
+> points to `22385edb`. The JDK 17 publish task list, isolated Android/JVM compiles and desktop Maven
+> sample passed locally. The release includes a verified Maven ZIP and checksum manifest; its ZIP
+> SHA-256 is `d3276f8822a87994c27f8430519aa4b9c0e9196a1894b10559d98734d6865f04`.
+> JitPack beta.2 failed on Linux AAPT2; the rehearsal at `4e3bb7de` got past it and found the Linux
+> Compose POM gap (ERROR-1015/1016). Beta.3 adds both checksums. Verify the cold candidate build
+> before tagging and both public consumer builds under REL22-04. The Hub ZIP and checksum were uploaded without a
 > deployment. The owner approved release with the signed-device, installer and complete interop
 > checks outstanding. Resume those cases from `docs/testing/TEST-BACKLOG.md`.
 

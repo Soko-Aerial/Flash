@@ -8,7 +8,7 @@ The `:ui:platform-shims` module decouples Jetpack Compose UI code from platform-
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:ui-platform-shims:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:ui-platform-shims:v2.2.0-beta.3")
 }
 ```
 

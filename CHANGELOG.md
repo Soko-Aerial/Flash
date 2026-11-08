@@ -10,11 +10,17 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## Unreleased
 
+## SDK 2.2.0-beta.3 - 2026-11-08
+
+- Added verified Linux AAPT2 and Compose Desktop metadata checksums for JitPack. The stable
+  app and Hub beta are unchanged.
+
 ## SDK 2.2.0-beta.2 - 2026-11-08
 
 - Added verified Maven Central checksums for four JUnit BOM Gradle metadata files used by
-  JitPack's cold build. Use `v2.2.0-beta.2` for the SDK; the `v2.2.0-beta.1` tag did not produce
-  JitPack packages. The Android and Windows app and Hub release tags stay the same.
+  JitPack's cold build. Beta.2 is available as a [Maven repository ZIP](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2);
+  JitPack stopped on a separate Linux dependency check. The Android and Windows app and Hub
+  release tags stay the same.
 
 ## 2.2.0 - 2026-11-08
 

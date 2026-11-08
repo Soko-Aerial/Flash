@@ -8,7 +8,7 @@ The `:core:engine` module provides the unified orchestrator and runtime facade f
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 
