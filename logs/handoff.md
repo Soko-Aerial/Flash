@@ -1,5 +1,16 @@
 # Current Handoff
 
+> **2026-11-08 — Flash 2.2.0 and both betas published.** The release tags point to `322a92aa`:
+> [Android and Windows](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0),
+> [SDK beta](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.1) and
+> [Hub beta](https://github.com/Soko-Aerial/Flash/releases/tag/server-v2.2.0-beta.1). The app is the
+> latest stable release. Its six artifacts match the uploaded checksum manifest; the signed
+> universal APK SHA-256 is `68f13dd5835984d73fff0f887428e1d854a19e8e557e210aa0fd1568011f912f`.
+> The SDK exact JitPack task list and isolated Android/JVM consumers passed under JDK 17 locally;
+> remote JitPack resolution is a separate check. The Hub ZIP and checksum were uploaded without a
+> deployment. The owner approved release with the signed-device, installer and complete interop
+> checks outstanding. Resume those cases from `docs/testing/TEST-BACKLOG.md`.
+
 > **2026-11-08 — REL22-FINAL-ANDROID: pairing root-cause fixed and verified; signed release build in
 > progress; Windows installer/upgrade gates still blocked.** Working tree on `codex/release-2.2.0`
 > (`64092bf3` + uncommitted release fixes). Instrumented reproduction proved ERROR-1013 was an
