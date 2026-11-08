@@ -1,6 +1,6 @@
 # Current Handoff
 
-> **2026-11-08 — Flash 2.2.0, Hub beta.1 and SDK beta.2 published on GitHub.** The original release tags point to `322a92aa`:
+> **2026-11-08 — Flash 2.2.0, Hub beta.1 and SDK beta.3 published.** The original release tags point to `322a92aa`:
 > [Android and Windows](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0),
 > [SDK beta.1](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.1) and
 > [Hub beta](https://github.com/Soko-Aerial/Flash/releases/tag/server-v2.2.0-beta.1). The app is the
@@ -11,8 +11,10 @@
 > sample passed locally. The release includes a verified Maven ZIP and checksum manifest; its ZIP
 > SHA-256 is `d3276f8822a87994c27f8430519aa4b9c0e9196a1894b10559d98734d6865f04`.
 > JitPack beta.2 failed on Linux AAPT2; the rehearsal at `4e3bb7de` got past it and found the Linux
-> Compose POM gap (ERROR-1015/1016). Beta.3 adds both checksums. Verify the cold candidate build
-> before tagging and both public consumer builds under REL22-04. The Hub ZIP and checksum were uploaded without a
+> Compose POM gap (ERROR-1015/1016). The cold JitPack build for `13e0fa3f` passed and published artifacts;
+> [SDK beta.3](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.3) points to that exact commit.
+> JitPack published 57 Maven modules on JDK 17. Both public-tag consumer compiles passed
+> (REL22-04), including the WebRTC and enterprise APIs. The Hub ZIP and checksum were uploaded without a
 > deployment. The owner approved release with the signed-device, installer and complete interop
 > checks outstanding. Resume those cases from `docs/testing/TEST-BACKLOG.md`.
 

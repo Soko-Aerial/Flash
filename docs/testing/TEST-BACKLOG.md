@@ -8283,9 +8283,10 @@ Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT
 - Setup. Empty Maven cache for Flash modules and an external Android/JVM consumer on JDK 17.
 - Exercise. Build with `com.github.Soko-Aerial.Flash` and tag `v2.2.0-beta.3` using JitPack, Google and Maven Central. Use the umbrella engine, calling UI and the granular messaging API.
 - Pass. Both platforms compile. The WebRTC track and enterprise join result are visible through their published dependencies.
-- Source. Release audit and `docs/release-build.md`. Status: OWED 2026-11-08 — the beta.2 Maven ZIP
-  is available on GitHub; JitPack exposed Linux checksum gaps (ERROR-1014..1016). Rehearse the
-  beta.3 commit cold, then verify the public tag with both consumer builds.
+- Source. Release audit and `docs/release-build.md`. Status: PASS 2026-11-08 — JitPack published
+  57 modules from `13e0fa3f` under `v2.2.0-beta.3`. A separate JDK 17 build compiled the Android
+  and JVM consumers against the public coordinate, including the WebRTC and enterprise types.
+  The beta.2 Maven ZIP is also available on GitHub.
 
 ### REL22-05 — PTT sends the first packet of a new burst
 

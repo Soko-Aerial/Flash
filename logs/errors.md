@@ -17387,4 +17387,12 @@ RESOLVED 2026-11-08 — proven cause, fix and focused regressions in the working
 - **Fix:** Add the Linux Compose POM's SHA-256, checked against Maven Central's published sidecar.
   Strict verification stays enabled. The [SDK beta.2 ZIP](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
   is available while the JitPack path is repaired.
-- **Status:** OPEN pending the cold candidate build. See REL22-04 for the published-coordinate check.
+- **Status:** RESOLVED. The cold [JitPack candidate build](https://jitpack.io/com/github/Soko-Aerial/Flash/13e0fa3f59/build.log)
+  passed in 3m20s and published Maven artifacts. The public-tag consumer check also passed (REL22-04).
+
+## ERROR-1017 — JitPack throttled requests during beta.3 publication
+
+- **Date / area:** 2026-11-08, isolated JDK 17 consumer check against `v2.2.0-beta.3`.
+- **Symptom:** The first Gradle attempt received HTTP 429 from JitPack while the tag build was still running.
+- **Verification / status:** RESOLVED. JitPack reported `ok` and listed 57 modules. Retried with one
+  worker after publication; both Android and JVM compiles passed against the public tag (REL22-04).
