@@ -10,6 +10,8 @@
 - The exact JitPack task list published 57 artifact directories under JDK 17. Separate Android
   and JVM consumers and the repository's desktop Maven sample compiled against those artifacts.
   Updated the developer guide and release instructions to use the new SDK version.
+- Published SDK beta.2 on GitHub at `22385edb` and linked it from the beta.1 notes. Triggered the
+  JitPack build. REL22-04 stays open until both consumers build against the public coordinate.
 
 ## 2026-11-08 — Cut the Flash 2.2.0 release
 
