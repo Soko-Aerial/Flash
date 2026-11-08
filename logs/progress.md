@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-11-08 — Correct SDK beta.3 integration docs after review
+
+- Clarified the Android/JVM dependency graph: `core-engine` includes PTT on both targets, leaves
+  calling and radio to the host, and `ui-chat` brings `core-radio` in at runtime for its UI adapter.
+- Fixed the Android pairing and foreground-service guidance, expanded radio wiring and Bluetooth
+  permissions, and corrected the desktop resume limit, `ULTRA_LOW` tier, swarm default and module counts.
+- The README quick start now keeps the host-owned engine open while the offer and transfer run. Its
+  exact Kotlin snippet compiled in an isolated JDK 17 Android project with `compileSdk` 35 against
+  the beta.3 local Maven artifacts. Verified 103 relative links and two changed anchors, and checked
+  that all Kotlin, Gradle and JitPack edits outside Markdown were comments only.
+- Kept the public Android/JVM verification recorded in REL22-04: both independent JitPack consumers
+  passed. No SDK binary or release tag changes are needed. The remaining physical release checks
+  are still in the test backlog.
+
 ## 2026-11-08 — Repair the SDK beta's cold JitPack build
 
 - The tagged SDK beta.1 published locally and passed Android/JVM consumer checks, but JitPack's

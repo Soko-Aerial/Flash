@@ -28,7 +28,10 @@ The screens are **stateless**: each takes a UI-state object from `:core:messagin
 * **Other screens:** `FlashNearbyScreen` (+ `FlashManualConnectDialog`), `FlashTransfersScreen`, `FlashSettingsScreen`, `FlashBottomNav` (`ui.shell`), `FlashPairingFlow`.
 * **Adaptive layout (`ui.adaptive`, `FlashAdaptiveMath`):** width classes at **600 dp (Medium)** and **840 dp (Expanded)**; the two-pane list/detail layout (`FlashAdaptiveTwoPane`) and the navigation rail (`FlashNavigationRail`) are available from Medium up. The list pane is clamped to 320 to 480 dp (the detail pane needs at least 480 dp) and a reading bubble is capped at 580 dp. There is no draggable splitter yet and no fold-posture support (`docs/migration/ADAPTIVE-UI-PLAN.md`). Not device-verified.
 
-The module depends on `:core:messaging` (for the state types), `:core:transfer`, `:core:security`, `:ui:theme` and `:ui:platform-shims`; it does not depend on `:core:calling`, so the call buttons are plain callbacks.
+The module uses `:core:messaging` for its state types, along with transfer, security, network, enterprise and theme libraries.
+Published runtime dependencies include `:ui:platform-shims` and `:core:radio` for platform and radio UI adapters.
+On JVM, the radio dependency also brings in jSerialComm and JNA; the host still owns any [radio integration](../core/core-radio.md).
+There is no dependency on `:core:calling`, so the call buttons are plain callbacks.
 
 ---
 

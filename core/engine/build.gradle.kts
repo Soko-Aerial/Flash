@@ -89,20 +89,9 @@ kotlin {
     }
 
     sourceSets {
-        // All six converted `:core:*` modules stay `api` and stay in commonMain even though
-        // commonMain's own two files import none of them. `Flash.kt` (androidMain) uses all six
-        // and inherits them through the source-set hierarchy, and declaring them here is what
-        // puts them in the ROOT `core-engine` POM — which is what a Maven-only consumer that
-        // resolves the platform-agnostic coordinate reads. (That POM lists them at `runtime`
-        // scope, not `compile`; every converted module's root POM does, `core-transfer`'s
-        // included. Gradle consumers read `.module` metadata instead and see `api`.) Coroutines
-        // is not declared: it arrives transitively as `api` from every one of the six, exactly
-        // as before.
-        //
-        // The seventh, `:core:ptt`, is deliberately NOT here. It was a plain AGP Android library with no
-        // JVM variant (ERROR-049); it became KMP in ADR-058, so the placement is now a choice, kept
-        // because nothing in commonMain names PTT and moving it is a public-API/publication change (ENG-1).
-        // See androidMain below.
+        // Export the engine's feature dependencies from commonMain for Android and JVM consumers.
+        // Gradle resolves the target and its API dependencies through the published module metadata.
+        // PTT is multiplatform (ADR-058); radio is wired separately by hosts.
         commonMain.dependencies {
             api(project(":core:common"))
             api(project(":core:security"))

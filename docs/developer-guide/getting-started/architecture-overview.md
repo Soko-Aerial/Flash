@@ -12,7 +12,10 @@ Flash is designed around four foundational architectural principles:
    Every major subsystem is accessed through a clean Kotlin interface ([`FlashDiscovery`](../../../core/discovery), [`FlashNetwork`](../../../core/network), [`FlashTransferRepository`](../../../core/transfer), [`FlashChatRepository`](../../../core/messaging), [`FlashCalling`](../../../core/calling), [`FlashPtt`](../../../core/ptt), [`FlashTrustStore`](../../../core/security), [`FlashCrypto`](../../../core/security)). Consumers interact with the interfaces; concrete implementations can be swapped or customized without affecting downstream code.
 
 2. **Transport Agnosticism:**  
-   The higher layers (messaging, file transfer, calling) operate over abstract communication channels. They do not know or care how bytes travel. Today every byte rides a WebSocket mesh over TLS on the LAN (mDNS discovery) or a hotspot; Wi-Fi Direct is a design goal with **no code yet** (ADR-056), and a serial/Bluetooth radio link has its groundwork in `:core:network` (ADR-101, not wired to the apps).
+   LAN and hotspot peers use TLS WebSockets and mDNS discovery. Wi-Fi Direct is planned (ADR-056).
+   Hub clients use the separate enterprise APIs. The Android and desktop apps also wire the
+   experimental [`:core:radio`](../modules/core/core-radio.md) gateway for compatible Bluetooth or
+   serial radios. The host owns chat fallback policy; adding the engine alone does not enable radio.
 
 3. **Reactive State & Immutability:**  
    Persistent state is exposed via Kotlin Coroutines `StateFlow` and event streams via `Flow`. Data models are immutable `data class`es. Fallible operations return [`FlashResult<T>`](../../../core/common) rather than throwing exceptions.
@@ -24,7 +27,7 @@ Flash is designed around four foundational architectural principles:
 
 ## 2. Multi-Module Hierarchy & Dependency Graph
 
-Flash enforces strict, acyclic boundaries between modules:
+Flash enforces acyclic dependencies. This diagram groups modules by role rather than listing every dependency:
 
 ```text
   ┌────────────────────────────────────────────────────────┐
@@ -40,13 +43,15 @@ Flash enforces strict, acyclic boundaries between modules:
   ┌─────────────▼─────────────────────────────▼────────────┐
   │                 Feature Modules                        │
   │ :core:messaging  :core:transfer  :core:calling         │
-  │ :core:ptt        :core:swarm                           │
+  │ :core:ptt        :core:swarm      :core:radio          │
+  │ :core:enterprise                                     │
   └─────────────┬─────────────────────────────┬────────────┘
                 │                             │
   ┌─────────────▼─────────────────────────────▼────────────┐
   │               Foundation & Infrastructure              │
   │  :core:network     :core:discovery    :core:security   │
   │  :core:persistence :ui:platform-shims :ui:theme        │
+  │  :core:hub-protocol                                   │
   └───────────────────────────┬────────────────────────────┘
                               │
   ┌───────────────────────────▼────────────────────────────┐
@@ -61,18 +66,21 @@ Flash enforces strict, acyclic boundaries between modules:
 
 | Tier | Module | Primary Responsibilities |
 |---|---|---|
-| **Foundation** | [`:core:common`](../../../core/common) | Base domain models, [`FlashResult<T>`](../../../core/common), [`FlashPerformanceMode`](../../../core/common/src/commonMain/kotlin/com/transfer/flash/core/common/perf/FlashPerformanceMode.kt), time sources, and byte math. No external dependencies. |
+| **Foundation** | [`:core:common`](../../../core/common) | Base domain models, [`FlashResult<T>`](../../../core/common), [`FlashPerformanceMode`](../../../core/common/src/commonMain/kotlin/com/transfer/flash/core/common/perf/FlashPerformanceMode.kt), time sources, and byte math. No Flash project dependencies. |
 | **Foundation** | [`:core:security`](../../../core/security) | Identity key management, AndroidKeyStore integration, ECDH P-256 ephemeral key exchange, HKDF key derivation, and AES-256-GCM wire framing ([`E2eFrameCodec`](../../../core/security/src/commonMain/kotlin/com/transfer/flash/core/security/crypto/E2eFrameCodec.kt)). |
 | **Foundation** | [`:core:persistence`](../../../core/persistence) | Room database (SQLCipher on Android, an encrypted SQLite JDBC build on desktop), transactional DAOs for messages, transfers, conversations, and device pairings. |
 | **Foundation** | [`:core:discovery`](../../../core/discovery) | Zero-configuration local network service discovery (Android NSD, JmDNS on desktop) plus the resilience sources (remembered routes, subnet sweep, address hints). There is no Wi-Fi Direct code yet. |
 | **Foundation** | [`:core:network`](../../../core/network) | High-performance WebSocket server and client with TLS, connection keepalive watchdogs, and network interface roamer monitoring ([`JvmNetworkWatcher`](../../../core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/resilience/JvmNetworkWatcher.kt)). |
+| **Foundation** | [`:core:hub-protocol`](../modules/core/core-hub-protocol.md) | Internal Hub wire types, certificate and signing data shared by server and clients. |
 | **Foundation** | [`:ui:theme`](../../../ui/theme) | Unified design system: typography, palettes, elevation, shapes, and accessibility-aware motion policies. |
 | **Foundation** | [`:ui:platform-shims`](../../../ui/platform-shims) | Clean platform decoupling for audio playback, microphone recording, image decoding, file pickers, and clipboard operations. |
 | **Features** | [`:core:transfer`](../../../core/transfer) | High-throughput streaming chunked transfer engine ([`MultiStreamDispatcher`](../../../core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt)), pause/resume mechanics, per-chunk and whole-file SHA-256 integrity verification (BLAKE3 was deferred, ADR-010), and path traversal guards. |
 | **Features** | [`:core:messaging`](../../../core/messaging) | Chat and group persistence, group history sync, delivery receipts (`FLASH_RCPT`), read states (`FLASH_READ`), reaction management, and typing indicators. |
 | **Features** | [`:core:calling`](../../../core/calling) | WebRTC mesh audio and video calling, signaling coordinator, ICE renegotiation, and adaptive bitrates. |
-| **Features** | [`:core:swarm`](../../../core/swarm) | Group file transfer, torrent-style: a pure sans-IO piece engine plus a driver; members serve pieces to each other (`FlashSwarm`, `FSW1` frames). Off by default in the Android app; not device-verified. |
+| **Features** | [`:core:swarm`](../../../core/swarm) | Group file transfer: members serve pieces to each other (`FlashSwarm`, `FSW1` frames). On by default in the Flash apps; a saved opt-out takes precedence (ADR-070). |
 | **Features** | [`:core:ptt`](../../../core/ptt) | Push-To-Talk voice messaging with floor control, audio streaming, and group voice distribution. |
+| **Features** | [`:core:radio`](../modules/core/core-radio.md) | Experimental KISS/AX.25 gateway and radio chat on Android and JVM. The host wires hardware access and fallback. |
+| **Features** | [`:core:enterprise`](../modules/core/core-enterprise.md) | Hub enrolment, directory, relay and trust APIs. |
 | **Features** | [`:ui:chat`](../../../ui/chat) | Rich Jetpack Compose messaging UI: message bubbles, composer, media viewer, adaptive dual-pane layouts, and navigation rail. |
 | **Features** | [`:ui:callui`](../../../ui/callui) | Voice and video calling screen, camera preview rendering, mute/speaker toggles, and participant grids. |
 | **Orchestrator**| [`:core:engine`](../../../core/engine) | Unified lifecycle coordinator binding discovery, networking, messaging, calling, and file transfer into a cohesive facade ([`FlashEngine`](../../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt)). |
@@ -87,12 +95,12 @@ All `:core:*` modules compile with Kotlin's `explicitApi()` mode (the `:ui:*` mo
 ### 4.2 Clean Calling Seam
 WebRTC dependencies are notoriously heavy. Flash isolates calling behind an optional compile-time seam (`attachCalling` / `detachCalling`) in [`FlashEngine`](../../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt). If an application does not need voice/video calling, `:core:calling` and `:ui:callui` can be completely omitted from the build without breaking the transfer or messaging stack.
 
-### 4.3 Who depends on whom (checked against the `build.gradle.kts` files, 2026-10-09)
+### 4.3 Who depends on whom
 
-- `:core:common` depends on nothing. Every other `:core:*` module `api`s it.
-- `:core:network` uses `:core:discovery` and `:core:security`; `:core:transfer` uses `:core:network`; `:core:messaging` uses `:core:persistence`, `:core:transfer`, `:core:security` and `:core:network`; `:core:swarm` `api`s `:core:transfer`; `:core:ptt` `api`s `:core:messaging`.
+- `:core:common` is a foundation module and has no Flash project dependencies.
+- `:core:network` uses `:core:discovery` and `:core:security`; `:core:transfer` uses `:core:network`; `:core:messaging` uses `:core:persistence`, `:core:transfer`, `:core:security`, `:core:network` and `:core:enterprise`. `:core:swarm` exports `:core:transfer`; `:core:ptt` exports `:core:common` and does not depend on messaging.
 - `:core:calling` depends only on `:core:common` (plus the vendored `webrtc-kmp` fork, ADR-103). `:core:engine` sees it as `compileOnly`, so an engine consumer does not pull WebRTC in.
-- `:core:engine` `api`s everything above except calling.
-- UI: `:ui:chat` uses messaging, security, transfer, `:ui:theme` and `:ui:platform-shims`; `:ui:callui` `api`s `:core:calling` and `:core:ptt`.
+- `:core:engine` exports common, security, discovery, network, enterprise, transfer, messaging, persistence, swarm and PTT on Android and JVM. It has no dependency on `:core:radio`. Hub protocol arrives through security and enterprise.
+- UI: `:ui:chat` uses messaging, security, network, enterprise, transfer, theme and platform shims, plus `:core:radio` for its radio UI adapter; `:ui:callui` exports `:core:calling` and `:core:ptt`.
 - `:desktop` and `:app` are applications, not libraries. Both **hand-wire** calling (`CallCoordinator`), push-to-talk and the swarm in their own engine classes (`DesktopEngine`, `DiscoveryEngineHolder`) rather than going through `Flash.create`; the `attachCalling` seam is for third-party hosts.
-- `:sample:consumer*` are three sample consumers (umbrella, granular, desktop) that prove the published artifacts resolve.
+- `:sample:consumer` and `:sample:consumer-granular` compile against Android project dependencies. `:sample:consumer-desktop` checks JVM variant resolution from a local Maven publication. Independent Android and JVM builds verified the public JitPack tag under [REL22-04](../../testing/TEST-BACKLOG.md#rel22-04--published-beta-resolves-from-the-current-jitpack-coordinate).

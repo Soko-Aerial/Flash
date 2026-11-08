@@ -17,6 +17,10 @@
 > (REL22-04), including the WebRTC and enterprise APIs. The Hub ZIP and checksum were uploaded without a
 > deployment. The owner approved release with the signed-device, installer and complete interop
 > checks outstanding. Resume those cases from `docs/testing/TEST-BACKLOG.md`.
+>
+> SDK documentation follow-up: the README and developer guide now describe standalone radio,
+> Android/JVM PTT, pairing, and host permissions accurately. The revised README snippet compiled
+> against beta.3 under JDK 17 at `compileSdk` 35. This follow-up changes docs and comments only.
 
 > **2026-11-08 — REL22-FINAL-ANDROID: pairing root-cause fixed and verified; signed release build in
 > progress; Windows installer/upgrade gates still blocked.** Working tree on `codex/release-2.2.0`
