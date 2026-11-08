@@ -17350,3 +17350,17 @@ Successful pairing 12:49:47–12:49:50: both cards were up and both accepts land
 
 ### Status
 RESOLVED 2026-11-08 — proven cause, fix and focused regressions in the working tree; device-verified with the 8-cycle matrix and the post-revoke manual re-pair. No commit/push was made.
+
+## ERROR-1014 — SDK 2.2.0-beta.1 could not publish on JitPack
+
+- **Date / area:** 2026-11-08, SDK dependency verification on JitPack's cold Linux JDK 17 build.
+- **Symptom:** JitPack reported `No build artifacts found`; Gradle stopped while resolving the
+  root `classpath`, before the publish tasks. See the [JitPack build log](https://jitpack.io/com/github/Soko-Aerial/Flash/v2.2.0-beta.1/build.log).
+- **Root cause:** Gradle resolved `org.junit:junit-bom` `.module` metadata for versions 5.12.2,
+  5.13.4, 5.14.1 and 5.14.4. `gradle/verification-metadata.xml` recorded those versions' POM
+  digests only. The local warm-cache release rehearsal did not exercise the same metadata path.
+- **Fix:** Add the four exact `.module` SHA-256 digests, each checked against Maven Central's
+  published sidecar. Keep strict verification. Leave the original tag fixed and publish beta.2.
+- **Verification:** The exact `jitpack.yml` publish task list passed on JDK 17 to an empty local
+  Maven repository. The public JitPack build and consumer check are tracked in REL22-04.
+- **Status:** OPEN pending the cold beta.2 build.

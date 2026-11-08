@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-11-08 — Repair the SDK beta's cold JitPack build
+
+- The tagged SDK beta.1 published locally and passed Android/JVM consumer checks, but JitPack's
+  cold Linux build selected four `org.junit:junit-bom` `.module` files missing from dependency
+  verification and stopped while configuring the root classpath (ERROR-1014).
+- Matched each downloaded `.module` to its Maven Central SHA-256 sidecar and added the four exact
+  entries without weakening verification. Use a new SDK beta.2 tag; the app and Hub tags stay put.
+- The exact JitPack task list published 57 artifact directories under JDK 17. Separate Android
+  and JVM consumers and the repository's desktop Maven sample compiled against those artifacts.
+  Updated the developer guide and release instructions to use the new SDK version.
+
 ## 2026-11-08 — Cut the Flash 2.2.0 release
 
 - The owner authorized building and uploading with the remaining manual checks open. Keep those

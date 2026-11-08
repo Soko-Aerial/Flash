@@ -8,7 +8,7 @@ The `:core:messaging` module implements the peer-to-peer chat repository, messag
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.2.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.2.0-beta.2")
 }
 ```
 

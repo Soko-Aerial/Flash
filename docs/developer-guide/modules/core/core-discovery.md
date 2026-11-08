@@ -8,7 +8,7 @@ The `:core:discovery` module enables zero-configuration, decentralized peer disc
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.2.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.2.0-beta.2")
 }
 ```
 

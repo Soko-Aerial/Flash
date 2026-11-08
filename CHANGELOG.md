@@ -10,6 +10,12 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## Unreleased
 
+## SDK 2.2.0-beta.2 - 2026-11-08
+
+- Added verified Maven Central checksums for four JUnit BOM Gradle metadata files used by
+  JitPack's cold build. Use `v2.2.0-beta.2` for the SDK; the `v2.2.0-beta.1` tag did not produce
+  JitPack packages. The Android and Windows app and Hub release tags stay the same.
+
 ## 2.2.0 - 2026-11-08
 
 ### Flash for Android and Windows 2.2.0

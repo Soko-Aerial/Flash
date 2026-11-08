@@ -32,7 +32,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") } // Flash artifacts (com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.1)
+        maven { url = uri("https://jitpack.io") } // Flash artifacts (com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.2)
         // mavenLocal() // only for a local `publishToMavenLocal` build (group com.transfer.flash)
     }
 }
@@ -47,9 +47,9 @@ Imports the complete Flash stack (discovery, pairing, encrypted messaging, chunk
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.1")
-    implementation("com.github.Soko-Aerial.Flash:ui-chat:v2.2.0-beta.1")     // Optional: If Jetpack Compose UI is needed
-    implementation("com.github.Soko-Aerial.Flash:ui-theme:v2.2.0-beta.1")    // Design tokens and styling
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:ui-chat:v2.2.0-beta.2")     // Optional: If Jetpack Compose UI is needed
+    implementation("com.github.Soko-Aerial.Flash:ui-theme:v2.2.0-beta.2")    // Design tokens and styling
 }
 ```
 
@@ -58,11 +58,11 @@ For resource-constrained devices or specialized services that do not need callin
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-common:v2.2.0-beta.1")
-    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.2.0-beta.1")
-    implementation("com.github.Soko-Aerial.Flash:core-network:v2.2.0-beta.1")
-    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.1")
-    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.2.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-common:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-network:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.2.0-beta.2")
 }
 ```
 

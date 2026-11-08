@@ -45,13 +45,13 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 |---|---|---|
 | Android version name and code | `app/build.gradle.kts` | `2.2.0` / `5` |
 | Windows installer version | `desktop/build.gradle.kts` | `2.2.0` |
-| KMP library and WebRTC fork | `gradle.properties` → `flashLibraryVersion` | `2.2.0-beta.1` |
+| KMP library and WebRTC fork | `gradle.properties` → `flashLibraryVersion` | `2.2.0-beta.2` |
 | Hub server distribution | `server/build.gradle.kts` | `2.2.0-beta.1` |
-| Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.2.0-beta.1` |
-| Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.2.0-beta.1` |
+| Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.2.0-beta.2` |
+| Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.2.0-beta.2` |
 
-The Android and Windows tag is `v2.2.0`. The JitPack tag is `v2.2.0-beta.1`, under
-`com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.1`. The independent Hub distribution tag is
+The Android and Windows tag is `v2.2.0`. The JitPack tag is `v2.2.0-beta.2`, under
+`com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.2`. The independent Hub distribution tag is
 `server-v2.2.0-beta.1`. Use the release checklist in the changelog and test backlog before
 publishing each artifact. Never reuse a tag. Keep the Android release signing key and increase
 `versionCode` for each upgrade.
