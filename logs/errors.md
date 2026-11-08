@@ -17363,4 +17363,16 @@ RESOLVED 2026-11-08 — proven cause, fix and focused regressions in the working
   published sidecar. Keep strict verification. Leave the original tag fixed and publish beta.2.
 - **Verification:** The exact `jitpack.yml` publish task list passed on JDK 17 to an empty local
   Maven repository. The public JitPack build and consumer check are tracked in REL22-04.
-- **Status:** OPEN pending the cold beta.2 build.
+- **Status:** RESOLVED. The cold beta.2 build passed classpath verification and reached Android
+  resource processing, which exposed the separate ERROR-1015.
+
+## ERROR-1015 — JitPack requires the Linux Android resource compiler checksum
+
+- **Date / area:** 2026-11-08, SDK 2.2.0-beta.2 on JitPack Linux JDK 17.
+- **Symptom:** `:core:engine:androidApis` rejected `aapt2-9.3.1-15703166-linux.jar` while Gradle
+  cached the resource task. See the [JitPack build log](https://jitpack.io/com/github/Soko-Aerial/Flash/v2.2.0-beta.2/build.log).
+- **Root cause:** Dependency verification recorded the Windows AAPT2 classifier and the POM,
+  but not the Linux classifier. The Windows rehearsal cannot exercise it.
+- **Fix:** Add the Linux JAR's exact SHA-256, checked against the Google Maven sidecar. Keep strict
+  verification and beta.2's original tag. Validate the fix on JitPack by commit before cutting a tag.
+- **Status:** OPEN pending the cold commit build.
