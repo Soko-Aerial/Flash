@@ -1,5 +1,18 @@
 # Experiments Log
 
+## EXP-142 — 2.2.0 debug direct transfer, 512 MB with pause/resume (2026-11-08)
+
+- **Setup:** Infinix X6882B (Android 14, API 34) → Samsung SM-G986U1 (Android 13, API 33), both on
+  `test LAN` (5 GHz), 2.2.0 debug build (versionCode 5), direct 1:1 transfer. A 536,870,912-byte
+  random `.bin` created for the test; destination `files/FlashReceived/Other/`.
+- **Result:** the sender UI showed 33% at 9.7 MB/s with 36 s left; the transfer was paused at 57%
+  (sender "Paused", receiver "paused by sender • 55%"), then resumed and completed. The received file's
+  SHA-256 matched the sender exactly (`579e9e4b…d908ed27`). A separate 1 MB file also matched.
+- **Not measured:** wall-clock from start to finish, CPU, disk read bytes, RSS, battery, thermals,
+  chunk size/profile, or a second run. The 9.7 MB/s is a single UI sample, not a throughput result and
+  not comparable with EXP-141's host loopback pipeline. No chunk-size or transport conclusion is drawn.
+- **Status:** single-run functional observation; no performance claim.
+
 ## Wave 4 experiments reviewed 2026-11-01 — all numeric headlines NOT MEASURED
 
 Base `baf77753`; delivered E `00a7a51f`, K `6d9c9227`; repaired E `b2b61b92`, K `22a53994`. Host correctness tests

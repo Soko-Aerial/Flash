@@ -352,6 +352,8 @@ class RealFlashChatRepositoryTest {
                 .sortedBy { it.nextAttemptAt }
                 .take(limit)
 
+        override suspend fun unacknowledgedToPeer(peerId: String, senderId: String): List<String> = queue.keys.toList()
+
         override suspend fun incrementAttempts(localId: String) {
             queue[localId]?.let { queue[localId] = it.copy(attempts = it.attempts + 1) }
         }
@@ -4089,7 +4091,7 @@ class RealFlashChatRepositoryTest {
     )
 
     @Test
-    fun `a negative ack fails the queued message and removes it from the outbox`() = runBlocking {
+    fun `a negative ack fails the queued message without changing a completed LAN attachment`() = runBlocking {
         val messageDao = FakeMessageDao()
         val outboxDao = FakeOutboxDao()
         val repository = RealFlashChatRepository(
@@ -4108,6 +4110,11 @@ class RealFlashChatRepositoryTest {
         val peer = "peer-nack"
         messageDao.insert(
             msg("m-nack", peer, "hello").copy(senderId = "my-device-id", status = "PENDING"),
+        )
+        messageDao.insert(
+            msg("lan-file", peer, "").copy(
+                senderId = "my-device-id", status = "SENT", attachmentTransferId = "completed-transfer",
+            ),
         )
         outboxDao.enqueue(
             OutboxEntity(
@@ -4129,6 +4136,7 @@ class RealFlashChatRepositoryTest {
         }
         assertEquals("FAILED", messageDao.messages["m-nack"]?.status)
         assertFalse(outboxDao.queue.containsKey("m-nack"))
+        assertEquals("SENT", messageDao.messages["lan-file"]?.status)
     }
 
     private fun msg(localId: String, conversationId: String, text: String) = MessageEntity(

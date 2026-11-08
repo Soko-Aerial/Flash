@@ -917,6 +917,11 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-08 — Release device findings addressed in the `codex/release-2.2.0` working tree.**
+ERROR-1010/1011/1012 have code fixes for Nearby pairing consent, Android revoke notices and truthful
+transfer status. Device retests are owed; no phones were available in the follow-up. The signed
+`dist/2.2.0` APK predates the fixes. See `logs/handoff.md` for the debug APK and acceptance steps.
+
 **2026-11-07 — 2.2.0 release consolidation on `codex/release-2.2.0`.** Nearby and Transfers
 owner-approved. Security and scope corrections, version bumps, changelog, consumer and
 operator docs are in the release branch. Product commit `1b71d4e0` passed the release test

@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
@@ -115,6 +116,9 @@ fun FlashFileMessageCard(
     }
 
     val statusSubtitle = remember(
+        formattedSize,
+        extension,
+        isParentOutgoing,
         attachment.transferStatus,
         attachment.transferSpeedMbps,
         attachment.etaSeconds,
@@ -141,7 +145,12 @@ fun FlashFileMessageCard(
                 if (!detail.isNullOrBlank()) "$formattedSize • $detail" else "$formattedSize • Tap to download"
             }
             FlashFileTransferStatus.AwaitingAcceptance -> {
-                if (!detail.isNullOrBlank()) "$formattedSize • $detail" else "$formattedSize • Awaiting your acceptance"
+                val waitingText = if (isParentOutgoing) {
+                    TransferFailureText.displayReason(detail) ?: TransferFailureText.WAITING_FOR_ACCEPT
+                } else {
+                    detail?.takeUnless { it.isBlank() } ?: "Awaiting your acceptance"
+                }
+                "$formattedSize • $waitingText"
             }
             FlashFileTransferStatus.Downloaded -> {
                 if (extension.isNotEmpty()) "$formattedSize • ${extension.uppercase()}" else formattedSize
@@ -162,7 +171,7 @@ fun FlashFileMessageCard(
             FlashFileTransferStatus.Transferring -> "Transferring ${attachment.name}, $statusSubtitle"
             FlashFileTransferStatus.Paused -> "Paused transfer of ${attachment.name}, $statusSubtitle. Double-tap to resume."
             FlashFileTransferStatus.NotDownloaded -> "${attachment.name}, $statusSubtitle. Double-tap to download."
-            FlashFileTransferStatus.AwaitingAcceptance -> "${attachment.name}, $statusSubtitle. Waiting for you to accept the transfer."
+            FlashFileTransferStatus.AwaitingAcceptance -> "${attachment.name}, $statusSubtitle"
             FlashFileTransferStatus.Downloaded -> "${attachment.name}, $formattedSize. Double-tap to open."
             FlashFileTransferStatus.Failed -> "Failed: ${attachment.name}, $statusSubtitle. Double-tap to retry."
             FlashFileTransferStatus.Cancelled -> "Cancelled: ${attachment.name}, $statusSubtitle."
@@ -203,7 +212,7 @@ fun FlashFileMessageCard(
                     }
                 )
                 .semantics {
-                    role = Role.Button
+                    if (!isAwaiting) role = Role.Button
                     contentDescription = a11yDesc
                 }
                 .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
@@ -304,6 +313,18 @@ fun FlashFileMessageCard(
                         haptics(FlashHaptic.Tick)
                         onCancel()
                     },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = "Cancel transfer",
+                        size = 16.dp,
+                        tint = colors.textError,
+                    )
+                }
+            } else if (isAwaiting && isParentOutgoing) {
+                IconButton(
+                    onClick = onCancel,
                     modifier = Modifier.size(28.dp),
                 ) {
                     FlashIcon(
@@ -470,7 +491,7 @@ fun FlashFileMessageCard(
         }
 
         // Accept/Decline buttons for inbound offers
-        if (isAwaiting) {
+        if (isAwaiting && !isParentOutgoing) {
             FlashFileOfferActions(
                 onAccept = {
                     haptics(FlashHaptic.Tick)
@@ -578,7 +599,10 @@ fun FlashFileIconBadge(
             .clip(CircleShape)
             .background(categoryColor.copy(alpha = 0.9f))
             .border(FlashDimensions.borderHairline, colors.borderSubtle.copy(alpha = 0.4f), CircleShape)
-            .clickable(onClick = onActionClick, role = Role.Button),
+            .then(
+                if (attachment.transferStatus == FlashFileTransferStatus.AwaitingAcceptance) Modifier
+                else Modifier.clickable(onClick = onActionClick, role = Role.Button),
+            ),
         contentAlignment = Alignment.Center,
     ) {
         when (attachment.transferStatus) {

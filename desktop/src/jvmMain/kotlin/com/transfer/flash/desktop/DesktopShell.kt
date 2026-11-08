@@ -2532,7 +2532,7 @@ private fun FlashTransfer.toDesktopTransferItemUi(): FlashTransferItemUi = Flash
     peerName = peerName,
     bytesTotal = bytesTotal,
     bytesDone = bytesDone,
-    state = when (state) {
+    state = if (isAwaitingReceiverAcceptance) FlashTransferState.Queued else when (state) {
         DomainState.Offered -> FlashTransferState.Offered
         DomainState.Queued -> FlashTransferState.Queued
         DomainState.Transferring, DomainState.Verifying -> FlashTransferState.Active

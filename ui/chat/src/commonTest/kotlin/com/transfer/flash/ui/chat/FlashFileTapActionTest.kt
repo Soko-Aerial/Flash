@@ -20,6 +20,11 @@ class FlashFileTapActionTest {
     }
 
     @Test
+    fun `waiting for acceptance has no tap action even when the sender has the file`() {
+        assertEquals(FlashFileTapAction.Nothing, flashFileTapAction(file(FlashFileTransferStatus.AwaitingAcceptance, "content://x")))
+    }
+
+    @Test
     fun `failed and paused cards resume`() {
         assertEquals(FlashFileTapAction.Resume, flashFileTapAction(file(FlashFileTransferStatus.Failed)))
         assertEquals(FlashFileTapAction.Resume, flashFileTapAction(file(FlashFileTransferStatus.Paused, "content://x")))

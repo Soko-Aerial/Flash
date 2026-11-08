@@ -49,6 +49,7 @@ public object TransferFailureText {
         "The sender did not continue sending this file. Ask them to send it again."
 
     public const val WAITING_FOR_ACCEPT: String = "Waiting for the other device to accept."
+    internal const val RECEIVER_ACCEPT_WAIT_REASON: String = "waiting for receiver to accept"
 
     public const val GENERIC: String = "The transfer stopped unexpectedly. Try again."
 
@@ -179,7 +180,7 @@ public object TransferFailureText {
             "declined" -> DECLINED_BY_PEER
             "paused by receiver", "paused by sender" -> PAUSED_BY_PEER
             "paused by system" -> PAUSED_BY_SYSTEM
-            "waiting for receiver to accept" -> WAITING_FOR_ACCEPT
+            RECEIVER_ACCEPT_WAIT_REASON -> WAITING_FOR_ACCEPT
             else -> raw
         }
     }

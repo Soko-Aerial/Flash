@@ -211,7 +211,9 @@ $wantSigned = $doAndroid -and ($Apk -in @('both', 'signed'))
 $wantUnsigned = $doAndroid -and ($Apk -in @('both', 'unsigned'))
 
 $appVersion = Get-VersionFrom (Join-Path $RepoRoot 'app\build.gradle.kts') 'versionName\s*=\s*"([^"]+)"'
-$deskVersion = Get-VersionFrom (Join-Path $RepoRoot 'desktop\build.gradle.kts') 'packageVersion\s*=\s*"([^"]+)"'
+# The desktop build may keep the version in `desktopAppVersion` and wire it into `packageVersion`
+# (so the packaged launcher and the About card share one source). Accept either literal form.
+$deskVersion = Get-VersionFrom (Join-Path $RepoRoot 'desktop\build.gradle.kts') '(?:packageVersion|desktopAppVersion)\s*=\s*"([^"]+)"'
 
 # Resolve everything that can fail BEFORE the long Gradle run, and ask for passwords up front so
 # the build can then run unattended.

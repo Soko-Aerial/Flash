@@ -1466,7 +1466,9 @@ object DiscoveryEngineHolder {
                         } else {
                             0f
                         },
-                        status = when (t.state) {
+                        status = if (t.isAwaitingReceiverAcceptance) {
+                            com.transfer.flash.core.messaging.model.FlashFileTransferStatus.AwaitingAcceptance
+                        } else when (t.state) {
                             com.transfer.flash.core.transfer.model.FlashTransferState.Completed,
                             com.transfer.flash.core.transfer.model.FlashTransferState.Verifying ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Downloaded
@@ -1707,10 +1709,11 @@ object DiscoveryEngineHolder {
             peerFeatures = { peerId ->
                 networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty()
             },
-            onPeerRevoked = { peerId ->
+            onPeerRevoked = { peerId, initiatedLocally ->
                 chatImpl.failPendingToPeer(
                     peerId,
-                    "The other device no longer trusts you. Pair again to reconnect.",
+                    if (initiatedLocally) "You removed this device. Pair again to reconnect."
+                    else "The other device no longer trusts you. Pair again to reconnect.",
                 )
                 appScope.launch { networkImpl.disconnect(FlashDeviceId(peerId)) }
             },
@@ -2054,7 +2057,11 @@ object DiscoveryEngineHolder {
                                         callCoordinator,
                                         session.peerDeviceId.value,
                                         text,
-                                    )
+                                    ) { peerId ->
+                                        if (networkImpl.activeSessions.value[session.peerDeviceId] === session) {
+                                            pairingCoordinator.onUnreadableSecuredFrame(peerId)
+                                        }
+                                    }
                                 }
                             }
                             launch {
@@ -2587,6 +2594,7 @@ object DiscoveryEngineHolder {
         calling: FlashCalling,
         peerDeviceId: String,
         text: String,
+        onUnreadableSecuredFrame: (String) -> Unit,
     ) {
         // Calling signaling first — the most latency-sensitive frame class, and the module owns its
         // decode: `onInboundText` returns true for every FLASH_CALL frame it consumed, false when
@@ -2641,6 +2649,7 @@ object DiscoveryEngineHolder {
                 }
             } else {
                 Log.w(TAG_CHAT, "Received FLASH_SEC frame from $peerDeviceId with no stored session key; dropping")
+                onUnreadableSecuredFrame(peerDeviceId)
                 return
             }
         } else {

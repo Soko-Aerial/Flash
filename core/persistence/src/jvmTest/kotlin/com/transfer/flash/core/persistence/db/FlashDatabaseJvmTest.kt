@@ -5,6 +5,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.MessagePinEntity
+import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmTombstoneEntity
 import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
@@ -116,6 +117,22 @@ class FlashDatabaseJvmTest {
         assertNull(db.reactionDao().get("absent", "+1"), "reactions")
         assertNull(db.draftDao().observeDraft("absent").first(), "drafts")
         assertNull(db.readCursorDao().get("absent", "absent"), "read cursors")
+    }
+
+    @Test
+    fun `revoke only selects this peer's unacknowledged outgoing outbox rows`() = runBlocking {
+        val db = openDatabase()
+        suspend fun add(id: String, peer: String, sender: String, status: String, queued: Boolean) {
+            db.messageDao().insert(MessageEntity(id, peer, sender, sender, "", 0L, status))
+            if (queued) db.outboxDao().enqueue(OutboxEntity(id, nextAttemptAt = Long.MAX_VALUE, payloadJson = "", createdAt = 0L))
+        }
+        add("retrying", "peer", "self", "SENT", queued = true)
+        add("completed-lan", "peer", "self", "SENT", queued = false)
+        add("delivered", "peer", "self", "DELIVERED", queued = true)
+        add("other-peer", "other", "self", "PENDING", queued = true)
+        add("inbound", "peer", "peer", "PENDING", queued = true)
+
+        assertEquals(listOf("retrying"), db.outboxDao().unacknowledgedToPeer("peer", "self"))
     }
 
     @Test
