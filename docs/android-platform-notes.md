@@ -1,5 +1,17 @@
 # Android Platform Notes
 
+## 2026-11-08 — Permissions for SDK hosts using transfers or radio
+
+- **Android 14 (API 34) and later:** An app targeting API 34+ must declare the permission for
+  each foreground-service type it uses. For `dataSync`, that is `FOREGROUND_SERVICE_DATA_SYNC`.
+  The Flash app already declares it; an SDK host supplies its own service and manifest.
+  Verified against the [foreground-service types](https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync).
+- **Android 12 (API 31) and later:** A modern radio host needs runtime `BLUETOOTH_CONNECT` to
+  list and connect to bonded radios, and `BLUETOOTH_SCAN` for discovery or cancelling discovery.
+  Cap legacy `BLUETOOTH`/`BLUETOOTH_ADMIN` declarations at API 30 and handle location permission
+  if actively discovering on older Android. Verified against the [Bluetooth permission guide](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions)
+  and [`BluetoothAdapter.cancelDiscovery`](https://developer.android.com/reference/android/bluetooth/BluetoothAdapter#cancelDiscovery()).
+
 ## 2026-11-01 — JCA reset preserves initialized capability; cache Provider selection, not keyed operations (ADR-312/350)
 
 ### Android version / APIs

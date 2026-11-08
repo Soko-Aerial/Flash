@@ -1,9 +1,9 @@
 // Throwaway desktop consumer — NOT published (no `maven-publish`, no publishing block).
 // Phase 24 Step 2 / D9 = Option A: prove variant-aware resolution by depending on the ROOT
-// coordinates (the same `com.transfer.flash:core-…:1.1.0` string an Android consumer writes)
-// from mavenLocal() and showing a `kotlin("jvm")` build picks the `-jvm` artifact and compiles
-// against the public API. The sibling `:sample:consumer` (umbrella) and `:sample:consumer-granular`
-// (single-artifact) do the same for the Android variant and stay Android-only per D9 = A.
+// coordinates (the same `com.transfer.flash:core-…:2.2.0-beta.3` root coordinate an Android
+// consumer can use with a local publication) from mavenLocal(). A `kotlin("jvm")` build picks
+// the `-jvm` artifact. The Android samples `:sample:consumer` and `:sample:consumer-granular`
+// compile against project dependencies; the external JitPack consumer check is REL22-04.
 //
 // Deliberately NO `implementation(project(":core:…"))` lines anywhere: a project dependency
 // would resolve source-set-to-source-set and prove nothing about published metadata. Everything

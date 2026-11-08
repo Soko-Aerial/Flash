@@ -20,7 +20,8 @@ To compile or consume Flash modules, ensure your environment meets the following
 
 ## 2. Project Setup & Dependency Configuration
 
-Flash libraries are structured as Kotlin Multiplatform (KMP) modules supporting both Android (`androidTarget`) and JVM Desktop (`jvmTarget`).
+Flash libraries are Kotlin Multiplatform modules with Android and desktop JVM variants. The same root
+coordinate selects the right variant for each consumer.
 
 ### 2.1 Repository Setup
 
@@ -43,7 +44,9 @@ dependencyResolutionManagement {
 Depending on whether you are building a full-featured application, a headless background service, or a custom UI, declare the required Flash coordinates in your `build.gradle.kts`:
 
 #### Option A: Unified Engine (Recommended for most apps)
-Imports the complete Flash stack (discovery, pairing, encrypted messaging, chunked file transfer, and background resilience):
+Use `core-engine` for the tutorial below. On Android it provides the `Flash.create` factory for discovery,
+pairing, encrypted chat and transfers. Add the optional UI modules only if you want the Compose screens.
+Calling and [radio](../modules/core/core-radio.md) have separate dependencies and require host setup.
 
 ```kotlin
 dependencies {
@@ -53,16 +56,16 @@ dependencies {
 }
 ```
 
-#### Option B: Granular / Headless Dependencies
-For resource-constrained devices or specialized services that do not need calling or UI:
+#### Option B: Transport-only dependencies
+Use these modules if you want discovery and transfers without the unified engine or its database.
+Your host constructs and connects the transport components. This option does not provide `Flash.create`
+or `engine.chats`; use Option A for the tutorial and for chat through the engine.
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-common:v2.2.0-beta.3")
     implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.2.0-beta.3")
     implementation("com.github.Soko-Aerial.Flash:core-network:v2.2.0-beta.3")
     implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.3")
-    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.2.0-beta.3")
 }
 ```
 
@@ -70,7 +73,9 @@ dependencies {
 
 ## 3. "Hello World" Tutorial: Discovery and Messaging
 
-Here is a complete, minimal example showing how to initialize the Flash engine, discover peers on the local Wi-Fi network, and send a direct message.
+The following Android walkthrough initializes the engine, discovers a peer on the local Wi-Fi network,
+pairs with that peer, and sends a direct message. A JVM host can use the same engine interfaces once it
+has registered and wired its own implementation.
 
 ### Step 1: Initialize Flash Engine
 
@@ -95,6 +100,7 @@ class by name, so it works inside the Flash desktop app. A standalone JVM progra
 
 ```kotlin
 import com.transfer.flash.core.engine.FlashDesktop
+import com.transfer.flash.core.engine.FlashConfig
 import com.transfer.flash.core.engine.awaitReady
 
 FlashDesktop.registerFactory { config -> MyEngine(config) } // your FlashEngine implementation
@@ -123,6 +129,11 @@ scope.launch {
 
 ### Step 3: Send a Direct Message
 
+On Android, `Flash.create` wires `engine.pairing`. Start a pairing with the discovered peer, display the
+code from the pairing state, and have both users confirm that their codes match. Wait for the peer to be
+trusted before sending. See [pairing and trust](../guides/pairing-and-trust.md) for the exact calls and the
+steps a custom transport must implement.
+
 `FlashChatRepository` works on an *open conversation*: open it, then send. Both calls return `Unit`; the message appears in
 `engine.chats.conversationState` and is delivered by the durable outbox (retried until the peer is reachable).
 
@@ -135,22 +146,19 @@ engine.chats.sendText("Hello from Flash Developer Guide!")
 engine.chats.sendTextTo(conversationId, "Hello again")
 ```
 
-Pairing must have happened first (a 1:1 chat only goes to a pinned, paired device); see [core-security](../modules/core/core-security.md).
-How a host actually drives the handshake (and why the facade cannot do it yet) is in
-[guides/pairing-and-trust.md](../guides/pairing-and-trust.md).
-
 ### Step 4: Send a File
 
-Sending uses the chunked transfer engine (`FlashTransferRepository`). `sendFile` takes the target `FlashDevice`, a content `Uri`
-string (a `content://` URI on Android, a path/URI on desktop), a display name and the size, and returns `FlashResult<FlashTransferId>`:
+Sending uses the chunked transfer engine (`FlashTransferRepository`). `sendFile` takes the target `FlashDevice`, a source URI,
+a display name and the size, and returns `FlashResult<FlashTransferId>`. On Android, pass the `content://` URI and file size
+from your file picker; a desktop host supplies the local path or URI its engine accepts:
 
 ```kotlin
 scope.launch {
     engine.transfers.sendFile(
         targetDevice = endpoint.device,
-        fileUri = "file:///path/to/archive.zip",
+        fileUri = pickedFileUri.toString(),
         displayName = "archive.zip",
-        fileSize = 104_857_600L, // 100 MB
+        fileSize = pickedFileSize,
     ).onSuccess { transferId ->
         println("Transfer started: $transferId")
     }.onFailure { err ->
