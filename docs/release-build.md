@@ -45,13 +45,13 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 |---|---|---|
 | Android version name and code | `app/build.gradle.kts` | `2.2.0` / `5` |
 | Windows installer version | `desktop/build.gradle.kts` | `2.2.0` |
-| KMP library and WebRTC fork | `gradle.properties` → `flashLibraryVersion` | `2.2.0-beta.2` |
+| KMP library and WebRTC fork | `gradle.properties` → `flashLibraryVersion` | `2.2.0-beta.3` |
 | Hub server distribution | `server/build.gradle.kts` | `2.2.0-beta.1` |
-| Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.2.0-beta.2` |
-| Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.2.0-beta.2` |
+| Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.2.0-beta.3` |
+| Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.2.0-beta.3` |
 
-The Android and Windows tag is `v2.2.0`. The JitPack tag is `v2.2.0-beta.2`, under
-`com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.2`. The independent Hub distribution tag is
+The Android and Windows tag is `v2.2.0`. The JitPack tag is `v2.2.0-beta.3`, under
+`com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.3`. The independent Hub distribution tag is
 `server-v2.2.0-beta.1`. Use the release checklist in the changelog and test backlog before
 publishing each artifact. Never reuse a tag. Keep the Android release signing key and increase
 `versionCode` for each upgrade.
@@ -88,6 +88,13 @@ Then point consumers at that repository plus Google and Maven Central. Resolve
 `gradle/verification-metadata.xml` with `--write-verification-metadata sha256` when resolving
 the new local sample coordinates, review the additions, and repeat with strict verification. Release-only failures (ProGuard, publication-block version
 overrides) are invisible to debug builds, so do this on JDK 17 as JitPack does (`jdk: openjdk17`).
+
+Before tagging, also request the [candidate commit on JitPack](https://docs.jitpack.io/intro/#publishing-on-jitpack)
+and check its Linux build log. A Windows rehearsal cannot exercise Linux-only artifacts such as
+the AAPT2 classifier. After tagging, repeat the external consumer compiles against the public tag.
+If JitPack fails, preserve the tag and record the failure on its release page. The
+[SDK beta.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2) provides the
+verified local Maven repository ZIP as a direct download, with its checksum and setup instructions.
 
 The `RadioLinkTest*` classes (the serial-radio tester, ADR-101) are excluded from the desktop jar and installers. The
 tester runs only through `:desktop:radioLinkTest` / `:desktop:radioLinkTestCli`, which use the compiled output

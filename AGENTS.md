@@ -918,10 +918,10 @@ This section must be updated by the AI as implementation progresses.
 ## Current Phase
 
 **2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0` and Hub prerelease
-`server-v2.2.0-beta.1` point to `322a92aa`. The release-wide host gate passed. SDK beta.1
-failed on JitPack (ERROR-1014); beta.2 adds the missing verification metadata and passed
-the local JDK 17 publish rehearsal. The owner authorized publication with remaining manual
-checks open. See `logs/handoff.md` and the test backlog for live SDK status and release acceptance.
+`server-v2.2.0-beta.1` point to `322a92aa`. The release-wide host gate passed. SDK beta.2 is
+available as a verified Maven repository ZIP. Linux dependency verification failures on JitPack
+are tracked in ERROR-1014..1016 and REL22-04. The owner authorized publication with remaining
+manual checks open. See `logs/handoff.md` and the test backlog for release acceptance.
 
 **2026-11-08 — Release device findings addressed in the `codex/release-2.2.0` working tree.**
 ERROR-1010/1011/1012 have code fixes for Nearby pairing consent, Android revoke notices and truthful

@@ -6,7 +6,7 @@ Use it when a host controls compatible radio hardware and its permissions.
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-radio:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-radio:v2.2.0-beta.3")
 }
 ```
 

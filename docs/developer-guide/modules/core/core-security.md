@@ -8,7 +8,7 @@ The `:core:security` module provides the cryptographic engine, device identity g
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-security:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-security:v2.2.0-beta.3")
 }
 ```
 

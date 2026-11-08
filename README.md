@@ -53,11 +53,13 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 
-This branch targets the library beta tag `v2.2.0-beta.2`. Use these coordinates once that tag is available on JitPack.
+This branch targets the library beta tag `v2.2.0-beta.3`. Use these coordinates once that tag is available on JitPack.
+For a direct download, the [SDK beta.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
+includes a Maven repository ZIP, a SHA-256 manifest, and instructions for `com.transfer.flash` coordinates.
 See [the changelog](CHANGELOG.md) for upgrade notes and [published modules](#published-modules) for smaller dependencies.
 
 ## Quick start
@@ -184,8 +186,8 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.2.0-beta.2")
-    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.2")   // optional in-call screen
+    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.3")   // optional in-call screen
 }
 ```
 
@@ -484,7 +486,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 

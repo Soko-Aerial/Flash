@@ -19,7 +19,7 @@ It is a Kotlin Multiplatform module with an **Android** and a **JVM** target (`c
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-swarm:v2.2.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-swarm:v2.2.0-beta.3")
 }
 ```
 
