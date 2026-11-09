@@ -1,5 +1,11 @@
 # Current Handoff
 
+> **2026-11-09 — Linux x86-64 packages added to Flash 2.2.0.** The `.deb`, portable archive and
+> separate SHA-256 manifest are on the existing release. Package metadata and GitHub asset digests
+> were verified. Install/launch/upgrade on Linux is owed under REL22-LINUX-01. Install steps:
+> `docs/install-linux.md`. The reported retry mismatch is tracked separately as XFER-RETRY-02;
+> OpenCode is investigating the sender restart and stale receiver state. No retry fix was shipped.
+
 > **2026-11-08 — Flash 2.2.0, Hub beta.1 and SDK beta.3 published.** The original release tags point to `322a92aa`:
 > [Android and Windows](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0),
 > [SDK beta.1](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.1) and

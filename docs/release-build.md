@@ -181,6 +181,13 @@ script doesn't attempt it.
 These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers were built with (`packageVersion` 2.2.0 builds `Flash-2.2.0.msi` / `.exe`).
 `packageRelease*` (ProGuard) has never been verified for this app.
 
+## Linux release packages
+
+Flash 2.2.0 has two Linux x86-64 assets: `flash_2.2.0_amd64.deb` and `flash-2.2.0-linux-x64.tar.gz`.
+The Linux build is separate from `tools/build-release.ps1`. Publish the packages with
+`SHA256SUMS-linux.txt`; keep the original Android and Windows checksum manifest alongside it.
+See [Install Flash on Linux](install-linux.md) for install, launch and verification steps.
+
 ## Environment the script sets up
 
 - **JDK 21 launcher and packaging tools.** Search order:

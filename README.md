@@ -8,7 +8,7 @@
 
 # Flash
 
-**Offline, LAN peer-to-peer file transfer, messaging and calling for Android and Windows desktop (Linux in progress) — no server, no
+**Offline, LAN peer-to-peer file transfer, messaging and calling for Android, Windows and Linux desktop — no server, no
 internet, no account.** Flash discovers nearby devices over your local network
 (Wi-Fi, or a phone hotspot), opens a direct encrypted channel between them, and
 streams files, chat and voice/video calls straight across. Nothing leaves the local network; there
@@ -21,15 +21,17 @@ take the whole engine or just the transport pieces you need. Supports **Android 
 
 ## Get the app
 
-Download the signed Android APK and the Windows installers from the
-[Releases page](https://github.com/Soko-Aerial/Flash/releases). The 2.2.0 release uses
-`Flash-2.2.0.msi` and `Flash-2.2.0.exe`. Verify downloads against the release’s `SHA256SUMS.txt`.
+Download the Android APK, Windows installers or Linux packages from the
+[Flash 2.2.0 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0). Verify Android and
+Windows files against `SHA256SUMS.txt` and Linux files against `SHA256SUMS-linux.txt`.
 
 - **Android 7.0 (API 24) or newer.** Allow "install unknown apps" for your browser or file manager, then open the APK.
   **If you have `v2.0.0-beta` installed, uninstall it first** (this deletes its chats and pairings): that build was signed with a
   debug key and Android will not update it with the release-signed 2.1.0. Updates after 2.1.0 install in place.
 - **Windows 10/11.** Per-user install, no administrator rights. The installers are not code-signed yet, so SmartScreen shows
   "unknown publisher": choose *More info*, then *Run anyway*.
+- **Linux x86-64.** Use the `.deb` on Debian or Ubuntu, or extract the `.tar.gz` for a per-user setup.
+  See [Install Flash on Linux](docs/install-linux.md) for the commands.
 - Both devices must be on the same Wi-Fi network (or one phone's hotspot) to find each other.
 - The Flash Hub ships on a separate experimental server beta line. The Radio gateway and Android screen presenter are experimental. See
   [CHANGELOG.md](CHANGELOG.md).
