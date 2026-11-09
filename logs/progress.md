@@ -1,6 +1,28 @@
 # Progress Log
 
-## 2026-11-05 (latest) - Linux Bluetooth: Live Streaming Discovery, Automated Agent Pairing & User-Space RFCOMM
+## 2026-11-09 (latest) - Fixed Linux packaged runtime missing jdk.security.auth and empty chat list (ERROR-1020)
+
+### Worked on
+Investigated user report that after installing Flash on Linux via `.deb`, the chat list was empty.
+Diagnosed through `desktop.log` that:
+1. `Chat database unavailable; chats will be empty this run: com/sun/security/auth/module/UnixSystem`.
+2. `IDENTITY DEGRADED: persisted identity key at ... could not be read (com/sun/security/auth/module/UnixSystem)`.
+
+Root cause: `dbus-java`'s SASL `AUTH EXTERNAL` transport invokes `com.sun.security.auth.module.UnixSystem` to obtain the operating system UID for D-Bus Secret Service authentication. Because `jdk.security.auth` was missing from `modules(...)` in `desktop/build.gradle.kts`, `jlink` stripped `UnixSystem` from the bundled runtime, causing `NoClassDefFoundError`.
+
+### Changed
+- `desktop/build.gradle.kts`: added `"jdk.security.auth"` to `compose.desktop.application.nativeDistributions.modules`.
+- `core/security`: in `KeyFileVault.kt` (`SealedVault`), widened exception catching from `Exception` to `Throwable` so linkage errors and class loading errors are caught and handled cleanly.
+- `tools/build-release.sh`: rebuilt release artifacts with the updated runtime (`flash_2.2.0_amd64.deb` and `flash-2.2.0-linux-x64.tar.gz`).
+
+### Verification
+- Executed the packaged binary (`/home/signal/flash/desktop/build/compose/binaries/main/app/Flash/bin/Flash`):
+  - Verified `desktop.log`: `I/WS: [bring-up] chat repository opened (/home/signal/.local/share/flash/chat/flash.db) (+436ms)`.
+  - Identity loaded cleanly without degradation.
+  - Group synchronization and chats loaded immediately without error.
+- `./gradlew :core:security:jvmTest`: BUILD SUCCESSFUL.
+
+## 2026-11-05 - Linux Bluetooth: Live Streaming Discovery, Automated Agent Pairing & User-Space RFCOMM
 
 ### Worked on
 Researched Linux BlueZ Bluetooth stack architecture and resolved gaps:

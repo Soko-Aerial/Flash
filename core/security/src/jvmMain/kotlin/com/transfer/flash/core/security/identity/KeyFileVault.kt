@@ -142,11 +142,11 @@ internal class SealedVault(private val sources: List<MasterKeySource>) {
     }
 
     fun protect(plain: ByteArray): ByteArray {
-        var lastFailure: Exception? = null
+        var lastFailure: Throwable? = null
         for (source in sources) {
             val key = try {
                 source.loadOrCreate()
-            } catch (failure: Exception) {
+            } catch (failure: Throwable) {
                 lastFailure = failure
                 continue
             }
@@ -168,7 +168,11 @@ internal class SealedVault(private val sources: List<MasterKeySource>) {
             ?: error("identity blob was sealed by an unavailable key source (tag ${blob[0]})")
         // Never create a key here: a missing key means the blob can no longer be opened, and silently minting a new
         // key would only fail later with a less useful message.
-        val key = source.load() ?: error("identity master key is missing (source tag ${source.tag})")
+        val key = try {
+            source.load() ?: error("identity master key is missing (source tag ${source.tag})")
+        } catch (e: Throwable) {
+            throw IllegalStateException("Failed to load master key from source tag ${source.tag}: ${e.message}", e)
+        }
         try {
             val cipher = Cipher.getInstance(TRANSFORM)
             cipher.init(
