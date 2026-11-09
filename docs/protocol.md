@@ -1619,6 +1619,8 @@ The full list of routes the hub answers is `docs/protocol-routes.txt`; `RouteTab
 
 - **Revocation list v3.** `audience` = `HubClientAuth.rootFingerprintHex(rootPublicKey)` (uppercase hex). `deviceHash(audience, deviceId)` = lower-case hex SHA-256 over `AuthCanonicalWriter("flash-revoked-device-v1").text(audience).text(deviceId)`. Golden: `deviceHash("TEST-AUDIENCE","dev-1")` = `5889627c...68c0` (full value in `HashedRevocationListTest`). `GET /api/v1/revocations` serves v3; `keytool revoke` signs v3; the hub republishes its plain list as v3 at startup. A client that does not know v3 ignores the list.
 - **Mailbox at rest.** Not a wire change: `mailbox_envelopes.payload` is sealed with AES-256-GCM (`sealed=1`), AAD `mailbox_envelopes.payload|<len>:origin|<len>:target|<len>:msgId`. See ADR-130.
+- **Group membership removal (ADR-358).** The Hub retires that device's undelivered group mailbox rows atomically with directory membership deletion. The recipient cannot replay those rows after rejoining. A row already fetched is checked again before the relay authorises hand-off. The sweep reports `FLASH_QUEUE_STATE state=DROPPED` to an online sender for each retired recipient copy. A previously authorised hand-off can still complete. Direct mailbox rows are unaffected.
+- **Admin announcement paging (HR4).** `GET /admin/api/v1/announcements` orders by descending creation timestamp and ID. Send `before=nextBefore` and `beforeId=<last item id>` together to continue across tied timestamps. Timestamp-only requests keep their legacy semantics. The scope and search filters must match the preceding page. The response shape is unchanged.
 - **Unreadable mailbox rows (RLY-01, ADR-222).** A sealed row that cannot be opened (the data key was lost or replaced, or the row was moved) is **quarantined**: mailbox migration v4 adds `undeliverable_reason`, the page fetch skips such rows but still fills its `LIMIT` from the rows behind them, so the device's drain continues and delivers the readable rows in the same connection. The hub tells each sender `FLASH_QUEUE_STATE state=DROPPED` (a client shows the message as failed and may resend; a resend of the same id replaces the quarantined row), counts the rows (`flash_mailbox_events_total{event="quarantined"}`, console counter "Stored messages set aside (unreadable)") and logs the recipient by its first 8 characters only. The row is kept until the normal TTL sweep removes it. If the quarantine write itself fails, the session is cut as before and the device drains again on reconnect.
 - **Approvals (device bearer).** `GET /api/v1/approvals` -> `[ApprovalDto{challengeId, action, admin, target, nonce, code, expiresAtMs}]` for the calling device (empty when it is nobody's approver). `POST /api/v1/approvals/{challengeId}` body `ApprovalSubmitBody{signature}` (Base64, DER or P1363, at most 256 chars) over `HubStepUp.approvalBytes(challengeId, action, admin, target, nonce)` (domain `flash-hub-approval-v1`) -> `{ok:true}` or 403 `ERR_FORBIDDEN` (expired, already answered, not this device's, not the bound approver). Six-digit code: `HubStepUp.approvalCode(challengeId, nonce)`; golden `("c-1","n0nce")` = `396796`, `("c-2","n0nce")` = `530814`.
 - **Console API.** `POST /admin/api/v1/stepup/challenge` now also returns `approvalRequired`, `approvalCode`, `browserKeyRequired` (false for `admin.signer.replace`); `GET /admin/api/v1/stepup/{id}` -> `StepUpStatusDto{verified, approvalRequired, approved, expiresAtMs}` (404 when expired or another admin's); `POST /admin/api/v1/admins/me/approver` `{deviceId, code}` (first phone: fresh TOTP, plus browser step-up `approver.change` when a signer exists; replacing: step-up with the old phone's approval); `POST /admin/api/v1/admins/me/approver/remove` `{code}` (a recovery code). `SessionDto` and `AdminDto` gain `approverDeviceId`. New error codes in challenge creation: `ERR_APPROVER_UNAVAILABLE` (bound phone revoked or no longer an admin device; fail closed), `ERR_NO_APPROVER` (signer replacement needs a bound phone).
@@ -1848,3 +1850,28 @@ A sender that sees one of these tokens marks the row **Failed** (retryable) with
 `reason`, or with a token it does not know, is a plain cancel (**Cancelled**, final). A re-declared session
 (`SESSION_CONFLICT`) is deliberately never refused this way, because that would end a healthy running transfer. An older
 sender ignores `reason` and shows "Cancelled by the other device", the behaviour before ADR-221.
+
+## Offline Hub revocations on the LAN (ADR-359)
+
+An Android app, Android SDK host or desktop with the revocation handler advertises `rvg1` in its LAN HELLO.
+Only a live TLS session whose peer certificate key matches a cached, same-root directory statement can exchange
+updates. The directory lease still bounds that binding. A revocation can cross a known cutoff over that binding
+without granting chat, transfer or group rights.
+
+| `FLASH_RVG` fields | When sent |
+|---|---|
+| `op=offer root=<root fingerprint> v=<version>` | An eligible peer has a verified positive version. |
+| `op=request root=<root fingerprint> v=<version>` | The offered version is newer than the receiver's verified version. |
+| `op=list root=<root fingerprint> v=<version> body=<Base64 UTF-8 RevocationList JSON>` | The same live session requested the offered version and it is still available. The JSON limit is 64 KiB before encoding. |
+
+The root fingerprint uses the existing upper-case hexadecimal Hub fingerprint. Fields use normal Flash text escaping.
+One exchange per peer and organisation is allowed in each ten-minute monotonic window, including reconnects within
+the process. A negotiated connection can send a new offer while it stays open. Peers without `rvg1` exchange no
+revocation frames. This does not add a relay or REST route.
+
+The receiver rejects unsolicited bodies, cross-root updates, equal and lower versions, and unauthorised signatures.
+Delegate-signed lists use the matching certificate already trusted at enrolment. A later list must retain known
+delegation cutoffs. The signed list is saved atomically before it changes trust. Restoring it does not extend the
+directory lease. The LAN directory carries statement serials rather than the remote device's current certificate
+serial. Device-ID and delegation revocations apply remotely and certificate-serial revocations apply to the local
+enrolment credential. No manual pairing pin is changed.

@@ -19,13 +19,14 @@ It is a Kotlin Multiplatform module with an **Android** and a **JVM** target (`c
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-swarm:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-swarm:v2.2.0-beta.3")
 }
 ```
 
 `core-engine` already `api`s it, so an umbrella consumer has it on the classpath. Nothing runs until the host attaches
-it, and **in the Flash apps the feature is off by default**: the Android host calls `attachSwarm()` only when the
-user's "group swarm" setting is on (`groupSwarmEnabled` in `DiscoveryEngineHolder`).
+it. **The Flash apps enable swarm by default** and honour an explicit off setting.
+In a custom host, call `attachSwarm(config)` when the factory supplies a swarm implementation,
+or attach a host-built `FlashSwarm` with `attachSwarm(swarm)`.
 
 ---
 

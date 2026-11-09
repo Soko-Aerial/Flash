@@ -22,15 +22,235 @@
 >    with Linux frequency parsing via `iw dev` (2.4 GHz, 5 GHz, 6 GHz) and wired Ethernet interfaces (`enp*`, `eno*`, `ens*`, `eth*`).
 > 5. **File Manager Reveal:** Updated [`DesktopHelpers`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopHelpers.kt)
 >    to invoke `org.freedesktop.FileManager1.ShowItems` via D-Bus with fallback to folder open.
-> 6. **Dependency Verification:** Resolved `ERROR-984` in `gradle/verification-metadata.xml` for `desktop-jvm-linux-x64-1.9.3.pom`.
+> 6. **Dependency Verification:** Resolved `ERROR-1018` in `gradle/verification-metadata.xml` for `desktop-jvm-linux-x64-1.9.3.pom`.
 > Verification: `:core:radio:jvmTest` (green, 6 suites), `:desktop:compileKotlinJvm` (green), `:desktop:jvmTest` (`*Radio*`, `DesktopNetworkBandTest`, `DesktopDiscoveryDownscaleTest`, `FlashDesktopEngineTest` all green), `:desktop:run -m` (green).
 
-> **2026-11-05 — ERROR-984: DESKTOP LINUX DEPENDENCY VERIFICATION RESOLVED.** Added SHA-256 for
+> **2026-11-05 — ERROR-1018: DESKTOP LINUX DEPENDENCY VERIFICATION RESOLVED.** Added SHA-256 for
 > `desktop-jvm-linux-x64-1.9.3.pom` (`8eb6b42e9af6acb401948e41e6fdd372377d23c4aebbbb1c768f777aaf2c63e8`) in
 > `gradle/verification-metadata.xml`. Resolves build failure when running `:desktop:run` on Linux where aboutLibraries
 > POM batch and configuration cache failed on unverified Linux Compose desktop POM metadata. Verified: `:desktop:compileKotlinJvm`
 > (1m 45s), `:desktop:exportLibraryDefinitionsJvm` (2s), `:desktop:jvmTest` (2m 48s, green), `:desktop:run -m` (3s).
 
+> **2026-11-08 — Flash 2.2.0, Hub beta.1 and SDK beta.3 published.** The original release tags point to `322a92aa`:
+> [Android and Windows](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0),
+> [SDK beta.1](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.1) and
+> [Hub beta](https://github.com/Soko-Aerial/Flash/releases/tag/server-v2.2.0-beta.1). The app is the
+> latest stable release. Its six artifacts match the uploaded checksum manifest; the signed
+> universal APK SHA-256 is `68f13dd5835984d73fff0f887428e1d854a19e8e557e210aa0fd1568011f912f`.
+> SDK beta.1 failed JitPack's cold build (ERROR-1014). [SDK beta.2](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
+> points to `22385edb`. The JDK 17 publish task list, isolated Android/JVM compiles and desktop Maven
+> sample passed locally. The release includes a verified Maven ZIP and checksum manifest; its ZIP
+> SHA-256 is `d3276f8822a87994c27f8430519aa4b9c0e9196a1894b10559d98734d6865f04`.
+> JitPack beta.2 failed on Linux AAPT2; the rehearsal at `4e3bb7de` got past it and found the Linux
+> Compose POM gap (ERROR-1015/1016). The cold JitPack build for `13e0fa3f` passed and published artifacts;
+> [SDK beta.3](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.3) points to that exact commit.
+> JitPack published 57 Maven modules on JDK 17. Both public-tag consumer compiles passed
+> (REL22-04), including the WebRTC and enterprise APIs. The Hub ZIP and checksum were uploaded without a
+> deployment. The owner approved release with the signed-device, installer and complete interop
+> checks outstanding. Resume those cases from `docs/testing/TEST-BACKLOG.md`.
+>
+> SDK documentation follow-up: the README and developer guide now describe standalone radio,
+> Android/JVM PTT, pairing, and host permissions accurately. The revised README snippet compiled
+> against beta.3 under JDK 17 at `compileSdk` 35. This follow-up changes docs and comments only.
+
+> **2026-11-08 — REL22-FINAL-ANDROID: pairing root-cause fixed and verified; signed release build in
+> progress; Windows installer/upgrade gates still blocked.** Working tree on `codex/release-2.2.0`
+> (`64092bf3` + uncommitted release fixes). Instrumented reproduction proved ERROR-1013 was an
+> **identity mismatch**, not a timing race: after a revoke the pin store refuses the automatic write
+> (ADR-353), so a first outbound pairing had no stored/observed key and failed before the code.
+> Fix: `core/network/.../TofuPinVerifier.kt` reports the first-use key to the pairing observed-key
+> map in both directions; `PairingUiMapper` no longer renders the code-less `AwaitingPeerNonce`
+> phase as "waiting for peer". Focused regressions added (`FlashPinVerifierTest`,
+> `PairingUiMapperTest`). **Device result:** 8/8 pairing cycles PASS (both directions × both accept
+> orders × 2), W1-NACK-01/W1-REVOKE-03/W1-TITLE-01 PASS, TABREF-01 affected slice PASS (8 MiB
+> `555b7383…` matched, completed file stayed completed after revoke). **Interop:** Android↔Windows
+> SECAUD-22 PASS (desktop `Flash Jaguar` ↔ phone, code `915 696`); Windows→Android chat PASS;
+> the Windows→Android file was offered and accepted but the desktop engine auto-closed at 15:08:39
+> before data flow (no bytes), and phone→desktop was not run (phone in owner use). Details:
+> `release-final-20261108T131525Z\interop-result.md`. **Release:** `tools/build-release.ps1 -Target
+> all -Apk signed -NoDaemon` completed (12m15s, exit 0) from the stabilized tree; old `dist/2.2.0`
+> is preserved in `baseline-2.2.0-dist/`. Signed `Flash-2.2.0.apk` SHA-256
+> `2e5b257c…80b6`, v2+v3, release cert `b695f4d6…e89af`, versionName 2.2.0 / code 5; per-ABI APKs
+> and both installers rebuilt. The stale pre-fix unsigned APKs were moved out of `dist` and the
+> sums regenerated. **Verdict: HOLD for publication** — REL-02/03/MIG-01 (debug-signed phones, no
+> disposable Android device), REL-05/MIG-02 (no disposable Windows Sandbox/VM), the released-wide
+> forced suites and signed-artifact acceptance remain; beta JitPack is a post-tag check. **Do not
+> commit, uninstall, clear or publish.** Evidence and exact statuses: `android-report.md`,
+> `candidate.md`, `desktop-report.md`, `interop-result.md`.
+
+> **2026-11-08 — REL22-PHONE-RETEST PASSED on the two phones; Windows halves and a focused
+> ERROR-1010/1013 repro remain.** The fixed universal debug APK (`77b1e108…123d8`) was installed
+> with `adb install -r` on the Infinix X6882B and Samsung SM-G986U1, data preserved. With a manual
+> test pair and an 8 MiB synthetic file: **SECAUD-22 Android half PASS** (initiator card over
+> Nearby, matching codes, one-sided accept paired nothing, both accepts paired, decline changed no
+> trust); **W1-NACK-01 PASS** (offline revoke → on reconnect B logged `Flash Hippo no longer trusts
+> you…` 12:37:04.087 and failed its queued text 12:37:04.102; A logged the no-key drop and resent);
+> **W1-REVOKE-03 PASS** (B held `revoked_adb2d87d…`, no pin; manual Pair at 12:49 cleared it, saved
+> the pin, texts delivered); **W1-TITLE-01 PASS** (friendly title + Not paired survived a restart);
+> **TABREF-01 retested slice PASS** (waiting row with no Pause/Resume, accept → complete,
+> `wholeFile=MATCH`, SHA-256 `918c4b1f…12ac7`, completed file stayed Sent after the revoke).
+> **Still open:** ERROR-1010/ERROR-1013 — Samsung-initiated pairing failed twice with `security
+> check failed` (12:24/12:25), once with no initiator card for the whole window (12:48) and once
+> after a responder-first accept (12:46); the 12:49 retry succeeded, so it is intermittent.
+> **Windows:** read `desktop-ready.md` (`HANDOFF: YES`), attempted Android↔Windows pairing (cards
+> matched `949 262`), but the phone accept landed after the card expired and the isolated desktop
+> auto-closed at its 12:53:48Z deadline; no trust changed. Windows SECAUD-22 and interop remain
+> owed. **State:** the test pair Flash Hippo ↔ Flash Olive is left in place; pre-existing Fox/
+> Hedgehog/Raspberry pairings untouched; synthetic files deleted; logcat stopped. **Docs updated:**
+> TEST-BACKLOG retest block and five case statuses; ERROR-1011/1012 resolved; ERROR-1010 retest
+> note; ERROR-1013 added. Evidence:
+> `%LOCALAPPDATA%\FlashTestEvidence\retest-20261108T121940Z\phone-report.md`.
+> **Next:** re-open the isolated desktop for the Windows halves; then a protocol-log repro of
+> ERROR-1010/1013. `dist/2.2.0` still predates the fixes and the signed install remains blocked.
+
+> **2026-11-08 — Three 2.2.0 device findings fixed in code; phone retest owed.** On
+> `codex/release-2.2.0` atop `64092bf3`, Android now hosts one pairing consent card across tabs
+> (ERROR-1010) and resends the existing rate-limited revoke notice to a capable, revoked peer
+> when its sealed frame arrives without a key (ERROR-1011). Sender-side consent wait no longer
+> shows Pause/Resume; revoke fails only messages still in the outbox, leaving LAN file bubbles
+> alone (ERROR-1012). No wire or schema change. The locked gate passed 1,855 tests, Android engine
+> and desktop compile, and debug APK assembly. The new universal debug APK is
+> `app/build/outputs/apk/debug/app-universal-debug.apk`, SHA-256
+> `77b1e108b0551c1a1bca0ddd70e8d046f83f1ee5cca3a6d49d085d8be24123d8` (same debug signer as the
+> prior phone run). OpenCode found no ADB devices on the follow-up. Next: data-preserving retest
+> SECAUD-22, W1-NACK-01/W1-REVOKE-03/W1-TITLE-01 and TABREF-01. Rebuild signed artifacts before
+> release acceptance; the APK in `dist/2.2.0` predates the fixes and still cannot upgrade the two
+> existing debug-signed installs. Do not uninstall or clear them.
+
+> **2026-11-08 — 2.2.0 SIGNED DEVICE PASS BLOCKED; 2.2.0 DEBUG FUNCTIONAL BATCH DONE; 3 OPEN DEFECTS.**
+> FLASH-REL22-DEVICE on `codex/release-2.2.0`, HEAD `64092bf3`/product `1b71d4e0`; no commit, push, tag,
+> release or deployment. Infinix X6882B (Android 14) + Samsung SM-G986U1 (Android 13) both held a
+> **debug-signed 2.1.0** (cert `703647c1…`), so the release-signed `dist/2.2.0/Flash-2.2.0.apk`
+> (cert `b695f4d6…`, versionName 2.2.0 / code 5) was refused on both with
+> `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Uninstall/clear was not authorized, so **REL-02/03/07, the
+> release-key MIG-01 and the signed halves of REL-06 are blocked**. REL-01 PASS (checksum + v2/v3 +
+> release certificate). A data-preserving **debug 2.2.0** install was then used (`adb install -r`
+> Success, firstInstallTime unchanged, chats/pairings intact, no migration error); **the phones now
+> carry that debug 2.2.0 build**, and the signed release still cannot install over it without an
+> uninstall (which remains unauthorized).
+> **Findings:** **ERROR-1010 / SECAUD-22 FAIL** — the pairing initiator's consent card is not rendered
+> on the Nearby tab (it appears only after switching to Chats; both codes then match and both accepts
+> are required, so the trust model itself holds). **ERROR-1011 / W1-NACK-01, W1-REVOKE-03 FAIL and
+> W1-TITLE-01 PARTIAL** — the Android legacy inbound handler (`DiscoveryEngineHolder.kt:2643-2645`)
+> logs `Received FLASH_SEC … no stored session key; dropping` but does not call the ADR-351 negative
+> ack that `FlashInboundRouter`/`Flash.kt` implement. A revoked peer stayed Connected/Sent for 3+
+> minutes (9 drops, no `PAIR_REVOKE`), kept `paired_`/`pin_`, and only failed on a local revoke.
+> A's local tombstone was correct (`revoked_…`, no pin). **ERROR-1012 / TABREF-01 PARTIAL** — a
+> waiting-for-acceptance row read "Paused (Tap to resume)" before any pause, and two already-delivered
+> files flipped to Failed after the revoke. Direct 1 MB and 512 MB A→B transfers completed (512 MB
+> paused at 57% and resumed) with matching SHA-256; TABREF-02/03 PARTIAL, RECEIVE-CAT-01 PARTIAL
+> (direct `.bin` → `FlashReceived/Other`); TABREF-04, RECEIVE-CAT-02 and REL22-01..05 blocked/not run.
+> Test files were deleted and the test pairing was revoked on both phones (baseline Raspberry/Fox/
+> Hedgehog pairings untouched); test-created `revoked_<peer>` tombstones remain and clear on manual Pair.
+> Evidence: `%LOCALAPPDATA%\FlashTestEvidence\20261108T033000Z\report.md` and
+> `key-log-excerpts.txt`.
+> **Next:** fix ERROR-1011 (wire the negative ack into the Android host) and re-run W1-NACK-01/
+> W1-REVOKE-03/W1-TITLE-01; then ERROR-1010 and ERROR-1012. The owner must decide how to run the signed
+> release pass (compatible phone, or uninstall on a disposable device — do not clear these phones).
+
+> **2026-11-07 — 2.2.0 release candidate on `codex/release-2.2.0`.** App/desktop 2.2.0,
+> code 5, SDK/Hub 2.2.0-beta.1. Security fixes, release docs and JDK 17 publication dry run
+> complete. Local isolated consumers passed on Android and JVM. The owner approved the
+> compact tabs and will run the phone checks. Use `docs/release-build.md` and the REL22/HUBREADY
+> cases for the remaining acceptance before publishing.
+> Candidate `302c7b95` passed the forced server gate (675 tests) and is running on the
+> isolated `myserver` test Hub. Health and Hub info report `2.2.0-beta.1`; console HTTP 200.
+> The old backup and previous distribution were preserved under
+> `~/flash-hub/release-220-20261107T160937Z/` before the swap. The ordinary `data.bak`
+> slot now holds the pre-swap test data. The rest of the real-host acceptance is owed.
+> PTT first-packet fix `40375e14` passed the focused JVM regression and the forced
+> Android-host gate (4,294 tests). Signed APKs and Windows installers are in
+> `dist/2.2.0`. The Hub distribution is `server/build/distributions/server-2.2.0-beta.1.zip`.
+> Final product commit `1b71d4e0`: 4,571 JVM/desktop/Hub test cases, zero failures after
+> the isolated 274-case radio rerun and two expected POSIX-only skips. Android host
+> 4,294/4,294, Node 83/83, lint zero errors. The JDK 17 publication rehearsal, isolated
+> consumers, strict dependency verification and signed package checks passed. See
+> ERROR-1009 for the intermittent radio simulation and the progress entry for commands.
+> **Next:** record the owner's signed device and upgrade results and finish HUBREADY-01–05
+> before the public tags. Then verify actual JitPack resolution for the beta tag (REL22-04).
+
+> **2026-11-07 — Hub HR1–HR5 implementation complete on `dev`.** Implementation commit `165c1f4d`. Clean-checkout verification passed 788 Gradle tests and 83 console tests, Android APK assembly and desktop compilation. Android app/SDK and desktop persist verified per-root revocation state and exchange it through authenticated LAN sessions. The restored HR5 gate passed 1,035 tests, APK assembly and desktop compile. HUBREADY-01..05 remain owed on real hosts. Use the HR6 handoff in `docs/plans/HUB-READINESS-REMEDIATION.md` to start fresh-identity replacement.
+
+> **2026-11-07 — Hub remediation HR1–HR4 implemented locally.** Scoped server listings, data-key restore validation, group mailbox retirement, and console scope/provisioning/revocation import/approval/paging are in the working tree. The console Chrome fixture and Node suite passed. Real Hub/browser-device acceptance remains HUBREADY-01..05. Next HR5, signed LAN revocation propagation. See `docs/plans/HUB-READINESS-REMEDIATION.md` for the precise stopping point.
+
+> **2026-11-07 — Hub remediation HR3 implemented.** Group removal now retires undelivered Hub group mailbox copies across rejoin, and leaves direct mail deliverable. Locked server gate 103/103. Both trigger-removal mutations failed. Authority: ADR-358 and `docs/plans/HUB-READINESS-REMEDIATION.md`. HUBREADY-03 remains owed. Next HR4, scoped console workflows and announcement paging.
+
+> **2026-11-07 — Hub remediation HR2 implemented.** Startup and `admin-recovery` validate the matching `data.key`, and legacy sealed/unsealed cases are covered. Locked server gate 46/46. Authority: ADR-357 and `docs/plans/HUB-READINESS-REMEDIATION.md`. HUBREADY-02 operator drill remains owed. Next HR3, queued group delivery after removal.
+
+> **2026-11-07 — Hub remediation HR1 implemented.** Scoped SQL paging and announcement visibility passed 79 server tests, with two reproduced regressions and two scope-removal mutations. Authority: `docs/plans/HUB-READINESS-REMEDIATION.md`. HUBREADY-01 remains owed after HR4. HR2 is the current phase.
+
+> **2026-11-07 — Hub rollout review recorded.** `docs/audit/2026-11-07-hub-feature-readiness.md` separates implemented features, incomplete workflows and operational gates. Follow up on LAN revocation propagation, department-head provisioning and scoped queries, restore/key validation, device identity replacement and the console revocation-list installer. ANN-01/10 still need a system notification producer. Group mailbox replay after removal needs an explicit policy. HUBREADY-01..04 cover the new acceptance cases. Product code and deployment were unchanged by this review.
+
+> **2026-11-07 — Compact Nearby/Transfers and categorized receives implemented.** Normal paired tiles about 64 dp, three-dot menu with Copy ID, conditional Verify and Revoke, calls in chat. Cross-screen size comparison, descriptive headers and spacing in `docs/ui/transfers-nearby-refinement.md`. ADR-356 routes direct/Hub/swarm completions into receive categories and persists new sent voice clips outside Temp. Final gate green, 83 tests including render, APK assembled, 48 native images in `docs/ui/transfers-nearby-compact/`. Next use TABREF-04 and RECEIVE-CAT-01/02 for laptop and phone checks. Uncommitted atop `f999b5a5`.
+
+
+> **2026-11-06 — Transfers/Nearby component refinement, uncommitted atop Hub `f999b5a5`.** Owner rejected the first workspace redraw; restored original screens, then refined components/states. Latest steering: paired-device tiles with rectangular slightly rounded Chat/Call/Verify/Revoke buttons, responsive 1–3 columns. Full 102-test/APK/47-render gate passed (4m14s); final narrow/large-font sizing gate also PASSED (3m5s; JVM 26 + Android-host 26, APK and Nearby native recaptures green). Phone/desktop/320 dp/200% images checked; owner review is the next step. Current design: `docs/ui/transfers-nearby-refinement.md`; native images: `docs/ui/transfers-nearby-refined/`. TABREF-01..03 device checks owed. No device operated or push; user photos untouched. Keep the existing compact Transfers design, not the rejected broad redraw.
+
+
+> **2026-11-06 — HUB WORKSPACE REDESIGN IMPLEMENTED on `dev` (commit follows this record).** Design and evidence: `docs/ui/hub-workspace-redesign.md`, ten native fixture captures in `docs/ui/hub-workspace-renders/`. Hub JVM 205 + Android-host 196 tests green; Android debug assembly and desktop render green. No device verification; HUBWORK-01..05 owed. Owner requested a focused Hub commit, then Transfers and Nearby with minimal professional paired-device rows. Next: research/design UI-047/048 before edits. Existing user photos remain untouched. No push.
+
+
+> **2026-11-06 (latest) - CHAT REDESIGN V2 MERGED INTO `dev` AS `ca9ada63`.** The approved chat mock and Compose port from `design/chat-redesign` are now on `dev`: wallpaper/appearance, composer/header, all 67 redrawn icons and the phone-pass fixes. Branch decision renumbered **ADR-355**; branch errors **ERROR-989/990** (main already used ADR-354/ERROR-984/985). CHATUI-13/14 PASS and CHATUI-15 PARTIAL on the Infinix; CHATUI-01..12/16 and the desktop checks remain owed. Verification: `:ui:chat:jvmTest`, `:ui:theme:jvmTest`, `:app:testDebugUnitTest` and `:desktop:jvmTest` green; app/desktop compile green. See the pre-merge records at the end and `docs/testing/TEST-BACKLOG.md` CHATUI.
+
+> **2026-11-06 (latest, full backlog audit) - 767 test headings, 752 not fully passed; radio is only 85 of them.**
+> The earlier "only radios" reading was an artifact of parsing only `### Status` TODOs. The full inventory is
+> `docs/testing/TEST-BACKLOG-AUDIT-2026-11-06.md` and is linked from the backlog header. Counts: 681 TODO, 5 PARTIAL,
+> 6 BLOCKED, 30 NO_STATUS, 14 OTHER non-pass, 1 FAIL, 15 PASS, 15 automated-but-device-owed. Large non-radio blocks:
+> hub/server/console 223, groups/swarm 99, calls/PTT 90, chat/UI/search 64, performance 55, network/release 47. 58 are
+> explicitly planned/not built. `dev` `c99ca55a` (then this audit record) is pushed to `origin/dev`.
+>
+> **2026-11-05 (two-phone test session) - FGS-01, XFER-RETRY-01 (empty case) and RADIO-PROFILE-A-01 (UI) PASS.**
+> Infinix X6882B + Samsung SM-G986U1, current debug APK installed with `adb install -r` (data preserved). The phone pair
+> is on the same Wi-Fi and has a session. `FGS-01`: foreground service `foregroundId=41`, no FGS crash. `XFER-RETRY-01`:
+> 0-byte file shows the visible Failed row, retry before/after a process restart does not crash. `RADIO-PROFILE-A-01`:
+> Profile A is dimmed with **Not supported** and cannot be selected; transmit step was blocked by `Link lost` (radio not
+> powered/connected). The remaining radio TODOs are **BLOCKED on physical radio hardware**, not code. No data or pairings
+> were cleared; the Infinix chat is back on **Automatic**. Authority: `docs/testing/TEST-BACKLOG.md` Results log and
+> `logs/progress.md` 2026-11-05 two-phone entry.
+>
+> **2026-11-05 (owner device pass) - RADIO TEXT WORKS BIDIRECTIONALLY.** After setting the phone chat's
+> **Radio fallback** to **Automatic**, Android→desktop and desktop→Android short texts work on the Infinix + Windows
+> radios. The one-way failure was exactly the phone's `policy=NEVER`; power-cycling the radios restored the receive
+> direction. `ERROR-985` is device-confirmed, `ERROR-988` is resolved for this session. `RADIO-PATH-01` is PASS for the
+> core bidirectional case; its link-down/Never-banner steps and `RADIO-PROFILE-A-01` were not separately reported and stay
+> TODO. **Not pushed.** The duplicate RFCOMM open/session-redial shape stays open as P2-4. Authority:
+> `docs/testing/TEST-BACKLOG.md` Results log 2026-11-05, `logs/errors.md` ERROR-985/988, `logs/progress.md`.
+>
+> **2026-11-05 (profile A) - Profile A is no longer selectable in the Radio settings sheet.** It was a trap: outbound chat
+> refused it (`RadioChatEngine.sendText`) and inbound signed frames could not be verified because `RadioChatWiring` has only
+> the peer fingerprint, not its full identity public key (`RadioSession.ingestSigned` -> `SIGNED_NOT_ENABLED`). The row is
+> dimmed with "Not supported" and a legacy selection shows a red instruction to choose Profile M. When a direct chat
+> is set to **Never** and the peer is offline, the composer now shows **"Radio fallback is off for this chat."** with a
+> one-tap **Turn on**; the 2026-11-05 phone log's `policy=NEVER` was the reason Android→desktop radio sent nothing.
+> Device checks `RADIO-PROFILE-A-01` and the updated `RADIO-PATH-01`. Making Profile A work needs a peer identity-key
+> exchange, not a toggle.
+
+
+> **2026-11-05 (test hub) - `myserver` UPDATED TO THE MERGED CONSOLE BUILD AND RESET FOR FIRST-RUN SETUP.**
+> The isolated test hub on `myserver` (`129.213.22.215`, `~/flash-hub`, Docker project `flash-hub`) now runs the
+> `dev` build at `c3685ba1` (new console; 57 jars; `server-2.1.0-beta.3.jar`). Its data was cleared for setup:
+> `setupOpen:true`, `hasAdmins:false`; `/health` ok; `/admin/#/setup` 200; `redesign.css` 200. The Cloudflare tunnel was
+> not recreated, so the public URL is unchanged (current value in `~/flash-hub/.env`; public `/health` 200). The setup
+> token remains in `~/flash-hub/.env` and was not printed/committed. Old data is backed up at `~/flash-hub/data.bak`
+> (17 MB), old code at `app.prev`. Reach the console with `ssh -N -L 8444:127.0.0.1:18444 myserver`, then
+> `http://127.0.0.1:8444/admin/`. Only the `flash-hub` compose project was touched.
+
+> **2026-11-05 (latest) - RADIO PATH SWITCHING: MERGED INTO `dev` AS `bfe2c943` (branch commits `79122c83`, `e29d7453`,
+> `2bcff97c`), HOST-TESTED, NOT DEVICE-VERIFIED.** The owner's phone log proved two separate defects. (1) `isRadioReachable`
+> checked only the pairing key, so with the gateway on and the link down the host skipped the LAN dial, the radio
+> refused `not_connected`, and the text had no path for 10 minutes; the 2026-11-05 log showed the same probe with
+> `connected=true` and inbound radio working, which means the per-chat policy was `NEVER` and the probe could not say
+> so. (2) A retry of a restored 0-byte transfer reached `FileMeta(0)` and killed the process (ERROR-984). Fixed:
+> gateway+link+key readiness, no radio-key skip of the LAN dial, policy read from the already-loaded conversation row,
+> `radio.path policy/pairKey/gateway/connected`, transient Profile-M refusal, retry re-measurement, and FGS promotion
+> before the Transsion keep-alive work. Tests: `RadioChatBridgeTest`, `RealFlashChatRepositoryTest` (107), transfer
+> refusal tests and `:core:radio:jvmTest` green. Owed device checks `RADIO-PATH-01`, `XFER-RETRY-01`, `FGS-01`.
+> Authority: `docs/decisions.md` ADR-354, `logs/errors.md` ERROR-984..986, `logs/progress.md` 2026-11-05 radio path.
+> **The phone was not connected; nothing here is device-verified.**
+> **Still open from the same logs (not attempted):** session churn (a new dial can supersede a live/adopted session; the
+> phone redialled one host 40 times in 6 minutes), a second RFCOMM open at 12:20:35, the chat-list "Radio only" badge for
+> a `NEVER` chat (the open header is policy-aware), and remembered-route dialling while the hub/radio already carries.
+>
 > **2026-11-05 - RADIO GATEWAY REDESIGN v3: MERGED INTO `dev` AS `e76edc71` AND PUSHED (dev `d77b8261`); NOT DEVICE-VERIFIED.**
 > Branch `design/radio-gateway-v3` from worktree `E:\FlashWork\radio-ui-v3`; the Compose screen was launched
 > (`:desktop:radioGatewayDemo`) and captured at 1180x820 and 900x820, with the settings sheet and the pair sheet opened:
@@ -8372,3 +8592,60 @@ AGENTS §29; then commit (do not push without the owner). Known limit: deleting 
   owner says so.
 - **Known load flakes**, to rerun alone: ORGT-U16, `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`,
   `GroupJoinTest.testApprovalMissedWhileOfflineCompletesOnReconnect`.
+
+---
+
+## Merged chat-redesign records (pre-merge, 2026-11-05)
+
+> **2026-11-05 (latest) - CHAT REDESIGN: THE MOCK IS APPROVED AND THE COMPOSE PORT HAS STARTED; ALL 67 ICONS ARE
+> REDRAWN.** The owner approved both screen sets, chose **ADR-355 option (a): one app-wide wallpaper**, and asked for
+> the Compose port plus every icon in the chat's language. On branch `design/chat-redesign` (worktree
+> `E:\FlashWork\chat-redesign`, `dev` untouched):
+> - **Wallpaper** - `FlashChatWallpaper` in `:core:common`; `FlashSettingsDataStore.chatWallpaper` /
+>   `setChatWallpaper("chat_wallpaper")`; `DesktopSettings.chatWallpaper` + store key; wired in `MainActivity` and
+>   `DesktopShell`; painted by `ui/chat/FlashChatWallpaper.kt`; `FlashTheme.isDark` exposed for the preset pair.
+> - **Chat appearance sheet** with live preview + 5 presets, opened by the new `CHAT_APPEARANCE` menu item (direct and
+>   group lists).
+> - **Thread / composer / header**: wallpaper ground (Scaffold included), 2dp/16dp run gaps, day-chip and unread-pill
+>   restyle; 44dp controls, 22dp pill on `graphite50`, one trailing slot cross-fading mic/send; 60dp header, 34dp
+>   avatar, three actions (search moved to the menu). New tokens `accentFill`/`onAccentFill`, `space10/14/44`,
+>   `composerInput` 22dp, `composerInputBackground` graphite50/surface0.
+> - **Icons**: all **67** `flash_ic_*.xml` rewritten at 24dp/1.75dp/round (28 byte-identical to the approved mock, 39
+>   redrawn), then fitted to an 18.0dp optical size. `settings` is a cog with eight flat teeth, `hangup` is the call
+>   handset struck perpendicular, `tray` is an inbox tray (it was the brand bolt). Record and images:
+>   `docs/ui/chat-icon-set.md`; AAPT + compile green; no device render yet (`CHATUI-16`).
+> **Verified:** `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` **BUILD SUCCESSFUL**; `:ui:chat:jvmTest`,
+> `:ui:theme:jvmTest`, `:app:testDebugUnitTest` **green**; new wallpaper settings tests green on both hosts.
+> **Not device-verified; no phone is attached.** The debug APKs are built and waiting:
+> `app/build/outputs/apk/debug/app-universal-debug.apk` (install this on any handset) and
+> `app-arm64-v8a-debug.apk` (the Infinix/Samsung route). Install with `adb install -r <apk>` once the owner
+> attaches a device, then run `CHATUI-13..16`. **Known deviations** (ADR-355 "Implementation"): compact bottom-right
+> bubble time instead of inline text; the file card keeps its tested surface; group info/settings keep their shipped
+> structure with the new tokens; the swarm map keeps its tested 16-column drawing; no custom colour. Owed:
+> `CHATUI-01..16` (13-16 cover the port), a second visual pass for the group sheets/file card/inline time, and the icon
+> set's device check. Authority: this file, ADR-355, `logs/progress.md` 2026-11-05, `design/chat-web/DESIGN.md`.
+
+> **2026-11-05 - CHAT SCREEN REDESIGN V2 IS A WEB MOCK IN `design/chat-web` (TWO ROUNDS); NOTHING IN
+> `ui/chat` CHANGED; OWNER REVIEW FIRST (CHATUI-01, CHATUI-08..12).** The owner asked for a WhatsApp/Telegram-inspired
+> chat (send key separated from a pill text field, redrawn icons, changeable chat background, settings) and said
+> "design not logic", mock first. Branch `design/chat-redesign`, worktree `E:\FlashWork\chat-redesign` (from `dev` at
+> `efc23ae8`, so the agent on the main checkout is undisturbed). The prototype runs on the shipped tokens and now
+> covers: 60dp header with three actions, three separated composer objects (44dp attach / 44dp pill / one 44dp
+> mic-send control), five wallpapers plus a colour with light and dark variants, `Chat appearance`, **the overflow
+> menu** (FlashConversationMenuMath's items for 1:1 and groups + a proposed Chat appearance item), **the profile
+> sheet**, **group chats** (collage header, sender names, group info with roles and join requests, signed group
+> rules above device switches, invite sheet) and **the swarm UI** (12-column piece matrix, holder list, the four
+> engine sentences), with 22 redrawn icons at 1.75dp. Verified: production build, Impeccable `detect` **0 findings**,
+> `lint.mjs --app` 0 FAIL, `inspect.mjs --app` **0 FAIL / 2 WARN** at 1440/768/390, no horizontal overflow, every
+> sampled text pair **>=5.21:1** in both themes, reduced motion at 1ms, menu/sheets keyboard-complete. Two critique
+> rounds are recorded in `design/chat-web/CRITIQUE.md`; the second round fixed destructive text contrast (4.38 ->
+> 6.25), join-request truncation, sender-run grouping, bar-shaped map cells, a repeated collage initial and
+> one-tint avatars. Records: **ADR-355 (PROPOSED, with its scope extension)**, `ERROR-989` (PowerShell UTF-8
+> corruption, repaired), `logs/progress.md` 2026-11-05, `CHATUI-01..12`.
+> **Open decision:** wallpaper persistence - (a) app-wide `FlashSettings`, (b) per-chat Room step, (c) preview-only.
+> Recommendation: (a) then (b). **Committed as `b1e2d97a`** (round 2; round 1 was `2865e811`) on branch
+> `design/chat-redesign` (worktree `E:\FlashWork\chat-redesign`); nothing pushed, nothing merged. **Next:** owner
+> reviews the new screens; only then the Compose port (icon XML paths, header, composer, message-list wallpaper,
+> menu item, profile sheet, group info/settings, piece map, appearance sheet), keeping every
+> `FlashConversationScreen` parameter, every callback and `FlashBubbleShape` unchanged. Nothing is device-verified;
+> no phone was used.

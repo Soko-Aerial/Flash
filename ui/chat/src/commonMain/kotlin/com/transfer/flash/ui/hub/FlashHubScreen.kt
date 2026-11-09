@@ -5,6 +5,9 @@ package com.transfer.flash.ui.hub
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -388,117 +391,107 @@ private fun FlashHubBody(
     }
 
     val listPane: @Composable () -> Unit = {
-        Column(Modifier.fillMaxSize()) {
-            FlashHubTopBar(
-                title = FlashHubCopy.TAB_LABEL,
-                searchOpen = selection.searchOpen,
-                query = selection.query,
-                onQueryChange = { onSelection(selection.copy(query = it.take(FlashHubMath.QUERY_MAX * 2))) },
-                onSearchOpen = { onSelection(selection.copy(searchOpen = true)) },
-                onSearchClose = ::closeSearch,
-                onSubmit = ::submitSearch,
-                searchFocus = searchFocus,
-                modifier = Modifier.statusBarsPadding(),
-            )
-            LaunchedEffect(selection.searchOpen) { if (selection.searchOpen) runCatching { searchFocus.requestFocus() } }
-            FlashHubStrip(data, mode, actions, onWhy = { whyOpen = true })
-            if (!selection.searchOpen) {
-                FlashHubSegments(selection.segment, ::select, unreadNews = unread)
-            }
-            actionNote?.let { NoticeLine(it) }
-            if (data.showMovedTip) FlashHubTip(actions.onDismissTip)
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-                when (mode) {
-                    FlashHubMode.LOADING -> FlashHubSkeleton()
-                    FlashHubMode.NEVER_SYNCED_OFFLINE -> FlashHubEmptyState(
-                        icon = FlashIcons.Hub,
-                        headline = FlashHubCopy.NEVER_SYNCED_TITLE,
-                        body = FlashHubCopy.NEVER_SYNCED_BODY,
-                        actionLabel = FlashHubCopy.RETRY,
-                        onAction = actions.onRefresh,
-                        actionBusy = state.isRefreshing,
-                    )
-                    else -> PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = actions.onRefresh, modifier = Modifier.fillMaxSize()) {
-                        AnimatedContent(
-                            targetState = page,
-                            modifier = Modifier.fillMaxSize(),
-                            transitionSpec = {
-                                if (motion.reduceMotion || initialState == SEARCH_PAGE || targetState == SEARCH_PAGE) {
-                                    motion.statusCrossfade()
-                                } else {
-                                    val towardEnd = targetState > initialState
-                                    motion.tabEnter(towardEnd) togetherWith motion.tabExit(towardEnd)
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+            Column(Modifier.widthIn(max = 880.dp).fillMaxSize()) {
+                if (selection.searchOpen) FlashHubTopBar(
+                    title = FlashHubCopy.TAB_LABEL,
+                    searchOpen = selection.searchOpen,
+                    query = selection.query,
+                    onQueryChange = { onSelection(selection.copy(query = it.take(FlashHubMath.QUERY_MAX * 2))) },
+                    onSearchOpen = { onSelection(selection.copy(searchOpen = true)) },
+                    onSearchClose = ::closeSearch,
+                    onSubmit = ::submitSearch,
+                    searchFocus = searchFocus,
+                    modifier = Modifier.statusBarsPadding(),
+                )
+                else FlashHubWorkspaceHeader(
+                    data = data,
+                    departmentName = state.myDepartmentId?.let(deptName),
+                    onSearch = { onSelection(selection.copy(searchOpen = true)) },
+                    onStatus = { statusOpen = true },
+                    onRefresh = actions.onRefresh,
+                    modifier = Modifier.statusBarsPadding(),
+                )
+                LaunchedEffect(selection.searchOpen) { if (selection.searchOpen) runCatching { searchFocus.requestFocus() } }
+                FlashHubStrip(data, mode, actions, onWhy = { whyOpen = true })
+                if (!selection.searchOpen) {
+                    FlashHubSegments(selection.segment, ::select, unreadNews = unread)
+                }
+                actionNote?.let { NoticeLine(it) }
+                if (data.showMovedTip) FlashHubTip(actions.onDismissTip)
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                    when (mode) {
+                        FlashHubMode.LOADING -> FlashHubSkeleton()
+                        FlashHubMode.NEVER_SYNCED_OFFLINE -> FlashHubEmptyState(
+                            icon = FlashIcons.Hub,
+                            headline = FlashHubCopy.NEVER_SYNCED_TITLE,
+                            body = FlashHubCopy.NEVER_SYNCED_BODY,
+                            actionLabel = FlashHubCopy.RETRY,
+                            onAction = actions.onRefresh,
+                            actionBusy = state.isRefreshing,
+                        )
+                        else -> PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = actions.onRefresh, modifier = Modifier.fillMaxSize()) {
+                            AnimatedContent(
+                                targetState = page,
+                                modifier = Modifier.fillMaxSize(),
+                                transitionSpec = { EnterTransition.None togetherWith ExitTransition.None },
+                                label = "hubPage",
+                            ) { pageNow ->
+                            val pageSearching = pageNow == SEARCH_PAGE
+                            val pageSegment = FlashHubSegment.entries.getOrElse(pageNow) { FlashHubSegment.PEOPLE }
+                            LazyColumn(
+                                state = if (pageSearching) searchState else listStates.getValue(pageSegment),
+                                modifier = Modifier.fillMaxSize().widthIn(max = FlashHubContentMaxWidth),
+                            ) {
+                                if (!pageSearching) {
+                                    item(key = "hub-section", contentType = "section") {
+                                        FlashHubWorkspaceSection(pageSegment, when (pageSegment) {
+                                            FlashHubSegment.PEOPLE -> data.people.size
+                                            FlashHubSegment.DEPARTMENTS -> orderedDepartments.size
+                                            FlashHubSegment.GROUPS -> if (data.groupsLoadError == null) data.groups.size else null
+                                            FlashHubSegment.NEWS -> if (!data.newsUnsupported) news.size else null
+                                        })
+                                    }
                                 }
-                            },
-                            label = "hubPage",
-                        ) { pageNow ->
-                        val pageSearching = pageNow == SEARCH_PAGE
-                        val pageSegment = FlashHubSegment.entries.getOrElse(pageNow) { FlashHubSegment.PEOPLE }
-                        LazyColumn(
-                            state = if (pageSearching) searchState else listStates.getValue(pageSegment),
-                            modifier = Modifier.fillMaxSize().widthIn(max = FlashHubContentMaxWidth),
-                        ) {
-                            if (!pageSearching) {
-                                item(key = "hub-overview", contentType = "overview") {
-                                    FlashHubOverview(
-                                        orgName = state.orgName,
-                                        summary = FlashHubMath.overviewSummary(state.peopleCount, orderedDepartments.size, data.groups.size),
-                                        roleLine = FlashHubMath.overviewRoleLine(state.myRole, state.myDepartmentId?.let(deptName)),
-                                        canPost = FlashHubMath.canPost(data.posting),
-                                        connected = when (mode) {
-                                            FlashHubMode.LOADING -> null
-                                            else -> data.link == HubLinkState.ONLINE || data.link == HubLinkState.CERT_EXPIRING
-                                        },
-                                        stats = listOf(
-                                            FlashHubStat(FlashHubSegment.PEOPLE, FlashHubMath.segmentLabel(FlashHubSegment.PEOPLE), state.peopleCount, FlashIcons.Group),
-                                            FlashHubStat(FlashHubSegment.DEPARTMENTS, FlashHubMath.segmentLabel(FlashHubSegment.DEPARTMENTS), orderedDepartments.size, FlashIcons.Hub),
-                                            FlashHubStat(FlashHubSegment.GROUPS, FlashHubMath.segmentLabel(FlashHubSegment.GROUPS), data.groups.size, FlashIcons.Chat),
-                                        ),
-                                        lease = state.lease,
-                                        nowMs = data.nowMs,
-                                        onStat = ::select,
-                                        onOpenStatus = { statusOpen = true },
+                                when {
+                                    pageSearching -> hubSearchItems(
+                                        query = query, people = searchPeople, departments = searchDepartments, news = searchNews, groups = searchGroups,
+                                        nowMs = data.nowMs, deptName = deptName,
+                                        onOpenPerson = ::openPerson,
+                                        onOpenDepartment = { onSelection(selection.copy(segment = FlashHubSegment.DEPARTMENTS, departmentId = it, searchOpen = false, query = "")) },
+                                        onOpenNews = { onSelection(selection.copy(announcementId = it)) },
+                                        onSeeAllPeople = { onSelection(selection.copy(segment = FlashHubSegment.PEOPLE, searchOpen = false)) },
+                                        onGroup = ::groupAction, joiningGroupId = joiningGroupId,
+                                    )
+                                    pageSegment == FlashHubSegment.NEWS -> hubNewsItems(
+                                        news = news, posting = data.posting, unsupported = data.newsUnsupported, nowMs = data.nowMs,
+                                        departmentName = deptName,
+                                        onOpen = { onSelection(selection.copy(announcementId = it)) },
+                                        onMenu = { menuAnnouncementId = it },
+                                        onNew = { startComposer(null) },
+                                    )
+                                    pageSegment == FlashHubSegment.PEOPLE -> hubPeopleItems(
+                                        items = peopleItems, filter = selection.peopleFilter,
+                                        onFilter = { onSelection(selection.copy(peopleFilter = it)) },
+                                        departments = orderedDepartments, myDepartmentId = myDeptId, query = query, onOpenPerson = ::openPerson,
+                                    )
+                                    pageSegment == FlashHubSegment.DEPARTMENTS -> hubDepartmentItems(
+                                        departments = orderedDepartments,
+                                        onOpen = { onSelection(selection.copy(departmentId = it)) },
+                                    )
+                                    else -> hubGroupItems(
+                                        groups = data.groups, loadError = data.groupsLoadError, feedback = groupFeedback,
+                                        joiningGroupId = joiningGroupId, onAction = ::groupAction, onRetry = actions.onRetryGroups,
+                                        onManage = actions.onManageGroupRequests?.takeIf { FlashHubMath.showManageRequests(data.groups, true) },
                                     )
                                 }
                             }
-                            when {
-                                pageSearching -> hubSearchItems(
-                                    query = query, people = searchPeople, departments = searchDepartments, news = searchNews, groups = searchGroups,
-                                    nowMs = data.nowMs, deptName = deptName,
-                                    onOpenPerson = ::openPerson,
-                                    onOpenDepartment = { onSelection(selection.copy(segment = FlashHubSegment.DEPARTMENTS, departmentId = it, searchOpen = false, query = "")) },
-                                    onOpenNews = { onSelection(selection.copy(announcementId = it)) },
-                                    onSeeAllPeople = { onSelection(selection.copy(segment = FlashHubSegment.PEOPLE, searchOpen = false)) },
-                                    onGroup = ::groupAction, joiningGroupId = joiningGroupId,
-                                )
-                                pageSegment == FlashHubSegment.NEWS -> hubNewsItems(
-                                    news = news, posting = data.posting, unsupported = data.newsUnsupported, nowMs = data.nowMs,
-                                    departmentName = deptName,
-                                    onOpen = { onSelection(selection.copy(announcementId = it)) },
-                                    onMenu = { menuAnnouncementId = it },
-                                    onNew = { startComposer(null) },
-                                )
-                                pageSegment == FlashHubSegment.PEOPLE -> hubPeopleItems(
-                                    items = peopleItems, filter = selection.peopleFilter,
-                                    onFilter = { onSelection(selection.copy(peopleFilter = it)) },
-                                    departments = orderedDepartments, myDepartmentId = myDeptId, query = query, onOpenPerson = ::openPerson,
-                                )
-                                pageSegment == FlashHubSegment.DEPARTMENTS -> hubDepartmentItems(
-                                    departments = orderedDepartments,
-                                    onOpen = { onSelection(selection.copy(departmentId = it)) },
-                                )
-                                else -> hubGroupItems(
-                                    groups = data.groups, loadError = data.groupsLoadError, feedback = groupFeedback,
-                                    joiningGroupId = joiningGroupId, onAction = ::groupAction, onRetry = actions.onRetryGroups,
-                                    onManage = actions.onManageGroupRequests?.takeIf { FlashHubMath.showManageRequests(data.groups, true) },
-                                )
                             }
-                        }
                         }
                     }
                 }
             }
-        }
+    }
     }
     if (selection.segment == FlashHubSegment.NEWS && !searching) {
         FlashHubReadMarking(listStates.getValue(FlashHubSegment.NEWS), unreadIds, actions.onMarkRead)
@@ -542,7 +535,8 @@ private fun FlashHubBody(
         }
     }
 
-    if (twoPane) {
+    val detailSelected = selection.personId != null || selection.announcementId != null || selection.departmentId != null
+    if (twoPane && detailSelected) {
         FlashAdaptiveTwoPane(listPane = listPane, detailPane = detailPane, windowWidthDp = widthDp)
     } else {
         // Compact: the reader and the department page slide over the list and slide back out. The last content is kept
@@ -695,7 +689,8 @@ internal fun NoticeLine(text: String) {
 @Composable
 private fun FlashHubStrip(data: FlashHubScreenData, mode: FlashHubMode, actions: FlashHubActions, onWhy: () -> Unit) {
     val strip = FlashHubMath.strip(data.state, data.link, data.nowMs) ?: return
-    if (mode == FlashHubMode.LOADING && strip.tone == FlashHubStripTone.CALM) return
+    // The header carries the healthy connection state; strips are reserved for recovery and warnings.
+    if (strip.tone == FlashHubStripTone.CALM) return
     val motion = FlashTheme.motion
     AnimatedContent(targetState = strip, transitionSpec = { motion.statusCrossfade() }, label = "hubStrip") { s ->
         FlashHubStatusStripView(s, onWhy = onWhy, onRetry = actions.onRefresh)

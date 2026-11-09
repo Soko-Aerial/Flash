@@ -8,9 +8,8 @@ import com.transfer.flash.core.common.result.FlashResult
 import kotlinx.coroutines.flow.first
 
 /**
- * Compile-only proof of the Phase 5 README quick-start (Task 5.4 acceptance). This is the
- * SAME code the root `README.md` shows, so if the README drifts from the real API this module
- * stops compiling. Never published; never run on device.
+ * Compile-only exercise of the public engine calls in the README quick start. Never published or
+ * run on a device. The README shows a host-owned engine that stays open while a transfer runs.
  *
  * The whole point of [Flash.create] is that a consumer needs no hand-assembly and no sibling
  * `core:*` dependency — only `:core:engine`. That includes the coroutine types (`Flow`/`StateFlow`)
@@ -20,7 +19,8 @@ import kotlinx.coroutines.flow.first
 internal object QuickStart {
 
     /**
-     * End-to-end happy path: build the engine, wait for a peer, send a file, then shut down.
+     * Type-check engine creation, discovery, the file offer and shutdown. A real host pairs first
+     * and keeps the engine alive to observe completion.
      * Call this off the main thread ([Flash.create] opens the encrypted DB synchronously).
      */
     suspend fun sendFirstFileToAnyPeer(
@@ -48,7 +48,7 @@ internal object QuickStart {
                 fileSize = fileSize,
             )
         } finally {
-            // 4. One off-switch: cancels the shared scope, stops radios, closes the DB. Idempotent.
+            // 4. Close the engine, discovery, network and database. Idempotent.
             engine.close()
         }
     }

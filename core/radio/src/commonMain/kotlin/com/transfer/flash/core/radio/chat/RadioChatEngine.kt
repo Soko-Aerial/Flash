@@ -334,8 +334,12 @@ public class RadioChatEngine(
         val txOutcome = deferred.await()
         return when (txOutcome) {
             is TxResult.Sent -> {
+                // Measure the ACK round trip from the moment the transmitter finished, not from when
+                // the user composed the message (RADIO-PATH-01; the old figure included queueing and
+                // Profile-M refusals, which made the documented 9.4 s look like air time).
+                val txAtMs = timeSource.nowMs()
                 pendingMutex.withLock {
-                    pendingAcks.put(firstCounter, messageId, recipientId, sentAtMs, nowMs)
+                    pendingAcks.put(firstCounter, messageId, recipientId, sentAtMs, nowMs, txAtMs = txAtMs)
                     lastSentFrames[messageId] = SentFrames(ax25Frames, firstCounter, textBytes.size, nowMs)
                     while (lastSentFrames.size > MAX_REMEMBERED_FRAMES) {
                         val oldest = lastSentFrames.keys.firstOrNull() ?: break
@@ -508,7 +512,8 @@ public class RadioChatEngine(
                                     "radio.rx.ack",
                                     "peer" to FlashProbe.short(ingestResult.peerId),
                                     "message" to FlashProbe.short(pending.messageId),
-                                    "rttMs" to (nowMs - pending.sentAtMs),
+                                    "rttMs" to (nowMs - pending.txAtMs),
+                                    "ageMs" to (nowMs - pending.sentAtMs),
                                 )
                                 _deliveryReceipts.emit(
                                     RadioChatReceipt(

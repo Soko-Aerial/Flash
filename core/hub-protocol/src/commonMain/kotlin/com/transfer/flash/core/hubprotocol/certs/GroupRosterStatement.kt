@@ -55,6 +55,7 @@ public data class GroupRosterStatement(
         nowMs: Long,
         revocations: RevocationList? = null,
         preVerifiedDelegations: Set<DelegationCert>? = null,
+        onVerifiedDelegation: ((DelegationCert) -> Unit)? = null,
     ): RosterStatus {
         if (groupId.isBlank() || rootPublicKey.isBlank() || issuerSignature.isBlank() || version < 0L) return RosterStatus.MALFORMED
         if (memberDeviceIds.any { it.isBlank() } || adminDeviceIds.any { it.isBlank() }) return RosterStatus.MALFORMED
@@ -85,6 +86,7 @@ public data class GroupRosterStatement(
         if (!delegation.hasScope(HubRoles.enrolScope(HubRoles.MEMBER))) return RosterStatus.SCOPE_DENIED
         if (!delegation.isValidAt(issuedAtMs, OrgMemberStatement.DEFAULT_CLOCK_SKEW_MS)) return RosterStatus.DELEGATION_EXPIRED
         if (revocations != null && revocations.isDelegationRevoked(delegation.serial)) return RosterStatus.REVOKED
+        onVerifiedDelegation?.invoke(delegation)
         return RosterStatus.OK
     }
 

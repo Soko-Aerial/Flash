@@ -51,7 +51,7 @@ internal fun hubStatusRows(data: FlashHubScreenData): List<FlashHubStatusRow> {
     val server = FlashHubStatusRow(
         icon = FlashIcons.Relay,
         title = FlashHubCopy.STATUS_SERVER,
-        value = if (online) FlashHubCopy.OVERVIEW_CONNECTED else FlashHubCopy.OVERVIEW_OFFLINE,
+        value = hubWorkspaceConnection(data.link),
         tone = if (online) HubTone.SUCCESS else HubTone.NEUTRAL,
     )
     val age = state.lastSyncedAtMs?.let { FlashHubMath.relativeTime(it, data.nowMs) }

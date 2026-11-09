@@ -3,6 +3,7 @@ package com.transfer.flash.ui.chat
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -73,13 +74,14 @@ fun FlashAttachmentButton(
 
     Box(
         modifier = modifier
-            .size(FlashSpacing.space40)
+            .size(FlashSpacing.space44)
             .graphicsLayer {
                 scaleX = pressScale
                 scaleY = pressScale
                 rotationZ = rotation
             }
             .clip(CircleShape)
+            .background(colors.backgroundSurfaceSubtle)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,

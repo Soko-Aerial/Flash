@@ -2,6 +2,8 @@
 
 package com.transfer.flash.core.enterprise
 
+import com.transfer.flash.core.hubprotocol.certs.RevocationList
+
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.hubprotocol.certs.DelegationCert
 import com.transfer.flash.core.hubprotocol.certs.GroupRosterStatement
@@ -1375,5 +1377,26 @@ class OrgDirectorySyncTest {
         assertEquals(3L, rosters.current("grp-1", nowMs)?.version)
         assertEquals(RosterAdoption.SENDER_NOT_MEMBER, rosters.adopt(offer(signedRoster(10L)), offeredBy = "stranger"), "an offer from a non-member is refused")
         assertNull(rosters.current("grp-1", nowMs + 31L * 24 * 3_600_000), "an expired window answers nobody")
+    }
+
+    @Test
+    fun cachedRosterStopsGrantingAccessAfterDeviceOrIssuerRevocation() = runBlocking {
+        val dao = FakeOrgDirectoryDao()
+        var list: RevocationList? = null
+        fun rosterView() = HubGroupRosters(dao, { creds }, verifier, { "local-device" }, { list }, { nowMs })
+        val rosters = rosterView()
+        val st = signedRoster(1L)
+        val offer = HubRosterOfferPayload(st.groupId, HubRestCodec.encode(st), HubRestCodec.encode(listOf(testOrg.delegation())))
+        assertEquals(RosterAdoption.ADOPTED, rosters.adopt(offer))
+        list = testOrg.hashedRevocations(ids = setOf("dev-1"))
+        assertEquals(setOf("local-device"), rosters.current(st.groupId, nowMs)?.memberDeviceIds)
+        list = testOrg.revocations(version = 2L).copy(revokedDelegationSerials = setOf(testOrg.delegation().serial))
+        assertNull(rosters.current(st.groupId, nowMs))
+        assertNull(rosters.offerFor(st.groupId, nowMs))
+        val restored = rosterView()
+        restored.refresh()
+        assertTrue(restored.isHubGroup(st.groupId))
+        assertTrue(restored.revocationBlocks(st.groupId))
+        assertNull(restored.current(st.groupId, nowMs))
     }
 }

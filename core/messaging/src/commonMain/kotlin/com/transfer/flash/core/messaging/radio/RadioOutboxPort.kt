@@ -75,8 +75,18 @@ public interface RadioOutboxPort {
     /** Live connection status flow. */
     public val connectionStatus: StateFlow<RadioGatewayConnectionStatus>
 
-    /** True if [recipientDeviceId] is a paired peer known to be radio-reachable. */
+    /**
+     * True if [recipientDeviceId] is a paired peer known to be radio-reachable **now**: the gateway is
+     * enabled, the link is connected, and the 32-byte pairing key is present.
+     */
     public fun isRadioReachable(recipientDeviceId: String): Boolean
+
+    /**
+     * True if this device holds a 32-byte radio pairing key for [recipientDeviceId], regardless of
+     * whether the gateway is switched on or the link is connected. Diagnostics only: it separates
+     * "no key" from "link down" in the `radio.path` probe (RADIO-PATH-01).
+     */
+    public fun hasRadioPairingKey(recipientDeviceId: String): Boolean = isRadioReachable(recipientDeviceId)
 
     /**
      * Peer ids this device could carry a text to over the radio right now: paired for radio here and the

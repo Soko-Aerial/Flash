@@ -222,7 +222,7 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
                 val req = d.directory.getJoinRequest(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("request")
                 val group = d.directory.getGroup(req.groupId) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
                 if (!scope.allowsGroup(group)) return@guarded call.notFound()
-                val updated = d.directory.approveJoinRequest(id, CONSOLE)
+                val updated = d.directory.approveJoinRequest(id, CONSOLE, (scope as? ConsoleScope.Departments)?.ids)
                 d.audit.log(session.username, "join.approve", "request=$id group=${updated.id}")
                 call.respondJson(updated.toAdminDto(d))
             }

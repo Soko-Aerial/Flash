@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.transfer.flash.ui.transfers
 
 import androidx.compose.animation.AnimatedContent
@@ -14,6 +16,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.heading
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -120,6 +129,10 @@ data class FlashTransferItemUi(
     /** True for the sending side of a group file: its cancel stops it for every member, not for one peer. */
     val isGroupFile: Boolean = false,
 )
+
+private val FlashTransferItemUi.isAwaitingReceiverAcceptance: Boolean
+    get() = direction == FlashTransferDirection.Send && state == FlashTransferState.Queued &&
+        errorMessage == com.transfer.flash.core.transfer.TransferFailureText.WAITING_FOR_ACCEPT
 
 data class TransfersUiState(
     val offers: List<FlashTransferItemUi> = emptyList(),
@@ -230,7 +243,9 @@ object FlashTransfersMath {
     fun statusLine(item: FlashTransferItemUi): String = when (item.state) {
         FlashTransferState.Offered -> "Wants to send you this file"
         FlashTransferState.Queued -> {
-            if (item.waitReason != null) {
+            if (item.isAwaitingReceiverAcceptance) {
+                com.transfer.flash.core.transfer.TransferFailureText.WAITING_FOR_ACCEPT
+            } else if (item.waitReason != null) {
                 com.transfer.flash.ui.chat.FlashSwarmUiMath.receiverStatusLine(
                     waitReason = item.waitReason,
                     holdersOnline = item.holdersOnline,
@@ -312,11 +327,24 @@ fun FlashTransfersScreen(
         when (page) {
             TransfersPageState.Error -> ErrorPanel(surface)
             TransfersPageState.Loading -> LoadingRows(surface)
-            TransfersPageState.Empty -> FlashEmptyState(
-                kind = FlashStateCopy.EmptyKind.TransfersFirstRun,
-                modifier = surface,
-                onAction = onFindDevices,
-            )
+            TransfersPageState.Empty -> Column(modifier = surface) {
+                // The empty state is still the Transfers page: keep the same page heading the
+                // populated list shows (one shared composable, so the two cannot drift apart),
+                // then let the empty panel take the remaining height.
+                HeaderWithChips(
+                    state = state,
+                    modifier = Modifier.padding(
+                        start = FlashSpacing.space16,
+                        end = FlashSpacing.space16,
+                        top = FlashSpacing.space12,
+                    ),
+                )
+                FlashEmptyState(
+                    kind = FlashStateCopy.EmptyKind.TransfersFirstRun,
+                    modifier = Modifier.weight(1f).padding(top = FlashSpacing.space16),
+                    onAction = onFindDevices,
+                )
+            }
             TransfersPageState.Populated -> PopulatedSections(
                 state = state,
                 onPauseResumeClick = onPauseResumeClick,
@@ -397,7 +425,7 @@ private fun TransfersUiState.isEmpty(): Boolean =
 @Composable
 private fun ErrorPanel(modifier: Modifier) {
     Column(
-        modifier.fillMaxSize().padding(top = FlashSpacing.space24),
+        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(FlashSpacing.space24),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         FlashText(
@@ -407,7 +435,7 @@ private fun ErrorPanel(modifier: Modifier) {
         )
         Spacer(Modifier.height(FlashSpacing.space4))
         FlashText(
-            text = "Something went wrong while loading transfer state.",
+            text = "Your transfers could not be loaded.",
             style = FlashTheme.typography.metadataDefault,
             color = FlashTheme.colors.textSecondary,
         )
@@ -416,7 +444,7 @@ private fun ErrorPanel(modifier: Modifier) {
 
 @Composable
 private fun LoadingRows(modifier: Modifier) {
-    Column(modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space16)) {
+    Column(modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = FlashSpacing.space16)) {
         // Branded loading mark (Bug 4 reuse): compact FlashBrandAnimation without the dark
         // splash gradient, centered above the skeleton transfer rows.
         Box(
@@ -437,7 +465,7 @@ private fun LoadingRows(modifier: Modifier) {
                     .fillMaxWidth()
                     .height(FlashDimensions.chatListRowHeight)
                     .clip(RoundedCornerShape(FlashShapes.radius12))
-                    .background(FlashTheme.colors.backgroundSurfaceSubtle),
+                    .background(FlashTheme.colors.backgroundSurfaceStrong),
             )
         }
     }
@@ -477,7 +505,7 @@ private fun PopulatedSections(
             top = FlashSpacing.space12,
             bottom = FlashSpacing.space12 + bottomInset,
         ),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
     ) {
         item(key = "header") { HeaderWithChips(state) }
         if (state.offers.isNotEmpty()) {
@@ -505,19 +533,23 @@ private fun PopulatedSections(
         if (state.active.isNotEmpty()) {
             item(key = "label-active") {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+                    modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space4),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     FlashText(
                         text = "ACTIVE",
+                        modifier = Modifier.weight(1f).semantics { heading() },
                         style = FlashTheme.typography.captionEmphasis,
                         color = FlashTheme.colors.textTertiary,
                     )
-                    if (state.active.size > 1) {
+                    if (state.active.size > 1 && state.active.any {
+                            it.state == FlashTransferState.Active || it.state == FlashTransferState.Paused
+                        }) {
                         val anyActiveRunning = state.active.any { it.state == FlashTransferState.Active }
                         Box(
                             modifier = Modifier
+                                .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clip(RoundedCornerShape(FlashShapes.radius8))
                                 .background(FlashTheme.colors.backgroundSurfaceSubtle)
                                 .clickable {
@@ -530,11 +562,12 @@ private fun PopulatedSections(
                                     }
                                 }
                                 .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+                            contentAlignment = Alignment.Center,
                         ) {
                             FlashText(
                                 text = if (anyActiveRunning) "Pause all" else "Resume all",
                                 style = FlashTheme.typography.captionEmphasis,
-                                color = FlashTheme.colors.accentPrimary,
+                                color = FlashTheme.colors.accentFill,
                             )
                         }
                     }
@@ -545,7 +578,7 @@ private fun PopulatedSections(
                     item = item,
                     modifier = flashAnimateItem(motion),
                     trailing = {
-                        AnimatedContent(
+                        if (!item.isAwaitingReceiverAcceptance) AnimatedContent(
                             targetState = item.state == FlashTransferState.Paused,
                             transitionSpec = { statusSwap },
                             label = "pauseResumeSwap",
@@ -556,7 +589,7 @@ private fun PopulatedSections(
                                 onClick = { onPauseResumeClick(item) },
                             )
                         }
-                        Spacer(Modifier.width(FlashSpacing.space8))
+                        if (!item.isAwaitingReceiverAcceptance) Spacer(Modifier.width(FlashSpacing.space8))
                         RowIcon(
                             icon = FlashIcons.Close,
                             description = "Cancel",
@@ -611,22 +644,25 @@ private fun PopulatedSections(
         if (state.history.isNotEmpty()) {
             item(key = "label-history") {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+                    modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space4),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     FlashText(
                         text = "HISTORY",
+                        modifier = Modifier.weight(1f).semantics { heading() },
                         style = FlashTheme.typography.captionEmphasis,
                         color = FlashTheme.colors.textTertiary,
                     )
                     if (onClearHistory != null) {
                         Box(
                             modifier = Modifier
+                                .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clip(RoundedCornerShape(FlashShapes.radius8))
                                 .background(FlashTheme.colors.backgroundSurfaceSubtle)
                                 .clickable { onClearHistory() }
                                 .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+                            contentAlignment = Alignment.Center,
                         ) {
                             FlashText(
                                 text = "Clear history",
@@ -656,7 +692,7 @@ private fun PopulatedSections(
 }
 
 @Composable
-private fun HeaderWithChips(state: TransfersUiState) {
+private fun HeaderWithChips(state: TransfersUiState, modifier: Modifier = Modifier) {
     val motion = FlashTheme.motion
     // Aggregate throughput ROLLS to its new value instead of snapping, so a burst reads as
     // acceleration and a pause reads as a drop. animateFloatAsState is a single value animation
@@ -679,15 +715,21 @@ private fun HeaderWithChips(state: TransfersUiState) {
         derivedStateOf { FlashTransfersMath.formatSpeed(rolledSpeed.value.toLong()) }
     }
 
-    Column {
+    Column(modifier = modifier) {
         FlashText(
             text = "Transfers",
+            modifier = Modifier.semantics { heading() },
             style = FlashTheme.typography.headingMedium,
             color = FlashTheme.colors.textPrimary,
         )
+        FlashText(
+            text = "Track files you send and receive.",
+            style = FlashTheme.typography.captionDefault,
+            color = FlashTheme.colors.textSecondary,
+        )
         AnimatedVisibility(visible = throughputLabel.isNotEmpty()) {
             FlashText(
-                text = "$throughputLabel total",
+                text = "$throughputLabel total speed",
                 style = FlashTheme.typography.numericDefault,
                 color = FlashTheme.colors.textSecondary,
             )
@@ -695,7 +737,7 @@ private fun HeaderWithChips(state: TransfersUiState) {
         val (retryableFailed, cancelledOrDeclined) = remember(state.failed) {
             state.failed.partition { it.retryable }
         }
-        Row(
+        FlowRow(
             modifier = Modifier.padding(top = FlashSpacing.space8),
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
         ) {
@@ -736,8 +778,8 @@ private fun SectionLabel(text: String) {
     FlashText(
         text = text,
         style = FlashTheme.typography.captionEmphasis,
-        color = FlashTheme.colors.textTertiary,
-        modifier = Modifier.padding(top = FlashSpacing.space8),
+        color = FlashTheme.colors.textSecondary,
+        modifier = Modifier.padding(top = FlashSpacing.space4).semantics { heading() },
     )
 }
 
@@ -749,21 +791,24 @@ private fun SectionLabelWithClear(text: String, onClear: (() -> Unit)?) {
         return
     }
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+        modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space4),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         FlashText(
             text = text,
+            modifier = Modifier.weight(1f).semantics { heading() },
             style = FlashTheme.typography.captionEmphasis,
-            color = FlashTheme.colors.textTertiary,
+            color = FlashTheme.colors.textSecondary,
         )
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(FlashShapes.radius8))
+                .heightIn(min = FlashDimensions.minTouchTarget)
+                                .clip(RoundedCornerShape(FlashShapes.radius8))
                 .background(FlashTheme.colors.backgroundSurfaceSubtle)
                 .clickable { onClear() }
                 .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+            contentAlignment = Alignment.Center,
         ) {
             FlashText(
                 text = "Clear",
@@ -801,83 +846,92 @@ private fun TransferRow(
         else -> colors.accentPrimary
     }
 
-    Row(
-        modifier
-            .fillMaxWidth()
-            .flashPressScale(interactionSource)
-            .clip(RoundedCornerShape(FlashShapes.radius12))
-            .background(colors.backgroundSurface)
-            .let { base ->
-                if (onRowClick != null) {
-                    base.clickable(
-                        interactionSource = interactionSource,
-                        indication = null,
-                        onClickLabel = "Open",
-                        onClick = onRowClick,
-                    )
-                } else {
-                    base
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val stackActions = maxWidth < 340.dp || LocalDensity.current.fontScale >= 1.3f
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .flashPressScale(interactionSource)
+                .clip(RoundedCornerShape(FlashShapes.radius12))
+                .background(colors.backgroundSurface)
+                .let { base ->
+                    if (onRowClick != null) {
+                        base.clickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                            onClickLabel = "Open",
+                            onClick = onRowClick,
+                        )
+                    } else {
+                        base
+                    }
                 }
+                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+                .semantics(mergeDescendants = true) {
+                    contentDescription = buildString {
+                        append(item.fileName)
+                        append(", ")
+                        append(when (item.direction) {
+                            FlashTransferDirection.Send -> "Sending"
+                            FlashTransferDirection.Receive -> "Receiving"
+                        })
+                        // The real progress, not the tween: a screen reader should hear where the
+                        // transfer actually is, and reading `item` here (a parameter, not a State) keeps
+                        // the animation from re-running this whole `buildString` in the semantics phase
+                        // on every frame (EXP-013).
+                        append(", ${(FlashTransfersMath.progressFraction(item.bytesDone, item.bytesTotal) * 100).toInt()} percent")
+                        append(", ${FlashTransfersMath.statusLine(item)}")
+                    }
+                },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TransferBadge(
+                fileName = item.fileName,
+                bytesTotal = item.bytesTotal,
+            )
+            Spacer(Modifier.width(FlashSpacing.space12))
+            Column(Modifier.weight(1f)) {
+                FlashText(
+                    text = item.fileName,
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textPrimary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FlashText(
+                    text = "${FlashTransfersMath.directionLabel(item)} ${item.peerName}" +
+                        item.transportLabel?.let { " · $it" }.orEmpty(),
+                    style = FlashTheme.typography.captionDefault,
+                    color = colors.textSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                TransferProgressBar(
+                    fraction = fraction,
+                    fillTint = fillTint,
+                    isActive = item.state == FlashTransferState.Active,
+                    speedBytesPerSec = item.speedBytesPerSec,
+                    reduceMotion = FlashTheme.motion.reduceMotion,
+                    modifier = Modifier.padding(top = FlashSpacing.space4),
+                )
+                FlashText(
+                    text = FlashTransfersMath.statusLine(item),
+                    style = FlashTheme.typography.captionDefault,
+                    color = if (item.state == FlashTransferState.Failed) colors.textError else colors.textSecondary,
+                    maxLines = if (item.state == FlashTransferState.Failed) Int.MAX_VALUE else 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            .padding(FlashSpacing.space12)
-            .semantics(mergeDescendants = true) {
-                contentDescription = buildString {
-                    append(item.fileName)
-                    append(", ")
-                    append(when (item.direction) {
-                        FlashTransferDirection.Send -> "Sending"
-                        FlashTransferDirection.Receive -> "Receiving"
-                    })
-                    // The real progress, not the tween: a screen reader should hear where the
-                    // transfer actually is, and reading `item` here (a parameter, not a State) keeps
-                    // the animation from re-running this whole `buildString` in the semantics phase
-                    // on every frame (EXP-013).
-                    append(", ${(FlashTransfersMath.progressFraction(item.bytesDone, item.bytesTotal) * 100).toInt()} percent")
-                    append(", ${FlashTransfersMath.statusLine(item)}")
-                }
-            },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        TransferBadge(
-            fileName = item.fileName,
-            bytesTotal = item.bytesTotal,
-        )
-        Spacer(Modifier.width(FlashSpacing.space12))
-        Column(Modifier.weight(1f)) {
-            FlashText(
-                text = item.fileName,
-                style = FlashTheme.typography.bodyDefault,
-                color = colors.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            FlashText(
-                text = "${FlashTransfersMath.directionLabel(item)} ${item.peerName}" +
-                    item.transportLabel?.let { " · $it" }.orEmpty(),
-                style = FlashTheme.typography.metadataDefault,
-                color = colors.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            TransferProgressBar(
-                fraction = fraction,
-                fillTint = fillTint,
-                isActive = item.state == FlashTransferState.Active,
-                speedBytesPerSec = item.speedBytesPerSec,
-                reduceMotion = FlashTheme.motion.reduceMotion,
-                modifier = Modifier.padding(top = FlashSpacing.space4),
-            )
-            FlashText(
-                text = FlashTransfersMath.statusLine(item),
-                style = FlashTheme.typography.metadataDefault,
-                color = if (item.state == FlashTransferState.Failed) colors.textError else colors.textTertiary,
-                maxLines = 1,
-            )
+            Spacer(Modifier.width(FlashSpacing.space8))
+            if (stackActions) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) { trailing() }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) { trailing() }
+            }
         }
-        Spacer(Modifier.width(FlashSpacing.space8))
-        Row(verticalAlignment = Alignment.CenterVertically) { trailing() }
     }
 }
+
 
 /**
  * The progress bar with the velocity shimmer: the sweep gets faster as [speedBytesPerSec] grows
@@ -1006,10 +1060,14 @@ private fun TransferBadge(fileName: String, bytesTotal: Long) {
     val typography = FlashTheme.typography
     val extension = remember(fileName) { extensionOf(fileName) }
     val categoryColor = remember(extension) { fileCategoryColorFor(extension) }
+    // The extension is a decorative marker; keep it inside its fixed circle at large text sizes.
+    // The full filename still scales normally and remains in the row semantics.
+    val fontScale = LocalDensity.current.fontScale
+    val badgeTextScale = fontScale.coerceAtMost(1.2f) / fontScale
 
     Box(
         Modifier
-            .size(FlashDimensions.avatarLg)
+            .size(FlashDimensions.avatarMd)
             .clip(CircleShape)
             .background(categoryColor.copy(alpha = 0.9f))
             .border(FlashDimensions.borderHairline, colors.borderSubtle.copy(alpha = 0.4f), CircleShape),
@@ -1020,8 +1078,8 @@ private fun TransferBadge(fileName: String, bytesTotal: Long) {
                 text = extension.uppercase(),
                 style = typography.captionEmphasis.copy(
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
-                    letterSpacing = 0.5.sp,
+                    fontSize = 11.sp * badgeTextScale,
+                    letterSpacing = 0.5.sp * badgeTextScale,
                 ),
                 color = Color.White,
             )

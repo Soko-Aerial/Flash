@@ -14,6 +14,10 @@ class PairingUiMapperTest {
     @Test
     fun corePhaseToUi_mapsEveryEnginePhase() {
         assertEquals(FlashPairingPhase.Idle, PairingUiMapper.corePhaseToUi(PairingPhase.Idle))
+        // Before both nonces are known neither side has a code: no dialog, not a code-less
+        // "waiting for peer to confirm" card (ERROR-1010).
+        assertEquals(FlashPairingPhase.Idle, PairingUiMapper.corePhaseToUi(PairingPhase.AwaitingPeerNonce))
+        assertEquals(FlashPairingPhase.Idle, PairingUiMapper.corePhaseToUi(PairingPhase.AwaitingPeerReveal))
         assertEquals(FlashPairingPhase.RequestReceived, PairingUiMapper.corePhaseToUi(PairingPhase.RequestReceived))
         // Both responder pre-accept sub-states collapse to the actionable consent card.
         assertEquals(FlashPairingPhase.RequestReceived, PairingUiMapper.corePhaseToUi(PairingPhase.AwaitingLocalDecision))

@@ -95,6 +95,7 @@ fun Route.authRoutes(
                     name = hubName,
                     serverTime = clock(),
                     maxFileBytes = maxFileBytes(),
+                    serverVersion = com.transfer.flash.server.ServerVersion.value,
                 ),
             )
         }

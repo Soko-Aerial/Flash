@@ -7,21 +7,28 @@ import { api } from '../app.js';
 import { shortId } from '../format.js';
 import { textInput, badge } from '../ui/widgets.js';
 import { icon } from '../icons.js';
+import { session } from '../state.js';
 
 let cache = null;
 let cacheAt = 0;
+let cacheScope = '';
+const scopeKey = () => JSON.stringify([session.user, session.role, session.departments]);
 
 /** Every device (id -> {name, status, department}), refreshed at most once a minute unless [force]. */
 export async function loadDeviceNames(force = false) {
-  if (!force && cache && Date.now() - cacheAt < 60_000) return cache;
+  const scope = scopeKey();
+  if (!force && cache && scope === cacheScope && Date.now() - cacheAt < 60_000) return cache;
   const map = new Map();
   for (let offset = 0; offset < 20000; offset += 500) {
     const page = await api.get('/devices', { query: { limit: 500, offset } });
     for (const d of page) map.set(d.deviceId, { name: d.name, status: d.status, department: d.department, role: d.role });
     if (page.length < 500) break;
   }
-  cache = map;
-  cacheAt = Date.now();
+  if (scope === scopeKey()) {
+    cache = map;
+    cacheScope = scope;
+    cacheAt = Date.now();
+  }
   return map;
 }
 

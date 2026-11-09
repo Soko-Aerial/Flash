@@ -199,6 +199,9 @@ class RealFlashChatRepositoryColleagueTest {
         override suspend fun dueForDelivery(now: Long, limit: Int): List<OutboxEntity> =
             outbox.values.filter { it.nextAttemptAt <= now }.take(limit)
 
+        override suspend fun unacknowledgedToPeer(peerId: String, senderId: String): List<String> =
+            error("This outbox fake has no message store")
+
         override suspend fun makePendingDue(now: Long) {
             outbox.replaceAll { _, v -> v.copy(attempts = 0, nextAttemptAt = now) }
         }
@@ -1298,10 +1301,12 @@ class RealFlashChatRepositoryColleagueTest {
         var adoptResult = com.transfer.flash.core.enterprise.RosterAdoption.INVALID
         var adoptCalls = 0
         var onAdopt: (() -> Unit)? = null
+        var revoked = false
 
         // Deliberately ignores the validity window: the repository's own gate must refuse an expired roster.
         override fun current(groupId: String, nowMs: Long) = roster?.takeIf { it.groupId == groupId }
         override fun isHubGroup(groupId: String) = roster?.groupId == groupId
+        override fun revocationBlocks(groupId: String) = revoked && isHubGroup(groupId)
         override fun offerFor(groupId: String, nowMs: Long) =
             roster?.takeIf { it.groupId == groupId }?.let { com.transfer.flash.core.enterprise.HubRosterOfferPayload(groupId, "{st}", "[]") }
         override fun groupIds(): Set<String> = setOfNotNull(roster?.groupId)
@@ -1375,6 +1380,27 @@ class RealFlashChatRepositoryColleagueTest {
         assertTrue(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice))
         rig.trust.unlinkGroupFromHub(hubGroup)
         assertFalse(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice), "a group not linked to the hub uses no roster")
+    }
+
+    @Test
+    fun HR5_linkedGroupRevocationCannotBeBypassedByPairing() = runTest {
+        val rig = b4Rig(orgPeers = emptySet(), paired = setOf(colleagueAlice))
+        rig.repo.refreshHubGroupRosters()
+        assertTrue(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice))
+        rig.view.revoked = true
+        assertFalse(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice))
+        assertFalse(rig.repo.isGroupCallMember(hubGroup, colleagueAlice))
+        val frame = GroupWireFrame.Message(hubGroup, "revoked", colleagueAlice, "Alice", 1_000_000L, "denied")
+        rig.repo.onInboundGroupWireFrame(colleagueAlice, frame)
+        assertTrue(rig.messages.messages.isEmpty())
+        rig.repo.onInboundWireFrame(
+            MessageWireFrame.TextMessage(
+                conversationId = localDeviceId, localId = "manual", senderId = colleagueAlice,
+                senderName = "Alice", text = "manual direct conversation", sentAt = 1_000_000L,
+            ),
+            transportPeerId = colleagueAlice,
+        )
+        assertEquals(listOf("manual"), rig.messages.messages.values.map { it.localId })
     }
 
     @Test

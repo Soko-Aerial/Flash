@@ -1,5 +1,7 @@
 package com.transfer.flash.core.transfer.model
 
+import com.transfer.flash.core.transfer.TransferFailureText
+
 @JvmInline
 public value class FlashTransferId(public val value: String)
 
@@ -80,6 +82,12 @@ public data class FlashTransfer(
      */
     val restored: Boolean = false,
 ) {
+    /** The sender's worker is parked on receiver consent; this is not a user pause. */
+    public val isAwaitingReceiverAcceptance: Boolean
+        get() = direction == FlashTransferDirection.Sending &&
+            (state == FlashTransferState.Queued || state == FlashTransferState.Paused) &&
+            errorMessage == TransferFailureText.RECEIVER_ACCEPT_WAIT_REASON
+
     /**
      * Whether a Retry control can do anything for this row. One predicate for every surface (the Transfers screen and
      * the notification), so none of them guesses (audit 2026-10-20 B-06). A cancelled or declined transfer is a

@@ -151,6 +151,12 @@ fun FlashEncryptionBadge(
     state: FlashEncryptionBadgeState,
     modifier: Modifier = Modifier,
     onClick: () -> Unit = {},
+    /**
+     * Icon-only form for a header status line: the mock shows a 13dp lock there, and the chip's
+     * label is what clipped to "En" on a 360dp screen with three header actions. The tap and the
+     * full label stay, so the trust sheet is still one tap away and TalkBack reads the state.
+     */
+    compact: Boolean = false,
 ) {
     if (state == FlashEncryptionBadgeState.None) return
 
@@ -165,6 +171,29 @@ fun FlashEncryptionBadge(
         colors.textSecondary
     }
     val description = "$label. Tap for details"
+
+    if (compact) {
+        Box(
+            modifier = modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onClick)
+                .semantics(mergeDescendants = true) {
+                    role = Role.Button
+                    contentDescription = description
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            FlashIcon(
+                icon = FlashIcons.Encryption,
+                contentDescription = null,
+                tint = iconTint,
+                size = 14.dp,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+        }
+        return
+    }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,

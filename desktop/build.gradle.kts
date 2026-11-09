@@ -17,6 +17,12 @@ plugins {
     id("flash.third-party-notices")
 }
 
+// Single source of the desktop application version: the MSI/EXE packageVersion and the
+// Implementation-Version manifest attribute that Settings -> About reads. Change this one value
+// when the desktop release version changes, so the About card can never drift from the installer
+// again (2.2.0 shipped a hardcoded "1.0.0-desktop").
+val desktopAppVersion = "2.2.0"
+
 val sqliteJdbcStripped: Configuration = configurations.create("sqliteJdbcStripped") {
     isCanBeConsumed = false
     isCanBeResolved = true
@@ -217,7 +223,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb)
             packageName = "Flash"
-            packageVersion = "2.1.0"
+            packageVersion = desktopAppVersion
             description = "Offline LAN peer-to-peer file transfer & messaging"
             vendor = "Flash"
             modules(
@@ -325,6 +331,7 @@ run {
 // file class RadioLinkTestMainKt (+ its lambdas); the Compose compiler also emits ComposableSingletons$RadioLinkTestMainKt.
 // The headless CLI lives in :core:radio (core/radio/.../diag), outside this module.
 tasks.named<Jar>("jvmJar") {
+    manifest { attributes["Implementation-Version"] = desktopAppVersion }
     exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*", "com/transfer/flash/desktop/radiospike/*", "com/transfer/flash/desktop/DesktopRadioGatewayDemoApp*", "com/transfer/flash/desktop/radioaudio/*", "com/transfer/flash/desktop/ApexHubShowcaseApp*")
 }
 

@@ -29,6 +29,14 @@ public interface OutboxDao {
     )
     public suspend fun dueForDelivery(now: Long, limit: Int): List<OutboxEntity>
 
+    /** Only messages the outbox can still send. Direct transfer bubbles have no outbox row. */
+    @Query(
+        "SELECT o.localId FROM outbox o INNER JOIN messages m ON m.localId = o.localId " +
+            "WHERE m.conversationId = :peerId AND m.senderId = :senderId AND m.deletedAt IS NULL " +
+            "AND m.status NOT IN ('DELIVERED', 'READ', 'FAILED')",
+    )
+    public suspend fun unacknowledgedToPeer(peerId: String, senderId: String): List<String>
+
     /**
      * Reconnect reset (Bug 5): make every pending outbox row retryable immediately —
      * `attempts -> 0`, `nextAttemptAt -> now` — so the drain flushes queued messages the

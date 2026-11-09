@@ -147,6 +147,7 @@ data class OverviewDto(
     val revocations: RevocationStatusDto?,
     val audit: AuditHeadDto,
     val deviceQuota: Int,
+    val serverVersion: String = "",
 )
 
 @Serializable

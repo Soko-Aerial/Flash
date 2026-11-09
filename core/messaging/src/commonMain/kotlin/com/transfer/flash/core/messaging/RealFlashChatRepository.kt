@@ -575,7 +575,11 @@ public class RealFlashChatRepository(
 
     /** The raw LAN sinks. The outbox uses these directly; everything else goes through the hub-aware wrappers below. */
     private val lanTransportSink: MessageTransportSink? = transportSink
-    private val lanGroupTransportSink: GroupTransportSink? = groupTransportSink
+    private val lanGroupTransportSink: GroupTransportSink? = groupTransportSink?.let { sink ->
+        GroupTransportSink { target, frame ->
+            !isRevokedForHubGroup(frame.groupId, target) && sink.send(target, frame)
+        }
+    }
 
     /** The chat's whole relationship with the hub (null without a hub). */
     private val hubBridge: HubChatBridge? = hubRelay?.let { relay ->
@@ -736,7 +740,8 @@ public class RealFlashChatRepository(
         hubBridge.sendDirect(target, hubFrameId(frame), timeSource.nowMs(), frame)
     }
 
-    private val groupTransportSink: GroupTransportSink? = if (hubBridge == null) groupTransportSink else GroupTransportSink { target, frame ->
+    private val groupTransportSink: GroupTransportSink? = if (hubBridge == null) lanGroupTransportSink else GroupTransportSink { target, frame ->
+        if (isRevokedForHubGroup(frame.groupId, target)) return@GroupTransportSink false
         val lan = lanGroupTransportSink?.send(target, frame) == true
         if (lan) return@GroupTransportSink true
         val chatLevel = frame is GroupWireFrame.Message || frame is GroupWireFrame.Receipt ||
@@ -1385,8 +1390,14 @@ public class RealFlashChatRepository(
         if (hubBridge != null && hubRelay != null) {
             val hubSink = object : HubInboundSink {
                 override suspend fun direct(frame: MessageWireFrame, from: String) = handleDirectFrame(frame, from, vetSender = false)
-                override suspend fun group(frame: GroupWireFrame, from: String) = onInboundGroupWireFrame(from, frame)
-                override suspend fun hubFile(frame: HubFileFrame, from: String): Boolean = onInboundHubFile(frame, from)
+                override suspend fun group(frame: GroupWireFrame, from: String) {
+                    requireHubGroupRevocations(frame.groupId)
+                    onInboundGroupWireFrame(from, frame)
+                }
+                override suspend fun hubFile(frame: HubFileFrame, from: String): Boolean {
+                    frame.groupId?.let(::requireHubGroupRevocations)
+                    return onInboundHubFile(frame, from)
+                }
             }
             scope.launch(ioDispatcher) {
                 hubRelay.deliveries.collect { delivery -> hubBridge.handleInbound(delivery, hubSink) }
@@ -3276,14 +3287,18 @@ public class RealFlashChatRepository(
             // F1 interim gate (group Phase 1 plan): group attachments are unsupported until the
             // F4 media path lands. Rejected with a log — never silently threaded into a group
             // row, which used to clobber the conversation's identity (see [touchConversation]).
-            if (conversationDao.get(conversationId)?.isGroup == true) {
+            val conversation = conversationDao.get(conversationId)
+            if (conversation?.isGroup == true) {
                 FlashLog.w("CHAT", "Group attachment rejected as unsupported (F4 pending): $fileName")
                 return@launch
             }
             // A radio-only route has no attachment transport. This is a safety net for a route
             // that changes after the picker opened; the conversation UI blocks the picker earlier.
+            // The row was just read for the group check, so its policy is used directly: a second
+            // `conversationDao.get` here made a locked DB stall this guard (RADIO-PATH-01).
             val radio = radioBridge
-            val radioAllowed = radioPolicyOf(conversationId) == FlashRadioPolicy.AUTO
+            val radioAllowed = (radioPolicyNow.value[conversationId]
+                ?: FlashRadioPolicy.fromStorage(conversation?.radioPolicy)) == FlashRadioPolicy.AUTO
             val hubCanCarryFile = hubFileRoute(conversationId) == HubFileRoute.READY
             if (radioAllowed && radio != null && radio.canCarry(conversationId) && !isPeerOnline(conversationId) && !hubCanCarryFile) {
                 val refusal = radio.checkAttachmentRefusal(conversationId)
@@ -3607,6 +3622,7 @@ public class RealFlashChatRepository(
      * `from` field cannot claim another trusted member's identity.
      */
     public suspend fun onInboundGroupWireFrame(peerDeviceId: String, frame: GroupWireFrame) {
+        if (isRevokedForHubGroup(frame.groupId, peerDeviceId)) return
         if (frame is GroupWireFrame.GsHello ||
             frame is GroupWireFrame.GsChallenge ||
             frame is GroupWireFrame.GsProof ||
@@ -5831,9 +5847,19 @@ public class RealFlashChatRepository(
      * Public so a host can hand the same predicate to the call layer (a vouched member may join a group call).
      */
     public suspend fun isGroupPeerTrusted(groupId: String, deviceId: String): Boolean =
-        isTrustedPeer(deviceId) ||
+        !isRevokedForHubGroup(groupId, deviceId) && (isTrustedPeer(deviceId) ||
             signedGroups?.isVouchedMember(groupId, deviceId, peerIdentityKey(deviceId)) == true ||
-            isHubGroupMemberPeer(groupId, deviceId)
+            isHubGroupMemberPeer(groupId, deviceId))
+
+    private fun isRevokedForHubGroup(groupId: String, deviceId: String): Boolean =
+        enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true &&
+            (hubGroupRosters?.revocationBlocks(groupId) == true || orgPeerResolver?.isRevokedColleague(deviceId) == true)
+
+    private fun requireHubGroupRevocations(groupId: String) {
+        if (enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true) {
+            check(hubGroupRosters?.revocationStateReady() != false) { "Hub revocation state unavailable" }
+        }
+    }
 
     /**
      * Plan B section 10 gate for a hub group (one linked to the hub that has a hub-signed roster): [deviceId] is an active
@@ -6057,6 +6083,7 @@ public class RealFlashChatRepository(
      * a member the caller is not paired with and has no session to yet can still be dialed and invited.
      */
     public suspend fun isGroupCallMember(groupId: String, deviceId: String): Boolean {
+        if (isRevokedForHubGroup(groupId, deviceId)) return false
         val members = groupMemberDao ?: return isGroupPeerTrusted(groupId, deviceId)
         if (isRemovedHere(members, groupId)) return false
         if (members.member(groupId, deviceId)?.isActive != true) return false
@@ -6493,7 +6520,16 @@ public class RealFlashChatRepository(
                 continue
             }
             val success = sendWithTimeout(wireFrame.localId, wireFrame.conversationId) {
-                sendDirectViaPaths(wireFrame)
+                // The conversation row was already loaded above; use its stored policy instead of a
+                // second query. On a busy Android database that extra `SELECT conversations` was
+                // measured at 0.3-15 s and delayed the whole send path (RADIO-PATH-01). The
+                // in-process override still wins: it exists so a send racing the asynchronous
+                // "Never" write cannot go by radio.
+                sendDirectViaPaths(
+                    wireFrame,
+                    radioPolicyNow.value[wireFrame.conversationId]
+                        ?: FlashRadioPolicy.fromStorage(conversation?.radioPolicy),
+                )
             }
             if (success) {
                 // Single tick, unchanged — the bytes are on the wire. The row itself survives
@@ -6652,7 +6688,10 @@ public class RealFlashChatRepository(
         val pending = if (roster == null) {
             allPending
         } else {
-            allPending.filter { roster.member(message.conversationId, it.memberId)?.isActive != false }
+            allPending.filter {
+                !isRevokedForHubGroup(message.conversationId, it.memberId) &&
+                    roster.member(message.conversationId, it.memberId)?.isActive != false
+            }
         }
         if (pending.isEmpty()) {
             if (deliveries.deliveredCount(item.localId) == 0) {
@@ -6786,27 +6825,22 @@ public class RealFlashChatRepository(
 
     /**
      * ADR-351 negative ack: the peer no longer trusts us. Fail its queued messages now instead of
-     * waiting for [OUTBOX_GIVE_UP_AFTER_MS], and stop treating it as online. A direct conversation's
-     * id is the peer device id, so the conversation read is the pending set.
+     * waiting for [OUTBOX_GIVE_UP_AFTER_MS], and stop treating it as online. LAN attachment bubbles
+     * track their own transfer and have no outbox row, even when their message status is SENT.
      */
     override fun failPendingToPeer(peerDeviceId: String, reason: String) {
         currentConnectedPeers.remove(peerDeviceId)
         groupProofSessions?.onSessionDown(peerDeviceId)
-        scope.launch {
-            val pending = runCatching {
-                messageDao.observeConversation(peerDeviceId).first()
-                    .filter {
-                        it.conversationId == peerDeviceId && it.senderId == localDeviceId &&
-                            it.status != "DELIVERED" && it.status != "READ" && it.status != "FAILED"
-                    }
-                    .map { it.localId }
-            }.getOrDefault(emptyList())
-            for (localId in pending) {
-                messageDao.updateStatusIfUnacknowledged(localId, "FAILED")
-                outboxDao.delete(localId)
-            }
-            if (pending.isNotEmpty()) {
-                FlashLog.w("CHAT", "Failed ${pending.size} queued message(s) to $peerDeviceId: $reason")
+        scope.launch(ioDispatcher) {
+            runInTransaction {
+                val pending = outboxDao.unacknowledgedToPeer(peerDeviceId, localDeviceId)
+                for (localId in pending) {
+                    messageDao.updateStatusIfUnacknowledged(localId, "FAILED")
+                    outboxDao.delete(localId)
+                }
+                if (pending.isNotEmpty()) {
+                    FlashLog.w("CHAT", "Failed ${pending.size} queued message(s) to $peerDeviceId: $reason")
+                }
             }
         }
     }
@@ -7278,11 +7312,6 @@ public class RealFlashChatRepository(
             conversationDao.setRadioPolicy(conversationId, policy.name)
         }
     }
-
-    /** This chat's outbound radio policy: the in-process choice first, then the stored one. */
-    private suspend fun radioPolicyOf(conversationId: String): FlashRadioPolicy =
-        radioPolicyNow.value[conversationId]
-            ?: FlashRadioPolicy.fromStorage(conversationDao.get(conversationId)?.radioPolicy)
 
     override fun markConversationUnread(conversationId: String) {
         scope.launch(ioDispatcher) {
@@ -7849,7 +7878,10 @@ public class RealFlashChatRepository(
      * a healthy LAN never duplicates through the server. Receivers de-duplicate by message id, so a message that
      * arrives twice is stored once.
      */
-    private suspend fun sendDirectViaPaths(frame: MessageWireFrame.TextMessage): Boolean {
+    private suspend fun sendDirectViaPaths(
+        frame: MessageWireFrame.TextMessage,
+        radioPolicy: FlashRadioPolicy,
+    ): Boolean {
         val target = frame.conversationId
         val lanOk = lanTransportSink?.send(target, frame) == true
         val bridge = hubBridge
@@ -7882,15 +7914,19 @@ public class RealFlashChatRepository(
         val radio = radioBridge
         // The radio is an optional per-chat fallback. NEVER is intentionally outbound-only;
         // RadioChatBridge continues to accept a peer's inbound radio messages.
-        val radioAllowed = radioPolicyOf(target) == FlashRadioPolicy.AUTO
-        val radioReachable = radio != null && radioAllowed && radio.canCarry(target)
-        // A permanent radio refusal (too long, an attachment, Profile M unconfirmed) ends the message where it is;
-        // a temporary one (link down) must still leave the hub's mailbox available below.
+        val radioAllowed = radioPolicy == FlashRadioPolicy.AUTO
+        // Read the key and the link separately: when the policy is NEVER the short-circuit used to hide
+        // whether the peer was paired, which made `not_reachable` ambiguous (RADIO-PATH-01).
+        val radioKeyPresent = radio != null && radio.port.hasRadioPairingKey(target)
+        val radioCanSendNow = radio != null && radio.canCarry(target)
+        val radioReachable = radioAllowed && radioCanSendNow
+        // A permanent radio refusal (too long, an attachment) ends the message where it is; a temporary one
+        // (link down, Profile M unconfirmed) must still leave the hub's mailbox available below.
         var radioRefusedForGood = false
         if (radio != null && radioReachable) {
             val again = radioCarried(frame.localId)
             val sent = radio.sendDirect(target, frame)
-            radioPathProbe(frame, target, if (sent) "sent" else "refused", radio)
+            radioPathProbe(frame, target, if (sent) "sent" else "refused", radio, radioPolicy, radioKeyPresent)
             if (sent) {
                 pathProbe(frame, target, "radio")
                 // ERROR-869: a radio ACK measured 3.8-9.4 s on real handhelds, far longer than the LAN retry
@@ -7910,7 +7946,7 @@ public class RealFlashChatRepository(
                 }
                 return true
             }
-            radioRefusedForGood = radio.notes.value[frame.localId]?.isFailure == true
+            radioRefusedForGood = radio.notes.value[frame.localId]?.let { it.isFailure && !it.transient } == true
         }
 
         // Step 4: the hub's mailbox, the last resort.
@@ -7929,13 +7965,14 @@ public class RealFlashChatRepository(
                 "peer" to FlashProbe.short(target),
                 "message" to FlashProbe.short(frame.localId),
                 "result" to "no_bridge",
+                "policy" to radioPolicy.name,
             )
             pathProbe(frame, target, "none")
         } else if (!radioReachable) {
-            // The gateway can be up while this device still cannot key the transmitter for that peer: the
-            // peer's 32-byte pairing session key is what makes it radio-reachable (ADR-227). Two very
-            // different sentences, so the line says which one it is.
-            radioPathProbe(frame, target, "not_reachable", radio)
+            // RADIO-PATH-01: this line covers three different causes, so it now carries the fields that
+            // separate them. `policy=NEVER` is the owner's per-chat choice; `pairKey=false` means this
+            // device has no 32-byte key for the peer; `gateway=false`/`connected=false` is the link.
+            radioPathProbe(frame, target, "not_reachable", radio, radioPolicy, radioKeyPresent)
             pathProbe(frame, target, "none")
         } else {
             // The radio was offered the frame and refused it; its own radio.path line says why.
@@ -7952,20 +7989,25 @@ public class RealFlashChatRepository(
         (hubOnlinePeerIds as? StateFlow<Set<String>>)?.value ?: hubOnlineNow.value
 
     /**
-     * The radio step's own line: which stage stopped it. `not_reachable` with `gateway=true connected=true` is
-     * "this peer has no radio pairing key here", not "the radio is down" (ERROR-869).
+     * The radio step's own line: which stage stopped it. `not_reachable` carries both the per-chat `policy`
+     * (AUTO/NEVER) and `pairKey`; a `gateway=true connected=true` line is no longer read as "no key" without them
+     * (ERROR-985 / ADR-354).
      */
     private fun radioPathProbe(
         frame: MessageWireFrame.TextMessage,
         target: String,
         result: String,
         radio: com.transfer.flash.core.messaging.radio.RadioChatBridge,
+        policy: FlashRadioPolicy,
+        pairKeyPresent: Boolean,
     ) {
         FlashProbe.emit(
             "radio.path",
             "peer" to FlashProbe.short(target),
             "message" to FlashProbe.short(frame.localId),
             "result" to result,
+            "policy" to policy.name,
+            "pairKey" to pairKeyPresent,
             "gateway" to radio.port.isGatewayEnabled,
             "connected" to radio.port.isConnected,
         )
@@ -8005,13 +8047,16 @@ public class RealFlashChatRepository(
         frame: GroupWireFrame.Message,
     ): Boolean {
         val bridge = hubBridge
+        if (isRevokedForHubGroup(frame.groupId, memberId)) return false
         val lanOk = lan.send(memberId, frame)
         if (bridge == null || !linked) return lanOk
         if (!lanOk) return bridge.canCarry(memberId, group = true) && bridge.sendGroup(memberId, messageId, sentAt, frame)
         scheduleHubFallback("$messageId|$memberId", pending = {
             groupDeliveryDao?.pendingForMessage(messageId)?.any { it.memberId == memberId } == true
         }) {
-            if (bridge.canCarry(memberId, group = true) && !bridge.isHubAccepted(messageId)) bridge.sendGroup(memberId, messageId, sentAt, frame)
+            if (!isRevokedForHubGroup(frame.groupId, memberId) &&
+                bridge.canCarry(memberId, group = true) && !bridge.isHubAccepted(messageId)
+            ) bridge.sendGroup(memberId, messageId, sentAt, frame)
         }
         return true
     }

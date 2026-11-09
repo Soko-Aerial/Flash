@@ -16,6 +16,7 @@ import { toast, toastError } from '../ui/toast.js';
 import { setActiveTable } from '../shortcuts.js';
 import { downloadText } from './setup.js';
 import { icon } from '../icons.js';
+import { isOrgAdmin } from '../state.js';
 
 const PAGE = 500;
 const MAX_ROWS = 20000;
@@ -25,6 +26,13 @@ export function statusBadge(status) {
   if (status === 'ACTIVE') return badge(t('status.active'), 'ok');
   if (status === 'REVOKED') return badge(t('status.revoked'), 'bad');
   return badge(t('status.unenrolled'), 'warn');
+}
+
+export function moveDevice(deviceId, department) {
+  const path = '/devices/' + encodeURIComponent(deviceId);
+  const change = { department, moveToDepartment: true };
+  return guarded('device.move', deviceId,
+    (id) => api.put(path, change, { stepUp: id }), { rethrow: true });
 }
 
 async function sha256Hex(b64) {
@@ -37,6 +45,7 @@ async function sha256Hex(b64) {
 }
 
 export function mountDevices(container, ctx) {
+  const orgAdmin = isOrgAdmin();
   let all = [];
   let departments = [];
   let loaded = false;
@@ -71,7 +80,7 @@ export function mountDevices(container, ctx) {
   const bulkMove = button({ label: t('devices.bulk.move'), icon: 'org', size: 'sm', on: { click: () => bulkMoveFlow() } });
   const bulkExport = button({ label: t('devices.bulk.export'), icon: 'download', size: 'sm', on: { click: () => exportCsv(true) } });
   const bulkClear = button({ label: t('devices.bulk.clear'), variant: 'ghost', size: 'sm', on: { click: () => { table.selection.clear(); table.update({ rows: view }); onSelection(); } } });
-  const bulkBar = h('div', { class: 'bulk-bar', role: 'region', 'aria-label': t('devices.bulk.region'), hidden: true }, bulkCount, bulkRevoke, bulkMove, bulkExport, bulkClear);
+  const bulkBar = h('div', { class: 'bulk-bar', role: 'region', 'aria-label': t('devices.bulk.region'), hidden: true }, bulkCount, orgAdmin ? [bulkRevoke, bulkMove] : null, bulkExport, bulkClear);
 
   // ------------------------------------------------------------------ table
   const columns = [
@@ -382,7 +391,8 @@ export function mountDevices(container, ctx) {
         let ok = 0;
         for (const d of targets) {
           try {
-            const updated = await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: sel.value || null, moveToDepartment: true });
+            const updated = await moveDevice(d.deviceId, sel.value || null);
+            if (!updated) break;
             const i = all.findIndex((x) => x.deviceId === d.deviceId);
             if (i >= 0) all[i] = updated;
             ok += 1;
@@ -392,7 +402,7 @@ export function mountDevices(container, ctx) {
           }
         }
         dlg.close();
-        toast(t('devices.move.done', { n: ok }), { kind: ok ? 'success' : 'error' });
+        if (ok) toast(t('devices.move.done', { n: ok }), { kind: 'success' });
         table.selection.clear();
         fillDepartments();
         apply();
@@ -461,7 +471,8 @@ export function mountDevices(container, ctx) {
     saveDept.addEventListener('click', () =>
       withBusy(saveDept, async () => {
         try {
-          const updated = await api.put('/devices/' + encodeURIComponent(device.deviceId), { department: dept.value || null, moveToDepartment: true });
+          const updated = await moveDevice(device.deviceId, dept.value || null);
+          if (!updated) return;
           replaceDevice(updated);
           toast(t('devices.move.done', { n: 1 }), { kind: 'success' });
           renderDrawer(body, updated);
@@ -471,7 +482,7 @@ export function mountDevices(container, ctx) {
       }),
     );
     const history = h('div', { class: 'stack tight' }, skeleton('lines', 3));
-    api
+    if (orgAdmin) api
       .get('/audit', { query: { text: device.deviceId, order: 'desc', limit: 20 } })
       .then((page) => {
         mount(history, page.entries.length ? h('ul', { class: 'event-list' }, page.entries.map((e) => h('li', {}, h('span', { class: 'event-action', text: e.action }), h('span', { class: 'event-detail', text: e.actor }), h('span', { class: 'event-time' }, timeEl(e.timestampMs))))) : h('p', { class: 'muted', text: t('devices.history.empty') }));
@@ -479,14 +490,14 @@ export function mountDevices(container, ctx) {
       .catch((e) => mount(history, errorState(e)));
 
     const actions = [];
-    if (device.status === 'ACTIVE') {
+    if (orgAdmin && device.status === 'ACTIVE') {
       const revoke = button({ label: t('devices.revoke.button'), icon: 'lock', variant: 'danger' });
       revoke.addEventListener('click', async () => {
         const res = await revokeFlow(device);
         if (res) renderDrawer(body, res);
       });
       actions.push(revoke);
-    } else if (device.status === 'REVOKED') {
+    } else if (orgAdmin && device.status === 'REVOKED') {
       const un = button({ label: t('devices.unrevoke.button'), icon: 'refresh', variant: 'secondary' });
       un.addEventListener('click', async () => {
         const res = await unrevokeFlow(device);
@@ -505,11 +516,11 @@ export function mountDevices(container, ctx) {
         [t('devices.col.lastSeen'), device.online ? t('devices.online') : device.lastSeenAt ? timeEl(device.lastSeenAt) : t('devices.never')],
         [t('devices.col.cert'), device.certExpiry ? h('span', {}, formatDateTime(device.certExpiry)) : null],
       ]),
-      h('div', { class: 'form-actions start' }, actions),
+      actions.length ? h('div', { class: 'form-actions start' }, actions) : null,
       h('div', { class: 'inline-form' }, nf.el, saveName),
-      h('div', { class: 'inline-form' }, df.el, saveDept),
-      h('h3', { class: 'subhead', text: t('devices.history') }),
-      history,
+      orgAdmin ? h('div', { class: 'inline-form' }, df.el, saveDept) : null,
+      orgAdmin ? h('h3', { class: 'subhead', text: t('devices.history') }) : null,
+      orgAdmin ? history : null,
       h(
         'details',
         { class: 'tech' },

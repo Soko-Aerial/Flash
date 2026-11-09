@@ -15,10 +15,18 @@ import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.server.auth.DelegationStatus
 import com.transfer.flash.server.auth.HubKeyStore
 import com.transfer.flash.server.auth.InviteScope
+import com.transfer.flash.server.auth.SecretBox
+import com.transfer.flash.server.auth.SecureFiles
 import com.transfer.flash.server.auth.generateEcKeyPair
 import com.transfer.flash.server.auth.sign
 import com.transfer.flash.server.auth.toBase64Spki
 import com.transfer.flash.server.config.ServerConfig
+import com.transfer.flash.server.directory.DirectoryActor
+import com.transfer.flash.server.directory.GroupVisibility
+import com.transfer.flash.server.directory.JoinMode
+import com.transfer.flash.server.mailbox.MailboxMessage
+import com.transfer.flash.server.mailbox.MailboxQueue
+import com.transfer.flash.server.storage.update
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -30,11 +38,13 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.runBlocking
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.PrintStream
 import java.nio.file.Files
 import java.security.KeyPair
+import java.util.Base64
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -187,6 +197,63 @@ class HubServicesTest {
     }
 
     @Test
+    fun aBoundDatabaseRefusesAMissingOrDifferentDataKeyAndCanRecoverWithItsOriginal() {
+        val hub = build()
+        val key = File(dir, "data.key").toPath()
+        val original = Files.readAllBytes(key)
+        val admin = hub.admins.breakGlassReset("restore-admin")
+        hub.database.close()
+
+        Files.delete(key)
+        val missing = assertFailsWith<HubStartupException> { build() }
+        assertTrue(missing.message.orEmpty().contains("matching data.key"))
+        assertFalse(Files.exists(key), "a failed start must not create a key")
+        val wrong = Base64.getEncoder().encode(ByteArray(32) { 42 })
+        SecureFiles.writeOwnerOnly(key, wrong)
+        assertFailsWith<HubStartupException> { build() }
+        assertTrue(wrong.contentEquals(Files.readAllBytes(key)))
+
+        SecureFiles.writeOwnerOnly(key, original)
+        assertEquals(admin.totpSecret, build().admins.getAdmin(admin.username)?.totpSecret)
+    }
+
+    @Test
+    fun legacySealedMailboxAuthenticatesItsKeyBeforeBinding() = runBlocking<Unit> {
+        val hub = build()
+        val key = File(dir, "data.key").toPath()
+        val original = Files.readAllBytes(key)
+        val mailbox = MailboxQueue(hub.database, secrets = SecretBox.loadOrCreate(key))
+        assertTrue(mailbox.enqueue(MailboxMessage("origin", "target", "test", "MSG_TEXT", "queued", 1)).isStored)
+        hub.database.withConnection { it.update("DELETE FROM hub_meta WHERE k = 'data-key.verifier.v1'") }
+        hub.database.close()
+
+        Files.delete(key)
+        assertFailsWith<HubStartupException> { build() }
+        assertFalse(Files.exists(key))
+        SecureFiles.writeOwnerOnly(key, Base64.getEncoder().encode(ByteArray(32) { 43 }))
+        assertFailsWith<HubStartupException> { build() }
+
+        SecureFiles.writeOwnerOnly(key, original)
+        val reopened = build()
+        assertEquals("queued", MailboxQueue(reopened.database, secrets = SecretBox.loadOrCreate(key)).fetchPage("target", 0, 1).single().payload)
+        assertTrue(reopened.identities.meta("data-key.verifier.v1").orEmpty().startsWith(SecretBox.PREFIX))
+    }
+
+    @Test
+    fun aLegacyUnsealedDatabaseCanCreateAKeyAndRetainItsAuthenticator() {
+        val hub = build()
+        val old = com.transfer.flash.server.admin.AdminAuthService(printSetupTokenToConsole = false, db = hub.database)
+        val admin = old.breakGlassReset("legacy-admin")
+        hub.database.withConnection { it.update("DELETE FROM hub_meta WHERE k = 'data-key.verifier.v1'") }
+        hub.database.close()
+        Files.delete(File(dir, "data.key").toPath())
+
+        val reopened = build()
+        assertEquals(admin.totpSecret, reopened.admins.getAdmin(admin.username)?.totpSecret)
+        assertTrue(reopened.identities.meta("data-key.verifier.v1").orEmpty().startsWith(SecretBox.PREFIX))
+    }
+
+    @Test
     fun theDevEmbeddedRootStartsActiveButOnlyWithTheExplicitFlag() {
         val hub = build(config(dev = true))
         assertFalse(hub.awaitingDelegation, "dev mode issues its own delegation")
@@ -251,6 +318,50 @@ class HubServicesTest {
 
         val second = build()
         assertNotNull(second.directory.getDepartmentMember("dev-keep"), "startup reconciliation re-adds ACTIVE devices")
+    }
+
+    @Test
+    fun startupRootRevocationsRetireGroupCopiesBeforeServingAndStayRetiredOnRestart() = testApplication {
+        provision()
+        val first = build()
+        application { first.engine.configureApplication(this) }
+        first.directory.createDepartment("eng", "Engineering", emptyList(), DirectoryActor.CONSOLE)
+        first.directory.createGroup("g-eng", "Engineering", "eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY, emptyList(), DirectoryActor.CONSOLE)
+        enrol(first, "by-id", FlashCrypto.generateEcKeyPair())
+        val serial = enrol(first, "by-serial", FlashCrypto.generateEcKeyPair()).deviceCert.serial
+        enrol(first, "keep", FlashCrypto.generateEcKeyPair())
+        for (device in listOf("by-id", "by-serial", "keep")) {
+            first.directory.addMemberToGroup("g-eng", device, DirectoryActor.CONSOLE)
+        }
+        val initialVersion = assertNotNull(first.directory.getGroup("g-eng")).version
+        val secrets = SecretBox.loadOrCreate(File(dir, "data.key").toPath())
+        val queued = MailboxQueue(first.database, secrets = secrets, enforceGroupMembership = true)
+        assertTrue(queued.enqueue(MailboxMessage("keep", "by-id", "group", "MSG_TEXT", "queued", 1, group = "g-eng")).isStored)
+        assertTrue(queued.enqueue(MailboxMessage("keep", "by-id", "direct", "MSG_TEXT", "queued", 1)).isStored)
+        first.database.close()
+
+        val rootKey = File(dir.parentFile, "root-${dir.name}/${KeyTool.ROOT_PRIV}").toPath()
+        KeyTool(PrintStream(ByteArrayOutputStream()), PassphraseSource { _, _ -> null }).revoke(
+            rootKeyFile = rootKey,
+            delegationSerials = emptySet(),
+            deviceSerials = setOf(serial),
+            deviceIds = setOf("by-id"),
+            outFile = File(dir, "revocations/startup.signed").toPath(),
+        )
+
+        val second = build()
+        assertNull(second.directory.getDepartmentMember("by-id"))
+        assertNull(second.directory.getDepartmentMember("by-serial"))
+        val retired = assertNotNull(second.directory.getGroup("g-eng"))
+        assertEquals(setOf("keep"), retired.memberDeviceIds.toSet())
+        assertTrue(retired.version > initialVersion)
+        val remaining = MailboxQueue(second.database, secrets = secrets, enforceGroupMembership = true).fetchPage("by-id", 0, 10)
+        assertEquals(listOf("direct"), remaining.map { it.msgId })
+        second.database.close()
+
+        val third = build()
+        assertEquals(retired, third.directory.getGroup("g-eng"))
+        assertNull(third.directory.getDepartmentMember("by-serial"), "an ACTIVE registry row with a revoked serial must not reappear")
     }
 
     // ------------------------------------------------------------------------------------------ delegation lifecycle

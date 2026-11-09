@@ -27,11 +27,12 @@ internal actual object HubFileDisk {
         return file.readBytes()
     }
 
-    actual fun replaceAtomically(path: String, bytes: ByteArray) {
+    actual fun replaceAtomically(path: String, bytes: ByteArray, sync: Boolean) {
         val target = File(path)
         val temp = File(target.parentFile, target.name + ".tmp")
         FileOutputStream(temp).use { out ->
             out.write(bytes)
+            if (sync) out.fd.sync()
         }
         Files.move(temp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
     }

@@ -258,6 +258,7 @@ export function mountSettings(container, ctx) {
           dl([
             [t('settings.about.hub'), o.hubName],
             [t('settings.about.serverId'), h('span', { class: 'inline' }, mono(o.serverId), copyButton({ text: o.serverId, label: t('common.copy') }))],
+            [t('settings.about.serverVersion'), mono(o.serverVersion || '—')],
             [t('settings.about.console'), mono(CONSOLE_VERSION)],
             [t('settings.about.origin'), mono(globalThis.location.origin)],
             [t('settings.about.secure'), globalThis.isSecureContext ? badge(t('settings.about.secure.yes'), 'ok') : badge(t('settings.about.secure.no'), 'warn')],

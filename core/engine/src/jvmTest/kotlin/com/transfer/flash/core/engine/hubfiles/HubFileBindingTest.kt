@@ -370,7 +370,7 @@ class HubFileBindingTest {
     // ----- receiving --------------------------------------------------------------------------------------------
 
     @Test
-    fun `U34 an accepted file is downloaded, checked and placed under its own folder`() = runBlocking(worker) {
+    fun `U34 an accepted file is downloaded, checked and placed in its category`() = runBlocking(worker) {
         val plain = Random(3).nextBytes(1024 * 1024 + 99)
         val ticket = ticketFromAnn(plain)
         val r = rig("dev-b")
@@ -382,9 +382,26 @@ class HubFileBindingTest {
         val path = assertNotNull(r.dao.get(row.transferId)?.localPath)
         val placed = File(path)
         assertContentEquals(plain, placed.readBytes())
-        assertEquals(File(r.receivedDir, row.transferId).canonicalPath, placed.parentFile.canonicalPath, "the file stays in its own folder")
+        assertEquals(File(r.receivedDir, "Documents").canonicalPath, placed.parentFile.canonicalPath)
         assertFalse(placed.name.contains("/") || placed.name.contains("\\") || placed.name == "..", "one plain name, no path")
         assertFalse(File(tempDir, "evil").exists() || File(r.receivedDir, "evil").exists(), "nothing escaped the folder")
+    }
+
+    @Test
+    fun `a Hub voice message lands in Voice messages without replacing an earlier clip`() = runBlocking(worker) {
+        val plain = Random(34).nextBytes(4096)
+        val ticket = ticketFromAnn(plain)
+        val r = rig("dev-b")
+        val directory = File(r.receivedDir, "Voice messages").apply { mkdirs() }
+        val existing = File(directory, "Voice message.wav").apply { writeText("earlier clip") }
+        val row = offeredRow(ticket, name = "Voice message.wav").copy(mime = "audio/wav")
+        r.dao.insert(row)
+        r.repo.acceptIncoming(FlashTransferId(row.transferId))
+        eventually("voice downloaded") { r.dao.get(row.transferId)?.state == HubFileStates.DONE }
+        val path = File(assertNotNull(r.dao.get(row.transferId)?.localPath))
+        assertEquals(File(directory, "Voice message (1).wav").canonicalFile, path.canonicalFile)
+        assertEquals("earlier clip", existing.readText())
+        assertContentEquals(plain, path.readBytes())
     }
 
     @Test

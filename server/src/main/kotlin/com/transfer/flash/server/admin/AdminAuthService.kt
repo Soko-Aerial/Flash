@@ -21,6 +21,8 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
+internal fun totpSecretContext(username: String): String = "admin_users.totp_secret:$username"
+
 data class AdminUser(
     val username: String,
     val passwordHash: String,
@@ -872,9 +874,7 @@ class AdminAuthService(
 
     // ------------------------------------------------------------------------------------------------ storage helpers
 
-    private fun totpContext(username: String) = "admin_users.totp_secret:$username"
-
-    private fun sealTotp(username: String, secret: String): String = secrets.seal(secret, totpContext(username))
+    private fun sealTotp(username: String, secret: String): String = secrets.seal(secret, totpSecretContext(username))
 
     /**
      * Seals every authenticator seed still stored in plain text (a data directory from before REV-03). Idempotent; runs at startup
@@ -901,7 +901,7 @@ class AdminAuthService(
     private fun adminRow(rs: java.sql.ResultSet) = AdminUser(
         username = rs.getString("username"),
         passwordHash = rs.getString("password_hash"),
-        totpSecret = secrets.open(rs.getString("totp_secret"), totpContext(rs.getString("username"))),
+        totpSecret = secrets.open(rs.getString("totp_secret"), totpSecretContext(rs.getString("username"))),
         role = rs.getString("role"),
         enrolledDeviceId = rs.getString("enrolled_device_id"),
         disabled = rs.getInt("disabled") != 0,

@@ -220,7 +220,10 @@ public object FlashRadioCopy {
 
     public const val PROFILE_A_TITLE: String = "Profile A (Signed cleartext)"
     public const val PROFILE_A_SUBTITLE: String =
-        "Plaintext AX.25 frames with digital signatures and callsign identification for amateur bands."
+        "Not supported for Flash chat yet: a receiving pair cannot verify a signed frame without the peer's full key. Use Profile M."
+    public const val PROFILE_A_UNSUPPORTED_BADGE: String = "Not supported"
+    public const val PROFILE_A_UNSUPPORTED_NOTE: String =
+        "Profile A cannot carry Flash chat. Select Profile M; your radio stays connected."
 
     public const val AUTHORISATION_DIALOG_TITLE: String = "Authorisation required for encrypted RF"
     public const val AUTHORISATION_DIALOG_BODY: String =

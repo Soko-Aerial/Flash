@@ -413,9 +413,9 @@ class AdminConsoleApiTest {
         enrollment.enrollDevice(token, deviceId, key.toBase64Spki(), proof, currentTimeMs = now).getOrThrow()
     }
 
-    private suspend fun HttpClient.putDevice(id: String, s: Sess, body: DeviceUpdateBody): HttpResponse =
+    private suspend fun HttpClient.putDevice(id: String, s: Sess, body: DeviceUpdateBody, stepUp: String? = null): HttpResponse =
         put("/admin/api/v1/devices/$id") {
-            withSession(s)
+            withSession(s, stepUp)
             contentType(ContentType.Application.Json)
             setBody(HubRestCodec.encode(body))
         }
@@ -439,11 +439,21 @@ class AdminConsoleApiTest {
         assertNotNull(r.tokens.resolve(token, r.now), "a rename changes no authorisation")
         assertTrue(session.isOpen, "and does not kick")
 
-        val same = client.putDevice("dev-1", s, DeviceUpdateBody(department = "dept-a", moveToDepartment = true))
+        val denied = client.putDevice("dev-1", s, DeviceUpdateBody(name = "Unauthorized", department = "dept-b", moveToDepartment = true))
+        assertEquals(HttpStatusCode.Forbidden, denied.status)
+        assertEquals("ERR_STEP_UP", errorOf(denied).code)
+        assertEquals("Renamed", r.identities.device("dev-1")!!.name)
+        assertEquals("dept-a", r.identities.device("dev-1")!!.department)
+
+        val key = FlashCrypto.generateEcKeyPair()
+        assertEquals(HttpStatusCode.OK, client.enrolKey(r, s, key).status)
+        val sameProof = client.confirm(s, key, StepUpActions.MOVE_DEVICE, "dev-1", p1363 = true)
+        val same = client.putDevice("dev-1", s, DeviceUpdateBody(department = "dept-a", moveToDepartment = true), sameProof)
         assertEquals(HttpStatusCode.OK, same.status, same.bodyAsText())
         assertTrue(session.isOpen, "moving to the department it already has is not a move")
 
-        val moved = client.putDevice("dev-1", s, DeviceUpdateBody(department = "dept-b", moveToDepartment = true))
+        val moveProof = client.confirm(s, key, StepUpActions.MOVE_DEVICE, "dev-1", p1363 = true)
+        val moved = client.putDevice("dev-1", s, DeviceUpdateBody(department = "dept-b", moveToDepartment = true), moveProof)
         assertEquals(HttpStatusCode.OK, moved.status, moved.bodyAsText())
         assertEquals("dept-b", r.identities.device("dev-1")!!.department)
         assertNull(r.tokens.resolve(token, r.now), "the old department's bearer is forgotten")

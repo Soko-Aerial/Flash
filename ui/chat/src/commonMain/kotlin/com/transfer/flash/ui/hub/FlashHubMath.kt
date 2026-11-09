@@ -184,13 +184,18 @@ public object FlashHubMath {
         }
         if (state.isRefreshing) return FlashHubStrip(FlashHubCopy.STRIP_UPDATING, FlashHubStripTone.CALM)
         val age = state.lastSyncedAtMs?.let { relativeTime(it, nowMs) }
-        val offline = state.syncStatus == HubSyncStatus.FAILED_OFFLINE || link != HubLinkState.ONLINE
+        val offline = state.syncStatus == HubSyncStatus.FAILED_OFFLINE || (link != HubLinkState.ONLINE && link != HubLinkState.CERT_EXPIRING)
         return when {
             state.syncStatus == HubSyncStatus.FAILED_OTHER ->
                 FlashHubStrip(
                     if (age != null) "${FlashHubCopy.STRIP_UPDATE_FAILED} · showing information from $age" else FlashHubCopy.STRIP_UPDATE_FAILED,
                     FlashHubStripTone.INFO,
                     FlashHubStripAction.RETRY,
+                )
+            link == HubLinkState.CONNECTING || link == HubLinkState.AUTHENTICATING ->
+                FlashHubStrip(
+                    hubWorkspaceConnection(link) + (age?.let { " · showing information from $it" } ?: ""),
+                    FlashHubStripTone.INFO,
                 )
             offline ->
                 FlashHubStrip(

@@ -8,7 +8,7 @@ The `:core:engine` module provides the unified orchestrator and runtime facade f
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 
@@ -24,10 +24,10 @@ dependencies {
    ┌───────────┬────────────┬───────┴────┬──────────────┬─────────────┐
    ▼           ▼            ▼            ▼              ▼             ▼
  chats      transfers    discovery     network      trustStore   optional seams:
- (messaging) (transfer)  (discovery)   (network)    (security)   ptt, calls, swarm
+ (messaging) (transfer)  (discovery)   (network)    (security)   pairing, ptt, calls, swarm
 ```
 
-`DefaultFlashEngine` is the standard implementation (it takes the five repositories and the three optional engines).
+`DefaultFlashEngine` aggregates the repositories, discovery, network and trust store.
 Two factories assemble a fully wired one:
 
 * **Android:** `Flash.create(context, FlashConfig())` (in `core-engine`'s Android source set). It builds one shared
@@ -60,6 +60,7 @@ public interface FlashEngine : AutoCloseable {
     public val discovery: FlashDiscovery
     public val network: FlashNetwork
     public val trustStore: FlashTrustStore
+    public val pairing: FlashPairing?
 
     public val ptt: FlashPtt?                       // null until attached
     public fun attachPtt(hasMicPermission: () -> Boolean = { true },
@@ -88,7 +89,10 @@ public interface FlashEngine : AutoCloseable {
 
 The attach methods are idempotent, and PTT, calling and the swarm are all opt-in so a consumer that never attaches them pays
 nothing (`:core:calling` is `compileOnly` for the engine, so WebRTC is not pulled in transitively; ADR-033).
-There is no `crypto` member: identity and pairing live behind `trustStore` and `:core:security`.
+On Android, `Flash.create` wires pairing through the same authenticated sessions used by the other
+subsystems. See the [pairing guide](../../guides/pairing-and-trust.md) for user consent and trust state.
+Use the [engine API reference](../../../architecture/public-api.md#10-core-engine-module-coreengine)
+for the JVM readiness signal, custom host injection and platform settings.
 
 ### 3.2 `FlashConfig`
 

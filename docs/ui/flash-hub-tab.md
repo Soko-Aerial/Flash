@@ -1,5 +1,10 @@
 # Component Research & Design Document — Flash Hub tab (UI-058)
 
+**Workspace redesign, 2026-11-06:** the current design and validation record is
+[`hub-workspace-redesign.md`](hub-workspace-redesign.md). It keeps the four supported sections and FlashTheme,
+moves organization identity above navigation, removes repeated summary decoration and makes detail panes contextual.
+The historical specifications below are preserved; the new record governs changed presentation.
+
 **Status:** IMPLEMENTED 2026-10-15 (H0-H10, branch `agent/C-h6-h10`); unit-tested only, NOT device-verified (HUBT-01..32 owed). Implementation plan: `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`.
 The shell (tab swap, Transfers button) is H0-H5; the screens, repository facade, Message/Call, routes, badge and previews are H6-H10
 (`ui/chat/.../ui/hub/`, `core/messaging/.../hub/`). Differences from this design are listed in "Implementation notes (H6-H10)" at the end.
