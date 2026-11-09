@@ -13,6 +13,7 @@ class FlashConversationMenuMathTest {
             listOf(
                 FlashConversationMenuItem.VIEW_PROFILE,
                 FlashConversationMenuItem.SEARCH,
+                FlashConversationMenuItem.CHAT_APPEARANCE,
                 FlashConversationMenuItem.REVOKE_TRUST,
                 FlashConversationMenuItem.MARK_UNREAD,
                 FlashConversationMenuItem.CLEAR_CONVERSATION,
@@ -33,6 +34,7 @@ class FlashConversationMenuMathTest {
                 FlashConversationMenuItem.GROUP_INFO,
                 FlashConversationMenuItem.ADD_MEMBERS,
                 FlashConversationMenuItem.SEARCH,
+                FlashConversationMenuItem.CHAT_APPEARANCE,
                 FlashConversationMenuItem.MARK_UNREAD,
                 FlashConversationMenuItem.LEAVE_GROUP,
             ),
@@ -54,6 +56,7 @@ class FlashConversationMenuMathTest {
             listOf(
                 FlashConversationMenuItem.GROUP_INFO,
                 FlashConversationMenuItem.SEARCH,
+                FlashConversationMenuItem.CHAT_APPEARANCE,
                 FlashConversationMenuItem.MARK_UNREAD,
             ),
             out,

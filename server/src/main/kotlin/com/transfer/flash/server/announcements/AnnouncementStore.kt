@@ -8,6 +8,7 @@ import com.transfer.flash.core.hubprotocol.rest.AnnouncementSearchResponseDto
 import com.transfer.flash.server.storage.Migration
 import com.transfer.flash.server.storage.Migrator
 import com.transfer.flash.server.storage.ServerDatabase
+import com.transfer.flash.server.storage.query
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.ResultSet
@@ -514,7 +515,10 @@ public class AnnouncementStore(
         callerDeptId: String?,
         isOrgAdmin: Boolean,
         nowMs: Long = clock(),
+        consoleDepartments: Set<String>? = null,
+        beforeId: String? = null,
     ): AnnouncementSearchResponseDto = db.withConnection { conn ->
+        if (consoleDepartments?.isEmpty() == true) return@withConnection AnnouncementSearchResponseDto()
         val safeLimit = limit.coerceIn(1, 100)
         val safeBefore = before ?: Long.MAX_VALUE
 
@@ -522,6 +526,10 @@ public class AnnouncementStore(
         // (SEC-D16-01): the clause strings below hold only literals and `?`.
         val visibilityParams = ArrayList<String>()
         val visibilityClause = when {
+            consoleDepartments != null -> {
+                visibilityParams.addAll(consoleDepartments)
+                "a.scope = 'department' AND a.department_id IN (${consoleDepartments.joinToString(",") { "?" }})"
+            }
             isOrgAdmin -> "1=1"
             callerDeptId.isNullOrBlank() -> "a.scope = 'org'"
             else -> {
@@ -535,7 +543,7 @@ public class AnnouncementStore(
         val filterClause = when {
             scope == "org" -> "a.scope = 'org'"
             scope == "department" && !departmentId.isNullOrBlank() -> {
-                if (!isOrgAdmin && departmentId != callerDeptId) {
+                if (!isOrgAdmin && !(consoleDepartments?.contains(departmentId) ?: (departmentId == callerDeptId))) {
                     return@withConnection AnnouncementSearchResponseDto() // Caller asking for another department -> empty
                 }
                 filterParams.add(departmentId)
@@ -543,7 +551,26 @@ public class AnnouncementStore(
             }
             else -> "1=1"
         }
-        val clauseParams = visibilityParams + filterParams
+        val pageParams = arrayListOf<Any?>(nowMs, safeBefore)
+        val cursorClause = if (beforeId == null) {
+            "a.created_at < ?"
+        } else {
+            pageParams += beforeId
+            "(a.created_at, a.id) < (?, ?)"
+        }
+        pageParams.addAll(visibilityParams)
+        pageParams.addAll(filterParams)
+        pageParams += safeLimit + 1
+        val pagePredicate = """
+            a.deleted_at IS NULL
+            AND (a.expires_at IS NULL OR a.expires_at > ?)
+            AND $cursorClause
+            AND $visibilityClause
+            AND $filterClause
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT ?
+        """.trimIndent()
+        val boundPageParams = pageParams.toTypedArray()
 
         val trimmedQuery = query?.trim().orEmpty()
         val items = ArrayList<AnnouncementItemDto>()
@@ -560,26 +587,10 @@ public class AnnouncementStore(
                     val sql = """
                         SELECT a.* FROM announcement a
                         JOIN announcement_fts fts ON a.rowid = fts.rowid
-                        WHERE announcement_fts MATCH ?
-                          AND a.deleted_at IS NULL
-                          AND (a.expires_at IS NULL OR a.expires_at > ?)
-                          AND a.created_at < ?
-                          AND $visibilityClause
-                          AND $filterClause
-                        ORDER BY a.created_at DESC
-                        LIMIT ?
+                        WHERE announcement_fts MATCH ? AND $pagePredicate
                     """.trimIndent()
 
-                    conn.prepareStatement(sql).use { stmt ->
-                        stmt.setString(1, ftsQuery)
-                        stmt.setLong(2, nowMs)
-                        stmt.setLong(3, safeBefore)
-                        clauseParams.forEachIndexed { i, value -> stmt.setString(4 + i, value) }
-                        stmt.setInt(4 + clauseParams.size, safeLimit)
-                        stmt.executeQuery().use { rs ->
-                            while (rs.next()) items.add(readItem(rs))
-                        }
-                    }
+                    items += conn.query(sql, ftsQuery, *boundPageParams, map = ::readItem)
                     searchedWithFts = true
                 } catch (_: Exception) {
                     searchedWithFts = false
@@ -592,52 +603,19 @@ public class AnnouncementStore(
                 val sql = """
                     SELECT a.* FROM announcement a
                     WHERE (a.title LIKE ? ESCAPE '\' OR a.body LIKE ? ESCAPE '\')
-                      AND a.deleted_at IS NULL
-                      AND (a.expires_at IS NULL OR a.expires_at > ?)
-                      AND a.created_at < ?
-                      AND $visibilityClause
-                      AND $filterClause
-                    ORDER BY a.created_at DESC
-                    LIMIT ?
+                      AND $pagePredicate
                 """.trimIndent()
 
-                conn.prepareStatement(sql).use { stmt ->
-                    stmt.setString(1, likeParam)
-                    stmt.setString(2, likeParam)
-                    stmt.setLong(3, nowMs)
-                    stmt.setLong(4, safeBefore)
-                    clauseParams.forEachIndexed { i, value -> stmt.setString(5 + i, value) }
-                    stmt.setInt(5 + clauseParams.size, safeLimit)
-                    stmt.executeQuery().use { rs ->
-                        while (rs.next()) items.add(readItem(rs))
-                    }
-                }
+                items += conn.query(sql, likeParam, likeParam, *boundPageParams, map = ::readItem)
             }
         } else {
             // Recency list without text search
-            val sql = """
-                SELECT a.* FROM announcement a
-                WHERE a.deleted_at IS NULL
-                  AND (a.expires_at IS NULL OR a.expires_at > ?)
-                  AND a.created_at < ?
-                  AND $visibilityClause
-                  AND $filterClause
-                ORDER BY a.created_at DESC
-                LIMIT ?
-            """.trimIndent()
-
-            conn.prepareStatement(sql).use { stmt ->
-                stmt.setLong(1, nowMs)
-                stmt.setLong(2, safeBefore)
-                clauseParams.forEachIndexed { i, value -> stmt.setString(3 + i, value) }
-                stmt.setInt(3 + clauseParams.size, safeLimit)
-                stmt.executeQuery().use { rs ->
-                    while (rs.next()) items.add(readItem(rs))
-                }
-            }
+            items += conn.query("SELECT a.* FROM announcement a WHERE $pagePredicate", *boundPageParams, map = ::readItem)
         }
 
-        val nextBefore = if (items.size == safeLimit) items.last().createdAt else null
+        val hasMore = items.size > safeLimit
+        if (hasMore) items.removeAt(items.lastIndex)
+        val nextBefore = if (hasMore) items.last().createdAt else null
 
         AnnouncementSearchResponseDto(
             items = items,

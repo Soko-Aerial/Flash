@@ -2,7 +2,7 @@
 <!--
     Android 11 and lower Auto Backup rules. Same policy as data_extraction_rules.xml (audit S4):
     trust state, sealed keys, identity, the wrapped DB passphrase and the SQLCipher DB never leave
-    the device; received files stay out of the 25 MB quota.
+    the device. Received files and submitted voice recordings are excluded too.
 -->
 <full-backup-content>
     <exclude domain="sharedpref" path="." />
@@ -11,4 +11,5 @@
     <exclude domain="file" path="logs" />
     <exclude domain="file" path="swarm" />
     <exclude domain="file" path="FlashReceived" />
+    <exclude domain="file" path="sent" />
 </full-backup-content>

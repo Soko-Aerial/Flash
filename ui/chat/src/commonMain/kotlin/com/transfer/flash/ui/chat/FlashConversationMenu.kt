@@ -44,6 +44,7 @@ public object FlashConversationMenuMath {
     ): List<FlashConversationMenuItem> = buildList {
         add(FlashConversationMenuItem.VIEW_PROFILE)
         add(FlashConversationMenuItem.SEARCH)
+        add(FlashConversationMenuItem.CHAT_APPEARANCE)
         if (canRevokeTrust) add(FlashConversationMenuItem.REVOKE_TRUST)
         add(FlashConversationMenuItem.MARK_UNREAD)
         add(FlashConversationMenuItem.CLEAR_CONVERSATION)
@@ -70,6 +71,7 @@ public object FlashConversationMenuMath {
         if (isMember && canAddMembers) add(FlashConversationMenuItem.ADD_MEMBERS)
         if (isMember && canContinueInNewGroup) add(FlashConversationMenuItem.CONTINUE_IN_NEW_GROUP)
         add(FlashConversationMenuItem.SEARCH)
+        add(FlashConversationMenuItem.CHAT_APPEARANCE)
         add(FlashConversationMenuItem.MARK_UNREAD)
         if (canLeave && isMember) add(FlashConversationMenuItem.LEAVE_GROUP)
     }
@@ -82,6 +84,8 @@ public enum class FlashConversationMenuItem(
 ) {
     VIEW_PROFILE("View profile", FlashIcons.Device),
     SEARCH("Search in conversation", FlashIcons.Search),
+    /** ADR-355: the app-wide wallpaper picker. New item, proposed with the redesign. */
+    CHAT_APPEARANCE("Chat appearance", FlashIcons.Gallery),
     REVOKE_TRUST("Revoke trust", FlashIcons.Close, isDestructive = true),
     MARK_UNREAD("Mark as unread", FlashIcons.Read),
     CLEAR_CONVERSATION("Clear conversation", FlashIcons.Delete, isDestructive = true),
@@ -115,8 +119,8 @@ public fun FlashConversationMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
         modifier = modifier
-            .widthIn(min = 210.dp, max = 280.dp)
-            .background(colors.backgroundSurfaceStrong, shape = menuShape)
+            .widthIn(min = 252.dp, max = 252.dp)
+            .background(colors.backgroundSurface, shape = menuShape)
             .border(
                 width = FlashDimensions.borderHairline,
                 color = colors.borderSubtle,
@@ -124,7 +128,7 @@ public fun FlashConversationMenu(
             ),
         offset = DpOffset(x = 0.dp, y = FlashSpacing.space4),
         shape = menuShape,
-        containerColor = colors.backgroundSurfaceStrong,
+        containerColor = colors.backgroundSurface,
         tonalElevation = 4.dp,
         shadowElevation = 8.dp,
         border = BorderStroke(FlashDimensions.borderHairline, colors.borderSubtle),

@@ -8,9 +8,14 @@ The `:core:messaging` module implements the peer-to-peer chat repository, messag
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-messaging:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.2.0-beta.3")
 }
 ```
+
+The messaging artifact exports `core-enterprise` so Hub directory and join results are visible
+on the consumer's compile classpath. These Hub integration types can require `@FlashInternalApi`
+opt-in. See the [messaging API reference](../../../architecture/public-api.md#6-core-messaging-module-coremessaging)
+for the current areas and the linked source declarations for signatures.
 
 ---
 

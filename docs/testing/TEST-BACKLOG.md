@@ -16,6 +16,12 @@ built but **not yet tested on real devices**, so nothing is forgotten when work 
 **Order:** do the functional tests (sections 1–4) first, in any order. Do the measurements (section 5) last,
 because their numbers tune the code (owner decision P8, `docs/network/PRESENCE-CONNECTIONS-PLAN.md`).
 
+**Full inventory (2026-11-06):** [`TEST-BACKLOG-AUDIT-2026-11-06.md`](TEST-BACKLOG-AUDIT-2026-11-06.md) lists every
+test heading that is not fully passed (767 headings: 681 TODO, 5 partial, 6 blocked, 30 no recorded status, 14 other
+non-pass, 1 fail; only 15 PASS and 15 automated-but-device-owed). Radio is 85 of the 752 not-fully-passed headings; the
+rest are calls/PTT, groups/swarm, hub/server/console, chat/UI/search, network/release and performance. The chat redesign
+merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; live non-pass is 766.
+
 ## 0. Before any test session
 
 - **Build:** install the current Android build on every phone, and use the latest desktop build
@@ -286,14 +292,22 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   `IllegalStateException`; the group message sends; `Remembered route saved peer=` appears after step 4 (the v5 table
   exists and is writable). `FlashMigrations` now builds its statements from the shared list, so
   this is the one place the Android wrapper is exercised on a real database.
-- **Status:** TODO
+- **Status:** PARTIAL 2026-11-08 — the release key path is blocked (the phones held a debug-signed
+  2.1.0 and the signed 2.2.0 was refused, `INSTALL_FAILED_UPDATE_INCOMPATIBLE`). A data-preserving
+  **debug** 2.1.0 → 2.2.0 upgrade was run instead on both phones: `adb install -r` Success,
+  versionName 2.1.0 → 2.2.0 / versionCode 4 → 5, `firstInstallTime` unchanged, all existing chats and
+  pairings still visible, no `FATAL EXCEPTION`, Room migration error or `A migration from` line.
+  The oldest-build/release-key upgrade and the new group/route steps remain owed. See the
+  2026-11-08 Results log entry.
 
 ### MIG-02 — Desktop still opens its existing chat database (ERROR-080, ADR-055)
 - **Setup:** a PC that already has chats, i.e. `%USERPROFILE%\.flash\chat\flash.db` exists.
 - **Steps:** start the new desktop build over the existing state directory and open an old conversation.
 - **Pass:** history is present and `%USERPROFILE%\.flash\desktop.log` has no Room/migration error and no fallback to an
   empty chat. (There is no older desktop file to upgrade, so this is a regression check, not an upgrade check.)
-- **Status:** TODO
+- **Status:** BLOCKED 2026-11-08 — needs a pre-existing desktop DB in a disposable Windows
+  environment; the owner's real `~/.flash` must not be used and no Sandbox/VM is available. See
+  `release-final-20261108T131525Z\desktop-report.md` and `candidate.md`.
 
 ## 4b. Discovery resilience plan (`docs/network/DISCOVERY-RESILIENCE-PLAN.md`, DR1)
 
@@ -2887,6 +2901,197 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-08 — Release 2.2.0 signed-device pass, blockers and a functional batch (Infinix + Samsung)
+
+- **Requested:** FLASH-REL22-DEVICE; run the signed 2.2.0 release checks first, then up to eight useful
+  backlog cases on the two USB phones. Owner asleep; agent-operated.
+- **Build / tree:** working tree `64092bf3` (release branch, product code `1b71d4e0`); installed for the
+  functional batch: **2.2.0 debug** from `app/build/outputs/apk/debug/app-universal-debug.apk`
+  (2026-11-07 17:03, versionName 2.2.0 / versionCode 5). Release artifact:
+  `dist/2.2.0/Flash-2.2.0.apk` (SHA-256 `e53c4770…a55461`, release cert `b695f4d6…e89af`).
+- **Devices:** Infinix X6882B `<Infinix serial>` (Android 14, API 34, 1080×2460 @480 dpi = 360×820 dp);
+  Samsung SM-G986U1 `<Samsung serial>` (Android 13, API 33, 1440×3200 @450 dpi with a 720×1600 @300 dpi
+  override = 384×853 dp). Both on `test LAN` (5 GHz).
+- **Baseline:** both phones had a **debug-signed** 2.1.0 (versionCode 4, cert SHA-256
+  `703647c1…d7762`), Infinix first installed 2026-10-22, Samsung 2026-09-02. Existing chats and pairings
+  were intact (Infinix: Flash Hedgehog, Flash Olive, Flash Gecko, Flash Fox, Flash Gazelle, Flash Walrus,
+  1 archived; Samsung: group "test 1", paired Flash Raspberry).
+- **Release result: BLOCKED on the signed artifact.** `adb install -r dist/2.2.0/Flash-2.2.0.apk` failed on
+  both phones with `INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.transfer.flash signatures do
+  not match newer version; ignoring!`. Uninstall/clear was forbidden, so REL-02/03/07 and the signed-build
+  halves of REL-06/MIG-01 remain owed. A data-preserving debug 2.2.0 install was then used for functional
+  checks: `adb install -r` Success on both, 2.1.0 → 2.2.0, firstInstallTime unchanged, all chats/pairings
+  still present, no Room/migration error or FATAL exception.
+- **Tests run (results):**
+  - `REL-01` **PASS** — artifact checksum, v2+v3 signatures, release cert, versionName 2.2.0 / code 5.
+  - `REL-02` **BLOCKED**, `REL-03` **BLOCKED**, `REL-07` **BLOCKED** — signature conflict / no clean install.
+  - `REL-04` **PARTIAL** — the signature-conflict half reproduced; v2.0.0-beta and clean reinstall not run.
+  - `REL-06` **PARTIAL** — on the non-enrolled Samsung: Radio gateway page is labelled Beta, shows "No
+    radio set up yet / Radio gateway is off." and no fake controller; Profile A dimmed Not supported with
+    its sentence; Enterprise offers enrolment only; no crash.
+  - `MIG-01` **PARTIAL** — release-key path blocked; the debug 2.1.0→2.2.0 in-place upgrade kept chats,
+    pairings and history, with `firstInstallTime` unchanged and no migration error.
+  - `SECAUD-22` **FAIL (ERROR-1010)** — the pairing initiator's consent card does not appear while the
+    Nearby tab is open (3 attempts); it appears only after switching to Chats. Both cards then show the
+    same code (e.g. 392 367), both accepts are required, and both devices reach Paired/trusted. The
+    initiator UI step fails as written. Windows half not run.
+  - `W1-NACK-01` **FAIL (ERROR-1011)** — A revoked B offline; B queued `queued-nack`, reconnected, and A
+    logged nine no-stored-session-key drops over 3 minutes. B received no `PAIR_REVOKE`, stayed Connected
+    and kept the message Sent until B was locally revoked at 04:11:57. The Android legacy inbound handler
+    (`DiscoveryEngineHolder.kt:2643-2645`) logs and returns without the negative-ack callback.
+  - `W1-REVOKE-03` **FAIL (ERROR-1011)** — A's prefs got `revoked_9a644186…` and lost the pin/pairing;
+    B kept `paired_adb2d87d…` + `pin_adb2d87d…` and had no tombstone. Manual Pair after revoke was not
+    retried, so the manual-repair half is unproven too.
+  - `W1-TITLE-01` **PARTIAL (ERROR-1011)** — B's title stayed "Flash Hippo" (never the raw UUID), but its
+    header stayed Connected instead of Not paired.
+  - `TABREF-01` **PARTIAL (ERROR-1012)** — direct 1:1 accept, moving %/speed/ETA, pause from sender,
+    receiver "paused by sender", resume, completed 512 MB transfer, Retry on the empty-file failure, files
+    opened from the bubble. Group/queued/cancelled/bulk/clear and Windows not run. Waiting-for-acceptance
+    wrongly read "Paused (Tap to resume)"; two delivered files flipped to Failed after the revoke.
+  - `TABREF-02` **PARTIAL** — identity, discovered/paired rows, Pair/Chat/three-dot, Scanning/scan done,
+    responder consent card; Connect by IP, quiet 30 s, pause discovery, network off and Windows not run.
+  - `TABREF-03` **PARTIAL** — current phone widths only; 48 dp interactive nodes measured, wrapping and
+    reachability seen; 320/1440 dp, 200% font, TalkBack, keyboard, reduced motion and Windows not run.
+  - `RECEIVE-CAT-01` **PARTIAL** — direct path only; 1 MB and 512 MB `.bin` files landed in
+    `FlashReceived/Other` and matched the sender SHA-256 (`07023baa…`, `579e9e4b…`); other categories,
+    duplicates, custom folder, Hub/swarm and old-build resume not run.
+  - `TABREF-04` **BLOCKED** (no Windows laptop); `RECEIVE-CAT-02`, `REL22-01..05` **BLOCKED/NOT RUN**
+    for the missing backup/audio/Hub/JitPack prerequisites.
+- **Transfer/chat smoke on 2.2.0 debug (not the signed release):** two-way text delivered both ways; a
+  1 MB and a 512 MB file transferred, the 512 MB paused at 57% and resumed, both SHA-256 hashes matched
+  on the Samsung; test files were deleted after verification.
+- **Cleanup:** the test pairing was revoked on both phones (no trust between them and the earlier
+  Raspberry/Fox/Hedgehog pairings untouched); the two test files were deleted. Test-created tombstones
+  `revoked_<peer>` remain on both phones and are cleared by a future manual Pair (ADR-353).
+- **Evidence:** `%LOCALAPPDATA%\FlashTestEvidence\20261108T033000Z\report.md`
+  (screenshots, `apksigner` output, install logs, full logcat, `key-log-excerpts.txt`). Errors
+  ERROR-1010/1011/1012. No commit, push, tag, release or deployment was made.
+
+### 2026-11-08 — Retest owed after release defect fixes
+
+The fixes are in the `codex/release-2.2.0` working tree. The earlier device results above are
+unchanged; OpenCode's follow-up `adb devices -l` found no phones. Use the new debug APK for the
+following data-preserving retests when the two debug-signed phones return:
+
+- **SECAUD-22:** Pair from Nearby without changing tabs. Verify one approval card per device,
+  matching codes, no pairing after one approval, successful pairing after the second, and no trust
+  change on decline. The Windows leg remains separate.
+- **W1-NACK-01 / W1-REVOKE-03 / W1-TITLE-01:** Revoke the test pair while the peer is offline.
+  On reconnect verify it receives the revoke, its queued text fails, the chat shows Not paired with
+  its friendly name, the tombstone survives reconnect, and manual Pair works again.
+- **TABREF-01:** Offer a file without accepting it. Verify the sender shows waiting, with no Resume;
+  accept on the receiver, finish and hash the file, then revoke the test pair. The completed file
+  must stay completed and its chat bubble must never show Failed or Retry due to the revoke.
+
+#### Retest result (2026-11-08, second run — phones returned)
+
+Same two debug-signed phones, `adb install -r` of the fixed universal debug APK
+(`77b1e108…123d8`), data preserved. Infinix X6882B (Android 14, A) + Samsung SM-G986U1
+(Android 13, B), `test LAN`.
+
+- **SECAUD-22 — Android half PASS; Windows half not run → case PARTIAL.** Pairing from Nearby
+  showed one consent card per device (initiator card included) with matching codes; decline changed
+  no trust; one accept alone paired nothing; both accepts paired and wrote `paired_`+`pin_` on both
+  sides. Matching codes observed: `464 780` (Infinix initiated, paired) and `573 299` (Samsung
+  initiated at 12:46, did not complete); the 12:49 Samsung-initiated retry paired but its card code
+  was not captured before the accepts.
+  Two Samsung-initiated attempts had failed earlier with `Pairing stopped: the security check
+  failed…` and one attempt showed no initiator card for the whole window — intermittent, tracked as
+  **ERROR-1013** and in **ERROR-1010**. Windows leg owed (isolated desktop handoff reached its
+  auto-close deadline after a matching `949 262` card).
+- **W1-NACK-01 — PASS.** A revoked B while B was offline; B reconnected and logged
+  `Flash Hippo no longer trusts you. Pair again to reconnect.` (12:37:04.087); its queued
+  `retest-nack` became **Failed** at 12:37:04.102 with
+  `Failed 1 queued message(s) to adb2d87d…: The other device no longer trusts you. …`. A logged
+  `Received FLASH_SEC frame from 9a644186… with no stored session key; dropping` (12:37:03.514)
+  and resent the revoke; B's header read **Not paired**.
+- **W1-REVOKE-03 — PASS.** After the revoke B's prefs held `revoked_adb2d87d…` and no
+  `pin_`/`paired_` for A; B's auto-connect did not re-pin; A stayed in Nearby with **Pair**. A
+  manual Pair at 12:49 cleared `revoked_`, saved the pin and delivered a new text both ways.
+- **W1-TITLE-01 — PASS.** After the revoke B kept **Flash Hippo** (never the raw UUID) and the
+  header read **Not paired**; both survived a force-stop/relaunch at 12:37:45.
+- **TABREF-01 — retested slice PASS, case stays PARTIAL.** The 8 MiB offer showed
+  `… Waiting for the other device to accept` / `Awaiting acceptance` with only **Cancel transfer**
+  (no Pause/Resume); the receiver accepted ~46 s later, the transfer completed with
+  `chunkVerified=true wholeFile=MATCH`, SHA-256 `918c4b1f…12ac7` on both, and the completed file
+  stayed **Sent**/completed after the revoke. Group/bulk/cancel halves and Windows remain
+  unexercised.
+- **Desktop smoke (separate worker, merged from `desktop-ready.md`) — PASS for launch, isolation,
+  discovery, resize/density and the reachable controls; TABREF-04 PARTIAL (not claimed).**
+  Findings from the running build: the Transfers **empty** state has no page heading (per
+  `FlashTransfersScreen.kt` the header exists only in the populated list, so a fresh profile cannot
+  show it), Esc does not dismiss the Connect by IP dialog, and Settings → About shows
+  `Version 1.0.0-desktop` while the artifacts are 2.2.0-beta.1 (`DesktopEngine.appVersionName` is
+  hardcoded). No crash; one mDNS warning and one `session.down … Connection_reset` from the
+  auto-connect probe. Windows SECAUD-22/interop remain owed.
+
+Evidence: `%LOCALAPPDATA%\FlashTestEvidence\retest-20261108T121940Z\`
+(`phone-report.md`, `phone-infinix.log`, `phone-samsung.log`, `sec22c-1-*`, `sec22e-1-*`,
+`repair-chat2-*`, `desk-pair-infinix-card.png`). Synthetic files were deleted after hashing; the
+test pair was left in place after the verified re-pair.
+
+#### Release-closeout retest after the pairing fix (2026-11-08, 13:31–14:05)
+
+The instrumented debug build (`2dfdf77d…`) reproduced the intermittent initiator failure as an
+**identity mismatch, not a timing race**: after an offline revoke the pin store refuses the automatic
+pin write (ADR-353), so the first outbound pairing had neither a stored nor an observed key and
+`PairingV2.matchesPinnedIdentity(claimed, null)` failed before any code appeared
+(`13:31:24.264 pairing.pin none`, `13:31:24.266 event.failed reason=identity-mismatch`). Fix:
+`TofuPinVerifier` now always reports the key a first-use connection presented to the pairing
+observed-key map in both dial directions; no pin is written for a revoked peer and the tombstone,
+numeric comparison, both accepts and TLS fail-closed check are unchanged. `PairingUiMapper` also
+stops rendering the code-less `AwaitingPeerNonce` phase as "waiting for peer to confirm".
+Focused regressions: `FlashPinVerifierTest.tofuPinVerifierObservesFirstConnectKeyWhenThePinWriteIsRefused`
+and the mapper phase assertions. Device result: **8/8 pairing cycles PASS** (both initiator
+directions × initiator-first/responder-first accept orders × 2), each with matching cards, both
+accepts, `paired_` on both phones and a delivered text; the critical manual re-pair after the
+offline revoke succeeded (cards `538 889`, texts `postrevive-b2a`/`postrevive-a2b`). W1-NACK-01,
+W1-REVOKE-03, W1-TITLE-01 and the TABREF-01 affected slice were re-verified on the same build
+(8 MiB transfer `555b7383…` matched; completed file stayed completed after the revoke; waiting row
+showed only **Cancel transfer**). Three cards were dismissed by `declineLocal` with no ADB input
+(scrim/back dismissal is intentional per UI-032); no protocol reset or trust change occurred.
+Evidence: `release-final-20261108T131525Z\android-code.md` and the `pair-*.log`/`cycle*-*` captures.
+
+The signed APK in `dist/2.2.0` predates these fixes. Rebuild it before signed acceptance. The
+release-key upgrade still requires a compatible release-signed 2.1.0 install with existing data.
+
+### 2026-11-05 - Chat redesign port, first device pass (Infinix X6882B)
+
+Build: branch `design/chat-redesign`, arm64 debug APK from the port + fixes (`7442ef16`, `b1a8c2da`, `4e71680a`,
+plus the device-pass fixes in the next commit). Device: Infinix X6882B, Android 14, 1080x2460 @480dpi.
+
+Ran: CHATUI-13 PASS, CHATUI-14 PASS, CHATUI-15 PARTIAL, CHATUI-16 not run as a full walk. Wallpaper presets and the
+six named colours, Undo, persistence across force-stop, dark mode, the composer's mic-to-send crossfade with the IME
+open, the compact header lock and the profile sheet were exercised by hand.
+
+Found and fixed: **ERROR-990** (the wallpaper modifier dropped its receiver chain, so every preset swatch measured
+0dp and the preview lost its height/clip), the header encryption chip clipping to "En" (now the compact lock), a
+14-character header title truncating (17sp title + tighter paddings; 13 fits), and a PowerShell round trip that
+corrupted the `Applied ...` line (the ERROR-989 class; repaired, codepoint-checked).
+
+Still owed: the group info/settings re-layout, inline bubble time, a file bubble on the wallpaper, the full icon walk,
+the desktop half of every item above, and the wave of existing `CHATUI-01..12` mock checks.
+
+
+
+### 2026-11-05 - Two-phone device backlog session (Infinix + Samsung)
+- **Code / build:** `dev` `b07cc61f`; debug APK installed with `adb install -r` on both phones (data preserved; first-install dates unchanged: Infinix 2026-10-22, Samsung 2026-09-02).
+- **Devices:** Infinix X6882B (Android 14) `13114704AP002141`; Samsung SM-G986U1 (Android 13) `R5CN21CNJAF`; same Wi-Fi LAN (`Ayaata Wifi_5G`, 192.168.0.199 / .107).
+- **Tests run:**
+  - `FGS-01`: PASS on the Infinix cold start: app/service started, `dumpsys activity services` shows `isForeground=true foregroundId=41`, no `ForegroundServiceDidNotStartInTimeException`.
+  - `XFER-RETRY-01`: PASS for the empty-file case. An empty `Download/empty-flash-test.txt` produced the visible Failed row `This file is empty (0 bytes), so there is nothing to send. (Tap to retry)`; tapping Retry twice, and again after force-stop/relaunch, left the row Failed and the process alive (`pidof` stable, no `totalBytes`/FATAL exception). The unreadable-source variant was not separately created.
+  - `RADIO-PROFILE-A-01`: PASS for the UI/selection check: Radio → Settings shows Profile M selected, Profile A dimmed with **Not supported** and the red sentence "Profile A cannot carry Flash chat. Select Profile M; your radio stays connected."; tapping Profile A does not select it. The transmit step was not run because the radio link was `Link lost`.
+  - `RADIO-PATH-01`: core case already PASS (owner report above). Link-down/Never-banner steps were not fully run; with the peer reachable through the hub the composer banner correctly did not claim the peer was offline. The phones were left with the Infinix chat restored to **Automatic**.
+- **Blocked:** `RADMOVE-01..03`, `RADCONL-01..05`, `RADCHAT-DEV02..07`, `RADCHAT-POLICY-01`, `RADCHAT-STOP-01`, `RADUI-DEV04` need the physical radio powered/paired; the Infinix remembered VR-N76 shows `Link lost` and the radio path logs `Bluetooth_is_off`/no link. No radio test was marked pass by inference.
+- **Notes:** This was an automated/ADB-assisted UI run, not a human visual/audio pass. No app data was cleared or uninstalled.
+
+### 2026-11-05 - Radio path switching works on hardware (owner report)
+- **Code / commits:** `dev` `2b22ca9e` (radio gate merge `bfe2c943`; Profile-A UI `b17152a2`; composer policy notice `16b36570`); the phone build that produced `flash-log-1793885189795.txt` carried the `policy`/`pairKey` probes.
+- **Devices:** Infinix X6882B (Android 14) + Windows desktop, both radio gateways connected over their VR-N76/COM serial links, Profile M.
+- **Tests run:** Owner set the phone chat's **Radio fallback** to **Automatic**; bidirectional short texts work. The earlier one-way failure was the phone's `policy=NEVER`; turning both radios off/on restored receive, and `RADIO-PATH-01`'s core Android→desktop case then passed. The phone log had shown `radio.path … policy=NEVER pairKey=true gateway=true connected=true`.
+- **Result:** **PASS for the core radio path** (bidirectional text). The `Never` composer banner, the link-down/LAN-dial step and `RADIO-PROFILE-A-01` were not separately reported and stay TODO in their test entries. `ERROR-985` is device-confirmed; `ERROR-988` is resolved by the radio power-cycle plus the policy change (RX had no app-side ACK defect).
+- **Notes:** Profile A remains unsupported and is now visibly unavailable. The second RFCOMM open / session-redial shape in the log is still a separate open reliability item (P2-4), not required for this pass.
+
 ### 2026-11-05 - Hub console redesign approved and ported
 - **Code / commits:** `agent/console-redesign` / `d3fb6c33` (design) and the port commit on the same branch; base `dev` `a7ff5636`.
 - **Environment:** Windows, Chrome 1440/768/390 against the design build and a mock-API review of the shipped console; no physical device needed for the admin console.
@@ -5384,8 +5589,9 @@ says DELIVERED or HELD. In step 5 the first attempt is `path=radio` and about 25
 
 Interpretation if it fails: `path=hub` with `hub.online result=read count=0` means the order fix is not in the binary (old build);
 `path=hub` with `hub.online count>0` is correct behaviour — the hub really had a session for the peer, so look at the hub side, not
-the radio; `radio.path result=not_reachable gateway=true connected=true` means the desktop holds no radio key for that peer (re-pair
-for radio, `RADCHAT-DEV01`); `radio.path result=refused` is explained by the next line, `radio.send.fail reason=…`.
+the radio; `radio.path result=not_reachable` now carries `policy`, `pairKey`, `gateway` and `connected`: `policy=NEVER` is the
+per-chat choice, `pairKey=false` means no radio pairing key (re-pair for radio, `RADCHAT-DEV01`), and `connected=false` is the
+link (ADR-354); `radio.path result=refused` is explained by the next line, `radio.send.fail reason=…`.
 
 ### Source
 ADR-229 (`docs/decisions.md`), ERROR-869 round 3 (`logs/errors.md`), `docs/network/RADIO-BLUETOOTH-CHANNELS.md` §5 and §7.
@@ -6079,40 +6285,74 @@ scope for this release. Record results in the Results log; a FAIL blocks the upl
 - **Steps:** `apksigner verify --print-certs -v Flash-2.1.0.apk`; compare with `SHA256SUMS.txt`.
 - **Pass:** v2 and v3 verify; `CN=Flash, OU=Release`; certificate SHA-256 `b695f4d6...e89af`; `versionName 2.1.0`, `versionCode 4`
   (`aapt dump badging`).
-- **Status:** TODO
+- **Status:** PASS 2026-11-08 for the 2.2.0 artifact — `dist/2.2.0/Flash-2.2.0.apk` matched
+  `SHA256SUMS.txt` (`e53c4770…a55461`), verified with APK Signature Scheme v2 + v3, signer
+  `CN=Flash, OU=Release` certificate SHA-256 `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`,
+  `versionName 2.2.0` / `versionCode 5`. The APK identity is correct; the **device** upgrade is
+  blocked separately (REL-02/03; debug-signed install). Evidence: `apksigner-dist-2.2.0.txt` and
+  `install-signed-*.txt` in `%LOCALAPPDATA%\FlashTestEvidence\20261108T033000Z`.
+  **Release-closeout rebuild 2026-11-08:** `dist/2.2.0/Flash-2.2.0.apk` SHA-256
+  `2e5b257cc55592584f660e6fca203c724224fcde506d3fbfc50b27b381e080b6`, v2+v3 verified, signer
+  `CN=Flash, OU=Release, O=Flash Project` cert SHA-256
+  `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`, versionName 2.2.0 / code 5.
+  The three per-ABI APKs and both installers were rebuilt in the same run; the stale unsigned APKs
+  were removed from `dist` and preserved under the evidence baseline. Evidence:
+  `release-final-20261108T131525Z\candidate.md`.
 
 ### REL-02 — Fresh install of the release APK (R8 build) on two phones
 - **Steps:** install, open, grant permissions, pair the two phones, send a text, a photo and a 200 MB file, start a voice and a video call.
 - **Pass:** no crash; the same flows that work on a debug build work on the R8 release build (release-only ProGuard failures are
   invisible to debug builds; no record in the logs says an R8 build of this tree was run on a device). No `FATAL EXCEPTION`/`ClassNotFound`/`NoSuchMethod` in logcat.
-- **Source:** `docs/release-build.md`, progress 2026-09-04 ("nobody has installed the release APK"). **Status:** TODO
+- **Source:** `docs/release-build.md`, progress 2026-09-04 ("nobody has installed the release APK"). **Status:** BLOCKED 2026-11-08 —
+  the two available phones held a debug-signed 2.1.0 (`CN=Android Debug`, certificate SHA-256
+  `703647c14178df601ce3f128e8b4f363911b21924a4f08c0014bed90ea1d7762`), so the release-signed 2.2.0
+  was refused on both with `INSTALL_FAILED_UPDATE_INCOMPATIBLE: Existing package com.transfer.flash
+  signatures do not match newer version; ignoring!`. Uninstall/clear is not authorized, so the R8
+  release build was not run on a device. See the release blocker in `logs/handoff.md`.
 
 ### REL-03 — Update over an older release-signed build keeps data (MIG-01 for the release key)
 - **Steps:** install `Flash-2.1.0-beta.apk` (release-signed, from `dist/2.1.0-beta`), pair and chat, then install `Flash-2.1.0.apk` over it.
 - **Pass:** installs as an update; chats, pairings and groups are intact; no `A migration from` / Room error in logcat.
-  versionCode 3 to 4. **Status:** TODO
+  versionCode 3 to 4. **Status:** BLOCKED 2026-11-08 — no release-signed 2.1.0 build was installed
+  (the phones had debug-signed 2.1.0), so the release-key update path cannot be started. The debug
+  2.1.0 → 2.2.0 upgrade did install over the existing data and keep chats/pairings; see MIG-01 and
+  the Results log. Do not uninstall to force this.
 
 ### REL-04 — v2.0.0-beta (debug-signed) is refused as an update, as the README says
 - **Steps:** install `v2.0.0-beta`, try to install 2.1.0 over it; then uninstall and install 2.1.0 clean.
-- **Pass:** the over-install is refused with a signature conflict; the clean install works. The README/CHANGELOG instruction is accurate. **Status:** TODO
+- **Pass:** the over-install is refused with a signature conflict; the clean install works. The README/CHANGELOG instruction is accurate. **Status:** PARTIAL 2026-11-08 —
+  the signature conflict half reproduced: the release-signed 2.2.0 was refused over the existing
+  debug-signed 2.1.0 on both phones (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`). The specific v2.0.0-beta
+  debug-key build and the uninstall → clean-install half were not run because uninstall/clear is not
+  authorized. See the release blocker in `logs/handoff.md`.
 
 ### REL-05 — Windows MSI and EXE install, run, upgrade and uninstall
 - **Steps:** on a clean Windows 11 user, install the MSI, launch, pair with a phone, chat, call; then install the EXE over it; then
   uninstall. Repeat the install on a PC that already has `%USERPROFILE%\.flash\chat\flash.db` (MIG-02).
 - **Pass:** no admin prompt; SmartScreen shows only "unknown publisher"; the existing database opens and history is present;
   `desktop.log` has no Room/migration error; uninstall leaves the user's data.
-- **Status:** TODO
+- **Status:** BLOCKED 2026-11-08 — no Windows Sandbox/VM is available and installing on the owner's
+  normal profile is forbidden; the rebuilt MSI/EXE exist and their metadata/identity can be checked,
+  but install/run/upgrade/uninstall was not performed. See `release-final-20261108T131525Z\desktop-report.md`
+  and `candidate.md`. Next: enable Windows Sandbox (or provide a clean Windows 11 VM) and run the steps.
 
 ### REL-06 — Settings: Enterprise and Radio entries do not mislead
 - **Steps:** on a device that is not enrolled, open Settings; open "Radio gateway (beta)" and the Enterprise section.
 - **Pass:** the radio page says it is beta and fails with a sentence (no fake controller, ERROR-660); Enterprise offers enrolment only.
-  Nothing crashes with no hub and no radio. **Status:** TODO
+  Nothing crashes with no hub and no radio. **Status:** PARTIAL 2026-11-08 — run on the non-enrolled
+  Samsung SM-G986U1 with the 2.2.0 debug build: Settings → **Radio gateway (beta)** opened a page
+  labelled **Beta**, showed "No radio set up yet / Radio gateway is off." and the three-band
+  instructions, with no fake controller; Profile A was dimmed **Not supported** with its sentence;
+  Enterprise & Organization offered only "Enrol with an invitation link". No crash. The **signed
+  release artifact** was not installable (REL-02), so the release-gate confirmation is still owed.
 
 ### REL-07 — Manifest permissions behave on a clean install
 - **Steps:** fresh install on Android 14 and Android 7/8 (BelFone SCP810 if available); do not open the Hiber/keep-alive screens.
 - **Pass:** no unexpected permission prompt at first run (no Bluetooth or overlay prompt unless the user opens those features);
   notifications permission is asked once; the app does not crash on API 24-26 (notification APIs).
-- **Status:** TODO
+- **Status:** BLOCKED 2026-11-08 — no clean install was possible on the two phones (existing app data,
+  and the release APK cannot install over the debug-signed install); no API 24–26 device was available.
+  The in-place 2.2.0 debug start produced no permission crash, but that is not this test.
 
 ## 4zzzzzzzzzzzzzzzz. Network move and swarm greeting (2026-10-20; ERROR-742, ERROR-743)
 
@@ -6623,7 +6863,7 @@ All **Status: TODO**. Source: `docs/audit/security-2026-10-22/findings-ledger.md
 - **SECAUD-19 (Backup rules, SEC-D13-02):** `adb shell bmgr backupnow com.transfer.flash` on a build with received files and swarm pieces, then inspect the transport archive (or run `adb shell dumpsys backup`). **Pass:** neither `files/swarm` nor `files/FlashReceived` is in the archive. Status: TODO
 - **SECAUD-20 (Handshake admission, SEC-D24-01):** From a laptop open 100 TCP connections to the phone port 45822 and hold them silent. **Pass:** the phone keeps answering a normal chat from a paired peer; more than 16 held connections from the one address are closed; after the holder disconnects, new peers connect at once. Status: TODO
 - **SECAUD-21 (Hub: mailbox share, step-up, tokens, SEC-D15-01 / D17-01 / D14-03):** On a test hub, (a) one enrolled device queues messages to an offline recipient until refused: the refusal comes before the whole mailbox is full and a second sender can still queue; (b) a console step-up approved in one browser session is refused when replayed from a second login; (c) a device that logs in more than 8 times keeps working, only its oldest sessions are dropped. **Pass:** all three as described. Status: TODO
-- **SECAUD-22 (Pairing needs both devices, SEC-D03-01 / D03-06):** Start a pairing from the initiator. **Pass:** the initiator shows the code, the sentence "Accept only if <peer> shows the same code." and Accept/Decline (it does NOT sit on "Waiting for peer"); accepting on one device alone pairs nothing and the other side stays on its card; after accepting on the second device both reach Paired and each trusts the other. Repeat on Windows against Android. Status: TODO
+- **SECAUD-22 (Pairing needs both devices, SEC-D03-01 / D03-06):** Start a pairing from the initiator. **Pass:** the initiator shows the code, the sentence "Accept only if <peer> shows the same code." and Accept/Decline (it does NOT sit on "Waiting for peer"); accepting on one device alone pairs nothing and the other side stays on its card; after accepting on the second device both reach Paired and each trusts the other. Repeat on Windows against Android. **Status: PASS 2026-11-08 (Android + Windows pairing; ERROR-1010/1013 resolved by the closeout fix)** - original run: on the 2.2.0 debug build (Infinix X6882B + Samsung SM-G986U1), the responder showed the code, the sentence and Accept/Decline, but the **initiator showed no consent card at all while the Nearby tab stayed open** (three attempts, 30 s window). Switching the initiator to Chats made its card appear; both cards then showed the same code (e.g. 392 367), both Accept actions were required, and both devices reached Paired and trusted each other. One-sided accept alone did not pair. Windows half not run. The trust property passes; the initiator UI step failed as written. **Retest after the ERROR-1010 fix (2026-11-08, second run, same phones, APK `77b1e108…`):** the initiator card now rendered over Nearby with matching codes (`464 780` on the Infinix-initiated success; `573 299` on the incomplete 12:46 Samsung-initiated attempt), one-sided accept still paired nothing, and the 12:49 Samsung-initiated retry paired after both accepts and wrote `paired_`+`pin_` on both sides; decline changed no trust. However two Samsung-initiated attempts failed with `security check failed` (12:24:38.562, 12:25:38.859) and one attempt (12:48) showed no initiator card for its whole window (ERROR-1013 / ERROR-1010 retest note). The Windows leg was attempted against the isolated desktop: both cards showed `949 262`, but the phone Accept landed after the card expired and the desktop auto-closed at its handoff deadline; Windows remains owed. **Release-closeout update (2026-11-08):** the residual failures were root-caused to the revoked-tombstone identity-mismatch (ERROR-1013) and fixed in `TofuPinVerifier`, plus the code-less-card mapper bug (ERROR-1010). On the fixed debug build, 8/8 pairing cycles passed (both directions × both accept orders × 2) and the post-revoke manual re-pair succeeded. Windows interop is scheduled separately in the closeout evidence folder. **Windows pairing done 2026-11-08:** isolated desktop `Flash Jaguar` (`9c4030b9…`) ↔ Infinix `Flash Hippo`, matching code `915 696`, both accepts; desktop log `Paired with Flash Hippo.` / `trusted=[adb2d87d…]` at 14:20:36, phone prefs `paired_9c4030b9…` + `pin_9c4030b9…`. The Windows file/chat interop is recorded separately in `interop-result.md` (chat PASS one way; file interrupted by the desktop's auto-close). Evidence: `retest-20261108T121940Z\phone-report.md`, `release-final-20261108T131525Z\android-code.md`, `interop-result.md`.
 - **SECAUD-23 (Keepalive survives a clock change, SEC-D26-01):** Pair two phones and keep a chat idle. Set one phone's clock forward by an hour (Settings → Date & time, manual), then backward by an hour. **Pass:** the session stays up through both changes; no `WS: peer silent` / `Reaping` line appears and no redial is needed. Then let a session idle past its liveness window with the clock correct: it still reaps within the window (the fix did not disable the watchdog). Status: TODO
 - **SECAUD-24 (Dependency verification blocks a swapped jar, SEC-D21-02):** On a scratch checkout, edit one recorded checksum in `gradle/verification-metadata.xml` (e.g. change the last hex digit of `org.jetbrains.skiko:skiko`). **Pass:** the build fails with "Incorrect checksum" naming that artifact and the file path. Restore it. Then delete the whole `gradle/verification-metadata.xml` locally: the build still passes but downloads without checks (that is what the file buys). Also confirm a normal full build (`allTests testDebugUnitTest assembleDebug`) is green with the file present, on a clean Gradle cache if one is available. Status: TODO
 - **SECAUD-25 (A replayed hub message is refused, SEC-D15-02):** On a test hub, have device A (paired or colleague of B) send B a message while B is offline; use the admin console or a SQL client to push the mailbox row's `sent_at` back 30 days (`UPDATE mailbox_envelopes SET sent_at = sent_at - 2592000000`), then bring B online. **Pass:** B shows the message as refused, nothing new appears in the chat, and Settings → hub connection details count it under "Old messages refused". Then repeat without the change: the message is stored normally. On a hub with a 1-day `mailboxTtlDays`, a delivery two days old is refused and one an hour old is kept. Set a phone's clock 3 days behind, send through the hub to a phone with the correct clock: the message arrives (the sender stamps with the hub's time). Status: TODO
@@ -7459,19 +7699,19 @@ green. These are the two-device checks that still gate confidence.
 - **Setup:** two paired phones running the negative-ack build; A paired with B.
 - **Steps:** force-stop A (or turn its Wi-Fi off) so B has no live session; on B send `queued-nack` (it stays queued); start A; on A, Nearby -> Revoke B. Repeat once with the first revoke frame effectively lost (force-stop A's app between the revoke and B's reconnect) to exercise the no-session-key resend.
 - **Pass:** B's queued message becomes **Failed** within seconds, not after the wall-clock budget; B's log carries `CHAT: Failed 1 queued message(s) to <id>: The other device no longer trusts you. Pair again to reconnect.`; B's header reads **Not paired**; A's log carries `Received FLASH_SEC from <id> with no stored session key; dropping`; the resend is limited to one per 10 s per peer.
-- **Source:** ADR-351, `ERROR-982`, `FlashInboundRouter.onUnreadableSecuredFrame`, `RealFlashChatRepository.failPendingToPeer`. **Status:** TODO — unit tests pass (`FlashInboundRouterTest` 55/55 including the no-key resend; `RealFlashChatRepositoryTest` negative ack 1/1), but the device run was blocked on 2026-11-05 because the Samsung left USB before the new APK was installed (only the Infinix has it).
+- **Source:** ADR-351, `ERROR-982`, `FlashInboundRouter.onUnreadableSecuredFrame`, `RealFlashChatRepository.failPendingToPeer`. **Status:** PASS 2026-11-08 (retest after ERROR-1011; the original failure is retained below). **Original run:** two-phone run on the 2.2.0 debug build. A revoked B while B was offline; B queued `queued-nack` and reconnected. A logged nine `Received FLASH_SEC ... with no stored session key; dropping` lines over three minutes, but B received no `PAIR_REVOKE`: it stayed **Connected**, kept the message at **Sent**, and failed it only when B was locally revoked during cleanup (04:11:57) with "The other device no longer trusts you." The Android legacy inbound path (`DiscoveryEngineHolder.kt:2643-2645`) returns after the log and does not call the negative-ack callback that `FlashInboundRouter`/`Flash.kt` implement. The security half holds (A never stored the message). Evidence in the 2026-11-08 Results log entry and `key-log-excerpts.txt`. **Retest 2026-11-08 (second run, fixed APK `77b1e108…`):** A revoked B while B was offline; on reconnect B logged `Flash Hippo no longer trusts you. Pair again to reconnect.` at 12:37:04.087 and its queued `retest-nack` became **Failed** at 12:37:04.102 with `Failed 1 queued message(s) to adb2d87d…: The other device no longer trusts you. …`; A logged `Received FLASH_SEC frame from 9a644186… with no stored session key; dropping` at 12:37:03.514 and resent the revoke once, and B's header read **Not paired**. All pass conditions met; evidence in `retest-20261108T121940Z\phone-report.md`.
 
 ### W1-REVOKE-03 — A revoke stays forgotten: no automatic re-pin, manual Pair still works
 - **Setup:** two paired phones on the same network; A paired with B.
 - **Steps:** on A, Revoke B. Leave both phones running (or toggle B's Wi-Fi) so B's discovery/auto-connect sees A again. Inspect B's prefs for `revoked_<A>`/`pin_<A>`; then on B tap Pair on A, complete the code pairing, and send a message.
 - **Pass:** after the revoke, B's prefs contain `revoked_<A>` and **no** `pin_<A>`; B's auto-connect does not dial/pin A (no `Auto-connect dialing peer=...A...` followed by a pin write); A still appears in B's Nearby with Pair. After a successful manual Pair, `revoked_<A>` is gone, the pin is saved, and the message is delivered. A manual Pair must not be blocked by the tombstone.
-- **Source:** ADR-353, `FlashTrustStore.isRevoked`/`revokedAt`, `savePin` gate, auto-connector sightings filter. **Status:** TODO (unit tests on Android and desktop pass; two-phone run owed).
+- **Source:** ADR-353, `FlashTrustStore.isRevoked`/`revokedAt`, `savePin` gate, auto-connector sightings filter. **Status:** PASS 2026-11-08 (retest after ERROR-1011; the original failure is retained below). **Original run:** after A revoked B, A's prefs held `revoked_9a644186…` with **no** `pin_9a644186`/`paired_9a644186` (local half passes), but B held `paired_adb2d87d…` and `pin_adb2d87d…` with **no** `revoked_adb2d87d…`, because B never learned of the revoke (no `PAIR_REVOKE` on the Android legacy path). B stayed Connected. Manual Pair after the revoke was not retried; the tombstone/no-auto-dial half could not be evaluated on B. Units still pass. **Retest 2026-11-08 (second run):** after the offline revoke, B reconnected, received the revoke notice and wrote `revoked_adb2d87d…` with **no** `pin_`/`paired_` for A; auto-connect did not re-pin; A stayed in B's Nearby with **Pair**. A manual Pair at 12:49 cleared `revoked_`, saved the pin and delivered texts both ways. Auto-dial/no-pin, tombstone and manual-Pair halves all pass; evidence in `retest-20261108T121940Z\phone-report.md`.
 
 ### W1-TITLE-01 — A revoke never turns a chat title into a raw device id
 - **Setup:** two paired phones with a delivered message, so the chat has a known name.
 - **Steps:** on A, Revoke B. On B, open the chat list and then the conversation with A; repeat after restarting B. Also open a conversation whose peer was never named.
 - **Pass:** the list row and header keep the last known name (e.g. "Flash Olive") before and after the revoke/restart; the raw UUID is never shown. A never-named peer reads **Unknown device**, not its device id. The name is presentation only; the header still says **Not paired**.
-- **Source:** ADR-353, `RealFlashChatRepository.directChatTitle`/`directTitleCache`, `RealFlashChatRepositoryTest` title tests. **Status:** TODO (unit tests pass; device run owed).
+- **Source:** ADR-353, `RealFlashChatRepository.directChatTitle`/`directTitleCache`, `RealFlashChatRepositoryTest` title tests. **Status:** PASS 2026-11-08 (retest after ERROR-1011; the original failure is retained below). **Original run:** the title half passes: after A revoked B, B's chat list and open header kept **Flash Hippo**, never the raw UUID. The header/notice half fails: B stayed **Connected** (not **Not paired**) until B was locally revoked during cleanup, because no `PAIR_REVOKE` reached it. Restart was not repeated. Evidence in the 2026-11-08 Results log. **Retest 2026-11-08 (second run):** B received the revoke on reconnect, its chat list and header kept **Flash Hippo** and the header read **Not paired**; a force-stop/relaunch at 12:37:45 preserved both, and the failed queued bubble plus the completed file were still there. The raw UUID was never shown; evidence in `retest-20261108T121940Z\phone-report.md`.
 
 ## 5.W2. Wave 2 performance measurements (2026-11-05; host baseline only)
 
@@ -7590,3 +7830,470 @@ tests and do not change the shipped console. Source: `docs/ui/hub-admin-console-
 - **Pass:** the shipped router, CSP-safe DOM, i18n, step-up, error boundaries and print rules still pass; no regression
   in the console web tests; the redesigned screens are browser-checked before merge.
 - **Source:** `docs/ui/hub-admin-console-redesign.md` section 10. **Status:** TODO (blocked on owner approval)
+
+---
+
+## RADIO-PATH-01 — Live-link, policy and LAN-dial behaviour on the two stations (2026-11-05)
+
+### Setup
+Two paired stations (Android phone + desktop) with the radio gateway connected on both, Profile M confirmed, and **Wi-Fi off on both**. The phone is on the current build containing ADR-354. The desktop may keep Wi-Fi on to use the hub; the phone's Wi-Fi stays off for steps 1-4.
+
+### Steps
+1. In the phone's direct chat details, set **Radio fallback** to **Automatic**. Send one short text from the phone. Confirm the desktop receives it and the phone's log has `radio.tx.text`, `radio.rx.ack`.
+2. Turn the radio off (or walk out of range) while leaving the gateway switch on. Send a second text from the phone. Watch the next 30 s.
+3. Turn the radio back on and let the link reconnect. Do not touch the phone's chat. Watch the outbox retry.
+4. In the details sheet set **Radio fallback** to **Never**. Send a third text with Wi-Fi still off. Then send a text from the desktop to the phone.
+5. Finally set it back to **Automatic** and send one more text.
+
+### Pass
+- Step 1: `radio.path peer=… message=… result=sent policy=AUTO pairKey=true gateway=true connected=true`, then `chat.path … path=radio`; exactly one `radio.tx.text` for the text (retry=false).
+- Step 2: the phone's log shows `radio.path … result=not_reachable policy=AUTO pairKey=true gateway=true connected=false`; the outbox does **not** show `radio.tx.text`; the send path does not skip the on-demand LAN attempt (with a remembered route that is an `Auto-connect dialing` line; with no known route `ensureSession` returns at once). There is no ten-minute gap with `chat.path path=none` and no path attempt.
+- Step 3: once the link is back, the next retry emits `radio.tx.text` and the text arrives once; no duplicate bubble on the desktop.
+- Step 4: `radio.path … result=not_reachable policy=NEVER pairKey=true gateway=true connected=true`; **no** `radio.tx.text` from the phone for the third text; the inbound desktop->phone radio text still appears and is ACKed. The phone may deliver its own text by LAN/hub, but never by radio. With the peer offline, the composer shows **"Radio fallback is off for this chat."** and tapping **Turn on** leaves `Never` and returns the policy to Automatic.
+- Step 5: radio is used again and the message arrives once.
+
+### Source
+ADR-354, ERROR-985, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` P-2.1, phone log 2026-11-03 18:34-18:39 and 2026-11-05 12:20-12:25.
+
+### Status
+PASS (owner, 2026-11-05; core bidirectional text after setting Automatic. Link-down, Never banner and Profile-A UI steps were not separately reported; see Results log.)
+
+---
+
+## XFER-RETRY-01 — Retrying a restored 0-byte attachment must not kill the app (2026-11-05)
+
+### Setup
+The Infinix X6882B that produced `flash-log-1793881521325.txt`, with at least one Failed sending row whose source could not be read (the log had two `send refused … reason=unreadable` rows). The build contains ADR-354/ERROR-984.
+
+### Steps
+1. Open **Transfers**, find the Failed row that says the file could not be read (or create one by revoking access to a picked file before sending).
+2. Tap **Retry** once. Wait 5 s.
+3. Force-stop and reopen the app. Tap **Retry** on the same row again.
+4. Repeat once more with a genuinely empty file.
+
+### Pass
+- The app never disappears; no `E/CRASH … totalBytes must be > 0` in the log.
+- The row stays **Failed** with the same human sentence (`This file is empty…` or `Couldn't read the file…`), and no offer is sent to the peer.
+- A readable zero-size picker result (unknown size) that can be measured still sends normally.
+
+### Source
+ERROR-984, ADR-354, `core/transfer/.../RealFlashTransferRepository.kt` `relaunchSend`/`executeSend`, test `TransferRefusalAndWordingTest`.
+
+### Status
+PASS (owner devices, 2026-11-05; empty-file retry before and after process restart; unreadable-source variant not separately created).
+
+---
+
+## FGS-01 — Foreground service promotion on a cold start (2026-11-05)
+
+### Setup
+Infinix X6882B (Transsion/XOS), cold start from the launcher with the radio gateway and mesh enabled.
+
+### Steps
+1. Force-stop Flash, then launch it.
+2. Within 5 s check the notification shade and the log.
+3. Repeat with a transfer queued and with the radio gateway on.
+
+### Pass
+- No `RemoteServiceException$ForegroundServiceDidNotStartInTimeException` and no `E/CRASH: uncaught in thread main`.
+- The foreground notification appears; the service remains alive for at least 60 s.
+- If the device reports the audio keep-alive tier, the FGS type includes media playback where it did before (the later `startAsForeground(transfers)` call may add it).
+
+### Source
+ERROR-984 log (2026-10-26 10:29:53), `FlashBackgroundService.onCreate`, ADR-354 note.
+
+### Status
+PASS (Infinix cold start, 2026-11-05: foreground service `foregroundId=41`, no FGS exception; transfer-queued variant not repeated).
+
+---
+
+## RADIO-PROFILE-A-01 — Signed cleartext is visibly unavailable (2026-11-05)
+
+### Setup
+Current Android app and radio gateway connected, on the Radio screen. A legacy install may already have Profile A selected.
+
+### Steps
+1. Open Radio → Settings → Security.
+2. Try to select **Profile A (Signed cleartext)**.
+3. If the current selection is already Profile A, read the red note and select **Profile M**.
+4. Send a short text.
+
+### Pass
+- Profile A is dimmed with the **Not supported** badge and cannot be selected.
+- A legacy Profile A selection shows the note "Profile A cannot carry Flash chat. Select Profile M; your radio stays connected."
+- Profile M can be selected after authorisation; the text goes by radio and no `SIGNED_NOT_ENABLED` is logged.
+- The app never offers Profile A as a working chat mode.
+
+### Source
+`RadioChatEngine.sendText` Profile-A refusal; `RadioSession.ingestSigned` `SIGNED_NOT_ENABLED`; `RadioChatWiring` has only the peer fingerprint; 2026-11-05 owner report.
+
+### Status
+PASS (UI/selection, Infinix 2026-11-05; Profile A dimmed, Not supported, tap does not select; transmit step blocked because the remembered radio was Link lost).
+
+---
+
+## 4zzzzzzzzzzzzzzzzzzzz Chat redesign v2 (CHATUI) - owed after the mock and the port
+
+Source: ADR-355, `design/chat-web/DESIGN.md`, `logs/progress.md` 2026-11-05. None of these have been run; the mock is
+not the app.
+
+### CHATUI-01 - Owner review of the web mock
+- **Setup:** `cd design/chat-web; npm install; npm run dev` -> http://localhost:5174 (or `npm run build && npm run preview`
+  -> :4174).
+- **Steps:** at 1440, 768 and 390: read the conversation, type in the composer until the mic becomes send, press the
+  kebab to open the wallpaper sheet, switch all five presets and the custom colour, switch light/dark, open Chat
+  appearance, press Replay in Motion, then turn Motion off and press Replay again.
+- **Pass:** the owner approves the direction (header, composer, wallpapers, icons, motion) or names the changes; the mic
+  and send never move the layout; every wallpaper keeps message text readable; reduced motion still changes state with no
+  travel.
+- **Status:** TODO
+
+### CHATUI-02 - Composer on a phone with the IME, 1 to 6 lines (after the port)
+- **Setup:** Android build with the ported composer, two paired phones.
+- **Steps:** type one line, then paste six lines; open and close the IME at the bottom of the thread; hold the mic and
+  slide to cancel; send a voice note; press Enter on a hardware keyboard.
+- **Pass:** the pill grows to six lines and stops; the composer stays above the IME with no jump; the trailing control
+  crossfades mic -> send in one slot with no width change; cancel discards and send sends; Enter sends and Shift+Enter
+  makes a new line.
+- **Status:** TODO
+
+### CHATUI-03 - Wallpaper, whichever store ADR-355 chooses
+- **Setup:** one phone (and the desktop if an app-wide setting is chosen).
+- **Steps:** set each of the five presets and one custom colour in a chat; kill and relaunch; switch theme; open a second
+  chat (per-chat option) or check every chat (app-wide option).
+- **Pass:** the chosen wallpaper survives the relaunch; its light and dark variants both apply; bubbles keep AA contrast
+  on every preset; the "This chat" / "All chats" scope behaves as labelled (if built).
+- **Status:** TODO
+
+### CHATUI-04 - Contrast and 200% font scale (after the port)
+- **Setup:** Android with large font / display size 200%, light and dark; a chat with incoming, outgoing, file, voice and
+  reply bubbles.
+- **Steps:** scroll the thread; open the wallpaper sheet; open Chat appearance.
+- **Pass:** no text is clipped; metadata still meets 4.5:1; the bubble tail does not clip text; the composer stays one
+  row at 200%.
+- **Status:** TODO
+
+### CHATUI-05 - RTL
+- **Setup:** Android set to an RTL locale (Arabic or Hebrew), two paired phones.
+- **Steps:** open a chat; send and receive; open the wallpaper sheet.
+- **Pass:** the bubble scoop mirrors to the sender's side, the header back arrow and the composer order mirror, no icon
+  is upside down, and the wallpaper sheet's tiles keep their labels.
+- **Status:** TODO
+
+### CHATUI-06 - Reduced motion on a LOW tier handset (after the port)
+- **Setup:** a low-end device or the performance tier set to LOW; Android "Remove animations" on.
+- **Steps:** type and send, open the wallpaper sheet, switch wallpaper.
+- **Pass:** no entrance travel, no scale pops, no sheet rise; state still changes instantly; nothing is left invisible.
+- **Status:** TODO
+
+### CHATUI-07 - Desktop window at 100/125/150% and the narrow minimum (after the port)
+- **Setup:** Windows desktop build, UI scale 100/125/150%, window at the 640x480 minimum and maximised.
+- **Steps:** open a chat in two panes, type six lines, open the wallpaper sheet.
+- **Pass:** the composer keeps its 820dp measure centred in a wide window; no horizontal scrollbar; the sheet fits
+  inside the conversation pane; the header keeps three actions with the name readable.
+- **Status:** TODO
+
+### CHATUI-08 - Overflow menu on both platforms (after the port)
+- **Setup:** a 1:1 chat and a v2 group, Android and Windows.
+- **Steps:** open the kebab; on the phone check every item; on desktop press Escape and click outside; choose View
+  profile, Group info, Group settings, Invite link, Chat appearance; then Mark as unread and Leave group.
+- **Pass:** the item list matches `FlashConversationMenuMath` (destructive last, separated); the popover opens under
+  the button with 44dp rows; Escape/outside closes; each navigating item opens its surface; the destructive items
+  ask for confirmation before doing anything.
+- **Status:** TODO
+
+### CHATUI-09 - Peer profile and unpair (after the port)
+- **Setup:** two paired phones, one chat open.
+- **Steps:** open the profile from the avatar and from the menu; check each row against the real session; tap Shared
+  Media & Files; press Unpair this device.
+- **Pass:** Connection/Security/Trust/Radio fallback show the live values; shared content opens; unpair asks for
+  confirmation, then the peer shows **Not paired** and can no longer deliver (ADR-351).
+- **Status:** TODO
+
+### CHATUI-10 - Group info and join requests (after the port)
+- **Setup:** a v2 group with 6 members, one unpaired applicant and one paired applicant.
+- **Steps:** open Group info; expand a vouched member; Verify, Make Admin and Remove; approve one request and
+  decline the other; open Invite people.
+- **Pass:** the roster matches the signed roster; a vouched member shows "Added by <name> - not verified" and can be
+  verified; removing asks for confirmation and rotates the group code; approve/decline updates the request list and
+  the member count; the unpaired applicant is marked "Not paired".
+- **Status:** TODO
+
+### CHATUI-11 - Group settings, signed vs device (after the port)
+- **Setup:** a v2 group; two devices in it; one admin and one member account.
+- **Steps:** as the admin, toggle each rule and change the max size; as the member, open the same page; toggle the
+  device switches on both; change the group code.
+- **Pass:** rules are read-only for the member with the admin-only sentence; rule changes reach the other device and
+  survive a restart (signed); device switches never change the other device; changing the code invalidates old
+  invite links and keeps current members.
+- **Status:** TODO
+
+### CHATUI-12 - Swarm piece map and delivery lines (after the port)
+- **Setup:** a group of three or more devices with group swarm on; a 100 MB+ file; one member offline.
+- **Steps:** send the file; watch the sender's map and lines; pause one receiver; bring a holder back; delete the
+  source file on the sender and retry sharing.
+- **Pass:** the map's verified count matches the progress; the sender reads "Delivered to N of M" and then "You can
+  go offline now"; the receiver reads "Getting it from K devices"; an offline holder shows "Offline - n%"; a lost
+  source shows "Your file is no longer available. Pick it again to keep sharing"; no piece numbers or peer ids appear.
+- **Status:** TODO
+
+### CHATUI-13 - Chat wallpaper persists (ADR-355 option a)
+- **Setup:** Android build with the ported chat; a Windows build from the same commit; two chats.
+- **Steps:** open a chat, menu > Chat appearance, choose each of the five presets, close and reopen the chat; kill and
+  relaunch the app; do the same on the desktop; switch the system to dark and back.
+- **Pass:** every chat uses the chosen preset (app-wide); the choice survives a restart on both hosts; each preset has
+  its light and its dark ground; message text and timestamps keep their contrast on all five; an unreadable/absent
+  stored value falls back to Graphite instead of failing a launch.
+- **Status:** PASS 2026-11-05 - Infinix X6882B (Android 14) on the port build. The chosen preset survived a
+  force-stop/relaunch and applied to every chat; light and dark grounds were seen (Signal, Sand, custom); `Undo`
+  returned to the value the sheet opened with; an unknown stored value still falls back to Graphite (unit test).
+  Desktop half not run.
+- **Evidence:** `docs/ui/chat-appearance-2026-11-05.png`, `chat-wallpaper-pulse-2026-11-05.png`,
+  `chat-wallpaper-dark-2026-11-05.png`.
+
+### CHATUI-14 - Overflow menu and Chat appearance entry
+- **Setup:** a 1:1 chat and a v2 group, both hosts.
+- **Steps:** open the kebab; confirm the item lists; open Chat appearance; use Search, View profile, Group info, Group
+  settings, Invite link and Add members; check destructive items and Escape/outside dismissal.
+- **Pass:** the lists match `FlashConversationMenuMath` including Chat appearance; the popover is 252dp with 44dp rows;
+  each item opens its surface; destructive items keep their confirmations; the menu is reachable with one thumb and
+  dismisses with back/Escape.
+- **Status:** PASS 2026-11-05 - 1:1 chat on the Infinix. The menu lists match `FlashConversationMenuMath` (View
+  profile, Search, Chat appearance, Revoke trust, Mark as unread, Clear conversation); Chat appearance opens the
+  sheet; View profile opens the peer sheet; the popover is 252dp wide with 52dp rows (4dp over the mock - Material's
+  minimum height kept, not forced); back dismisses it. Group menu and desktop not run.
+- **Evidence:** the session screenshots in the device folder (05, 07, 09).
+
+### CHATUI-15 - Header and composer on a phone
+- **Setup:** Android phone, two paired chats; a hardware keyboard for the desktop step.
+- **Steps:** type 1 and 6 lines; open/close the IME; clear the draft; hold the mic and slide to cancel; send; open the
+  reply dock.
+- **Pass:** the three header actions fit with the name and presence; the mic and send share one 44dp slot with a
+  crossfade and never move the pill; the pill grows to 6 lines; the IME never overlaps the composer; the reply dock
+  matches the design.
+- **Status:** PARTIAL 2026-11-05 - Infinix, one 1:1 chat. The three header actions fit beside a 34dp avatar; the
+  compact lock no longer clips; a 13-character name fits ("Flash Gazelle"), 14 truncates ("Flash Hedgeh...") - the
+  mock's 40dp web buttons vs the app's 48dp touch targets; the send key replaces the mic in the same 44dp slot with
+  the IME open and no width jump; the pill focus ring and the 44dp attach disc are visible. Hold-to-record, slide to
+  cancel and the locked recording bar were **not** exercised. Desktop not run.
+- **Evidence:** `docs/ui/chat-composer-focus-2026-11-05.png`.
+
+### CHATUI-16 - The full icon set at 24dp and 48dp
+- **Setup:** Android and Windows builds from the icon commit.
+- **Steps:** walk every screen that uses icons (chats list, conversation header/composer, attachments, transfers, nearby,
+  settings, hub, calls, radio) at default and large font/UI scale; single out the nav row and the call controls.
+- **Pass:** no glyph reads as a different symbol from before; stroke weight is even next to the chat glyphs; nothing
+  clips its frame at 48dp; `settings` still reads as a cog, `mic_off`/`video_off` have a clear slash, and the four nav
+  glyphs match the chat hand.
+- **Status:** TODO - icons were seen incidentally in the nav bar, chat list, header, composer and profile sheet and
+  read coherently at 24dp; the full screen walk (calls, radio, hub, transfers) at 24/48dp and large font is owed.
+
+
+## Hub organizational workspace redesign — 2026-11-06
+
+Source for all cases: `docs/ui/hub-workspace-redesign.md` (UI-058). Native fixture rendering is visual evidence,
+not a substitute for the following real-host checks. No phone was operated in this session.
+
+### HUBWORK-01 — Roles and actions on Android
+- Setup: enrolled phone, accounts for member, department head and administrator.
+- Steps: open Hub; inspect organization/role; visit all four sections; publish for each allowed audience; open a
+  person and Message; exercise conditional Call, group Open/Join/Request/Pending and management where authorized.
+- Pass: role matches enrollment; only supported/authorized controls appear; actions complete through their existing
+  flows; no unauthorized audience is offered; unread announcements and draft/error recovery still work.
+- Status: TODO.
+
+### HUBWORK-02 — Connection and recovery states
+- Setup: enrolled phone with a synced directory, plus a never-synced profile.
+- Steps: disconnect/reconnect network; refresh; inspect the connection sheet; load groups during a failure; retry.
+- Pass: cached content remains usable; loading, offline and failures are explicit; retry/refresh work; connecting
+  does not claim Connected; expired/revoked access retains the required recovery action.
+- Status: TODO.
+
+### HUBWORK-03 — Desktop layout and navigation
+- Setup: Windows app enrolled in a hub with people, announcements and departments.
+- Steps: resize from 640x480 to 1440x900; select/close people, announcements and departments; search and clear search;
+  switch Hub/Chats; operate controls with keyboard.
+- Pass: no blank reserved detail pane before selection; details and lists remain usable; selection/back/search work;
+  existing app rail stays visible; no keyboard trap or clipped primary action.
+- Status: TODO.
+
+### HUBWORK-04 — Accessible phone layouts
+- Setup: Android phone with TalkBack, light/dark themes, 100% and 200% font size, reduced motion; long organization and
+  department names in the directory.
+- Steps: read the header, traverse section tabs, open a person/department, search, refresh; rotate to landscape.
+- Pass: names/role/status readable, controls reachable, selected tab announced, connection changes spoken politely;
+  no overlapping hit targets, hidden primary action or unwanted movement under reduced motion.
+- Native-render finding: the existing shared bottom bar clips its labels at 200% font; fixed-size avatar initials also clip. Hub header and colleague names were repaired. Verify on a real phone before assigning the shared-shell follow-up.
+- Status: TODO.
+
+### HUBWORK-05 — Content and lifecycle regression
+- Setup: populated hub on Android and Windows.
+- Steps: scroll each section; open/close a detail; switch sections; background and return; exercise notification deep
+  links, pending group requests, announcement edit/pin/delete and failed-post retry.
+- Pass: list positions/selection behave consistently; read marking only follows visible announcements; drafts survive
+  failure; no duplicate conversation/join action; existing privacy and link-confirmation behavior is preserved.
+- Status: TODO.
+
+
+## Existing Transfers/Nearby component refinement — 2026-11-06
+
+Source: `docs/ui/transfers-nearby-refinement.md` (UI-047/048). The earlier workspace redesign was rejected and rolled back. Native sample renders do not establish real network or accessibility correctness.
+
+### TABREF-01 — Transfer states and actions on devices
+- Setup: Android + Windows, two physical peers; incoming, queued, moving, paused, failed, cancelled and completed transfers; group file with holder/wait states.
+- Steps: accept/decline; pause/resume singly and in bulk; cancel sent/received files; dismiss/confirm group cancellation; retry a failure; dismiss cancelled rows; clear failures/history; open/share received files. Disconnect/reconnect; test 0-byte and long-name files; switch tabs during transfer.
+- Pass: original control placement and callbacks preserved; actions affect the intended file; only retryable rows offer Retry; errors/wait reasons readable; progress and status remain truthful; send/group confirmations preserved; last row clears shell inset.
+- Status: PARTIAL 2026-11-08 (ERROR-1012) — two phones, 2.2.0 debug build, direct 1:1 path only. Verified:
+  incoming "Awaiting your acceptance", Accept/Decline; moving with %/speed/ETA; pause from the sender
+  (receiver showed "paused by sender") and resume; completed 512 MB transfer with matching SHA-256;
+  the existing empty-file Failed row still offers Retry with its sentence; 1 MB and 512 MB files landed in
+  `FlashReceived/Other` and open from the bubble. **Not exercised:** group/swarm holder-wait states, queued,
+  cancelled, bulk pause/resume, clear failures/history, long-name/0-byte new sends, tab switching during a
+  transfer, Windows host. **Defects:** a waiting-for-acceptance row read "Paused (Tap to resume)" before any
+  pause, and two already-delivered files flipped from Sent to "Failed to send" after the revoke. Group
+  confirmations were not run. The case cannot be marked PASS until the group and cancel/bulk halves exist.
+  **Retest 2026-11-08 (second run, fixed APK `77b1e108…`, direct 1:1 Android slice):** the 8 MiB
+  `rel22-retest.bin` offer showed `Waiting for the other device to accept` / `Awaiting acceptance` with
+  only **Cancel transfer** (no Pause, no Resume) for ~46 s; the receiver accepted, the sender completed
+  (`transfer.summary result=completed durationMs=48370`), the receiver logged `chunkVerified=true
+  wholeFile=MATCH`, SHA-256 `918c4b1f…12ac7` matched on both, and after the offline revoke the completed
+  file stayed **Sent** on the sender and completed on the receiver — never Failed or Retry. The two
+  ERROR-1012 defects are therefore fixed on this slice; the group/cancel/bulk/Windows halves remain why
+  the case is not PASS. Evidence: `retest-20261108T121940Z\phone-report.md`.
+
+### TABREF-02 — Discovery, trust and connection states on devices
+- Setup: Android + Windows, verified/unverified saved peers, colleague and newly discovered peer; hosts with Call/Verify/manual-connect callbacks present and absent.
+- Steps: Pair / Message / Chat, Call where supported, Verify again, Revoke through existing host flow; scan network (running/done/refused); connect by IP; quiet network for 30 seconds; pause discovery; turn network off; run all pairing consent/expiry outcomes.
+- Pass: original explicit actions remain visible in rectangular tile buttons and target correct peers; paired tiles resize from one to three columns; names/device-kind badges fit; legacy pairing remains Not verified; saved pairings do not claim current presence; quiet hint/results/actions retain timing and availability; pairing consent unchanged.
+- Status: PARTIAL 2026-11-08 — two Android phones, 2.2.0 debug build. Verified on both: the identity header
+  (name, short id, port), discovered row with LAN/Phone badges and rectangular **Pair**, paired rows with
+  **Chat** + three-dot menu, "Scanning… · N paired", a completed scan, and the pairing consent card on the
+  responder (code + "Accept only if …" + Accept/Decline). Paired tiles fit as one row at 360–384 dp; the
+  one-to-three-column resize was not observed. **Not exercised:** Connect by IP, the 30-second quiet hint,
+  pause discovery, network off, a colleague/unverified saved peer, an absent-callback host, Windows. The
+  initiator consent-card defect is ERROR-1010 (SECAUD-22); this case does not claim pairing consent
+  unchanged until it is fixed.
+
+### TABREF-03 — Component layout, accessibility and lifecycle
+- Setup: both tabs, 320–1440 dp widths, short landscape, long names/non-Latin names, 100%/200% text, light/dark, TalkBack, keyboard and reduced motion.
+- Steps: inspect every page/row state; traverse actions; resize and rotate; scroll and return after tab switches; exercise dialogs; inspect loading placeholders and error recovery.
+- Pass: compact original design remains recognizable; names/status wrap; controls are 48 dp and reachable without overlapping; heading/action semantics useful; no unexpected animation or lost list position. Existing shared shell label clipping at 200% text is tracked by HUBWORK-04.
+- Status: PARTIAL 2026-11-08 — at the two phones' default widths (Infinix 360×820 dp @480 dpi, Samsung
+  384×853 dp @300 dpi after its display-size override), the compact design is recognizable, long labels
+  wrapped, and the interactive nodes measured 48 dp (Samsung's 90 px at 1.875 density; Infinix's 144 px at
+  3.0). The three-dot menu and pairing card were reachable with the accessibility tree, and no crash or
+  lost list position was seen across Chats/Nearby/Settings. **Not exercised:** 320 dp and 1440 dp widths,
+  short landscape, 100%/200% font, light/dark contrast at 200%, TalkBack, keyboard, reduced motion,
+  Windows. These are why the case is not PASS.
+
+
+## 2026-11-07 — compact tabs and categorized received files
+
+### TABREF-04 — Laptop density and paired menu
+- Setup. Windows laptop at default and increased display/font scale, Android narrow phone. Paired verified and unverified devices.
+- Exercise. Inspect Transfers and Nearby headers, compare with Chats/Hub/Settings, resize the tile grid, open the three-dot menu with pointer and keyboard, copy the device ID, verify when eligible and revoke a test pairing. Open a chat and start its existing call action.
+- Pass. Normal tiles use a single action row. Expanded fonts wrap cleanly. The menu is anchored, dismisses and routes actions to the correct peer. All supported transfer/discovery states remain accessible.
+- Status. BLOCKED 2026-11-08 — no Windows laptop was available in this session. The Android narrow-phone
+  half was observed incidentally (single action row, three-dot menu, Revoke through the conversation menu),
+  but the laptop density/expanded-font/pointer/keyboard checks and the paired-menu routing comparison were
+  not run, so no partial PASS is claimed.
+
+### RECEIVE-CAT-01 — File types and custom receive folder
+- Setup. Two paired devices and a Hub account, Android and Windows. Use a custom desktop save location with a pre-existing personal file in Images.
+- Exercise. Receive images, videos, audio, a document, an archive and a folder over direct, Hub and swarm paths where supported. Receive duplicate names concurrently. Pause and resume an in-progress file from an older build. Open/share completed files and use the received-files clear action only in the disposable test folder.
+- Pass. New files land in their categories, folder structure survives, duplicate names receive suffixes, chat/history point to real bytes, legacy transfers still resume and the personal file survives clear.
+- Status. PARTIAL 2026-11-08 — direct Android→Android path only, 2.2.0 debug build. A 1,048,576-byte
+  `.bin` and a 536,870,912-byte `.bin` both landed in
+  `files/FlashReceived/Other/` on the Samsung (no custom folder), and both matched the sender's SHA-256
+  exactly (`07023baa…` and `579e9e4b…`); the chat bubbles opened the received files. **Not exercised:**
+  images/video/audio/document/archive, duplicate-name suffixes, Hub and swarm paths, custom receive
+  folder, pausing from an older build, Clear received files, Windows. The `.bin` category "Other" is a
+  real result, not the full category matrix.
+
+### RECEIVE-CAT-02 — Voice clip durability and restart
+- Setup. Android and Windows peers with Hub-only and direct delivery available. Use disposable recordings.
+- Exercise. Send/receive a voice message over each route, restart Flash, and play the received and sent copies. Check the received category and share/open via the normal UI. Simulate a placement failure in an isolated test destination and retry.
+- Pass. Received clips are in Voice messages, newly submitted recordings survive the recording cache lifetime, duplicates coexist, and a failed direct placement still points to the retained file.
+- Status. TODO.
+
+## 2026-11-07 — Hub rollout review follow-up
+
+Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT-04/12/14`, `ANN-01/10/11`, `CONSOLE-D02..07`, and `HUBWORK-01..05` for existing drills.
+
+### HUBREADY-01 — Multi-department head paging and search
+- Setup. A head assigned to departments A and B, with members, invites and announcements in both and enough newer rows from department C to fill a page. Include a head assigned only to A and an org admin as controls.
+- Exercise. Sign in through the console, use list, search, page and department filters, and open direct links to out-of-scope resources.
+- Pass. A and B appear in the multi-department head's permitted views. Department C is excluded from items, counts and cursors. Explicit in-scope filters work. The single-department and org-admin controls retain their access.
+- Status. TODO.
+
+### HUBREADY-02 — Restore with matching, absent and mismatched data keys
+- Setup. A disposable Hub snapshot with a sealed mailbox row, a TOTP admin, a pending sealed file and a revoked device. Store the matching data key separately.
+- Exercise. Restore with the matching key. Repeat with the key missing and with a different valid-format key. Use a fresh disposable destination for each case.
+- Pass. A matching restore preserves admin sign-in, queued delivery, file integrity and revocation. Missing or mismatched keys are reported before serving and never silently replace the key for existing sealed data.
+- Status. TODO.
+
+### HUBREADY-03 — Queued group delivery after removal
+- Setup. Three enrolled group members, with one offline. Send a group message and file while they are offline and verify the queue. Remove that device from the group while keeping it enrolled.
+- Exercise. Reconnect the former member, send again from an active member and inspect the recipient traffic, sender outcome and file read response.
+- Pass. No new group messages arrive and pending file downloads are refused. Pre-removal mailbox rows follow the documented policy. If removal cuts off undelivered data, those rows are retired without sending their payload or reporting delivery.
+- Status. TODO.
+
+### HUBREADY-04 — Signed revocation relay with the Hub unreachable
+- Setup. Three enrolled peers with fresh offline leases and TLS LAN sessions. Use an Android and desktop for A and B and repeat with the roles switched. Keep B and C cut off from the Hub. Revoke C by device ID and sync only A.
+- Exercise. Connect A and B and look for `org.revocation.lan result=APPLIED` on B. Repeat with an already connected pair and allow the ten-minute rate window plus the next poll. Restart B offline. Attempt an organisation-only send and linked-group traffic from C. Repeat with a stale and invalid update, and with an old peer that has no `rvg1`.
+- Pass. B denies C's organisation trust and linked-group traffic before and after restart. Stale and invalid lists do not change that decision. Check direct manual pairing separately under its existing policy. With a root-signed delegation cutoff, previously certified A and B can relay the cutoff while the lease remains valid.
+- Status. TODO on physical hosts. Automated signed-cache, TLS binding, exchange and roster cases run separately.
+
+### HUBREADY-05 — Console provisioning, recovery and join confirmation on a real Hub
+- Setup. An isolated Hub with a production-style root and delegation, an organisation admin, two departments, an enrolled device, a join request and enough announcements for multiple pages.
+- Exercise. Create a head using the console's browser confirmation key and one-time credentials. Sign in as the head, confirm restricted routes and actions, then change the head's departments while that browser is open and refresh its session. Cancel and then confirm a join request. Import a stale, wrong-signed and valid root-signed revocation list. Verify older announcements and Overview audit status at narrow and wide widths.
+- Pass. The console shows only scoped data and actions. One-time credentials work for the head. The cancelled approval does not change membership. The signed-list import requires step-up and only the newer root-signed list installs. Announcement pages retain all tied entries and display their shown count.
+- Status. TODO. Isolated Chrome fixture exercised UI wiring and server tests covered the routes. Real Hub acceptance remains owed.
+
+### REL22-01 — Submitted voice recordings are excluded from Android backups
+
+- Setup. Use disposable Android 11 and Android 12+ installs. Send a voice recording and confirm it plays from the original conversation after restart.
+- Exercise. Use the legacy Auto Backup path on Android 11, then cloud backup and device-to-device transfer on Android 12+. Inspect the restored app files.
+- Pass. No file below `files/sent` reaches the restore destination. The original phone still plays the submitted recording.
+- Source. SEC-NEW-02 and ADR-356. Status: BLOCKED 2026-11-08 — requires an Android 11 legacy Auto Backup
+  run and a cloud/device-to-device restore on Android 12+; no disposable installs or backup accounts were
+  available, and backup/restore is out of scope for this session. Not attempted.
+
+### REL22-02 — Offline root revocation on the beta distribution
+
+- Setup. Enrol three disposable devices on a test Hub. Give them a shared group. Queue a group message and direct message for a device that is offline.
+- Exercise. Stop the Hub, drop a newer root-signed revocation list naming the offline device into `revocations/`, and restart. Repeat on a copy using the device's current certificate serial. Check the group roster and queued copies immediately. Restart again.
+- Pass. The revoked member is absent from the directory and roster at first access and after restart. The group copy is retired and the direct copy follows the direct-mail retention policy. The unaffected member stays in the group.
+- Source. SEC-NEW-01 and ADR-358. Status: BLOCKED 2026-11-08 — requires the isolated test Hub with a
+  root-signed revocation drop and three enrolled devices. The session was restricted to the two USB
+  phones and no Hub deployment was authorized or touched. Automated `HubServicesTest` still covers the
+  logic; the real-host drill remains owed.
+
+### REL22-03 — Device moves and multi-department approvals in the browser
+
+- Setup. Test Hub with an organisation admin who has a browser confirmation key, a multi-department head, and a device with a pending join request.
+- Exercise. Cancel a move, then confirm a move through the device drawer, a bulk action, and department membership editing. As the head, try to approve the request after the requester has moved out of the head's scope. Edit a head-authored announcement in each assigned department.
+- Pass. Cancelling changes no data. Every move requires a fresh confirmation. The old bearer and session are retired on scope change. Out-of-scope approval fails, and in-scope announcement edits succeed.
+- Source. SEC-NEW-03/04/08. Status: BLOCKED 2026-11-08 — requires the isolated test Hub, an organisation
+  admin with a browser confirmation key, a multi-department head and a pending join request. No browser or
+  Hub session was in scope; the two phones alone cannot exercise it. Route coverage remains automated.
+
+### REL22-04 — Published beta resolves from the current JitPack coordinate
+
+- Setup. Empty Maven cache for Flash modules and an external Android/JVM consumer on JDK 17.
+- Exercise. Build with `com.github.Soko-Aerial.Flash` and tag `v2.2.0-beta.3` using JitPack, Google and Maven Central. Use the umbrella engine, calling UI and the granular messaging API.
+- Pass. Both platforms compile. The WebRTC track and enterprise join result are visible through their published dependencies.
+- Source. Release audit and `docs/release-build.md`. Status: PASS 2026-11-08 — JitPack published
+  57 modules from `13e0fa3f` under `v2.2.0-beta.3`. A separate JDK 17 build compiled the Android
+  and JVM consumers against the public coordinate, including the WebRTC and enterprise types.
+  The beta.2 Maven ZIP is also available on GitHub.
+
+### REL22-05 — PTT sends the first packet of a new burst
+
+- Setup. A paired and an unpaired peer on the same LAN. Connect the paired peer for PTT.
+- Exercise. Begin a burst and speak as soon as capture starts. Stop and start another burst with a different opening word.
+- Pass. The paired listener hears the opening syllable on both bursts. Old audio does not carry into the second burst and the unpaired device receives no PTT audio.
+- Source. ERROR-975 and `40375e14`. Status: BLOCKED 2026-11-08 — the pass condition is audible ("the
+  listener hears the opening syllable"), so it needs two physically paired peers, live microphones and a
+  person listening. No audio observation is possible in this session; the test pair was revoked after the
+  W1 runs. The first-packet ordering remains host-tested only.

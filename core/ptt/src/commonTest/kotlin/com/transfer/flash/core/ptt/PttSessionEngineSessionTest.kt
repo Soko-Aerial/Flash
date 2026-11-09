@@ -229,10 +229,10 @@ class PttSessionEngineSessionTest {
     @Test
     fun `a press never sends the microphone to this device itself or to an untrusted peer`() = runTest {
         members = listOf(LOCAL_ID, PEER, "untrusted-peer")
+        // Simulate capture producing its first packet before the sender coroutine starts.
+        audio.onPacketsEnabled = { it.emit(pcm(1), captureTsMs = 1_000L) }
         withEngine { engine ->
             assertEquals(PttPressOutcome.ACCEPTED, engine.onPttButton())
-            awaitUntil("capture packets enabled") { audio.captures.snapshot().firstOrNull()?.packetsEnabled == true }
-            audio.captures.snapshot().single().emit(pcm(1), captureTsMs = 1_000L)
             awaitUntil("audio sent") { sentAudio.snapshot().isNotEmpty() }
 
             val recipients = (controlFrames().map { it.first } + sentAudio.snapshot().map { it.first }).toSet()

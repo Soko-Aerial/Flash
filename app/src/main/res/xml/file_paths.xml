@@ -9,6 +9,7 @@
     FlashReceived/  received files (external-files dir, or the internal fallback when there is no external storage):
                     "share" / "open" a received file, and the swarm completion directory.
     ws-received/    older received-file location, kept so rows written before FlashReceived/ still open.
+    sent/Voice messages/  submitted voice clips kept for chat history and explicit sharing.
     cache root      voice notes (flash-voice-*.m4a) and camera captures (camera_captures/) written by :ui:platform-shims,
                     and the log export (log-export/). The cache holds nothing else of value and is cleared by the system.
   A new FileProvider caller must add its directory here on purpose.
@@ -17,5 +18,6 @@
     <external-files-path name="received" path="FlashReceived/" />
     <files-path name="received_internal" path="FlashReceived/" />
     <files-path name="ws_received" path="ws-received/" />
+    <files-path name="sent_voice" path="sent/Voice messages/" />
     <cache-path name="cache_files" path="." />
 </paths>

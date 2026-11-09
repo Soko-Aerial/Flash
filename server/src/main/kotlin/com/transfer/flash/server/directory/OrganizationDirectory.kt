@@ -920,6 +920,12 @@ class OrganizationDirectory(
      */
     fun removeDevice(deviceId: String) {
         lock.write {
+            val affectedGroups = groups.values.filter { deviceId in it.memberDeviceIds || deviceId in it.adminDeviceIds }
+            val affectedDepartments = departments.values.filter { deviceId in it.adminDeviceIds }
+            if (deviceId !in members && deviceId !in memberStatements && affectedGroups.isEmpty() &&
+                affectedDepartments.isEmpty() && joinRequests.values.none { it.deviceId == deviceId && it.status == JoinRequestStatus.PENDING } &&
+                preAuthorized.none { it.second == deviceId }
+            ) return@write
             val v = bumpVersionLocked()
             val deptOfDevice = members[deviceId]?.departmentId.orEmpty()
             recordTombstoneLocked("member", deviceId, v, departmentId = deptOfDevice, departmentHidden = departments[deptOfDevice]?.hidden == true)
@@ -929,26 +935,24 @@ class OrganizationDirectory(
                 c.update("DELETE FROM dir_group_members WHERE device_id = ?", deviceId)
                 c.update("DELETE FROM dir_join_requests WHERE device_id = ? AND status = 'PENDING'", deviceId)
                 c.update("DELETE FROM dir_preauth WHERE device_id = ?", deviceId)
-                for (g in groups.values.filter { deviceId in it.adminDeviceIds }) {
+                for (g in affectedGroups) {
                     c.update("UPDATE dir_groups SET admin_ids = ?, version = ? WHERE id = ?", encodeList(g.adminDeviceIds - deviceId), v, g.id)
                 }
-                for (d in departments.values.filter { deviceId in it.adminDeviceIds }) {
+                for (d in affectedDepartments) {
                     c.update("UPDATE dir_departments SET admin_ids = ?, version = ? WHERE id = ?", encodeList(d.adminDeviceIds - deviceId), v, d.id)
                 }
             }
             members.remove(deviceId)
             memberStatements.remove(deviceId)
-            for ((id, g) in groups.entries.toList()) {
-                if (deviceId in g.memberDeviceIds || deviceId in g.adminDeviceIds) {
-                    groups[id] = g.copy(
-                        memberDeviceIds = g.memberDeviceIds - deviceId,
-                        adminDeviceIds = g.adminDeviceIds - deviceId,
-                        version = v,
-                    )
-                }
+            for (g in affectedGroups) {
+                groups[g.id] = g.copy(
+                    memberDeviceIds = g.memberDeviceIds - deviceId,
+                    adminDeviceIds = g.adminDeviceIds - deviceId,
+                    version = v,
+                )
             }
-            for ((id, d) in departments.entries.toList()) {
-                if (deviceId in d.adminDeviceIds) departments[id] = d.copy(adminDeviceIds = d.adminDeviceIds - deviceId, version = v)
+            for (d in affectedDepartments) {
+                departments[d.id] = d.copy(adminDeviceIds = d.adminDeviceIds - deviceId, version = v)
             }
             joinRequests.values.removeIf { it.deviceId == deviceId && it.status == JoinRequestStatus.PENDING }
             preAuthorized.removeIf { it.second == deviceId }
@@ -1063,10 +1067,22 @@ class OrganizationDirectory(
         DirectoryActor(callerDeviceId, role = if (isOrgAdmin) MemberRole.ORG_ADMIN else MemberRole.MEMBER),
     )
 
-    fun approveJoinRequest(requestId: String, actor: DirectoryActor): GroupCharter = lock.write {
+    fun approveJoinRequest(
+        requestId: String,
+        actor: DirectoryActor,
+        allowedDepartments: Set<String>? = null,
+    ): GroupCharter = lock.write {
         val req = joinRequests[requestId] ?: throw DirectoryNotFoundException("Join request '$requestId' not found")
         val group = groups[req.groupId] ?: throw DirectoryNotFoundException("Group '${req.groupId}' not found")
         requireManager(group, actor, "approve join requests for")
+        if (allowedDepartments != null) {
+            if (group.departmentId.isBlank() || group.departmentId !in allowedDepartments) {
+                throw DirectoryNotFoundException("Group '${req.groupId}' not found")
+            }
+            if (members[req.deviceId]?.departmentId.orEmpty() !in allowedDepartments) {
+                throw SecurityException("Requester is outside the approver's department scope")
+            }
+        }
         if (req.status != JoinRequestStatus.PENDING) throw IllegalStateException("Join request '$requestId' was already decided")
         val updated = addMemberLocked(group, req.deviceId)
         val decided = req.copy(status = JoinRequestStatus.APPROVED, decidedBy = actor.deviceId, decidedAtMs = clock())

@@ -8608,3 +8608,177 @@ resolver) was removed.
 ### Revisit
 When the capability/version registry lands, expose the tombstone in the Nearby row and consider an explicit "Un-revoke"
 action alongside Pair. A receiver reset frame is unrelated; this is local state.
+
+## ADR-354 - A radio path requires a live link, and "Radio fallback: Never" must not suppress the LAN dial
+
+### Decision
+1. `RadioOutboxPort.isRadioReachable()` and `RadioChatBridge.canCarry()` mean **can key the transmitter now**:
+   the gateway is enabled, the serial/Bluetooth link is connected, and the peer's 32-byte radio key is present.
+   A key without a link is not a path.
+2. The host transport sink always makes its one-second on-demand LAN dial before path selection. It must not
+   skip that dial merely because a radio key exists.
+3. The per-chat radio policy is read from the conversation row already loaded by the outbox drain (with the
+   in-process `radioPolicyNow` override winning), never by a second `SELECT conversations` in the send path.
+4. `radio.path` carries `policy`, `pairKey`, `gateway` and `connected`, so `not_reachable` no longer conflates
+   "Never", "no key" and "link down".
+5. A `RefusedAuthorization` (Profile M unconfirmed) is a **transient** radio refusal: the red sentence remains,
+   the row is not marked Failed, retries continue, and the hub mailbox is still allowed.
+
+### Context
+The 2026-11-03 phone log showed `radio.path result=not_reachable gateway=true connected=false` ten times while
+the LAN was demonstrably reachable (`session.up` at 18:39:12). The old reachability check only asked whether a
+pairing key existed, so the transport sink skipped `ensureSession`; the radio then refused with
+`not_connected`, and the message had no path for ten minutes. The 2026-11-05 log showed the same probe with
+`gateway=true connected=true` while inbound radio from the same peer was decrypted and ACKed; that is the
+per-chat `NEVER` policy, which the probe could not name. The old host skip also applied to `NEVER` chats,
+because it did not know the policy.
+
+### Consequences
+- A text to a radio-only peer now spends at most the `AutoConnector.DIAL_ON_DEMAND_BUDGET_MS` (1 s) on a LAN
+  attempt when a remembered route exists; that is the price of never stranding a `NEVER` chat.
+- A link drop makes the radio step report `not_reachable` with `pairKey=true`, `connected=false`; the path
+  continues to the hub mailbox, and the LAN dial is attempted on the next pass.
+- `never` still accepts inbound radio; only outbound is blocked. The chat header keeps its existing
+  policy-aware suppression for the open conversation.
+
+### Tests
+`RADIO-PATH-01` (repository: link down is not a path; `NEVER` never transmits), `RadioChatBridgeTest`
+(auth refusal is transient; `canCarry` is false with the link down), and the transfer retry test
+`retrying a zero-byte failed row fails visibly...` (same phone log).
+
+### Revisit
+The auto-connect sweep still redials remembered routes while the hub is online or the radio is carrying; that
+is a separate presentation/planner question (`PRESENCE-CONNECTIONS-PLAN` P-2.1) and needs a policy-aware
+`Links` hook, not a blanket suppression.
+
+## ADR-355 - Chat screen redesign v2 is presentation-only; the wallpaper is one app-wide setting
+
+### Status
+ACCEPTED 2026-11-05 (owner approved the mock and both screen sets, and chose option (a) for wallpaper storage)
+
+### Decision
+1. The conversation screen is redesigned as: a 60dp header with three actions (call, video, more; search stays in the
+   conversation menu), three separated composer objects (44dp attach, 44dp pill at 22dp radius, one 44dp trailing
+   control that crossfades mic to send), a redrawn chat icon set at a 1.75dp stroke on the same 24dp grid, five
+   changeable chat wallpapers plus one custom colour, and a `Chat appearance` page that owns the choice.
+2. The change is **presentation only**: no wire, protocol, repository, callback or settings logic changes.
+3. The direction is built as a standalone web prototype (`design/chat-web`) and reviewed by the owner **before** any
+   Compose change. The prototype is the visual authority for the port.
+4. **The wallpaper is one app-wide setting** (the owner's choice, 2026-11-05): `FlashChatWallpaper` lives in
+   `:core:common`, Android persists the stable key in `FlashSettingsDataStore` (`chat_wallpaper`) and the desktop in
+   `DesktopSettingsStore` (`chat_wallpaper` in `settings.properties`). A per-chat wallpaper (Room step) and the mock's
+   free colour are NOT built; the picker offers the five presets.
+
+### Context
+The owner asked for a chat screen that takes the separated send key, the pill text box and the changeable background
+from WhatsApp and Telegram, with redrawn icons and settings, and said "design not logic" and "I should see the mock
+first". The app already ships a custom design system, a 20dp bubble with an 8dp concave scoop (`FlashBubbleShape`), and
+a no-Material-text-field composer, so the redesign keeps those and changes layout, colour slots and the icon paths.
+
+### Alternatives considered
+- **Port to Compose first, review on a device.** Rejected: motion timing, the 8dp scoop and the wallpaper contrast
+  cannot be judged from a description, and a rejected direction would have touched the shipping UI.
+- **An invented visual world for chat (new colours, new type).** Rejected: `AGENTS.md` section 34 forbids replacing the
+  Flash design system; the Hub-tab prototype was rejected for the same reason (see the SUPERSEDED note in
+  `docs/ui/hub-web-atlas-prototype.md`).
+- **A third-party chat UI kit.** Rejected: ADR-003 and the premium UI rules.
+
+### Consequences
+- The port is a restyle of `FlashChatHeader`, `FlashComposer`, `FlashMessageList`, `FlashMessageBubble` and a new
+  appearance sheet; every parameter and callback stays.
+- Two token corrections are proposed: a darker tertiary text step for 12dp text outside bubbles (`graphite500` is
+  4.50:1 on white and 3.86:1 on `graphite100`), and `pulse800` for outgoing timestamps (4.24:1 -> 6.40:1).
+- `FlashConversationScreen`'s `Scaffold` has no `containerColor`, so overscroll currently reveals the Material scheme
+  rather than `backgroundChat`; the wallpaper work fixes that.
+- Nothing is device-verified. The owed checks are `CHATUI-01`..`CHATUI-07` in `docs/testing/TEST-BACKLOG.md`.
+
+### Implementation (2026-11-05, same branch)
+- `FlashChatWallpaper` (5 presets + **Custom**, `storageKey`, `fromStorageKey` defaulting unknown keys to Graphite).
+- `FlashSettingsDataStore.chatWallpaper` + `setChatWallpaper`; `DesktopSettings`/`DesktopSettingsStore` the same;
+  host wiring in `MainActivity` (collected + persisted through the app scope) and `DesktopShell`
+  (`engine.updateSettings`).
+- `ui/chat/FlashChatWallpaper.kt` paints the ground and the pattern (`drawPoints` dots, hatch and grid lines, four
+  pulse rings) and falls back to the flat ground under `ultraLowUi`; `FlashTheme.isDark` is exposed for the preset pair.
+  The custom ground is stored as `#RRGGBB` (`chat_wallpaper_custom` on both hosts) and is carried down towards the
+  dark surface in dark mode (hue kept, contrast kept). **The modifier must chain its receiver** (`this.then(...)`);
+  returning a fresh `Modifier` dropped every earlier size/clip in the chain and collapsed the swatches — ERROR-990.
+- `FlashMessageList` paints it, the `Scaffold` uses its ground, and `FlashChatAppearanceSheet` is opened by the new
+  `CHAT_APPEARANCE` menu item. The sheet mirrors the mock: day-chip preview, five presets + **Yours**, the six named
+  colours, `Applied · <name>`, **Undo** to the value it opened with, and Done (design record and phone evidence:
+  `docs/ui/chat-appearance-2026-11-05.png`).
+- New theme tokens: `accentFill`/`onAccentFill` (5.21:1 light, 5.85:1 dark), `headingConversation` (17sp, the
+  header title in the mock) and `composerInputBackground` moved to `graphite50`/`surface0`. The header's encryption
+  badge is icon-only there (the mock's 13dp lock): its chip label used to clip to "En" beside three 48dp actions.
+- Known deviations from the mock, to revisit after a device pass: the bubble time is a compact bottom-right line, not
+  inline in the text (Compose inline content needs a measured placeholder); the group info/settings sheets keep their
+  shipped structure with the new tokens rather than the mock's full re-layout; the swarm map keeps its tested
+  16-column/fixed-height drawing and its longer summary string; the appearance sheet has no Light/Dark control because
+  the theme is one app setting owned by Settings (the mock's separate appearance page had one). The file block's inner
+  card was flattened on the phone pass (it is content on the message now).
+- **Device pass 2026-11-05 (Infinix X6882B, Android 14):** wallpaper chosen, persisted across force-stop, applied to
+  every chat, light and dark grounds seen; Undo reverts; the custom colour and its six presets render; the composer's
+  send key replaces the mic in place with the IME open; the header shows the compact lock and a 13-character name.
+  Full results: `docs/testing/TEST-BACKLOG.md` CHATUI-13..16.
+
+### Revisit when
+- Per-chat wallpapers or a custom colour are requested (then Room gains a step / a second stored value).
+- The device pass (`CHATUI-13..16`) shows the inline time or the group-sheet re-layout is worth the risk.
+
+### Scope extension (2026-11-05, still PROPOSED)
+After seeing the first mock the owner approved the direct conversation, the desktop shell and the redrawn icons,
+and asked for the rest of the chat surface before reviewing again: the three-dot menu's options, group chats with
+their options and settings, the profile view and the swarm UI. Those are added to the same prototype and to the
+same decision:
+
+- The menu is `FlashConversationMenuMath`'s own list for a 1:1 chat and for a v2 group, plus one proposed item,
+  **Chat appearance** (`CHAT_APPEARANCE`), which is how the wallpaper sheet is reached.
+- The profile is the shipped `FlashPeerDetailsSheet` content; groups use the shipped group copy for roles, join
+  requests, signed rules, device preferences, the group code and the relay row.
+- The swarm UI is `FlashSwarmPieceMap`'s piece states drawn as a 12-column matrix, with `FlashSwarmUiMath`'s four
+  sender/receiver sentences and a holder list.
+- Still presentation only: no new storage, no new capability, and no app source touched. Confirmations, menu
+  actions that do not navigate, and persistence remain outside this mock.
+
+
+## ADR-356 — Categorize completed received files under the configured receive root
+
+2026-11-07. The laptop exposed transport-specific storage. Direct transfers use a transfer-ID directory for their sink and resume state. Hub downloads stage under hub storage before binding publishes them to a transfer-ID directory. Swarm finalizes directly into the root. Desktop's outgoing voice recorder also supplies a system Temp file as the durable attachment source.
+
+Use one completion-time placement policy for direct, Hub and swarm files. Keep the configured root (`FlashReceived` on Windows/macOS and Android by default, XDG download `Flash` on Linux). Sort completed files into Voice messages, Images, Videos, Audio, Documents, Archives, Folders and Other. Preserve folder transfer subpaths under Folders. Reserve collision suffixes without overwriting an existing file. Validate the category/parent boundary and reject linked destination directories. Direct writes and verification still use the existing staging path. When publication succeeds, save the new path to transfer/chat history and remove empty staging parents. If direct publication fails, retain the assembled file at its existing path. Hub and swarm keep their existing placement failure handling. Retain old stored paths for history and resume compatibility.
+
+Desktop ownership records exact categorized files so a user-selected destination's category directory can also hold unrelated files. Continue honoring historical top-level ownership records. Persist newly sent voice clips in app-owned storage before their URI enters chat or a Hub upload, so retention of the recording cache cannot remove the source. Old Temp paths require the original files to be present and are not silently migrated.
+
+Android app-specific storage rules checked 2026-11-07 for API 24+ and the configured target. Keep the existing app-specific root, permission model and user export flow. See [Android Developers app-specific storage](https://developer.android.com/training/data-storage/app-specific). No protocol, encryption, acceptance or database schema change.
+
+## ADR-357 — Bind the Hub data key to its database
+
+**Accepted and implemented 2026-11-07.** Hub remediation HR2 records an AES-GCM verifier in `hub_meta` before serving requests or writing sealed secrets. The verifier uses a dedicated AAD domain. Startup and `admin-recovery` refuse a missing or mismatched key. Older sealed stores authenticate a bounded sample of existing records before binding. A store that has never sealed data can create a key on first use. This retains the existing format and independent per-row validation and quarantine.
+
+Generating a replacement key at startup left inaccessible rows behind a healthy process. A key checksum in a sidecar would prove only that two files were copied together. The database verifier is restored with the data it protects. The original key must be backed up separately. Restore with a matching pair and verify the actual records in HUBREADY-02. See ERROR-997.
+
+## ADR-358 — Group removal retires the recipient's queued Hub copies
+
+**Accepted and implemented 2026-11-07.** Hub remediation HR3 uses the live directory membership as the authority for undelivered group mailbox data. A trigger marks the recipient's queued copies for retirement in the same transaction as a membership delete. Rejoining cannot clear the retirement. The queue refuses writes while that group membership is absent and rechecks fetched group rows before relay hand-off. The ordinary sweep deletes marked rows and reports `DROPPED` per recipient to online senders. Direct mail and existing group file authorisation keep their delivery rules.
+
+An administrative change can race a delivery already authorised for a connected session. The authorisation before hand-off is the boundary for mailbox replay. A removal cannot recall a payload handed off earlier. Events for disconnected senders follow the existing transient queue-state contract. The migration retires orphaned rows present at upgrade and cannot infer a removal followed by a rejoin that both occurred on older software. Physical acceptance is HUBREADY-03.
+
+## ADR-359 — Persist Hub revocation lists and exchange them on authenticated LAN sessions
+
+**Accepted and implemented 2026-11-07.** Implements D10 of Plan B. Android and desktop share a cache and LAN exchange. The cache verifies the existing signed list against the enrolled root and the matching trusted delegation, then writes it atomically under that root before using it. The LAN handler uses `rvg1` and the active TLS certificate key, checked against the directory snapshot. Directory leases and manual pairing policy are unchanged.
+
+Use the signed list as a durable overlay on the directory and roster. This preserves signed records and supports restart without a Room migration. Group trust gates apply a learned cutoff even when a peer also has a manual pin. A matching cached TLS binding can still carry the signed cutoff while its lease is valid. Known delegation cutoffs must appear in each subsequent list. The Hub's serial-only revocation of a remote certificate needs Hub enforcement or refreshed directory state because the LAN directory uses a separate statement serial.
+
+Follow [the wire and compatibility contract](protocol.md#offline-hub-revocations-on-the-lan-adr-359). HUBREADY-04 covers physical acceptance.
+
+## ADR-360 — Reconcile durable revocation state before Hub directory service starts
+
+2026-11-07. The release audit found a gap between loading root-signed revocations at startup
+and registering asynchronous live callbacks. Startup now reconciles the directory after disk
+imports and before serving requests. A revoked device, its current certificate, or its
+issuing delegation blocks directory membership. Existing group membership removal triggers
+ADR-358 mailbox retirement. Group versions advance durably for ordinary members as well as
+admins. Repeating the cleanup after restart does not advance the version again.
+
+The Android SDK supplies the same revocation-cache readiness gate as both apps. The linked
+group receive path can retry while the cache loads instead of acknowledging a transient
+trust refusal. Device checks are HUBREADY-04 and REL22-02.

@@ -52,5 +52,24 @@ class FlashPinVerifierTest {
         val attackResult = verifier.isPinned("device-a", "11:22:33:44")
         assertFalse("key change must be rejected (fail closed)", attackResult)
     }
+
+    @Test
+    fun tofuPinVerifierObservesFirstConnectKeyWhenThePinWriteIsRefused() {
+        // ADR-353: a revoked peer's automatic pin write is refused until a deliberate pairing clears
+        // the tombstone. The first outbound dial after that revoke must still report the key this
+        // connection presented, so the pairing numeric comparison covers the TLS-authenticated key
+        // and the user can reach the consent card (ERROR-1013).
+        val store = mutableMapOf<String, String>()
+        val observed = mutableMapOf<String, String>()
+        val verifier = TofuPinVerifier(
+            lookupPin = { store[it] },
+            recordPin = { _, _ -> /* revoked: refused */ },
+            observeInbound = { id, pin -> observed[id] = pin },
+        )
+
+        assertTrue(verifier.isPinned("device-a", "aa:bb:cc:dd"))
+        assertEquals("AABBCCDD", observed["device-a"])
+        assertTrue("a refused pin write must not populate the trust store", store.isEmpty())
+    }
 }
 

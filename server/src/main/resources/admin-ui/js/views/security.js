@@ -8,7 +8,7 @@ import { formatNumber, formatDateTime, groupText, shortId } from '../format.js';
 import { renderFingerprint } from '../identicon.js';
 import { renderQr } from '../qr.js';
 import * as keys from '../stepup-key.js';
-import { session } from '../state.js';
+import { session, isOrgAdmin } from '../state.js';
 import { pageHeader, card, button, badge, banner, emptyState, textInput, selectInput, field, withBusy, timeEl, tabs, skeleton, errorState, mono, dl, copyButton } from '../ui/widgets.js';
 import { createTable } from '../ui/table.js';
 import { openDialog, confirmDialog } from '../ui/dialog.js';
@@ -22,6 +22,19 @@ import { devicePicker, loadDeviceNames, deviceLabel } from './devicepicker.js';
 import { setActiveTable } from '../shortcuts.js';
 
 const TABS = ['account', 'admins', 'sessions', 'delegation', 'revocations', 'trust'];
+const REVOCATION_IMPORT_MAX_BYTES = 64 * 1024;
+
+function departmentChoices(departments, selected = []) {
+  const inputs = departments.map((dept) => {
+    const input = h('input', { type: 'checkbox', class: 'check', value: dept.id, checked: selected.includes(dept.id) });
+    return { input, label: h('label', { class: 'check-row' }, input, h('span', { text: dept.name })) };
+  });
+  return {
+    el: h('fieldset', { class: 'fieldset' }, h('legend', { text: t('sec.admin.departments') }),
+      inputs.length ? inputs.map(({ label }) => label) : h('p', { class: 'muted', text: t('sec.admin.departments.empty') })),
+    selected: () => inputs.filter(({ input }) => input.checked).map(({ input }) => input.value),
+  };
+}
 
 /** Shows one-time credentials (QR, key, recovery codes) in a dialog; resolves when closed. */
 export function showCredentials({ title, credentials, intro }) {
@@ -54,12 +67,14 @@ export function showCredentials({ title, credentials, intro }) {
 
 export function mountSecurity(container, ctx) {
   let stopped = false;
-  let current = TABS.includes(ctx.query.tab) ? ctx.query.tab : 'account';
+  const orgAdmin = isOrgAdmin();
+  const availableTabs = orgAdmin ? TABS : ['account', 'sessions'];
+  let current = availableTabs.includes(ctx.query.tab) ? ctx.query.tab : 'account';
   let ready = false;
   const tabBar = tabs({
     label: t('sec.tabs'),
     selected: current,
-    items: TABS.map((id) => ({ id, label: t('sec.tab.' + id) })),
+    items: availableTabs.map((id) => ({ id, label: t('sec.tab.' + id) })),
     onSelect: (id) => {
       current = id;
       if (!ready) return;
@@ -90,14 +105,14 @@ export function mountSecurity(container, ctx) {
         card({ title: t('sec.key.title'), subtitle: t('sec.key.sub'), id: 'sec-key' }, keyHost),
         card({ title: t('sec.pw.title'), id: 'sec-pw' }, pwHost),
         card({ title: t('sec.rec.title'), subtitle: t('sec.rec.sub'), id: 'sec-rec' }, recHost),
-        card({ title: t('sec.totp.title'), subtitle: t('sec.totp.sub'), id: 'sec-totp' }, totpHost),
+        orgAdmin ? card({ title: t('sec.totp.title'), subtitle: t('sec.totp.sub'), id: 'sec-totp' }, totpHost) : null,
         card({ title: t('sec.appr.title'), subtitle: t('sec.appr.sub'), id: 'sec-appr' }, apprHost),
       ),
     );
     renderKeyCard(keyHost);
     renderPasswordCard(pwHost);
     renderRecoveryCard(recHost);
-    renderTotpCard(totpHost);
+    if (orgAdmin) renderTotpCard(totpHost);
     renderApproverCard(apprHost);
   }
 
@@ -276,7 +291,7 @@ export function mountSecurity(container, ctx) {
 
   function renderRecoveryCard(host) {
     const remaining = h('p', { class: 'muted' });
-    api.get('/admins').then((list) => {
+    if (orgAdmin) api.get('/admins').then((list) => {
       const me = list.find((a) => a.username.toLowerCase() === session.user.toLowerCase());
       remaining.textContent = me ? t('sec.rec.remaining', { n: me.recoveryCodesRemaining }) : '';
     }).catch(() => {});
@@ -334,18 +349,21 @@ export function mountSecurity(container, ctx) {
   // ------------------------------------------------------------------ administrators
   async function renderAdmins() {
     const host = h('div', { class: 'table-host' });
-    mount(panel, h('div', { class: 'section-actions' }, button({ label: t('sec.admin.create'), icon: 'plus', variant: 'primary', on: { click: () => createAdmin() } })), host);
+    const create = button({ label: t('sec.admin.create'), icon: 'plus', variant: 'primary', on: { click: () => withBusy(create, createAdmin) } });
+    mount(panel, h('div', { class: 'section-actions' }, create), host);
     await loadInto(host, {
       skeleton: 'table',
       rows: 3,
-      load: () => api.get('/admins'),
-      render: (admins) => {
+      load: () => Promise.all([api.get('/admins'), api.get('/departments')]),
+      render: ([admins, departments]) => {
+        const names = new Map(departments.map(({ id, name }) => [id, name]));
         const table = createTable({
           ariaLabel: t('sec.admin.table'),
           rowId: (a) => a.username,
           rowLabel: (a) => a.username,
           columns: [
-            { key: 'name', label: t('sec.admin.col.name'), render: (a) => h('span', { class: 'cell-stack' }, h('span', { class: 'cell-title', text: a.username }), h('span', { class: 'cell-sub', text: a.createdBy ? t('sec.admin.createdBy', { name: a.createdBy }) : t('sec.admin.firstAdmin') })) },
+            { key: 'name', label: t('sec.admin.col.name'), render: (a) => h('span', { class: 'cell-stack' }, h('span', { class: 'cell-title', text: a.displayName || a.username }), h('span', { class: 'cell-sub', text: a.displayName ? a.username : a.createdBy ? t('sec.admin.createdBy', { name: a.createdBy }) : t('sec.admin.firstAdmin') })) },
+            { key: 'role', label: t('sec.admin.col.role'), render: (a) => h('span', { class: 'cell-stack' }, h('span', { text: t('role.' + a.role.toLowerCase()) }), a.role === 'DEPT_HEAD' ? h('span', { class: 'cell-sub', text: a.departments?.length ? a.departments.map((id) => names.get(id) || id).join(', ') : t('sec.admin.departments.none') }) : null) },
             { key: 'status', label: t('sec.admin.col.status'), render: (a) => (a.disabled ? badge(t('sec.admin.disabled'), 'bad') : badge(t('sec.admin.enabled'), 'ok')) },
             { key: 'key', label: t('sec.admin.col.key'), className: 'hide-sm', render: (a) => (a.enrolledDeviceId ? badge(t('sec.admin.key.yes'), 'ok') : badge(t('sec.admin.key.no'), 'warn')) },
             { key: 'codes', label: t('sec.admin.col.codes'), className: 'num hide-md', render: (a) => String(a.recoveryCodesRemaining) },
@@ -362,6 +380,7 @@ export function mountSecurity(container, ctx) {
   function adminActions(a) {
     const isMe = a.username.toLowerCase() === (session.user || '').toLowerCase();
     const row = h('div', { class: 'row-actions' });
+    if (a.role === 'DEPT_HEAD') row.appendChild(button({ label: t('sec.admin.departments.edit'), size: 'sm', variant: 'ghost', on: { click: () => editHeadDepartments(a) } }));
     row.appendChild(button({ label: t('sec.admin.resetPw'), size: 'sm', variant: 'ghost', ariaLabel: t('sec.admin.resetPw.for', { name: a.username }), on: { click: () => resetPassword(a) } }));
     row.appendChild(button({ label: t('sec.admin.resetTotp'), size: 'sm', variant: 'ghost', ariaLabel: t('sec.admin.resetTotp.for', { name: a.username }), on: { click: () => confirmTotp(a, isMe) } }));
     if (!isMe) row.appendChild(button({ label: a.disabled ? t('sec.admin.enable') : t('sec.admin.disable'), size: 'sm', variant: a.disabled ? 'secondary' : 'ghost', ariaLabel: (a.disabled ? t('sec.admin.enable.for', { name: a.username }) : t('sec.admin.disable.for', { name: a.username })), on: { click: () => toggleAdmin(a) } }));
@@ -409,13 +428,37 @@ export function mountSecurity(container, ctx) {
     );
   }
 
-  function createAdmin() {
+  async function createAdmin() {
+    let departments;
+    try {
+      departments = await api.get('/departments');
+    } catch (e) {
+      return toastError(e);
+    }
+    if (stopped || current !== 'admins') return;
     const name = textInput({ autocomplete: 'off', maxlength: 64 });
     const pw = textInput({ type: 'password', autocomplete: 'new-password', maxlength: 256 });
     const nf = field({ label: t('setup.username'), control: name, hint: t('setup.username.hint'), required: true });
     const pf = field({ label: t('sec.admin.create.password'), control: pw, hint: t('sec.admin.create.password.hint'), required: true });
+    const role = selectInput([{ value: 'ORG_ADMIN', label: t('role.org_admin') }, { value: 'DEPT_HEAD', label: t('role.dept_head') }], 'ORG_ADMIN');
+    const displayName = textInput({ maxlength: 64 });
+    const choices = departmentChoices(departments);
+    let linkedDevice = null;
+    const linked = h('div', { role: 'status' });
+    const picker = devicePicker({ label: t('sec.admin.linkedDevice'), onPick: (device) => {
+      linkedDevice = device.deviceId;
+      mount(linked, h('span', { text: device.name || shortId(device.deviceId) }), button({ label: t('sec.admin.linkedDevice.clear'), variant: 'ghost', size: 'sm', on: { click: () => { linkedDevice = null; mount(linked); } } }));
+    } });
+    const message = h('div', { 'aria-live': 'polite' });
+    const head = h('div', { class: 'stack', hidden: true }, field({ label: t('sec.admin.displayName'), control: displayName }).el, choices.el, h('div', { class: 'field' }, h('div', { class: 'label', text: t('sec.admin.linkedDevice') }), linked, picker.el));
+    const roleNote = h('div', {}, banner({ tone: 'warn', text: t('sec.admin.create.warn') }));
+    role.addEventListener('change', () => {
+      head.hidden = role.value !== 'DEPT_HEAD';
+      mount(roleNote, banner({ tone: head.hidden ? 'warn' : 'info', text: t(head.hidden ? 'sec.admin.create.warn' : 'sec.admin.create.headNote') }));
+      mount(message);
+    });
     const go = button({ label: t('sec.admin.create.submit'), variant: 'primary' });
-    const dlg = openDialog({ title: t('sec.admin.create'), size: 'sm', body: [banner({ tone: 'warn', text: t('sec.admin.create.warn') }), nf.el, pf.el], actions: [button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close() } }), go] });
+    const dlg = openDialog({ title: t('sec.admin.create'), size: 'md', body: [nf.el, pf.el, field({ label: t('sec.admin.col.role'), control: role }).el, roleNote, head, message], actions: [button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close() } }), go] });
     go.addEventListener('click', () =>
       withBusy(go, async () => {
         nf.clearError();
@@ -423,11 +466,18 @@ export function mountSecurity(container, ctx) {
         const username = name.value.trim();
         if (!/^[A-Za-z0-9._@-]{3,64}$/.test(username)) return nf.setError(t('setup.username.invalid'));
         if (pw.value.length < 10) return pf.setError(t('setup.password.short'));
+        mount(message);
+        const body = { username, password: pw.value, role: role.value };
+        if (role.value === 'DEPT_HEAD') {
+          const selected = choices.selected();
+          if (!selected.length) return mount(message, banner({ tone: 'bad', text: t('sec.admin.departments.required') }));
+          Object.assign(body, { displayName: displayName.value.trim(), departments: selected, linkedDeviceId: linkedDevice });
+        }
         let creds;
         try {
-          creds = await guarded('admin.create', username, (id) => api.post('/admins', { username, password: pw.value }, { stepUp: id }), { rethrow: true });
+          creds = await guarded('admin.create', username, (id) => api.post('/admins', body, { stepUp: id }), { rethrow: true });
         } catch (e) {
-          if (e.status === 409 || e.status === 400) return nf.setError(e.message || t('error.generic'));
+          if (e.status === 409 || e.status === 400) return mount(message, banner({ tone: 'bad', text: e.message || t('error.generic') }));
           return toastError(e);
         }
         if (creds) {
@@ -438,6 +488,35 @@ export function mountSecurity(container, ctx) {
         return undefined;
       }),
     );
+  }
+
+  async function editHeadDepartments(admin) {
+    const path = '/admins/' + encodeURIComponent(admin.username) + '/departments';
+    let departments, currentScope;
+    try {
+      [departments, currentScope] = await Promise.all([api.get('/departments'), api.get(path)]);
+    } catch (e) {
+      return toastError(e);
+    }
+    if (stopped || current !== 'admins') return;
+    const choices = departmentChoices(departments, currentScope.departments);
+    const save = button({ label: t('common.save'), variant: 'primary' });
+    const message = h('div', { 'aria-live': 'polite' });
+    const dlg = openDialog({
+      title: t('sec.admin.departments.title', { name: admin.displayName || admin.username }),
+      size: 'sm', body: [h('p', { text: t('sec.admin.departments.help') }), choices.el, message],
+      actions: [button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close() } }), save],
+    });
+    save.addEventListener('click', () => withBusy(save, async () => {
+      try {
+        await api.put(path, { departments: choices.selected() });
+        dlg.close();
+        toast(t('sec.admin.departments.saved'), { kind: 'success' });
+        renderAdmins();
+      } catch (e) {
+        mount(message, banner({ tone: 'bad', text: e.message || t('error.generic') }));
+      }
+    }));
   }
 
   // ------------------------------------------------------------------ sessions
@@ -547,9 +626,73 @@ export function mountSecurity(container, ctx) {
           s.unpublishedChanges ? banner({ tone: 'warn', text: t('sec.rev.unpublished.note') }) : null,
           table ? table.el : emptyState({ title: t('sec.rev.empty.title'), text: t('sec.rev.empty.text'), glyph: 'security' }),
           h('div', { class: 'inline-form' }, sf.el, go),
+          h('div', { class: 'form-actions start' }, button({ label: t('sec.rev.import'), icon: 'upload', on: { click: () => importRevocations(s.listVersion) } })),
         ];
       },
     });
+  }
+
+  function importRevocations(currentVersion) {
+    const area = h('textarea', { class: 'input textarea mono', rows: '6', spellcheck: 'false', autocomplete: 'off' });
+    const input = field({ label: t('sec.rev.import.paste'), control: area, required: true });
+    const file = h('input', { type: 'file', class: 'file-input', accept: '.json,.revocations,application/json,text/plain', 'aria-label': t('sec.rev.import.file') });
+    let selection = 0;
+    file.addEventListener('change', async () => {
+      const chosen = file.files?.[0];
+      const version = ++selection;
+      if (!chosen) return;
+      input.clearError();
+      if (chosen.size > REVOCATION_IMPORT_MAX_BYTES) {
+        input.setError(t('sec.rev.import.size'));
+        return;
+      }
+      try {
+        const content = await chosen.text();
+        if (version === selection) area.value = content;
+      } catch (e) {
+        if (version === selection) input.setError(t('sec.rev.import.read'));
+      }
+    });
+    area.addEventListener('input', () => { selection++; input.clearError(); });
+
+    const install = button({ label: t('sec.rev.import.submit'), variant: 'danger' });
+    const dlg = openDialog({
+      title: t('sec.rev.import'),
+      size: 'md',
+      body: [h('p', { text: t('sec.rev.import.help', { version: currentVersion }) }), file, input.el],
+      actions: [button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close() } }), install],
+    });
+    install.addEventListener('click', () => withBusy(install, async () => {
+      input.clearError();
+      const raw = area.value.trim();
+      if (raw.length > REVOCATION_IMPORT_MAX_BYTES || new TextEncoder().encode(raw).byteLength > REVOCATION_IMPORT_MAX_BYTES) {
+        return input.setError(t('sec.rev.import.size'));
+      }
+      let list;
+      try {
+        list = JSON.parse(raw);
+      } catch (e) {
+        return input.setError(t('sec.rev.import.invalid'));
+      }
+      if (!list || !Number.isSafeInteger(list.version) || list.version < 1 ||
+          typeof list.signature !== 'string' || !list.signature || typeof list.issuerPublicKey !== 'string' || !list.issuerPublicKey) {
+        return input.setError(t('sec.rev.import.invalid'));
+      }
+      if (list.version <= currentVersion) return input.setError(t('sec.rev.import.older', { version: currentVersion }));
+      try {
+        const result = await guarded('revocation.install', 'version:' + list.version,
+          (id) => api.post('/revocations/install', list, { stepUp: id }), { rethrow: true });
+        if (result) {
+          dlg.close();
+          toast(t('sec.rev.import.done', { version: list.version }), { kind: 'success' });
+          renderRevocations();
+        }
+      } catch (e) {
+        if (e.status === 400 || e.status === 409) input.setError(e.message || t('sec.rev.import.invalid'));
+        else toastError(e);
+      }
+      return undefined;
+    }));
   }
 
   // ------------------------------------------------------------------ trust
@@ -600,7 +743,7 @@ export function mountSecurity(container, ctx) {
     },
     onRoute(next) {
       ctx = { ...ctx, ...next };
-      const wanted = TABS.includes(next.query.tab) ? next.query.tab : 'account';
+      const wanted = availableTabs.includes(next.query.tab) ? next.query.tab : 'account';
       if (wanted !== current) tabBar.select(wanted);
     },
   };

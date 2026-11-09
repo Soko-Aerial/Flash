@@ -69,6 +69,16 @@ class FlashBackgroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeInstance = this
+        // Android gives startForegroundService() five seconds to reach startForeground(). On the
+        // Infinix this used to lose that race to the Transsion keep-alive binder work and kill the
+        // process with ForegroundServiceDidNotStartInTimeException (phone log 2026-10-26 10:29:53).
+        // Promote first; everything else may wait.
+        if (startAsForeground()) {
+            promotionRefused.set(false)
+        } else {
+            promotionRefused.set(true)
+            Log.w(TAG, "Foreground promotion refused (background start restriction) — retaining service instance in background; promotion will be retried upon screen-on / network availability")
+        }
         keepAlive = TranssionHiberKeepAlive(
             context = this,
             onTierChanged = { oldTier, newTier ->
@@ -77,18 +87,14 @@ class FlashBackgroundService : Service() {
                 updateTransferNotification(transfers)
             },
         )
-        keepAlive?.start()
+        // Keep the OEM hibernation binder off the main thread as well: start() may probe system
+        // settings and must never sit between startForeground() and the rest of onCreate().
+        scope.launch { runCatching { keepAlive?.start() } }
         scope.launch {
             runCatching {
                 DiscoveryEngineHolder.ensureStarted(applicationContext)
                 DiscoveryEngineHolder.currentSwarm()?.reevaluate()
             }.onFailure { Log.w(TAG, "engine start failed in background service", it) }
-        }
-        if (startAsForeground()) {
-            promotionRefused.set(false)
-        } else {
-            promotionRefused.set(true)
-            Log.w(TAG, "Foreground promotion refused (background start restriction) — retaining service instance in background; promotion will be retried upon screen-on / network availability")
         }
 
         observeSessionActivity()

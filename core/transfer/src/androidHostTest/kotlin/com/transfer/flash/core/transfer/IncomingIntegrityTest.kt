@@ -77,7 +77,10 @@ class IncomingIntegrityTest {
         }
     }
 
-    private fun repo(store: TransferStore? = null) = RealFlashTransferRepository(
+    private fun repo(
+        store: TransferStore? = null,
+        placeReceivedFile: ((String, String) -> String)? = null,
+    ) = RealFlashTransferRepository(
         chunker = Chunker(),
         streamChannelFactory = StreamChannelFactory { channelId, _ ->
             object : StreamChannel {
@@ -90,6 +93,7 @@ class IncomingIntegrityTest {
         repositoryScope = newScope(),
         workerDispatcher = dispatcher,
         defaultStreams = 1,
+        placeReceivedFile = placeReceivedFile,
     )
 
     private fun RealFlashTransferRepository.row(id: String): FlashTransfer =
@@ -138,6 +142,28 @@ class IncomingIntegrityTest {
             WholeFileCheck.UNVERIFIABLE,
             WholeFileVerifier.check(File(tempFolder.root, "missing.bin").path, payloadHex),
         )
+    }
+
+    @Test
+    fun `completed receive records its published path and failed placement keeps its source`() {
+        val file = fileWith(payload)
+        val target = File(tempFolder.root, "published.bin")
+        val repository = repo(placeReceivedFile = { path, name ->
+            assertEquals("received.bin", name)
+            assertTrue(File(path).renameTo(target))
+            target.path
+        })
+        repository.startInbound("published", file.path)
+        assertEquals(WholeFileCheck.MATCH, repository.onIncomingFileAssembled("published", file.path, payloadHex))
+        assertEquals(target.path, repository.row("published").localPath)
+        assertTrue(target.readBytes().contentEquals(payload))
+
+        val staged = fileWith(payload, "another.bin")
+        val fallback = repo(placeReceivedFile = { _, _ -> throw java.io.IOException("destination unavailable") })
+        fallback.startInbound("retained", staged.path)
+        assertEquals(WholeFileCheck.MATCH, fallback.onIncomingFileAssembled("retained", staged.path, payloadHex))
+        assertEquals(staged.path, fallback.row("retained").localPath)
+        assertTrue(staged.isFile)
     }
 
     // ---------------------------------------------------------------- the receiving repository

@@ -352,6 +352,8 @@ class RealFlashChatRepositoryTest {
                 .sortedBy { it.nextAttemptAt }
                 .take(limit)
 
+        override suspend fun unacknowledgedToPeer(peerId: String, senderId: String): List<String> = queue.keys.toList()
+
         override suspend fun incrementAttempts(localId: String) {
             queue[localId]?.let { queue[localId] = it.copy(attempts = it.attempts + 1) }
         }
@@ -401,7 +403,11 @@ class RealFlashChatRepositoryTest {
             kotlinx.coroutines.flow.MutableSharedFlow<com.transfer.flash.core.messaging.radio.RadioDeliveryReceipt>(replay = 16)
 
         override val isGatewayEnabled: Boolean = true
-        override val isConnected: Boolean = true
+
+        /** Set false to model a gateway that is on while the serial/Bluetooth link is down. */
+        @kotlin.concurrent.Volatile
+        var connected: Boolean = true
+        override val isConnected: Boolean get() = connected
         override val connectionStatus: MutableStateFlow<com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus> =
             MutableStateFlow(com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus.CONNECTED)
 
@@ -4085,7 +4091,7 @@ class RealFlashChatRepositoryTest {
     )
 
     @Test
-    fun `a negative ack fails the queued message and removes it from the outbox`() = runBlocking {
+    fun `a negative ack fails the queued message without changing a completed LAN attachment`() = runBlocking {
         val messageDao = FakeMessageDao()
         val outboxDao = FakeOutboxDao()
         val repository = RealFlashChatRepository(
@@ -4104,6 +4110,11 @@ class RealFlashChatRepositoryTest {
         val peer = "peer-nack"
         messageDao.insert(
             msg("m-nack", peer, "hello").copy(senderId = "my-device-id", status = "PENDING"),
+        )
+        messageDao.insert(
+            msg("lan-file", peer, "").copy(
+                senderId = "my-device-id", status = "SENT", attachmentTransferId = "completed-transfer",
+            ),
         )
         outboxDao.enqueue(
             OutboxEntity(
@@ -4125,6 +4136,7 @@ class RealFlashChatRepositoryTest {
         }
         assertEquals("FAILED", messageDao.messages["m-nack"]?.status)
         assertFalse(outboxDao.queue.containsKey("m-nack"))
+        assertEquals("SENT", messageDao.messages["lan-file"]?.status)
     }
 
     private fun msg(localId: String, conversationId: String, text: String) = MessageEntity(
@@ -4407,6 +4419,42 @@ class RealFlashChatRepositoryTest {
 
         assertEquals(1, rig.relay.sent.size)
         assertTrue(radio.textSent.isEmpty())
+    }
+
+    @Test
+    fun `RADIO-PATH-01 a paired radio with the link down is not treated as a live path`() = runBlocking {
+        // 2026-11-03 phone log: gateway=true, connected=false, but isRadioReachable() only checked
+        // the key. The host skipped the LAN dial and the radio refused, leaving chat.path=none.
+        val radio = FakeRadioOutboxPort().apply {
+            reachable = true
+            connected = false
+        }
+        val rig = hubRig(lanUp = false, radio = radio)
+
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("link is down")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+
+        assertEquals("the hub mailbox, not the dead radio", 1, rig.relay.sent.size)
+        assertTrue(radio.textSent.isEmpty())
+    }
+
+    @Test
+    fun `RADIO-PATH-01 a chat set to Never never transmits even when the radio is ready`() = runBlocking {
+        val radio = FakeRadioOutboxPort()
+        val rig = hubRig(lanUp = false, radio = radio)
+        rig.repository.setRadioPolicy(
+            "colleague",
+            com.transfer.flash.core.common.model.FlashRadioPolicy.NEVER,
+        )
+
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("keep this off the air")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+        kotlinx.coroutines.delay(300)
+
+        assertEquals(1, rig.relay.sent.size)
+        assertTrue("NEVER is outbound-only", radio.textSent.isEmpty())
     }
 
     @Test

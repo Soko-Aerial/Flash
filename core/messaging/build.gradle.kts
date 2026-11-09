@@ -86,7 +86,7 @@ kotlin {
             implementation(project(":core:transfer"))
             implementation(project(":core:security"))
             implementation(project(":core:network"))
-            implementation(project(":core:enterprise"))
+            api(project(":core:enterprise"))
             // ERROR-703: HostedRadioOutboxPort / RadioChatWiring sit on the radio chat engine and host.
             implementation(project(":core:radio"))
         }

@@ -104,6 +104,8 @@ public class RealFlashTransferRepository(
      * a source check. Production Android and desktop wiring pass a provider.
      */
     private val sourceIdentityProvider: SourceIdentityProvider? = null,
+    /** Host placement for a finished receive. A failure retains the assembled file at its original path. */
+    private val placeReceivedFile: ((path: String, fileName: String) -> String)? = null,
 ) : FlashTransferRepository, AutoCloseable {
 
     override fun close() {
@@ -470,7 +472,7 @@ public class RealFlashTransferRepository(
         sourceUri = fileUri,
         wireFileId = fileId,
         peerDeviceId = targetDevice.id.value,
-        errorMessage = if (requireReceiverAcceptance) "waiting for receiver to accept" else null,
+        errorMessage = TransferFailureText.RECEIVER_ACCEPT_WAIT_REASON.takeIf { requireReceiverAcceptance },
         isEncrypted = isPeerEncrypted(targetDevice.id.value),
     )
 
@@ -559,6 +561,25 @@ public class RealFlashTransferRepository(
         runCatching { FlashLog.w("TRANSFER", "resume refused transferId=$transferId: $detail") }
     }
 
+    /**
+     * RADIO-PATH-01 follow-up (phone log 2026-11-03): a Failed send row with `bytesTotal = 0`
+     * reached `executeSend` and `FileMeta` threw `IllegalArgumentException` on a worker thread; the
+     * uncaught exception killed the process, and the peer's own RESUME could repeat it after every
+     * relaunch. A failed row is a normal state, so it is failed visibly here instead.
+     */
+    private suspend fun failSendRow(transferId: String, message: String) {
+        updateTransferState(transferId) {
+            it.copy(
+                state = FlashTransferState.Failed,
+                errorMessage = message,
+                speedBytesPerSec = 0L,
+                etaSeconds = 0L,
+            )
+        }
+        runCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
+        runCatching { FlashLog.w("TRANSFER", "send refused transferId=$transferId reason=$message") }
+    }
+
     private suspend fun executeSend(
         transferId: String,
         fileId: String,
@@ -569,6 +590,13 @@ public class RealFlashTransferRepository(
         peerDeviceId: String? = null,
         fileSha256Hex: String? = null,
     ) {
+        if (fileSize <= 0L) {
+            failSendRow(
+                transferId,
+                if (fileSize == 0L) TransferFailureText.EMPTY_FILE else TransferFailureText.UNREADABLE_FILE,
+            )
+            return
+        }
         val meta = FileMeta(
             transferId = transferId,
             fileId = fileId,
@@ -820,6 +848,9 @@ public class RealFlashTransferRepository(
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
+        if (transfer.isAwaitingReceiverAcceptance) {
+            return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown(TransferFailureText.WAITING_FOR_ACCEPT))
+        }
         val jobPresent = registryLock.withLock { transferId.value in runningJobs }
         runCatching {
             FlashLog.i(
@@ -898,6 +929,12 @@ public class RealFlashTransferRepository(
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
+
+        // Only the receiver's RESUME can release an unaccepted offer, even if a stale sender UI
+        // or notification still has a Resume action for the internally paused worker.
+        if (transfer.isAwaitingReceiverAcceptance) {
+            return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown(TransferFailureText.WAITING_FOR_ACCEPT))
+        }
 
         // Terminal transfers have nothing to resume.
         if (transfer.state == FlashTransferState.Completed) {
@@ -1030,31 +1067,47 @@ public class RealFlashTransferRepository(
         // re-arm the acceptance gate so FILE_START is sent as an offer and chunks are parked.
         // If the peer is the one that asked for the resume (notifyPeer == false), the receiver has already
         // explicitly requested/accepted the transfer, so we do not re-park.
-        if (requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer) {
+        val waitingForAcceptance = requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer
+        if (waitingForAcceptance) {
             registryLock.withLock { pauseIntents.add(transferId) }
         }
         updateTransferState(transferId) {
             it.copy(
                 state = FlashTransferState.Queued,
-                errorMessage = if (requireReceiverAcceptance && transfer.bytesDone == 0L) "waiting for receiver to accept" else null,
+                errorMessage = TransferFailureText.RECEIVER_ACCEPT_WAIT_REASON.takeIf { waitingForAcceptance },
             )
         }
         // Tell the peer before the relaunch: a receiver that paused its own intake must re-open
         // the gate, otherwise the fresh dispatcher blocks on backpressure with nothing draining.
-        if (notifyPeer) {
+        if (notifyPeer && !waitingForAcceptance) {
             emitOutgoing(transferId, transfer.peerDeviceId, ACTION_RESUME)
         }
         val job = repositoryScope.launch(workerDispatcher) {
-            store?.setStatus(transferId, FlashTransferState.Queued.name)
+            // A retry of a row whose size was never known must measure the source again. Passing
+            // `bytesTotal = 0` straight to `executeSend` crashed the process on 2026-11-03; this
+            // path either recovers the real size or leaves a Failed row with a sentence.
+            val sourceUri = transfer.sourceUri ?: transfer.fileName
+            val measured = if (transfer.bytesTotal > 0L) transfer.bytesTotal else measureSourceBytes(sourceUri)
+            if (measured == null || measured <= 0L) {
+                failSendRow(
+                    transferId,
+                    if (measured == null) TransferFailureText.UNREADABLE_FILE else TransferFailureText.EMPTY_FILE,
+                )
+                return@launch
+            }
+            if (measured != transfer.bytesTotal) {
+                updateTransferState(transferId) { it.copy(bytesTotal = measured) }
+            }
+            runCatching { store?.setStatus(transferId, FlashTransferState.Queued.name) }
             executeSend(
                 transferId = transferId,
                 // Stable wire identity: the receiver's session is keyed on (transferId, fileId);
                 // a fresh fileId here would be rejected as SESSION_CONFLICT.
                 fileId = transfer.wireFileId ?: UuidIdGenerator.newId(),
                 // Resume MUST re-read the original source, not the display name.
-                fileUri = transfer.sourceUri ?: transfer.fileName,
+                fileUri = sourceUri,
                 displayName = transfer.fileName,
-                fileSize = transfer.bytesTotal,
+                fileSize = measured,
                 peerName = transfer.peerName,
                 peerDeviceId = transfer.peerDeviceId,
             )
@@ -1146,7 +1199,7 @@ public class RealFlashTransferRepository(
                             state = FlashTransferState.Paused,
                             speedBytesPerSec = 0L,
                             etaSeconds = -1L,
-                            errorMessage = "paused by receiver",
+                            errorMessage = if (it.isAwaitingReceiverAcceptance) it.errorMessage else "paused by receiver",
                         )
                     }
                 }
@@ -1642,34 +1695,31 @@ public class RealFlashTransferRepository(
             WholeFileCheck.MISMATCH
         }
         when (check) {
-            WholeFileCheck.MATCH -> {
-                // O07-02: Atomically rename .part staging file to final destination once whole-file verification matches
-                val finalPath = if (!localPath.isNullOrBlank() && localPath.endsWith(".part")) {
-                    val target = localPath.removeSuffix(".part")
-                    try {
-                        fileSystem.atomicMove(localPath.toPath(), target.toPath())
-                        target
-                    } catch (_: Exception) {
-                        localPath
+            WholeFileCheck.MATCH, WholeFileCheck.UNVERIFIABLE -> {
+                val finalPath = when {
+                    localPath.isNullOrBlank() -> localPath
+                    placeReceivedFile != null -> {
+                        val name = _internalTransfers.value.firstOrNull { it.id.value == transferId }?.fileName
+                            ?: localPath.toPath().name
+                        try {
+                            placeReceivedFile.invoke(localPath, name)
+                        } catch (_: okio.IOException) {
+                            FlashLog.w("TRANSFER", "Could not organize completed receive for transferId=$transferId")
+                            localPath
+                        }
                     }
-                } else {
-                    localPath
-                }
-                onIncomingCompleted(transferId, verified = true, localPath = finalPath)
-            }
-            WholeFileCheck.UNVERIFIABLE -> {
-                val finalPath = if (!localPath.isNullOrBlank() && localPath.endsWith(".part")) {
-                    val target = localPath.removeSuffix(".part")
-                    try {
-                        fileSystem.atomicMove(localPath.toPath(), target.toPath())
-                        target
-                    } catch (_: Exception) {
-                        localPath
+                    localPath.endsWith(".part") -> {
+                        val target = localPath.removeSuffix(".part")
+                        try {
+                            fileSystem.atomicMove(localPath.toPath(), target.toPath())
+                            target
+                        } catch (_: okio.IOException) {
+                            localPath
+                        }
                     }
-                } else {
-                    localPath
+                    else -> localPath
                 }
-                onIncomingCompleted(transferId, verified = false, localPath = finalPath)
+                onIncomingCompleted(transferId, verified = check == WholeFileCheck.MATCH, localPath = finalPath)
             }
             WholeFileCheck.MISMATCH -> {
                 if (!localPath.isNullOrBlank()) {

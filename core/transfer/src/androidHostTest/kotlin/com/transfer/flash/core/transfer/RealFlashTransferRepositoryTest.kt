@@ -319,6 +319,53 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test(timeout = 60_000)
+    fun `sender cannot resume an offer until the receiver accepts it`() = runBlocking {
+        val offerOnWire = CompletableDeferred<Unit>()
+        val chunksOnWire = AtomicInteger(0)
+        lateinit var repo: RealFlashTransferRepository
+        repo = RealFlashTransferRepository(
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                        when (val frame = ChunkFrame.parse(frameBytes)) {
+                            is ChunkFrame.FileStart -> offerOnWire.complete(Unit)
+                            is ChunkFrame.Chunk -> {
+                                chunksOnWire.incrementAndGet()
+                                repo.onInboundFrame(ChunkFrame.serialize(
+                                    ChunkFrame.AckBatch(frame.transferId, frame.fileId, listOf(frame.index)),
+                                ))
+                            }
+                            else -> Unit
+                        }
+                        return true
+                    }
+                }
+            },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+            requireReceiverAcceptance = true,
+        )
+        val id = (repo.sendFile(peer, "content://offer.bin", "offer.bin", eightChunkPayload.size.toLong())
+            as FlashResult.Success).value
+        kotlinx.coroutines.withTimeout(10_000) { offerOnWire.await() }
+
+        assertTrue(repo.snapshot(id).isAwaitingReceiverAcceptance)
+        assertTrue(repo.resumeTransfer(id) is FlashResult.Failure)
+        assertEquals(0, chunksOnWire.get())
+        assertTrue(repo.snapshot(id).isAwaitingReceiverAcceptance)
+
+        repo.onRemoteTransferControl(id.value, RealFlashTransferRepository.ACTION_RESUME)
+        awaitUntil(describe = { "accepted transfer did not finish" }) {
+            repo.snapshot(id).state == FlashTransferState.Completed
+        }
+        assertEquals(8, chunksOnWire.get())
+        assertNull(repo.snapshot(id).errorMessage)
+    }
+
+    @Test(timeout = 60_000)
     fun `remote pause parks a live sender and remote resume finishes it with the notice cleared`() = runBlocking {
         val firstChunkGate = CompletableDeferred<Unit>()
         val gateEntered = AtomicBoolean(false)

@@ -5,7 +5,7 @@
 import { h, mount } from './dom.js';
 import { t, getLocale } from './i18n.js';
 import { api, events, setEnrolHook, setApprovalHook, stepUp } from './app.js';
-import { session, setSession, clearSession, subscribe } from './state.js';
+import { session, setSession, clearSession, subscribe, canOpenConsoleRoute } from './state.js';
 import { createRouter, parseHash } from './router.js';
 import { createShell } from './ui/shell.js';
 import { installShortcuts, openHelp, setActiveTable } from './shortcuts.js';
@@ -119,8 +119,10 @@ function applyOverview(o) {
 }
 
 async function refreshOverview() {
+  const target = shell;
   try {
-    applyOverview(await api.get('/overview'));
+    const overview = await api.get('/overview');
+    if (target === shell) applyOverview(overview);
   } catch (e) {
     /* the page that needs the numbers shows its own error */
   }
@@ -175,7 +177,17 @@ function showApp() {
   shell = createShell({ onLogout: () => logout(), onHelp: () => openHelp() });
   shell.setUser(session.displayName || session.user, session.role);
   mount(app, shell.el);
-  unsubscribe = subscribe(() => session.user && shell && shell.setUser(session.user, session.role));
+  const scopeKey = () => JSON.stringify([session.role, session.departments]);
+  const mountedScope = scopeKey();
+  unsubscribe = subscribe(() => {
+    if (!session.user || !shell) return;
+    if (scopeKey() !== mountedScope) {
+      returnTo = globalThis.location.hash;
+      showApp();
+      return;
+    }
+    shell.setUser(session.displayName || session.user, session.role);
+  });
   stopWatch = watchSession({ onTick: (ms, tone) => shell && shell.setCountdown(ms, tone) });
   clearInterval(overviewTimer);
   overviewTimer = setInterval(() => {
@@ -237,6 +249,10 @@ function route(parsed) {
   }
   if (name === 'organization' && parsed.query.tab === 'requests') {
     router.replace(['requests'], {});
+    return route(router.current);
+  }
+  if (!canOpenConsoleRoute(name)) {
+    router.replace(['overview'], {});
     return route(router.current);
   }
   setTitle(name);

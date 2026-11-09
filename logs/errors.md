@@ -16226,6 +16226,14 @@ the case at line 230), `logs/wave4-c-gate1-run3-2026-11-02.log`, `logs/wave4-c-p
 `logs/wave4-c-ptt-repeat2.log`.
 **OPEN — 1 red under the full gate, 2 of 2 green alone on the same tree; nothing changed.**
 
+**2026-11-07 release follow-up.** The forced 2.2.0 gate reproduced the exact timeout.
+The sender drained the shared queue when its coroutine started, which could discard
+the first packet after capture was already enabled. Changed the fixture to emit one packet
+synchronously on enablement. It reproduced the same timeout in the old implementation
+without a busy machine. Commit `40375e14` drains before opening capture and retains the
+sender's session-ID check. The forced PTT Android-host suite passed 125 tests, including
+the unchanged trusted-recipient assertion. The earlier load-only diagnosis is superseded.
+
 ## ERROR-974 — The router test fixture registered a session as *caught up* before starting its drain
 
 ### Date / area / environment
@@ -16613,6 +16621,11 @@ Still owed:
 - Old peers without `pr1` still use the outbox budget.
 - Device runs: `W1-NACK-01` (queued message fails), `W1-REVOKE-03` (auto-redial cannot re-pin; manual Pair clears the
   tombstone) and `W1-TITLE-01` (the name survives a revoke; an unknown peer reads "Unknown device").
+- **2026-11-08 device result (ERROR-1011):** the negative ack is **not effective on the Android host**. After A
+  revoked B offline and B reconnected, A logged nine no-key drops but B received no `PAIR_REVOKE`, stayed Connected,
+  kept `paired_`/`pin_`, and kept the message Sent for 3+ minutes. `DiscoveryEngineHolder.kt:2643-2645` logs the drop
+  and returns without calling `onUnreadableSecuredFrame`; only `FlashInboundRouter`/`Flash.kt` have the resend. The
+  old revocation *notice* path is unchanged; do not claim the negative ack is device-verified.
 
 ### Verification
 First device run (2026-11-04, Infinix X6882B + TECNO SPARK 40): security half passed (no pin/pairing/session key on A; all `FLASH_SEC` dropped; A's chat never got `afterrevoke`); UX half failed (B Connected/sent, retry loop) — this is the report.
@@ -16632,7 +16645,8 @@ Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-pai
 - `docs/testing/TEST-BACKLOG.md` `W1-REVOKE-02`
 
 ### Status
-FIXED FOR THE NOTICE, THE HEADER LABEL AND THE NEGATIVE ACK (device run for the ack still owed); **PARTIAL**: old-peer budget and TOFU re-pin remain.
+FIXED FOR THE NOTICE AND THE HEADER LABEL; the negative ack works in the router/KMP path but **fails on the Android host**
+(ERROR-1011, device run 2026-11-08). **PARTIAL**: old-peer budget and TOFU re-pin remain.
 
 ## ERROR-983 - W1 control escaping let a hub file name/group id carry a literal control escape
 
@@ -16669,7 +16683,721 @@ Full messaging suites rerun as part of the gate. No device dependency.
 ### Status
 FIXED (host-tested).
 
-## ERROR-984 - Gradle dependency verification failed for org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3
+## ERROR-984 - A retry of a restored zero-byte transfer killed the Android process
+
+### Date
+2026-11-05
+
+### Area
+Transfers / retry
+
+### Symptoms
+The Infinix phone restarted on 2026-11-03 at 18:39:02 and again at 18:39:13. Both logs showed
+`E/CRASH: uncaught in thread DefaultDispatcher-worker-*` and
+`java.lang.IllegalArgumentException: totalBytes must be > 0, was 0` at `Chunker.kt:32`, reached from
+`RealFlashTransferRepository.executeSend` through `relaunchSend`.
+
+### Root cause
+`sendFileWithIdentity` deliberately stores a Failed row with `bytesTotal = 0` for an empty or unreadable
+source. `relaunchSend` passed that value straight to `FileMeta`, whose constructor requires a positive size.
+The throw happened before the send job's `try` block, so the coroutine exception was uncaught.
+
+### Working fix
+`relaunchSend` now re-measures a zero/unknown source with `measureSourceBytes`; a null or non-positive result
+leaves a Failed row with `UNREADABLE_FILE`/`EMPTY_FILE`. `executeSend` also refuses `fileSize <= 0` before
+constructing `FileMeta` as a second guard.
+
+### Verification
+`:core:transfer:testAndroidHostTest --tests TransferRefusalAndWordingTest` passes, including two new retry
+tests (empty and unreadable rows) that used to reach the crash path. Not device-verified.
+
+### Related files
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt`
+- `core/transfer/src/androidHostTest/kotlin/com/transfer/flash/core/transfer/TransferRefusalAndWordingTest.kt`
+
+### Status
+FIXED (host-tested).
+
+## ERROR-985 - A radio key was treated as a live path, so a text skipped the LAN and then had nowhere to go
+
+### Date
+2026-11-05
+
+### Area
+Radio / transport switching
+
+### Symptoms
+Phone log 2026-11-03 18:34-18:38: ten identical
+`radio.send.fail ... reason=not_connected`, `radio.path ... result=refused gateway=true connected=false`,
+`chat.path ... path=radio_refused`; no WS dial for 5.5 minutes; the peer's inbound LAN session came up only at
+18:39:12. Phone log 2026-11-05 12:22-12:24: `radio.path result=not_reachable gateway=true connected=true`
+while the same peer's inbound radio text was decrypted and ACKed; the text eventually went by the hub.
+
+### Root cause
+`isRadioReachable` checked only the 32-byte radio key, not `isGatewayEnabled`/`isConnected`. The host
+transport sink skipped the on-demand LAN dial when that key existed (`radioCanCarry`), and the radio then
+refused with `not_connected`; the message had no path until the hub recovered. On 2026-11-05 the link was up,
+so the remaining false term was the per-chat `NEVER` policy, which the `not_reachable` probe could not name.
+
+### Working fix
+`RadioOutboxPort.isRadioReachable` / `RadioChatBridge.canCarry` require gateway + connected + key. The host
+transport sink no longer skips `ensureSession` for a radio key. `radio.path` now prints `policy`, `pairKey`,
+`gateway` and `connected`. The send path reads the conversation policy once from the row already loaded by the
+outbox drain (the in-process override still wins), avoiding a second DB query.
+
+### Verification
+`:core:messaging:testAndroidHostTest --tests RealFlashChatRepositoryTest` (105 tests) and
+`:core:messaging:jvmTest --tests RadioChatBridgeTest` pass. New tests:
+`RADIO-PATH-01 a paired radio with the link down is not treated as a live path`,
+`RADIO-PATH-01 a chat set to Never never transmits even when the radio is ready`, and
+`testCanCarry_onlyReachablePairedPeers` now also asserts the disconnected case. **Device-confirmed 2026-11-05:** owner report of bidirectional radio text after setting the phone chat to `Radio fallback: Automatic`; the failing one-way case had printed `policy=NEVER`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/HostedRadioOutboxPort.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/RadioChatBridge.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+
+### Status
+FIXED (host-tested).
+
+## ERROR-986 - A temporary Profile-M refusal permanently failed the radio message and hid the hub fallback
+
+### Date
+2026-11-05
+
+### Area
+Radio / delivery state
+
+### Symptoms
+Phone log 2026-10-28 12:18:50: `radio.send.fail ... reason=authorisation attempt=1..4`, four rapid
+`radio.path result=refused`, then the same message was transmitted at 12:19:05 and ACKed with
+`rttMs=18425` (measured from composition, not transmit).
+
+### Root cause
+`RadioChatBridge` treated every `RadioSendResult.RefusedAuthorization` as permanent: it called
+`onMessageFailed` and set a failure note. The repository then set `radioRefusedForGood` and skipped the hub
+mailbox. A missing operator confirmation was therefore unrecoverable in that pass. `rttMs` used the message's
+creation time, so it measured queueing and refusals, not air time.
+
+### Working fix
+`RadioDeliveryNote.transient` marks a temporary refusal. `RefusedAuthorization` sets it, does not call
+`onMessageFailed`, and leaves the hub mailbox available. `PendingAckTable` records `txAtMs` when the
+transmitter finishes; `radio.rx.ack` reports `rttMs` from that point and `ageMs` from the original send.
+
+### Verification
+`RadioChatBridgeTest` (new transient-auth test) and `:core:radio:jvmTest` pass. Not device-verified.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/RadioChatBridge.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/radio/RadioDeliveryNote.kt`
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/chat/PendingAckTable.kt`
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/chat/RadioChatEngine.kt`
+
+### Status
+FIXED (host-tested).
+
+## ERROR-988 - The desktop transmitted radio frames but the phone logged no receive at all
+
+### Date
+2026-11-05
+
+### Area
+Radio / RF link
+
+### Symptoms
+Desktop `13:24-13:26`: `radio.tx.text peer=adb2d87d ... retry=false/true`, `radio.path ... result=sent policy=AUTO pairKey=true gateway=true connected=true`, `chat.path ... path=radio`, but **no `radio.rx.ack`** and the messages stayed pending. Phone export `.../flash-log-1793885189795.txt`, same window: `radio.link.up` at `13:21:06`, `radio.link.attempt ... result=ok` again at `13:21:44` with **no `link.up`**, and **zero `radio.rx.text`** / **zero `radio.rx.dropped`**. The phone's two outgoing texts show `radio.path ... result=not_reachable policy=NEVER pairKey=true gateway=true connected=true`.
+
+### Root cause
+UNPROVEN. The app's ACK layer is below this symptom: the phone did not decode any frame, not even a frame it would drop as signed/unknown. The phone's `NEVER` policy is outbound-only and does not block receive. Candidates, in order:
+1. The two radios are not on the same RF channel/mode (KISS TNC/frequency), or the desktop's radio is keyed/stuck (red LED), so nothing reaches the phone's receiver.
+2. The second RFCOMM open at `13:21:44` (a known P2-4 shape: `radio.link.attempt result=ok` with no `link.up`) stole/closed the working link and left the phone's driver in a bad state.
+3. Hardware/firmware state after the Profile A experiment. Profile A is not the cause of the missing receive: the phone would have logged `radio.rx.dropped reason=SIGNED_NOT_ENABLED` for a signed frame, and it logged nothing.
+
+### What was done
+- Profile A is now visibly unavailable (see the 2026-11-05 profile-A progress entry) so it cannot be mistaken for a working mode.
+- `radio.path` now names `policy=NEVER`; the phone's non-sending side is confirmed and needs the per-chat setting changed to Automatic.
+- No speculative code change was made for the missing RX; the RF/channel/PTT and duplicate-open causes need a fresh log after a clean power-cycle/reconnect.
+
+### Next
+Power-cycle both radios; confirm both are on the same channel, KISS TNC mode, and not showing a red/keyed LED; reconnect the radio on both apps; set the phone chat's **Radio fallback** to **Automatic**; send one text from each side. Capture both logs. If the phone still logs no `radio.rx.text`/`radio.rx.dropped`, the fault is below the app's protocol.
+
+### Result (owner, 2026-11-05)
+Power-cycling the radios restored the receive direction, and setting the phone chat to **Radio fallback: Automatic** restored phone→desktop; bidirectional text now works. The one-way half was therefore the policy, not the ACK layer. The duplicate RFCOMM open/session-redial shape remains a separate reliability item (P2-4) and is not claimed fixed here.
+
+### Related files
+- `core/radio/src/commonMain/.../driver/KissTncDriver.kt`
+- `core/radio/src/androidMain/.../link/AndroidRadioDiscovery.kt`
+- `core/messaging/src/commonMain/.../RealFlashChatRepository.kt` (`radio.path`)
+- `logs/progress.md` 2026-11-05 entries; phone log `flash-log-1793885189795.txt`
+
+### Status
+RESOLVED for the observed session (radio power-cycle + per-chat policy). The duplicate-open investigation stays open as P2-4.
+
+## ERROR-989 - A PowerShell Get-Content/Set-Content round trip corrupted UTF-8 in the chat mock sources
+
+### Date
+2026-11-05
+
+### Area
+Tooling / design prototype text encoding
+
+### Symptoms
+The review page rendered "senderâ€™s" and "Â·" where the source had a right single quote and a middle dot; Select-String
+also showed replacement characters. No command failed.
+
+### Environment
+- Windows 11, PowerShell 5.x
+- Node 24.19.0, npm 12.0.2, Vite 7.3.7
+- Target: design/chat-web (design prototype only; no Android or desktop build involved)
+
+### Error
+```text
+no exception - silent corruption: UTF-8 bytes were read as the ANSI code page and written back as UTF-8
+```
+
+### Root cause
+`Get-Content` without `-Encoding` decodes a UTF-8 file with the ANSI code page (cp1252) on this host, and
+`Set-Content -Encoding utf8` then writes those characters back as UTF-8. Every multi-byte sequence became
+double-encoded, and `Set-Content` also added a BOM. Two edits used that round trip: trimming App.tsx after deleting a
+component, and a `-replace` over data.ts and tokens.css.
+
+### Failed attempts
+1. Whole-file reverse (`text.encode("cp1252").decode("utf-8")`) - impossible: later editor writes had already inserted
+   correctly-encoded characters, and the reverse would corrupt those.
+2. A marker scan that reported 0 files - the script looked in `scripts/src` instead of `src`, so it never opened them.
+
+### Working fix
+`design/chat-web/scripts/repair-encoding.py` replaces the exact mojibake sequences (Â·, â€™, â€œ, â€<9d>, â†’, â€”, â€“)
+and strips the BOM. It is intentionally not a whole-file reverse and is safe to re-run. All later text edits use the
+editor tools, not PowerShell.
+
+### Verification
+`npm run typecheck` clean, production build clean, and the built preview renders the quote, middle dot, arrow and dash
+correctly in the screenshots. No U+00C2 / U+00E2 remains in `src`.
+
+### Related files
+- design/chat-web/src/App.tsx
+- design/chat-web/src/flash/data.ts
+- design/chat-web/src/flash/Shells.tsx
+- design/chat-web/src/styles/tokens.css
+- design/chat-web/scripts/repair-encoding.py
+
+### Status
+RESOLVED
+
+## ERROR-990 - The wallpaper modifier silently dropped the size/clip modifiers before it, so every appearance swatch measured 0dp
+
+### Date
+2026-11-05
+
+### Area
+Compose / `:ui:chat` appearance sheet (ADR-355 port)
+
+### Symptoms
+On the Infinix X6882B the "Chat appearance" sheet showed the five preset names and the six colour names, but **no swatch tiles at all**; the preview card was ~118px tall instead of 132dp and lost its rounded corners. The sheet looked empty and the owner called it "underwhelming". The thread wallpaper itself still appeared, which hid the cause.
+
+### Environment
+- Android 14 (API 34), Infinix X6882B, 1080x2460, density 480
+- Debug APK from commit `8afaccec` + the port patch
+- Compose Multiplatform (ui:chat:compileKotlinJvm green)
+
+### Error
+No exception. The failure is layout-only: `FlashChatAppearanceSheet.kt` built the tile as
+`Modifier.fillMaxWidth().height(58.dp).clip(...).flashChatWallpaper(w).border(...)`, and the library
+function was written as
+
+```kotlin
+@Composable
+fun Modifier.flashChatWallpaper(w: FlashChatWallpaper): Modifier {
+    return remember(w, colors, dark, flat) {
+        Modifier.drawBehind { drawChatWallpaper(w, colors, dark, flat) }   // the receiver is gone
+    }
+}
+```
+
+so `fillMaxWidth`, `height(58.dp)` and `clip` were discarded with the receiver. The Box wrapped its
+(empty) content: 0dp tall. The preview kept only the modifiers after the call (`border`, `padding`),
+which is why it kept a border while losing its height and corners.
+
+### Root cause
+A Compose `Modifier` extension that constructs and returns a **new** `Modifier` must chain the
+receiver (`this.then(...)`). Returning a fresh modifier replaces the whole chain instead of appending
+to it. There is no compiler or lint error for this; the bug only shows in rendered geometry.
+
+### Failed attempts
+1. Re-checked the tile's `height(58.dp)` and the `FlashChatWallpaperPresets` list — both correct.
+2. Suspected the sheet's scroll/weight measurement and dumped `uiautomator` bounds; they showed the
+   swatch node at 132x144px at the window origin while the name row was correct, which pointed at the
+   modifier chain rather than the parent layout.
+
+### Working fix
+`FlashChatWallpaper.kt` now returns `this.then(draw)`, with a comment explaining why. Every caller
+keeps its size and clip: the five preset swatches, the "Yours" tile, the 150dp preview, the sheet's
+`Scaffold` ground and the message list's background all render as designed.
+
+### Verification
+- Reinstalled the arm64 debug APK; the sheet now shows Graphite/Signal/Blueprint/Draft/Pulse/Yours
+  swatches with their patterns, a 150dp preview with a day chip and two bubbles, the six named
+  colours, `Applied · <name>`, Undo and Done.
+- Undo returns to the value the sheet opened with; the choice survives force-stop/relaunch
+  (Custom + Sand re-checked on the phone); dark mode keeps a dark ground.
+- Build + tests green (see `logs/progress.md` 2026-11-05 device pass).
+
+### Related files
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatWallpaper.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatAppearanceSheet.kt`
+
+### Status
+RESOLVED
+
+### Addendum (same day) - the same PowerShell round trip as ERROR-989 hit the new Kotlin file
+The repair that replaced `FlashSpacing.space6` used `Get-Content | Set-Content`, which decoded the
+UTF-8 file as ANSI and wrote `·` / `·` into the `Applied · <name>` string and two KDoc em dashes. The
+footer rendered "Applied · Graphite". Fixed with an explicit UTF-8 read/replace/write
+(`chr(0xFFFD) -> '·'`, mojibake pairs -> ASCII dashes) and verified by codepoint (`0xB7`). Use the
+edit/read tools or Python `io.open(..., encoding='utf-8')` for Kotlin sources; never PowerShell text
+round trips.
+
+
+## ERROR-991 — Hub workspace verification scaffold did not compile
+
+### Date / area / environment
+2026-11-06; new test/render scaffolding, Windows Gradle host; shared Compose UI (Android compile SDK 37), CMP 1.9.3.
+
+### Symptoms / error
+Product UI compiled, but `:desktop:compileTestKotlinJvm` failed with
+`Cannot access constructor(reduceMotion: Boolean): FlashMotion: it is internal`.
+The new common test also had two malformed `@Test fun...` declarations (`Expecting member declaration`).
+
+### Root cause
+The render fixture directly called an internal theme constructor instead of the public composable factory;
+two test declarations omitted the space after the Kotlin `fun` keyword.
+
+### Failed attempts
+The first verification invocation exposed these scaffold errors; no product API was widened to make the fixture compile.
+
+### Working fix
+Use `rememberFlashMotion(reduceMotion = true)` in the render fixture and correct the test declarations.
+
+### Verification
+Final gate: BUILD SUCCESSFUL in 3m 14s; Hub JVM 205 tests and Android-host 196 tests, no failures/errors/skips;
+Android debug APK assembled; desktop native render fixture passed.
+
+### Related files
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/FlashHubWorkspaceRenderTest.kt`
+- `ui/chat/src/commonTest/kotlin/com/transfer/flash/ui/hub/FlashHubWorkspaceTest.kt`
+
+### Status
+RESOLVED (verification scaffold only).
+
+
+## ERROR-992 — Windows edit helper re-encoded UTF-8 punctuation
+
+### Date / area
+2026-11-06 — development tooling, Nearby/Transfers Compose sources.
+
+### Symptoms and root cause
+A Python edit used Path.read_text() without encoding on Windows. The default cp1252 decoded existing UTF-8 punctuation incorrectly, so writing UTF-8 introduced mojibake into existing comments and status separators. `git diff` exposed changes such as a middle dot becoming an extra A-with-circumflex plus dot. This was an edit-tool defect, not a product encoding issue.
+
+### Failed attempts / working fix
+No product workaround. Recovered only the malformed sequences for non-ASCII characters present in the original Git blobs, then used explicit encoding='utf-8' for all subsequent reads/writes. Existing logic strings were restored before the test gate. Always specify encoding in repository edit helpers on Windows.
+
+### Verification
+Git diff confirms the existing status helpers no longer have punctuation changes. Native render and JVM/Android-host tests are recorded in the Transfers/Nearby progress entry.
+
+### Related files / status
+`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/{nearby,transfers}/Flash*Screen.kt`. RESOLVED (source recovery verified; final product gate separately recorded).
+
+
+## ERROR-993 — Paired tile row used the lazy placement helper on the wrong receiver
+
+### Date / area
+2026-11-06 — Nearby paired-tile UI compile.
+
+### Symptoms / error
+Both shared JVM and Android compilation failed at `FlashNearbyScreen.kt:457` with `Unresolved reference ... receiver type mismatch` for `Modifier.fillMaxWidth().flashAnimateItem(motion)`.
+
+### Root cause
+`flashAnimateItem` is a LazyItemScope helper that returns a Modifier, not an extension on Modifier. The previous per-item call was correct; the new grouped tile row accidentally chained it onto Modifier.
+
+### Working fix / verification
+Changed to `flashAnimateItem(motion).fillMaxWidth()` inside the lazy item scope. No dependency, animation policy or domain code changed. The final compile/build/test/render gate is recorded in the corresponding progress entry.
+
+### Status
+RESOLVED — shared JVM/Android compilation, APK assembly, 102 affected automated checks and the 47-case native matrix passed in `build-tabs-tiles-gate.log` (4m14s). Later tile sizing checks are recorded separately.
+
+
+## ERROR-994 — Storage placement compile references
+
+2026-11-07. The first shared build failed at `RealFlashTransferRepository.kt:1697` with unresolved `TAG`. The next build failed at `HubFileBinding.kt:285` with unresolved `FlashPathSanitizer`. The new completion logger used a tag constant the repository does not declare. Replacing Hub's receive placement had removed the sanitizer import while the send path still uses it. Switched the logger to the existing TRANSFER tag and restored the Hub import. Resolved. The final locked gate compiled shared JVM and Android and assembled the APK in `build-compact-receive-complete.log`.
+
+## ERROR-995 — Hub voice placement fixture waited for text-only auto-accept
+
+2026-11-07. The new Hub voice placement test timed out waiting for `voice downloaded`. The rig intentionally auto-accepts `text/plain` from its paired peer. The audio offer stayed Offered as designed. The fixture now uses the normal explicit accept path. The rerun passed all 21 Hub binding tests, including the voice category and duplicate clip check. Resolved.
+
+## ERROR-996 — Multi-department heads get an empty announcement list
+
+### Date / area
+2026-11-07 — Hub console announcement scope, `dev` at `f999b5a5`.
+
+### Symptoms / root cause
+`GET /admin/api/v1/announcements` returns HTTP 200 with an empty `items` array for a head scoped to multiple departments, even when filtering to one permitted department. `AnnouncementAdminRoutes.kt` supplies a caller department only for a head with exactly one department. `AnnouncementStore.kt` treats the missing caller department as visibility of organisation posts only, or rejects a selected department before querying. The route then filters any remaining rows to department posts.
+
+### Verification / next step
+A temporary Ktor route probe created two posts, one per assigned department. The org admin saw both and the head saw neither, with and without `departmentId=dept-a`. The existing single-head fixture passed. Apply the complete department set before filtering and pagination and exercise HUBREADY-01.
+
+### Status
+RESOLVED in server code by Hub remediation HR1. The new multi-department route regression is green in the 79-test gate and fails when the SQL scope is removed. HUBREADY-01 browser verification remains owed.
+
+## ERROR-997 — Existing sealed Hub data does not block startup when its key is missing
+
+### Date / area
+2026-11-07 — Hub backup and restore, `dev` at `f999b5a5`.
+
+### Symptoms / root cause
+`HubServices` calls `SecretBox.loadOrCreate` even for an existing database. If `data.key` is absent, the loader creates a different key without checking for existing sealed rows. A syntactically valid but mismatched key also passes file validation. Existing sealed mailbox rows and TOTP seeds need the original key.
+
+### Verification / next step
+A temporary E2E probe queued a sealed message, stopped a disposable Hub, removed only `data.key` and restarted. The Hub started, minted a different key and retained the old row. Add a restore-specific preflight and exercise matching, absent and mismatched keys in HUBREADY-02.
+
+### Status
+RESOLVED in server code by Hub remediation HR2. Three new regressions failed on the old loader and passed in the 46-test gate. The operator restore drill remains HUBREADY-02.
+
+## ERROR-998 — Hub announcement refresh has no system notification producer
+
+### Date / area
+2026-11-07 — Hub announcements on Android and desktop, `dev` at `f999b5a5`.
+
+### Symptoms / root cause
+Plan A3 specifies title-only system announcements and an opt-out. `RealFlashChatRepository.kt` uses relay hints and reconnection to refresh the local feed. The production notification managers have no new-announcement producer, and the existing Hub route consumers only provide the destination for a tap.
+
+### Verification / next step
+Source trace only. Wire a scope-aware notification producer and setting on both hosts. Verify privacy, duplicate suppression, permission denial and cold start using ANN-01, ANN-10 and HUBT-12. Check ANN-11 separately for background delivery.
+
+### Status
+OPEN.
+
+## ERROR-999 — Removed group members can replay Hub-held group messages
+
+2026-11-07. The group send path checks the current member list at send time, but mailbox replay used only the authenticated recipient ID. Both the original-code E2E and a mutation that disabled the retirement trigger reproduced old payloads after removal and rejoin. ADR-358 retires rows in the directory write, checks prefetched rows and reports `DROPPED` on sweep. Resolved in the 103-test HR3 gate. HUBREADY-03 remains owed on real hosts.
+
+## ERROR-1000 — Join approval confirmation could not resolve the group name
+
+2026-11-07. The first Chrome fixture click reached `decide` but raised `ReferenceError: groupName is not defined`. The existing group label helper lived inside list rendering. Moved the lookup to the view scope and reused it in the list and confirmation. The rerun showed the correct group and sent no write until approval was confirmed. RESOLVED in the isolated browser fixture. HUBREADY-05 covers the real Hub.
+
+## ERROR-1001 — Windows Android-host JVM cannot replace an existing revocation cache file
+
+2026-11-07. A second verified write in `HubRevocationCacheTest.expiredDelegationCannotPublishOrClearRootRevocationButVerifiedHistoryStillLoads` returned `STORAGE_FAILED` on Android-host. The Android actual uses a sibling `File.renameTo`, whose Windows JVM implementation does not replace the existing destination. The Windows host path now uses atomic NIO replacement. The Android path still uses the checked same-directory rename. No fallback deletes the old version first. The first gate also overlapped a resolver signature edit and compiled the SDK against the earlier signature. The next gate was run after the signatures matched.
+
+## ERROR-1002 — Paired-group test used the wrong direct-message entry point
+
+2026-11-07. The initial test tried to assert a result from `sendTextTo`, whose return type is Unit. Reworked it to feed a real direct message through the inbound handler and assert that it is stored while the linked-group message is refused.
+
+**Status.** RESOLVED in the restored HR5 gate.
+
+## ERROR-1003 — Hub file fixture read delivery status before the outbox persisted it
+
+2026-11-07. The broad JVM gate exposed `HUBFILE-P4-U50` reading PENDING after both tickets were observable. The fake relay records a sent ticket before the real outbox updates the message to SENT. The fixture now waits for that existing state transition, with the same bounded helper it uses for ticket delivery. The product send path is unchanged.
+
+**Status.** RESOLVED in the restored HR5 JVM gate.
+
+## ERROR-1004 — Startup revocation left a stale Hub roster
+
+2026-11-07, SEC-NEW-01. The startup import preceded listener registration and the old
+reconciliation only re-added active devices. Reconciled durable revocation state
+synchronously before serving requests (ADR-360). The regression covers a hashed device
+revocation, a current-serial revocation, group mailbox retirement and restart. The initial
+fixture used an unsealed reader for a sealed test mailbox and falsely lost the direct
+control row. Using the same Hub data key for both test queues fixed the fixture. The
+44-test recheck passed. REL22-02 is owed on the test Hub. Status: RESOLVED in host tests.
+
+## ERROR-1005 — Hub sealing-key lifecycle test timed out once in the full server run
+
+2026-11-07. `E2eHostSealingLifecycleTest.aDeviceThatLeavesAndComesBackGetsANewKeyAndAColleaguesPinNoticesTheChange`
+timed out waiting for the new key to publish. It passed in the 44-test recheck without a
+product or fixture change for that case. Recheck in the forced server gate. Status: OPEN,
+intermittent with cause unconfirmed.
+
+## ERROR-1006 — Server version resource expansion captured the Gradle script
+
+2026-11-07. Tests passed but the focused build failed while storing the configuration cache
+because `:server:processResources` captured its build script. The action now captures a
+local version string. The cache-enabled `:server:installDist` recheck stored its graph
+and the deployed Hub reported the new version. Status: RESOLVED.
+
+## ERROR-1007 — Release Gradle launcher unavailable while the development drive was disconnected
+
+2026-11-07. The Gradle junction and SDK target were absent, so the repository lock script
+stopped at its JBR check. Reconnecting the Projects drive restored the SDK and JBR paths.
+The baseline subsequently built successfully in 4m37s. Status: RESOLVED.
+
+## ERROR-1008 — Release lint could not infer the widget pinning API check
+
+2026-11-07. `:app:lintRelease` reported `NewApi` at `requestPinAppWidget` because
+the API 26 guard was in the boolean helper `isPinningSupported`. Annotated the helper
+with `ChecksSdkIntAtLeast` in `1b71d4e0`. The existing runtime check still refuses
+API 24–25. Lint reran with 0 errors, 150 warnings and 1 hint. The app unit suite
+also passed. Status: RESOLVED.
+
+## ERROR-1009 — Simulated radio harness missed an ACK in the release sweep
+
+2026-11-07. The final concurrent JVM sweep's `RadioLinkTestHarnessTest` burst accepted
+four frames but counted three ACKs before its five-second deadline. The first forced
+JVM sweep had passed this suite. All 274 radio JVM tests then passed in the isolated
+rerun on `1b71d4e0` with the existing deadline and assertions. Status: OPEN,
+intermittent simulated-radio failure with cause unconfirmed.
+
+## ERROR-1010 — The pairing initiator's consent card is not rendered on the Nearby tab
+
+2026-11-08. Area: Android pairing UI (SECAUD-22, SEC-D03-01/D03-06).
+
+**Environment:** Infinix X6882B (Android 14, API 34) and Samsung SM-G986U1 (Android 13,
+API 33); 2.2.0 debug build `versionCode 5` from
+`app/build/outputs/apk/debug/app-universal-debug.apk` (2026-11-07 17:03), working tree
+`64092bf3` with product code at `1b71d4e0`. The signed release APK could not be installed
+over the existing debug-signed install (see the release blocker in `logs/handoff.md`).
+
+**Symptoms:** Tapping **Pair** on the initiator while the Nearby tab is open sends the
+request (log `FLASH_PAIRING beginPair ... fingerprintKnown=true` plus the pairing frames),
+and the responder shows the consent card with the 6-digit code and "Accept only if <peer>
+shows the same code." The initiator shows **no card at all** for the whole 30-second
+window. Switching the initiator to Chats makes the card appear immediately; both cards
+then show the same code and both Accept actions complete the pairing.
+
+**Evidence:** `pair-step1-samsung-nearby.png` (initiator on Nearby, no card),
+`pair-step1-infinix-card.png` (responder card), `pair-step2-samsung-card.png` (initiator
+card after switching to Chats), `pair-step2-infinix-waiting.png`; Samsung log
+03:45:53.583 (`beginPair`) and 03:46:08.626 (responder accept) in the 2026-11-08 evidence
+folder.
+
+**Root cause:** Not proven. `MainActivity` deliberately suppresses the global pairing
+dialog while the destination is `NearbyDevices` (`MainActivity.kt` around line 3560) and
+expects `FlashNearbyScreen` to render `NearbyUiState.pairingRequest`. On this build that
+card did not surface while the tab stayed open. The trust model itself is intact: both
+sides must accept, and accepting one side alone does not pair.
+
+**Workaround:** Leave Nearby (open Chats) after tapping Pair; both consent cards render
+and the pairing completes.
+
+**Impact:** SECAUD-22 FAIL as written: from the screen where pairing starts, the initiator
+sees nothing and may believe Pair did nothing. No trust bypass was observed.
+
+**Code fix:** Android now renders the coordinator's consent card once at the app shell, including
+Nearby. Nearby no longer supplies a second card. Both Accept actions, decline and expiry still
+go through the existing coordinator. The failure observed on the previous APK remains recorded.
+
+**Status:** OPEN — code fix implemented; SECAUD-22 device retest owed. **Retest 2026-11-08 (second run):** the initiator card rendered over Nearby with matching codes on several Samsung-initiated attempts (e.g. `573 299` at 12:46), and the 12:49 retry paired after both accepts (its card code was not captured before accepting). The symptom still recurred intermittently: the 12:48 attempt logged `beginPair` but showed no initiator card for its whole 30 s window, the 12:46 responder-first accept left the initiator card gone, and two attempts at 12:24:38.562 / 12:25:38.859 ended with `Pairing stopped: the security check failed...` (ERROR-1013). Status updated after the 2026-11-08 release-closeout fix: **RESOLVED for the original defect.** The instrumented runs showed the shell-level card rendering over Nearby on every one of 8 pairing cycles (both initiator directions × both accept orders), and the code-less `AwaitingPeerNonce` card was a second, separate mapping bug now fixed (`PairingUiMapper`: AwaitingPeerNonce/AwaitingPeerReveal → Idle). The 12:48 no-card case did not recur after the fix; three later cards were dismissed by `declineLocal` (scrim/back; UI-032 intentionally allows first-contact dismissal), with no protocol reset or trust change (see ERROR-1013). SECAUD-22 Android half PASS; Windows half handled by the interop stage. Evidence: `release-final-20261108T131525Z\android-code.md`, `pair-samsung.log`, `pair-infinix.log`.
+
+**Related files:** `app/src/main/java/com/transfer/flash/MainActivity.kt`,
+`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/nearby/FlashNearbyScreen.kt`,
+`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashPairingFlow.kt`.
+
+## ERROR-1011 — Android's legacy inbound path drops an unreadable FLASH_SEC without ADR-351's negative ack
+
+2026-11-08. Area: Android security / revoked-peer notification (W1-NACK-01,
+W1-REVOKE-03, ADR-351).
+
+**Environment:** same two phones and 2.2.0 debug build as ERROR-1010. A = Infinix
+X6882B, B = Samsung SM-G986U1, newly paired for the test.
+
+**Symptoms:** A revoked B while B was offline. B queued `queued-nack`, later reconnected,
+and A logged nine `Received FLASH_SEC frame from ... with no stored session key; dropping`
+lines between 04:08:17 and 04:11:20. B never received a `PAIR_REVOKE`: it kept
+`paired_adb2d87d`, kept `pin_adb2d87d`, had no `revoked_adb2d87d`, stayed **Connected**,
+and kept the message at **Sent** for more than three minutes. It became **Failed** only
+at 04:11:57, when B was locally revoked during cleanup, with the misleading sentence
+"The other device no longer trusts you." At 04:07:42 A failed **2 queued message(s)** with that
+same wrong-direction sentence when A revoked locally; the two file bubbles then showed Failed even
+though both transfers had completed.
+
+**Root cause (code-level):** `FlashInboundRouter` and the KMP engine implement the
+negative ack (`onUnreadableSecuredFrame`), but the Android host's legacy handler
+`DiscoveryEngineHolder.handleInboundText` logs the drop and returns without invoking it
+(`app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:2643-2645`). The
+host still advertises `pr1` in its HELLO, so the sender has no way to learn otherwise.
+The security half still holds: A dropped the frames and never stored the message.
+
+**Evidence:** `key-log-excerpts.txt` section 4; `run-infinix.log` 04:08:17.806 through
+04:11:20.745; `run-samsung.log` 04:08:17.750 and 04:11:57.212; prefs key dumps (names
+only) from both devices; screenshots of B's Connected header and Sent message.
+
+**Verification:** W1-NACK-01 FAIL; W1-REVOKE-03 FAIL; W1-TITLE-01 PARTIAL (the title kept
+"Flash Hippo", but the header never showed Not paired until B was locally revoked).
+
+**Code fix:** The Android host now resends `PAIR_REVOKE` when an authenticated current session
+advertises `pr1`, the sender has a local revocation tombstone, and its sealed frame has no key.
+The coordinator limits resends to one per peer per 10 seconds, ignores duplicate received revokes,
+and distinguishes a local forget from a remote revoke in the outbox log. Sealed frames still drop.
+
+**Status:** OPEN — code fix implemented; W1-NACK-01, W1-REVOKE-03 and W1-TITLE-01 device retests owed. **Retest 2026-11-08 (second run): RESOLVED.** A revoked B while B was offline; B reconnected, logged `Flash Hippo no longer trusts you. Pair again to reconnect.` (12:37:04.087) and failed its queued `retest-nack` at 12:37:04.102 (`Failed 1 queued message(s) ... The other device no longer trusts you. ...`). A logged `Received FLASH_SEC frame from 9a644186... with no stored session key; dropping` at 12:37:03.514 and resent the revoke once. B wrote `revoked_adb2d87d...` with no pin/pairing, kept **Not paired** and the friendly title through a restart, and a manual Pair at 12:49 restored the pin and delivered texts both ways. W1-NACK-01 / W1-REVOKE-03 / W1-TITLE-01 all PASS. Evidence: `retest-20261108T121940Z\phone-report.md`.
+
+**Related files:** `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`,
+`core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashInboundRouter.kt`,
+`core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/Flash.kt`,
+`app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`.
+
+## ERROR-1012 — Transfer rows call waiting-for-acceptance "Paused" and flip delivered files to Failed after a local revoke
+
+2026-11-08. Area: Android transfer UI state truthfulness (TABREF-01).
+
+**Symptoms:** (a) While the receiver had not accepted a 512 MB send, the sender's bubble
+read `waiting for receiver to accept • 0% • Paused (Tap to resume)` and offered Resume,
+although the user had never paused it. (b) After A revoked B, the two already-delivered
+attachments (1 MB and 512 MB, both completed and hash-verified on B) changed from Sent to
+`Failed to send. Double-tap to retry.` with a Failed icon. The local revoke also failed
+A's own completed file receipts with "The other device no longer trusts you."
+
+**Evidence:** screenshots `big-resumed-infinix.png` / `big-resumed-samsung.png` and the
+04:02–04:07 UI states in the 2026-11-08 evidence folder; `run-infinix.log` 04:07:42.798;
+`run-samsung.log` 04:11:57.212.
+
+**Root cause:** Not investigated. The row state folds "awaiting acceptance" into the
+paused branch, and the revoke path fails any pending receipt even when the transfer
+already completed. The direction of the failure sentence is also wrong for a local
+revoke.
+
+**Impact:** TABREF-01 cannot claim "progress and status remain truthful"; Retry on an
+already-delivered file may re-send it. No corruption was observed.
+
+**Code fix:** The chat and Transfers views identify the sender's consent wait separately from a
+manual pause. Only the receiver can release the parked offer. Revoke cleanup uses the outbox rows
+for the affected peer instead of treating every `SENT` row as a pending message; it leaves LAN
+transfer bubbles alone. This prevents future false failures and does not rewrite old message history.
+
+**Status:** OPEN — code fix implemented; TABREF-01 device retest owed. **Retest 2026-11-08 (second run): RESOLVED for the direct 1:1 Android slice.** The 8 MiB offer showed `Waiting for the other device to accept` / `Awaiting acceptance` with only **Cancel transfer** (no Pause/Resume) for ~46 s; the transfer completed (`transfer.summary result=completed`, `chunkVerified=true wholeFile=MATCH`, SHA-256 `918c4b1f...12ac7` on both) and the completed file stayed **Sent** on the sender and completed on the receiver after the offline revoke. TABREF-01 itself stays PARTIAL for the group/bulk/cancel/Windows halves. Evidence: `retest-20261108T121940Z\phone-report.md`.
+
+**Related files:** `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/`
+(transfer bubble state), `core/transfer/...` (transfer state mapping).
+
+## ERROR-1013 — Intermittent Samsung-initiated pairing fails the security check or shows no initiator card
+
+### Date
+2026-11-08
+
+### Area
+Android pairing (SECAUD-22 / SEC-D03-01), initiator side
+
+### Symptoms
+- 12:24:38.562 and 12:25:38.859: tapping **Pair** on the Samsung logged `beginPair` and then `Pairing stopped: the security check failed...` within ~300 ms; neither device showed a usable consent card and no trust changed.
+- 12:46: both cards showed `573 299`; the Infinix accepted and showed `Waiting for Flash Olive to confirm...`, then the Samsung card disappeared within ~2 s with no failure line and no pairing.
+- 12:48:00.815: `beginPair` logged; the Infinix card appeared (`275 414`) but the Samsung never rendered its card for the whole 30 s window.
+
+### Environment
+- Infinix X6882B, Android 14 / API 34 (A)
+- Samsung SM-G986U1, Android 13 / API 33 (B)
+- 2.2.0 debug build, versionCode 5, APK `77b1e108b0551c1a1bca0ddd70e8d046f83f1ee5cca3a6d49d085d8be24123d8` (same debug signer as the previous install)
+- `test LAN` (5 GHz); <Phone A LAN IP> / <Phone B LAN IP>
+
+### Error
+```text
+11-08 12:24:38.562 I/FLASH_PAIRING(20733): Pairing stopped: the security check failed. If this keeps happening, something may be interfering with the connection.
+11-08 12:25:38.859 I/FLASH_PAIRING(20733): Pairing stopped: the security check failed. If this keeps happening, something may be interfering with the connection.
+```
+The 12:46 and 12:48 attempts produced no failure line at all.
+
+### Root cause
+**Proven on 2026-11-08 with an instrumented debug build** (`2dfdf77d...`): the failure is an **identity mismatch caused by the revoked-tombstone interaction**, not a timeout. After a revoke, `AndroidPreferencesTrustStore.savePin` deliberately refuses to store a pin for the revoked peer (ADR-353). The next outbound TLS handshake therefore recorded no pin, and the pairing initiator's `PeerNonce` check (`PairingV2.matchesPinnedIdentity(claimed, null)`) failed before any code was derived:
+
+```text
+13:31:24.126 beginPair peer=adb2d87d ... storedPin=false observedPin=false
+13:31:24.264 pairing.pin none peer=adb2d87d
+13:31:24.265 ui=Declined|Failed|...|0|...
+13:31:24.266 event.failed reason=identity-mismatch req=925cc993 phase=Failed
+```
+
+The same phone could pair later only if it had received an inbound connection from the peer in the meantime (which populated the in-memory observed-key map) — hence the intermittent "it works after a while" behavior. The earlier unproven hypothesis (a race/timing issue) is superseded. A separate UI mapping bug also existed: `PairingUiMapper` mapped the initiator's code-less `AwaitingPeerNonce` phase to `AwaitingPeerConfirmation`, so the shell could render a code-less "Waiting for <peer> to confirm" card instead of no card.
+
+### Failed attempts
+1. Immediate Samsung→Infinix retry at 12:25 — the same failure, 60 s after the first.
+2. Accept on the responder first (12:46) — the initiator card vanished, no pairing.
+3. Tap Pair and wait (12:48) — the initiator card never appeared.
+4. Accept on the initiator first, then the responder (12:49) — SUCCESS.
+
+### Working fix
+- `core/network/src/commonMain/.../TofuPinVerifier.kt`: on a first-use connection the verifier now always reports the key the connection actually presented to the pairing observed-key map, in both dial directions, in addition to the optional pin write. The pairing coordinator already prefers the stored pin and falls back to `observedPeerPin`; a refused pin write (revoked peer) no longer starves the numeric comparison. No pin is written for a revoked peer; the tombstone, both accepts, the numeric comparison and the TLS fail-closed check are unchanged.
+- `app/src/main/java/com/transfer/flash/pairing/PairingUiMapper.kt`: `AwaitingPeerNonce` (and `AwaitingPeerReveal`) map to `Idle`; the consent card appears only once a real code exists (`AwaitingLocalDecision`/`RequestReceived`).
+- Focused regressions: `FlashPinVerifierTest.tofuPinVerifierObservesFirstConnectKeyWhenThePinWriteIsRefused` and the mapper assertions in `PairingUiMapperTest`.
+- Concise diagnostics remain in `PairingCoordinator`/`MainActivity` (frame type, short request id, phase transition, real failure reason, shell phase; no fingerprints, nonces, codes or secrets).
+
+### Verification
+Successful pairing 12:49:47–12:49:50: both cards were up and both accepts landed inside the window (the code was not captured before accepting), then `paired_adb2d87d` + `pin_adb2d87d` on the Samsung and `paired_9a644186` + `pin_9a644186` on the Infinix; texts delivered both ways at 12:50–12:51. The FAIL condition remains reproducible only intermittently.
+
+**Device-confirmed after the fix (debug APK `2dfdf77d...`, both phones, data preserved):**
+- 8 pairing cycles = both initiator directions × both accept orders × 2 repetitions, **all PASS**:
+  matching cards, one-sided accept pairs nothing, both accepts reach Paired, `paired_` written on
+  both sides, text delivered.
+- Every initiator logged `storedPin=false observedPin=true` after a revoke and its nonce reached
+  `AwaitingLocalDecision`; no `identity-mismatch` occurred after the fix.
+- The critical manual re-pair after an **offline revoke** succeeded (cards `538 889`, both accepts,
+  trust restored, texts `postrevive-b2a`/`postrevive-a2b` delivered both ways).
+- W1-NACK-01 / W1-REVOKE-03 / W1-TITLE-01 re-verified on the same build (see the 2026-11-08
+  release-closeout results entry). Three pairing cards were dismissed by `declineLocal` with no
+  ADB input during the session; the only callers are the dialog's scrim/back dismissal, which
+  UI-032 intentionally allows. No protocol reset or trust change occurred in those cases; they are
+  recorded as external/physical input, not the fixed defect.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/tls/TofuPinVerifier.kt`
+- `core/network/src/androidHostTest/kotlin/com/transfer/flash/core/network/tls/FlashPinVerifierTest.kt`
+- `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`
+- `app/src/main/java/com/transfer/flash/pairing/PairingUiMapper.kt`
+- `app/src/test/java/com/transfer/flash/pairing/PairingUiMapperTest.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (diagnostics)
+- `docs/testing/TEST-BACKLOG.md` (SECAUD-22, W1-REVOKE-03)
+- `release-final-20261108T131525Z\android-code.md`, `pair-samsung.log`, `pair-infinix.log`
+
+### Status
+RESOLVED 2026-11-08 — proven cause, fix and focused regressions in the working tree; device-verified with the 8-cycle matrix and the post-revoke manual re-pair. No commit/push was made.
+
+## ERROR-1014 — SDK 2.2.0-beta.1 could not publish on JitPack
+
+- **Date / area:** 2026-11-08, SDK dependency verification on JitPack's cold Linux JDK 17 build.
+- **Symptom:** JitPack reported `No build artifacts found`; Gradle stopped while resolving the
+  root `classpath`, before the publish tasks. See the [JitPack build log](https://jitpack.io/com/github/Soko-Aerial/Flash/v2.2.0-beta.1/build.log).
+- **Root cause:** Gradle resolved `org.junit:junit-bom` `.module` metadata for versions 5.12.2,
+  5.13.4, 5.14.1 and 5.14.4. `gradle/verification-metadata.xml` recorded those versions' POM
+  digests only. The local warm-cache release rehearsal did not exercise the same metadata path.
+- **Fix:** Add the four exact `.module` SHA-256 digests, each checked against Maven Central's
+  published sidecar. Keep strict verification. Leave the original tag fixed and publish beta.2.
+- **Verification:** The exact `jitpack.yml` publish task list passed on JDK 17 to an empty local
+  Maven repository. The public JitPack build and consumer check are tracked in REL22-04.
+- **Status:** RESOLVED. The cold beta.2 build passed classpath verification and reached Android
+  resource processing, which exposed the separate ERROR-1015.
+
+## ERROR-1015 — JitPack requires the Linux Android resource compiler checksum
+
+- **Date / area:** 2026-11-08, SDK 2.2.0-beta.2 on JitPack Linux JDK 17.
+- **Symptom:** `:core:engine:androidApis` rejected `aapt2-9.3.1-15703166-linux.jar` while Gradle
+  cached the resource task. See the [JitPack build log](https://jitpack.io/com/github/Soko-Aerial/Flash/v2.2.0-beta.2/build.log).
+- **Root cause:** Dependency verification recorded the Windows AAPT2 classifier and the POM,
+  but not the Linux classifier. The Windows rehearsal cannot exercise it.
+- **Fix:** Add the Linux JAR's exact SHA-256, checked against the Google Maven sidecar. Keep strict
+  verification and beta.2's original tag. Validate the fix on JitPack by commit before cutting a tag.
+- **Status:** RESOLVED. The cold rehearsal at `4e3bb7de` passed AAPT2 verification and stopped
+  at a separate Linux Compose dependency check (ERROR-1016).
+
+## ERROR-1016 — Cold Linux publish reaches Compose Desktop's Linux POM
+
+- **Date / area:** 2026-11-08, JitPack rehearsal of `4e3bb7de`.
+- **Symptom / cause:** KMP metadata transformation resolved `:ui:platform-shims:jvmTestCompileClasspath`
+  during configuration caching and rejected `org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3`'s
+  POM. Only the Windows POM was recorded. Its Linux Skiko runtime dependency was already covered.
+- **Fix:** Add the Linux Compose POM's SHA-256, checked against Maven Central's published sidecar.
+  Strict verification stays enabled. The [SDK beta.2 ZIP](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
+  is available while the JitPack path is repaired.
+- **Status:** RESOLVED. The cold [JitPack candidate build](https://jitpack.io/com/github/Soko-Aerial/Flash/13e0fa3f59/build.log)
+  passed in 3m20s and published Maven artifacts. The public-tag consumer check also passed (REL22-04).
+
+## ERROR-1017 — JitPack throttled requests during beta.3 publication
+
+- **Date / area:** 2026-11-08, isolated JDK 17 consumer check against `v2.2.0-beta.3`.
+- **Symptom:** The first Gradle attempt received HTTP 429 from JitPack while the tag build was still running.
+- **Verification / status:** RESOLVED. JitPack reported `ok` and listed 57 modules. Retried with one
+  worker after publication; both Android and JVM compiles passed against the public tag (REL22-04).
+
+## ERROR-1018 - Gradle dependency verification failed for org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3
 
 ### Date
 2026-11-05
@@ -16716,7 +17444,7 @@ Added the SHA-256 checksum for `org.jetbrains.compose.desktop:desktop-jvm-linux-
 ### Status
 RESOLVED
 
-## ERROR-985 - Flow invariant violation in LinuxRadioDiscovery.scan during live Bluetooth discovery
+## ERROR-1019 - Flow invariant violation in LinuxRadioDiscovery.scan during live Bluetooth discovery
 
 ### Date
 2026-11-05

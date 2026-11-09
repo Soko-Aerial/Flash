@@ -93,8 +93,12 @@ class PairingCoordinator(
     /** Feature tokens advertised by [peerId]'s current session, used to gate `pr1` (ADR-351). */
     private val peerFeatures: (peerId: String) -> Set<String> = { emptySet() },
     /** Host hook after a revoke; close the session and stop queued sends for [peerId]. */
-    private val onPeerRevoked: (peerId: String) -> Unit = {},
+    private val onPeerRevoked: (peerId: String, initiatedLocally: Boolean) -> Unit = { _, _ -> },
 ) {
+    private val lastRevokeNoticeAt = mutableMapOf<String, Long>()
+
+    /** Diagnostic only: suppresses the 1 Hz UI-state line unless the visible snapshot changed. */
+    private var lastUiSignature: String? = null
     private val _pairing = MutableStateFlow<PairingUiModel?>(null)
     val pairing: StateFlow<PairingUiModel?> = _pairing.asStateFlow()
 
@@ -179,9 +183,19 @@ class PairingCoordinator(
             is PairingWireCodec.Inbound.Frame -> {
                 val frame = inbound.frame
                 if (frame is FlashPairingFrame.PairRevoke) {
+                    FlashLog.i(TAG, "rx PairRevoke peer=${peerId.take(SHORT_ID)}")
                     handlePeerRevoked(peerId)
                 } else {
-                    scope.launch { protocol.onFrame(frame) }
+                    val name = frame::class.simpleName ?: "frame"
+                    val requestId = frame.requestId.take(SHORT_ID)
+                    scope.launch {
+                        val before = protocol.session.value.phase
+                        protocol.onFrame(frame)
+                        FlashLog.i(
+                            TAG,
+                            "rx $name req=$requestId phase=$before->${protocol.session.value.phase}",
+                        )
+                    }
                 }
             }
             null -> Unit
@@ -194,8 +208,10 @@ class PairingCoordinator(
         // NOTHING was emitted", which is invisible if only the failure path logs.
         FlashLog.i(
             TAG,
-            "beginPair peer=$peerId name=$peerName " +
-                "fingerprintKnown=${synchronized(fingerprints) { fingerprints.containsKey(peerId) }}",
+            "beginPair peer=${peerId.take(SHORT_ID)} name=$peerName " +
+                "fingerprintKnown=${synchronized(fingerprints) { fingerprints.containsKey(peerId) }} " +
+                "storedPin=${trustStore.getPin(FlashDeviceId(peerId)) != null} " +
+                "observedPin=${observedPeerPin(peerId) != null}",
         )
         synchronized(fingerprints) { fingerprints[peerId] }?.let { fingerprint ->
             beginIfPeerSupportsV2(peerId, peerName, fingerprint)
@@ -233,16 +249,29 @@ class PairingCoordinator(
             emitMessage("$peerName is running an older Flash. Update Flash on that device, then pair again.")
             return
         }
-        protocol.beginRequest(peerId, peerName, fingerprint)
+        val result = protocol.beginRequest(peerId, peerName, fingerprint)
+        FlashLog.i(
+            TAG,
+            "beginRequest peer=${peerId.take(SHORT_ID)} v=$version " +
+                "ok=${result is com.transfer.flash.core.common.result.FlashResult.Success} " +
+                "phase=${protocol.session.value.phase}",
+        )
     }
 
     /** Responder accepted the displayed code match. */
     fun acceptLocal() {
+        val state = protocol.session.value
+        FlashLog.i(
+            TAG,
+            "acceptLocal initiator=${state.isInitiator} phase=${state.phase} " +
+                "req=${state.requestId?.take(SHORT_ID) ?: "-"}",
+        )
         scope.launch { protocol.respondAccept() }
     }
 
     /** Decline an active request, or dismiss a terminal dialog — either way, back to a clean slate. */
     fun declineLocal() {
+        FlashLog.i(TAG, "declineLocal phase=${protocol.session.value.phase}")
         scope.launch {
             protocol.respondDecline()
             resetProtocol()
@@ -272,18 +301,36 @@ class PairingCoordinator(
         // Give the notice a moment to leave the writer before the host closes the socket.
         scope.launch {
             delay(PAIR_REVOKE_FLUSH_MS)
-            onPeerRevoked(peerId)
+            onPeerRevoked(peerId, true)
         }
+    }
+
+    /** ADR-351: a revoked peer may have missed our notice while it was offline. */
+    fun onUnreadableSecuredFrame(peerId: String) {
+        if (!trustStore.isRevoked(FlashDeviceId(peerId)) ||
+            PairingWireCodec.FEATURE_PAIR_REVOKE !in peerFeatures(peerId)
+        ) return
+        val now = timeSource.nowMs()
+        val shouldSend = synchronized(lastRevokeNoticeAt) {
+            lastRevokeNoticeAt.entries.removeAll { now - it.value >= REVOKE_NOTICE_INTERVAL_MS }
+            if (peerId in lastRevokeNoticeAt) false else {
+                lastRevokeNoticeAt[peerId] = now
+                true
+            }
+        }
+        if (shouldSend) sendToPeer(peerId, PairingWireCodec.encode(FlashPairingFrame.PairRevoke()))
     }
 
     /** A peer told us it forgot us: remove its trust, close the session and say so (ADR-351). */
     private fun handlePeerRevoked(peerId: String) {
-        val name = trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
-        trustStore.revokeTrust(FlashDeviceId(peerId))
+        val deviceId = FlashDeviceId(peerId)
+        if (trustStore.isRevoked(deviceId)) return
+        val name = trustStore.getTrustedPeers()[deviceId]
+        trustStore.revokeTrust(deviceId)
         _trustedPeers.value = loadTrusted()
         if (protocol.session.value.peerDeviceId == peerId) resetProtocol()
         emitMessage("${name ?: "The other device"} no longer trusts you. Pair again to reconnect.")
-        onPeerRevoked(peerId)
+        onPeerRevoked(peerId, false)
     }
 
     /** Retrieve the cached peer identity fingerprint (hex) if known. */
@@ -320,12 +367,17 @@ class PairingCoordinator(
                 val s = protocol.session.value
                 val peerId = s.peerDeviceId
                 val hash = s.expectedCodeHashHex
+                FlashLog.i(
+                    TAG,
+                    "event.peerAccepted req=${event.requestId.take(SHORT_ID)} phase=${s.phase}",
+                )
                 if (peerId != null && hash != null) {
                     sendToPeer(peerId, PairingWireCodec.encode(FlashPairingFrame.PairConfirm(event.requestId, hash)))
                 }
             }
             is FlashPairingEvent.Confirmed -> {
                 val s = protocol.session.value
+                FlashLog.i(TAG, "event.confirmed req=${event.requestId.take(SHORT_ID)}")
                 s.peerDeviceId?.let { peerId ->
                     val name = s.peerName?.ifBlank { null } ?: peerId.take(SHORT_ID)
                     trustStore.trustPeer(FlashDeviceId(peerId), name)
@@ -354,6 +406,11 @@ class PairingCoordinator(
                 }
             }
             is FlashPairingEvent.Failed -> {
+                FlashLog.w(
+                    TAG,
+                    "event.failed reason=${event.reason} req=${event.requestId?.take(SHORT_ID) ?: "-"} " +
+                        "phase=${protocol.session.value.phase}",
+                )
                 failureMessage(event.reason)?.let(::emitMessage)
                 scope.launch {
                     delay(TERMINAL_LINGER_MS)
@@ -361,17 +418,31 @@ class PairingCoordinator(
                 }
             }
             is FlashPairingEvent.PeerDeclined,
-            is FlashPairingEvent.Expired ->
+            is FlashPairingEvent.Expired -> {
+                FlashLog.i(
+                    TAG,
+                    "event.terminal=${event::class.simpleName} phase=${protocol.session.value.phase}",
+                )
                 scope.launch {
                     delay(TERMINAL_LINGER_MS) // let the terminal card show, then allow retry.
                     resetProtocol()
                 }
+            }
             is FlashPairingEvent.RequestReceived -> Unit // the session collector already raises the dialog.
         }
     }
 
     private fun recomputeUi(s: PairingSessionState) {
         val uiPhase = PairingUiMapper.corePhaseToUi(s.phase)
+        val signature = "$uiPhase|${s.phase}|${s.requestId?.take(SHORT_ID)}|" +
+            "${s.code6?.length ?: 0}|${s.peerDeviceId?.take(SHORT_ID)}"
+        if (signature != lastUiSignature) {
+            lastUiSignature = signature
+            FlashLog.i(
+                TAG,
+                "ui=$signature seconds=${PairingUiMapper.secondsLeft(s.expiresAtMs, timeSource.nowMs())}",
+            )
+        }
         if (uiPhase == FlashPairingPhase.Idle) {
             _pairing.value = null
             return
@@ -391,6 +462,12 @@ class PairingCoordinator(
     }
 
     private fun resetProtocol() {
+        val old = protocol.session.value
+        FlashLog.i(
+            TAG,
+            "reset phase=${old.phase} req=${old.requestId?.take(SHORT_ID) ?: "-"}",
+        )
+        lastUiSignature = null
         collectorJob.cancel()
         protocol = newProtocol()
         collectorJob = launchCollectors()
@@ -452,7 +529,14 @@ class PairingCoordinator(
         localModel = localModel,
         ephemeralPublicKeyProvider = { ephemeralPublicKey },
         // ADR-042: the pairing must cover the key TLS pinned for this peer on this connection.
-        peerIdentityPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) ?: observedPeerPin(peerId) },
+        peerIdentityPin = { peerId ->
+            val stored = trustStore.getPin(FlashDeviceId(peerId))
+            val observed = observedPeerPin(peerId)
+            if (stored == null && observed == null) {
+                FlashLog.w(TAG, "pairing.pin none peer=${peerId.take(SHORT_ID)}")
+            }
+            stored ?: observed
+        },
         // The session holds a single peer at a time; route by its current peerDeviceId (set before
         // any frame is sent, since the reducer runs before sendFrame in the protocol).
         sendFrame = { frame ->
@@ -496,6 +580,7 @@ class PairingCoordinator(
         const val FINGERPRINT_POLL_MS = 100L
         /** Time for a best-effort `PAIR_REVOKE` to leave the writer before the host closes the socket. */
         const val PAIR_REVOKE_FLUSH_MS = 250L
+        const val REVOKE_NOTICE_INTERVAL_MS = 10_000L
 
         /**
          * Re-ask cadence inside [FINGERPRINT_WAIT_MS]: at most 8 asks, each answered at most once.

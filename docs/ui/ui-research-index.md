@@ -83,8 +83,8 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-044 | Network-state simulation UI | [error-states.md](error-states.md) | IMPLEMENTED | UI-030 |
 | UI-045 | Design-system quality gate | [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md) | NOT STARTED | All above |
 | UI-046 | Bottom navigation bar (Phase 8 shell) | [bottom-nav.md](bottom-nav.md) | IMPLEMENTED v2 hanging capsule + host wiring: reselect-to-top, scroll-under-capsule (device verification pending) | UI-001, UI-002, UI-037, UI-039, UI-033 |
-| UI-047 | Transfers page (P3 tab) | [transfers-page.md](transfers-page.md) | IMPLEMENTED (demo state; C5 wiring pending) | UI-046, UI-016 language, UI-025 |
-| UI-048 | Nearby page (P4 tab) | [nearby-page.md](nearby-page.md) | IMPLEMENTED (demo state; C3/C2 wiring pending) | UI-046, UI-030, UI-032 |
+| UI-047 | Transfers page (P3 tab) | [transfers-page.md](transfers-page.md), [component refinement](transfers-nearby-refinement.md) | ACCEPTED for 2.2.0 (2026-11-07) | UI-046, UI-016 language, UI-025 |
+| UI-048 | Nearby page (P4 tab) | [nearby-page.md](nearby-page.md), [component refinement](transfers-nearby-refinement.md) | ACCEPTED for 2.2.0 (2026-11-07) | UI-046, UI-030, UI-032 |
 | UI-049 | Settings page (P5 tab) | [settings-page.md](settings-page.md) | IMPLEMENTED (demo state; C1.4 wiring pending) | UI-046, UI-035/036, UI-039 |
 | UI-050 | Calling UI (voice/video call screen) | [calling-ui.md](calling-ui.md) | IMPLEMENTED as `:ui:callui` (`FlashCallScreen` over `:core:calling`, ADR-025; device QA pending) | UI-001, UI-002, UI-033, UI-037, UI-038 |
 | UI-050b | Group video grid (G1) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (not device-verified) | UI-050 |
@@ -101,7 +101,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-055 | Group file availability (swarm row states, wait reasons, "Delivered to k of n", "You can go offline now", Cancel for everyone) | [group-file-availability.md](group-file-availability.md) | IMPLEMENTED 2026-10-05 (ADR-072, SW-11) | UI-016, UI-047, UI-027 |
 | UI-056 | Launch splash "Ink" (the name written by hand in Hershey Script 1-stroke, then the bolt; cold start only, plays to the end, setting to turn it off; Android + desktop) | [launch-splash.md](launch-splash.md) | IMPLEMENTED 2026-10-06 (ADR-080; unit-tested; device checks SPLASH-01..08 owed) | UI-001, UI-037, UI-049 |
 | UI-057 | Group history join card (new member picks how much earlier history to receive, clamped to the signed ceiling; "Load older messages"; admin ceiling control) | [group-history-join-card.md](group-history-join-card.md) | DESIGNED 2026-10-09 (ADR-100; implementation in progress) | UI-052, UI-053, UI-029 |
-| UI-058 | Flash Hub tab (enrolled devices only; replaces Transfers; News / People / Departments / Groups; Transfers moves to the chat-list top bar) | [flash-hub-tab.md](flash-hub-tab.md) | IMPLEMENTED 2026-10-15 (H0-H10; unit-tested, NOT device-verified; ADR-133; plan `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`; device checks HUBT-01..32) | UI-046, UI-003, UI-002, UI-053 |
+| UI-058 | Flash Hub tab (enrolled devices only; replaces Transfers; News / People / Departments / Groups; Transfers moves to the chat-list top bar) | [flash-hub-tab.md](flash-hub-tab.md), [workspace redesign](hub-workspace-redesign.md) | Workspace redesign IMPLEMENTED 2026-11-06 (401 Hub host tests; Android APK/desktop compile; native renders; HUBWORK-01..05 owed). Original: IMPLEMENTED 2026-10-15 (H0-H10; unit-tested, NOT device-verified; ADR-133; plan `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`; device checks HUBT-01..32) | UI-046, UI-003, UI-002, UI-053 |
 
 > UI-046–UI-049 were added under Phase 8 App-Shell authority (`docs/ui-page-plan.md`, owner-approved plan).
 > All four research docs reached DESIGNED before their implementation per the research-first rule.

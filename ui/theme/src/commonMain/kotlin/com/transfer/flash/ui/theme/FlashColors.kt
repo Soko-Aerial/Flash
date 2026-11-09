@@ -7,6 +7,15 @@ import androidx.compose.ui.graphics.Color
 data class FlashColors(
     val accentPrimary: Color,
     val accentSecondary: Color,
+    /**
+     * The fill for a control that carries text or a glyph (send key, a primary button), and the
+     * colour that sits on it. One step darker than [accentPrimary] in light (5.21:1 with white) and
+     * `pulse400`/`pulse900` in dark (5.85:1), because `white on pulse500` is 3.74:1 and fails AA for
+     * a 16sp label. Deliberately NOT re-tinted by [withAccent]: a dynamic accent of unknown
+     * luminance must not be able to break the label contrast.
+     */
+    val accentFill: Color,
+    val onAccentFill: Color,
     val textPrimary: Color,
     val textSecondary: Color,
     val textTertiary: Color,
@@ -64,6 +73,8 @@ data class FlashColors(
         fun light(): FlashColors = FlashColors(
             accentPrimary = FlashPalette.pulse500,
             accentSecondary = FlashPalette.spark500,
+            accentFill = FlashPalette.pulse600,
+            onAccentFill = FlashPalette.white,
             textPrimary = FlashPalette.graphite900,
             textSecondary = FlashPalette.graphite700,
             textTertiary = FlashPalette.graphite500,
@@ -90,7 +101,7 @@ data class FlashColors(
             chatTextTimestampOutgoing = FlashPalette.pulse700,
             chatTextUsername = FlashPalette.graphite700,
             chatTextSystem = FlashPalette.graphite700,
-            composerInputBackground = FlashPalette.graphite100,
+            composerInputBackground = FlashPalette.graphite50,
             composerSurface = FlashPalette.white,
             sheetSurface = FlashPalette.white,
             scrim = FlashPalette.scrimLight,
@@ -120,6 +131,8 @@ data class FlashColors(
         fun dark(): FlashColors = FlashColors(
             accentPrimary = FlashPalette.pulse400,
             accentSecondary = FlashPalette.spark400,
+            accentFill = FlashPalette.pulse400,
+            onAccentFill = FlashPalette.pulse900,
             textPrimary = FlashPalette.graphite50,
             textSecondary = FlashPalette.graphite300,
             textTertiary = FlashPalette.graphite500,
@@ -147,7 +160,7 @@ data class FlashColors(
             chatTextTimestampOutgoing = FlashPalette.pulse300,
             chatTextUsername = FlashPalette.graphite300,
             chatTextSystem = FlashPalette.graphite300,
-            composerInputBackground = FlashPalette.surface2,
+            composerInputBackground = FlashPalette.surface0,
             composerSurface = FlashPalette.surface1,
             sheetSurface = FlashPalette.surface1,
             scrim = FlashPalette.scrimDark,

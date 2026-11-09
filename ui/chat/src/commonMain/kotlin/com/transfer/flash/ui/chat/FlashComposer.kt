@@ -37,6 +37,7 @@ import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.type
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -55,6 +56,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -114,6 +116,7 @@ fun FlashComposer(
     // OPT-O24-02: an attachment already marked isSending is waiting on its own send, so it must not
     // make the composer sendable again — a second tap would hand it to onSendFile a second time.
     val canSend = (draft.isNotBlank() || stagedAttachments.any { !it.isSending }) && enabled
+    var isComposerFocused by remember { mutableStateOf(false) }
 
     // --- UI-020 voice recording state (local to the composer) ---
     var recordingPhase by remember { mutableStateOf(FlashRecordingPhase.Idle) }
@@ -215,11 +218,6 @@ fun FlashComposer(
         // the hold gesture across Idle/Holding/CancelArmed � swapping it mid-hold would
         // dispose its pointerInput stream and kill slide/release handling.
         val isRecordingActive = recordingPhase != FlashRecordingPhase.Idle
-        val showMic = when (recordingPhase) {
-            FlashRecordingPhase.Locked -> false
-            FlashRecordingPhase.Idle -> draft.isBlank() && stagedAttachments.isEmpty()
-            else -> true
-        }
 
         Row(
             modifier = Modifier
@@ -259,12 +257,13 @@ fun FlashComposer(
                                     .background(colors.composerInputBackground)
                                     .border(
                                         width = FlashDimensions.borderHairline,
-                                        color = colors.borderSubtle,
+                                        color = if (isComposerFocused) colors.accentPrimary else Color.Transparent,
                                         shape = FlashShapes.composerInput,
                                     )
+                                    .heightIn(min = 44.dp)
                                     .padding(
-                                        horizontal = FlashSpacing.space16,
-                                        vertical = FlashSpacing.space8,
+                                        horizontal = FlashSpacing.space14,
+                                        vertical = FlashSpacing.space10,
                                     ),
                                 contentAlignment = Alignment.CenterStart,
                             ) {
@@ -282,6 +281,7 @@ fun FlashComposer(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .heightIn(min = 20.dp, max = 120.dp)
+                                        .onFocusChanged { isComposerFocused = it.isFocused }
                                         .onPreviewKeyEvent { event ->
                                             if (event.type == KeyEventType.KeyDown &&
                                                 (event.key == Key.Enter || event.key == Key.NumPadEnter)
@@ -311,7 +311,7 @@ fun FlashComposer(
                                             Text(
                                                 text = placeholderText,
                                                 style = typography.bodyDefault,
-                                                color = colors.textTertiary,
+                                                color = colors.textSecondary,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                             )
@@ -353,43 +353,73 @@ fun FlashComposer(
                 }
             }
 
-            // Persistent trailing slot: the SAME mic node survives Idle/Holding/CancelArmed.
-            if (showMic) {
-                FlashMicButton(
-                    isRecording = isRecordingActive,
-                    enabled = enabled,
-                    onStartRecord = {
-                        // Only enter the recording surface if the host actually started capture
-                        // (mic permission granted). Otherwise stay Idle — a permission prompt fired.
-                        if (onVoiceRecordStart()) {
-                            recordingPhase = FlashRecordingPhase.Holding
-                        }
-                    },
-                    onSlideUpdate = { totalDx, totalDy ->
-                        val cancelPx = with(density) { FlashVoiceRecordingMath.CANCEL_SLIDE_DP.dp.toPx() }
-                        val lockPx = with(density) { FlashVoiceRecordingMath.LOCK_SLIDE_DP.dp.toPx() }
-                        recordingPhase = when (FlashVoiceRecordingMath.resolveHoldSlide(totalDx, totalDy, cancelPx, lockPx)) {
-                            FlashHoldSlideTarget.Cancel -> FlashRecordingPhase.CancelArmed
-                            FlashHoldSlideTarget.Lock -> FlashRecordingPhase.Locked
-                            FlashHoldSlideTarget.Stay ->
-                                if (recordingPhase == FlashRecordingPhase.CancelArmed) FlashRecordingPhase.Holding else recordingPhase
-                        }
-                    },
-                    onRecordEnd = {
-                        when (recordingPhase) {
-                            FlashRecordingPhase.CancelArmed -> cancelRecording()
-                            FlashRecordingPhase.Holding -> sendVoiceRecording()
-                            FlashRecordingPhase.Locked, FlashRecordingPhase.Idle -> Unit
-                        }
-                    },
-                )
-            } else if (!isRecordingActive) {
-                // Tactile Flash Send Button
-                FlashSendButton(
-                    canSend = canSend,
-                    onClick = onSend,
-                    enabled = enabled,
-                )
+            // One 44dp slot for the mic and the send key. The mic stays composed (its hold gesture
+            // must survive Holding / CancelArmed) and the send key cross-fades over it: no width
+            // animation, no second control appearing beside the pill.
+            val sendProgress by animateFloatAsState(
+                targetValue = if (canSend) 1f else 0f,
+                animationSpec = tween(motion.fastMillis),
+                label = "composer_trailing_progress",
+            )
+            Box(
+                modifier = Modifier.size(FlashSpacing.space44),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier.then(
+                        if (sendProgress > 0.5f) Modifier.clearAndSetSemantics {} else Modifier,
+                    ),
+                ) {
+                    FlashMicButton(
+                        isRecording = isRecordingActive,
+                        enabled = enabled && !canSend,
+                        onStartRecord = {
+                            // Only enter the recording surface if the host actually started capture
+                            // (mic permission granted). Otherwise stay Idle — a permission prompt fired.
+                            if (onVoiceRecordStart()) {
+                                recordingPhase = FlashRecordingPhase.Holding
+                            }
+                        },
+                        onSlideUpdate = { totalDx, totalDy ->
+                            val cancelPx = with(density) { FlashVoiceRecordingMath.CANCEL_SLIDE_DP.dp.toPx() }
+                            val lockPx = with(density) { FlashVoiceRecordingMath.LOCK_SLIDE_DP.dp.toPx() }
+                            recordingPhase = when (FlashVoiceRecordingMath.resolveHoldSlide(totalDx, totalDy, cancelPx, lockPx)) {
+                                FlashHoldSlideTarget.Cancel -> FlashRecordingPhase.CancelArmed
+                                FlashHoldSlideTarget.Lock -> FlashRecordingPhase.Locked
+                                FlashHoldSlideTarget.Stay ->
+                                    if (recordingPhase == FlashRecordingPhase.CancelArmed) FlashRecordingPhase.Holding else recordingPhase
+                            }
+                        },
+                        onRecordEnd = {
+                            when (recordingPhase) {
+                                FlashRecordingPhase.CancelArmed -> cancelRecording()
+                                FlashRecordingPhase.Holding -> sendVoiceRecording()
+                                FlashRecordingPhase.Locked, FlashRecordingPhase.Idle -> Unit
+                            }
+                        },
+                        modifier = Modifier.graphicsLayer {
+                            alpha = 1f - sendProgress
+                            scaleX = 1f - 0.12f * sendProgress
+                            scaleY = 1f - 0.12f * sendProgress
+                        },
+                    )
+                }
+                Box(
+                    modifier = Modifier.then(
+                        if (sendProgress <= 0.5f) Modifier.clearAndSetSemantics {} else Modifier,
+                    ),
+                ) {
+                    FlashSendButton(
+                        canSend = canSend,
+                        onClick = onSend,
+                        enabled = enabled,
+                        modifier = Modifier.graphicsLayer {
+                            alpha = sendProgress
+                            scaleX = 0.7f + 0.3f * sendProgress
+                            scaleY = 0.7f + 0.3f * sendProgress
+                        },
+                    )
+                }
             }
         }
     }
@@ -430,7 +460,7 @@ fun FlashSendButton(
     val backgroundColor by animateColorAsState(
         targetValue = when {
             !enabled -> colors.backgroundSurfaceSubtle
-            canSend -> colors.accentPrimary
+            canSend -> colors.accentFill
             else -> Color.Transparent
         },
         animationSpec = tween(motion.fastMillis),
@@ -440,7 +470,7 @@ fun FlashSendButton(
     val iconTint by animateColorAsState(
         targetValue = when {
             !enabled -> colors.textTertiary
-            canSend -> colors.textOnAccent
+            canSend -> colors.onAccentFill
             else -> colors.textTertiary
         },
         animationSpec = tween(motion.fastMillis),
@@ -449,7 +479,7 @@ fun FlashSendButton(
 
     Box(
         modifier = modifier
-            .size(FlashSpacing.space40)
+            .size(FlashSpacing.space44)
             // Same chain position, same node: `Modifier.scale(f)` *is*
             // `graphicsLayer(scaleX = f, scaleY = f)` with the same centre pivot, so this is
             // pixel-identical — but the read now happens in draw instead of being a
@@ -498,15 +528,22 @@ fun FlashReplyDock(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(colors.backgroundSurface)
-            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space8)
+            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .background(colors.backgroundSurfaceSubtle)
+            .border(
+                FlashDimensions.borderHairline,
+                colors.borderSubtle,
+                RoundedCornerShape(FlashShapes.radius12),
+            )
+            .padding(start = FlashSpacing.space8, end = FlashSpacing.space4, top = FlashSpacing.space4, bottom = FlashSpacing.space4),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Accent indicator bar
         Box(
             modifier = Modifier
                 .width(3.dp)
-                .heightIn(min = 28.dp)
+                .heightIn(min = 30.dp)
                 .clip(RoundedCornerShape(1.5.dp))
                 .background(colors.accentPrimary),
         )
@@ -520,14 +557,14 @@ fun FlashReplyDock(
         ) {
             Text(
                 text = replyingTo.senderName,
-                style = typography.captionEmphasis.copy(fontWeight = FontWeight.SemiBold),
+                style = typography.metadataEmphasis,
                 color = colors.accentPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 text = replyingTo.text.ifBlank { "Attachment" },
-                style = typography.captionDefault,
+                style = typography.metadataDefault,
                 color = colors.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -538,7 +575,7 @@ fun FlashReplyDock(
         IconButton(
             onClick = onDismiss,
             modifier = Modifier
-                .size(FlashSpacing.space24)
+                .size(32.dp)
                 .semantics { contentDescription = "Cancel reply" },
         ) {
             FlashIcon(

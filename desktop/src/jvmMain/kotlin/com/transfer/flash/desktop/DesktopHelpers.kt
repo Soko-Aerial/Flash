@@ -213,7 +213,7 @@ internal object DesktopHelpers {
         if (!root.exists()) return emptyList()
         val recorded = engine.receivedManifest.entriesUnder(root)
         if (!engine.receivedRootIsFlashsOwn) return recorded
-        return (root.listFiles()?.toList().orEmpty() + recorded).distinctBy { it.path }
+        return root.listFiles()?.toList().orEmpty()
     }
 
     fun clearReceivedFiles(engine: DesktopEngine) {

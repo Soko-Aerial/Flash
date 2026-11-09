@@ -8,7 +8,7 @@ The `:core:persistence` module manages relational database storage, encrypted ta
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-persistence:v2.1.0-beta.2")
+    implementation("com.github.Soko-Aerial.Flash:core-persistence:v2.2.0-beta.3")
 }
 ```
 
@@ -17,12 +17,12 @@ dependencies {
 ## 2. Architecture and Database Schema
 
 The database is [`FlashDatabase`](../../../../core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/FlashDatabase.kt)
-(Room, **schema version 13**, schemas exported to `core/persistence/schemas/`). Opening it is platform code:
+(Room, **schema version 23**, schemas exported to `core/persistence/schemas/`). Opening it is platform code:
 `FlashDatabaseOpener` (Android, SQLCipher) and `JvmFlashDatabaseOpener` (desktop, `sqlite-jdbc-crypt` through `JdbcCipherSQLiteDriver`);
 migrations are `FlashMigrations` / `FlashJvmMigrations`, built from the shared `FlashSchemaSteps`. The key is supplied by the host
 (on Android it is wrapped by the Keystore); a database that can no longer be opened fails loudly rather than being recreated.
 
-25 entities, grouped:
+32 entities, grouped:
 
 | Area | Entities |
 |---|---|
@@ -32,6 +32,7 @@ migrations are `FlashMigrations` / `FlashJvmMigrations`, built from the shared `
 | Discovery | `RememberedEndpointEntity` (remembered routes, DR1) |
 | Groups | `GroupMemberEntity`, `GroupDeliveryEntity`, `GroupSecretEntity`, `GroupInviteEntity`, `GroupJoinRequestEntity`, `GroupRotationEntity`, `GroupSettingsEntity`, `GroupPreferencesEntity`, `GroupHistoryStateEntity`, `GroupSyncWatermarkEntity` (history sync, ADR-100) |
 | Swarm | `SwarmContentEntity`, `SwarmTombstoneEntity` |
+| Hub | `OrgDirectoryMemberEntity`, `OrgDepartmentEntity`, `OrgSyncStateEntity`, `HubGroupRosterEntity`, `HubAnnouncementEntity`, `HubAnnouncementStateEntity`, `HubFileEntity` |
 
 `RetentionPolicy` (commonMain) holds the purge rules. The app's backup rules exclude the database files (Auto Backup and data extraction).
 

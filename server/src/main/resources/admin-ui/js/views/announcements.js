@@ -6,9 +6,9 @@ import { h, mount } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../app.js';
 import { ApiError } from '../api.js';
-import { session } from '../state.js';
-import { formatDateTime, formatNumber } from '../format.js';
-import { pageHeader, button, badge, emptyState, textInput, selectInput, field, withBusy, banner } from '../ui/widgets.js';
+import { session, isOrgAdmin } from '../state.js';
+import { formatDateTime } from '../format.js';
+import { pageHeader, button, badge, emptyState, errorState, textInput, selectInput, field, banner } from '../ui/widgets.js';
 import { createTable } from '../ui/table.js';
 import { openDialog, openDrawer, confirmDialog } from '../ui/dialog.js';
 import { toast, toastError } from '../ui/toast.js';
@@ -16,15 +16,14 @@ import { setActiveTable } from '../shortcuts.js';
 import { icon } from '../icons.js';
 import { expiryFields, toLocalInput } from '../announcement-expiry.js';
 
-function isOrgAdmin() {
-  const role = (session.role || '').toLowerCase();
-  return (role === 'admin' || role === 'org_admin') && (!session.departments || session.departments.length === 0);
-}
-
 export function mountAnnouncements(container, ctx) {
   let items = [];
   let departments = [];
   let searchTimer = 0;
+  let pageVersion = 0;
+  let nextPage = null;
+  let loading = false;
+  let stopped = false;
   const f = {
     q: ctx.query.q || '',
     scope: ctx.query.scope || '',
@@ -70,8 +69,10 @@ export function mountAnnouncements(container, ctx) {
     deptField.el,
   );
 
-  const resultLine = h('p', { class: 'result-line', role: 'status', 'aria-live': 'polite' });
+  const resultLine = h('p', { class: 'result-line', role: 'status', 'aria-live': 'polite', tabindex: '-1' });
   const tableHost = h('div', { class: 'table-host' });
+  const moreBtn = button({ label: t('announcements.loadOlder'), on: { click: () => reload(true) } });
+  moreBtn.hidden = true;
 
   const newBtn = button({
     label: t('announcements.action.create'),
@@ -146,12 +147,13 @@ export function mountAnnouncements(container, ctx) {
     pageHeader({
       title: t('announcements.title'),
       subtitle: t('announcements.sub'),
-      actions: [refreshBtn, newBtn],
+      actions: [refreshBtn, !isHead || headDepts.length ? newBtn : null],
     }),
     banner({ tone: 'info', text: t('announcements.plaintext') }),
     filterGrid,
     h('div', { class: 'toolbar-row' }, resultLine),
     tableHost,
+    h('div', { class: 'section-actions' }, moreBtn),
   );
 
   setActiveTable(table);
@@ -193,25 +195,51 @@ export function mountAnnouncements(container, ctx) {
     reload();
   });
 
-  async function reload() {
-    await withBusy(tableHost, async () => {
-      try {
-        const params = new URLSearchParams();
-        if (f.q) params.set('q', f.q);
-        if (f.scope) params.set('scope', f.scope);
-        if (f.dept) params.set('departmentId', f.dept);
-        const queryStr = params.toString() ? '?' + params.toString() : '';
-        const res = await api.get('/announcements' + queryStr);
-        items = res.items || [];
-        draw();
-      } catch (e) {
-        toastError(e);
+  async function reload(append = false) {
+    if (stopped || (append && (loading || !nextPage))) return;
+    const version = ++pageVersion;
+    loading = true;
+    tableHost.setAttribute('aria-busy', 'true');
+    moreBtn.disabled = true;
+    if (!append) {
+      nextPage = null;
+      moreBtn.hidden = true;
+    }
+    try {
+      const params = new URLSearchParams();
+      if (f.q) params.set('q', f.q);
+      if (f.scope) params.set('scope', f.scope);
+      if (f.dept) params.set('departmentId', f.dept);
+      if (append) {
+        params.set('before', nextPage.before);
+        params.set('beforeId', nextPage.id);
       }
-    });
+      const query = params.toString();
+      const res = await api.get('/announcements' + (query ? '?' + query : ''));
+      if (version !== pageVersion || stopped) return;
+      const page = res.items || [];
+      items = append ? items.concat(page) : page;
+      const last = page.at(-1);
+      nextPage = last && res.nextBefore != null ? { before: res.nextBefore, id: last.id } : null;
+      const moveFocus = append && !nextPage && document.activeElement === moreBtn;
+      moreBtn.hidden = !nextPage;
+      draw();
+      if (moveFocus) resultLine.focus({ preventScroll: true });
+    } catch (e) {
+      if (version !== pageVersion || stopped) return;
+      if (items.length) toastError(e);
+      else mount(tableHost, errorState(e, () => reload()));
+    } finally {
+      if (version === pageVersion && !stopped) {
+        loading = false;
+        tableHost.removeAttribute('aria-busy');
+        moreBtn.disabled = false;
+      }
+    }
   }
 
   function draw() {
-    resultLine.textContent = items.length ? formatNumber(items.length) + ' announcement(s)' : '';
+    resultLine.textContent = items.length ? t('announcements.shown', { n: items.length }) : '';
     mount(tableHost);
     if (!items.length) {
       tableHost.appendChild(
@@ -534,6 +562,7 @@ export function mountAnnouncements(container, ctx) {
   (async () => {
     try {
       departments = await api.get('/departments').catch(() => []);
+      if (stopped) return;
       syncDeptOptions();
       await reload();
     } catch (e) {
@@ -543,6 +572,7 @@ export function mountAnnouncements(container, ctx) {
 
   return {
     destroy() {
+      stopped = true;
       clearTimeout(searchTimer);
     },
   };

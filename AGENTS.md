@@ -917,6 +917,57 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0` and Hub prerelease
+`server-v2.2.0-beta.1` point to `322a92aa`. The release-wide host gate passed. SDK beta.3
+published on JitPack from `13e0fa3f`; beta.2 also has a verified Maven repository ZIP. See
+ERROR-1014..1016 for the Linux checksum fixes. Both public consumer checks passed (REL22-04).
+The owner authorized publication with remaining manual checks open. See `logs/handoff.md`
+and the test backlog for release acceptance.
+
+**2026-11-08 — Release device findings addressed in the `codex/release-2.2.0` working tree.**
+ERROR-1010/1011/1012 have code fixes for Nearby pairing consent, Android revoke notices and truthful
+transfer status. Device retests are owed; no phones were available in the follow-up. The signed
+`dist/2.2.0` APK predates the fixes. See `logs/handoff.md` for the debug APK and acceptance steps.
+
+**2026-11-07 — 2.2.0 release consolidation on `codex/release-2.2.0`.** Nearby and Transfers
+owner-approved. Security and scope corrections, version bumps, changelog, consumer and
+operator docs are in the release branch. Product commit `1b71d4e0` passed the release test
+slices, lint, JDK 17 scratch publication and isolated consumers. Signed app builds and
+Windows installers are in `dist/2.2.0`. Hub 2.2.0-beta.1 is healthy on the isolated test host.
+The owner will run the phone pass. See `logs/handoff.md` for remaining release acceptance.
+
+**2026-11-07 — Hub remediation HR1–HR5 implemented.** Signed LAN revocation updates persist across restart and gate cached organisation and linked-group trust (ADR-359). Locked HR5 gate 1,035 tests green, APK assembled and desktop compiled. HUBREADY-01..05 remain owed on real hosts. Next HR6 device identity replacement. See `docs/plans/HUB-READINESS-REMEDIATION.md`.
+
+**2026-11-07 — Hub rollout remediation HR1–HR4 implemented locally.** Scoped server queries, database/key restore validation (ADR-357), group mailbox retirement (ADR-358) and console workflows passed the final 118-server/83-Node gate and isolated Chrome verification. Follow `docs/plans/HUB-READINESS-REMEDIATION.md`. Next is HR5 LAN revocation propagation. HUBREADY-01..05 track real Hub and device acceptance separately.
+
+**2026-11-07 — Compact tabs and categorized file storage implemented.** Nearby has 64 dp paired tiles and a three-dot action menu. Transfers and Nearby use tighter spacing and descriptive headers. ADR-356 categorizes completed receives and keeps submitted voice recordings in persistent storage. APK and 83 checks green. See logs/handoff.md for TABREF-04 and RECEIVE-CAT device follow-up. Uncommitted atop Hub `f999b5a5`.
+
+**2026-11-06 — Transfers/Nearby component refinement in review, uncommitted atop Hub `f999b5a5`.** Owner rejected the broad redraw; original compact screens were restored and refined. Paired devices now use lightly rounded tiles and rectangular action buttons per owner steering. Full 102-test/APK/47-render gate and final paired sizing gate (JVM 26 + Android-host 26/APK/native, 3m5s) green. Phone/desktop/320 dp/200% captures checked; owner review next. Current authority: `docs/ui/transfers-nearby-refinement.md`; TABREF-01..03 device checks owed.
+
+**2026-11-06 — Hub workspace redesign implemented.** Organization/role/status header, compact sections and adaptive detail use existing Flash tokens and callbacks. Hub JVM 205 + Android-host 196 tests, APK assembly and desktop native renders green. Design: `docs/ui/hub-workspace-redesign.md`. HUBWORK-01..05 device/interaction checks owed. Next owner scope: minimal professional Transfers and Nearby, especially paired devices.
+
+**2026-11-06 - Chat redesign v2 merged into `dev` as `ca9ada63` from `design/chat-redesign`.** The approved mock and
+Compose port are in: app-wide wallpaper + appearance sheet, redesigned header/composer/message-list, all 67 icons
+redrawn, and the phone-pass fixes. The branch's decision is **ADR-355** (main already had ADR-354 for the radio path; the
+branch errors were renumbered **ERROR-989/990**). Device pass: `CHATUI-13`/`14` PASS, `CHATUI-15` PARTIAL on the Infinix;
+`CHATUI-01..12/16` and the desktop checks are owed. Verification on the merged tree: `:ui:chat:jvmTest`,
+`:ui:theme:jvmTest`, `:app:testDebugUnitTest`, `:desktop:jvmTest` and app/desktop compile green. Not pushed yet.
+
+**2026-11-05 - Radio path switching merged into `dev` as `bfe2c943`; host-tested, and the core bidirectional text
+path is now owner-confirmed on the Infinix + Windows radios.** After setting the phone chat's **Radio fallback** to
+**Automatic**, both directions send and acknowledge; the one-way case was `policy=NEVER`, and power-cycling the radios
+restored receive. `ERROR-985` is device-confirmed, `ERROR-988` resolved for this session; `RADIO-PATH-01` is PASS for the
+core case, while its link-down/Never-banner steps and `RADIO-PROFILE-A-01` remain owed. A two-phone session on
+2026-11-05 (Infinix + Samsung, data-preserving reinstall) passed `FGS-01`, `XFER-RETRY-01` (empty-file case) and
+`RADIO-PROFILE-A-01` (UI); the remaining radio tests are BLOCKED on physical radio hardware. Not pushed. The phone log's two
+defects are fixed: `isRadioReachable` now requires gateway + connected + key (a
+key with the link down used to make the host skip the LAN dial, after which the radio refused), the host sink no longer
+skips `ensureSession` for a radio key, the per-chat `NEVER` policy is read from the already-loaded conversation row and
+named in `radio.path` (`policy`, `pairKey`, `gateway`, `connected`), and a retry of a restored 0-byte transfer no longer
+kills the process (ERROR-984). Also fixed: Profile-M refusal is transient and `radio.rx.ack` measures from transmit;
+Android FGS promotion now precedes the Transsion keep-alive work. Authority: ADR-354, ERROR-984..986, `logs/progress.md`
+2026-11-05 radio path. Owed device checks `RADIO-PATH-01`, `XFER-RETRY-01`, `FGS-01`. The phone was not connected.
+
 **2026-11-05 - Radio gateway redesign v3 is merged into `dev` as `e76edc71` and pushed (dev `d77b8261`).** Branch
 `design/radio-gateway-v3` from `E:\FlashWork\radio-ui-v3`, based on the pushed `efc23ae8`; the merge kept the console
 audit/port entries and the radio entries. The Compose port, the review page `design/radio-v3/`, the demos and the docs are
@@ -937,7 +988,9 @@ post-merge wiring audit (2026-11-05, `docs/audit/2026-11-05-server-console-wirin
 broken API calls, but four open P1 product gaps (department-head client scope/provisioning, multi-department paging,
 revocation-list installer) and a set of new-Overview/shell regressions (audit-chain verify removed, dead retry, wrong
 activity labels, missing `dept_head` role key, display-name refresh, mobile identity, ledger caps, help list). No code was
-changed by the audit; fix the port regressions first. The old
+changed by the audit; fix the port regressions first. The live test hub on `myserver` was updated to the merged build and
+reset for first-run setup on 2026-11-05 (`setupOpen:true`; token in `~/flash-hub/.env`; backup `data.bak`; public URL
+unchanged). The old
 `docs/ui/hub-admin-console.md` is marked SUPERSEDED. Merge conflicts in the two shared logs were resolved by keeping both
 sides; the other agent's Wave 2/tombstone entries are intact. Authority: `logs/handoff.md`, `logs/progress.md`.
 

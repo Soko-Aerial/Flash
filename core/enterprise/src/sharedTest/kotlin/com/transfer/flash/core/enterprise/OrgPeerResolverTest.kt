@@ -156,6 +156,49 @@ class OrgPeerResolverTest {
     )
 
     @Test
+    fun learnedRevocationDisablesOrgPathsWithoutTouchingManualTrust() = runBlocking {
+        val org = TestOrg()
+        val peer = sampleMember("alice")
+        val dao = CountingOrgDirectoryDao()
+        val trust = TestTrustStore()
+        val id = FlashDeviceId(peer.deviceId)
+        trust.savePin(id, peer.subjectPublicKeyFingerprint)
+        trust.trustPeer(id, peer.displayName)
+        dao.upsertMembers(listOf(peer))
+        dao.setSyncState(OrgSyncStateEntity(
+            directoryEpoch = "epoch", lastSyncedVersion = 1L, offlineGraceDays = 30,
+            lastSyncSuccessMs = TestOrg.T0, lastSyncAttemptMs = TestOrg.T0, orgRootFingerprint = org.fingerprint,
+        ))
+        var list: com.transfer.flash.core.hubprotocol.certs.RevocationList? = null
+        var permitsOrg = true
+        val resolver = RealOrgPeerResolver(
+            dao, trust, clock = { TestOrg.T0 }, revocations = { list },
+            enrolledRoot = { org.fingerprint }, permitsOrg = { permitsOrg },
+        )
+        resolver.refreshFromSnapshot()
+        assertTrue(resolver.isOrgPeer("alice"))
+        assertTrue(resolver.authenticatesRevocationPeer("alice", org.fingerprint, peer.subjectPublicKeyFingerprint))
+        assertFalse(resolver.authenticatesRevocationPeer("alice", org.fingerprint, "unrelated-key"))
+        assertFalse(resolver.authenticatesRevocationPeer("alice", "foreign-root", peer.subjectPublicKeyFingerprint))
+        list = org.revocations(serials = setOf(peer.statementSerial))
+        assertTrue(resolver.isOrgPeer("alice"), "statement serials are independent of device certificate serials")
+        list = org.hashedRevocations(ids = setOf("alice"), version = 2)
+        assertTrue(resolver.isRevokedColleague("alice"))
+        assertFalse(resolver.isOrgPeer("alice"))
+        assertFalse(resolver.isKnownColleague("alice"))
+        assertNull(resolver.displayName("alice"))
+        assertTrue(resolver.searchColleagueIds("alice").isEmpty())
+        assertTrue(trust.isTrusted(id))
+        assertEquals(peer.subjectPublicKeyFingerprint, trust.getPin("alice"))
+        list = org.revocations(version = 3).copy(revokedDelegationSerials = setOf(peer.statementDelegationSerial))
+        permitsOrg = false
+        assertTrue(resolver.isRevokedColleague("alice"))
+        assertFalse(resolver.isOrgPeer("alice"))
+        assertTrue(resolver.authenticatesRevocationPeer("alice", org.fingerprint, peer.subjectPublicKeyFingerprint),
+            "the previously certified TLS key can still carry a root cutoff")
+    }
+
+    @Test
     fun ORGT_U20_resolver_is_O1_in_memory_without_db_access_during_resolve() = runBlocking {
         val dao = CountingOrgDirectoryDao()
         val trustStore = TestTrustStore()

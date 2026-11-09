@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import com.transfer.flash.core.engine.ReceivedFilePlacement
 import com.transfer.flash.core.engine.FlashPathSanitizer
 import com.transfer.flash.core.swarm.model.FileIdentity
 import com.transfer.flash.core.swarm.model.PartialHandle
@@ -11,16 +12,12 @@ import com.transfer.flash.core.swarm.model.PieceStorage
 import com.transfer.flash.core.swarm.model.SourceHandle
 import com.transfer.flash.core.swarm.model.StorageFinalizeResult
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 /**
@@ -274,67 +271,10 @@ public class AndroidPieceStorage(
             )
         }
 
-        // 2. Resolve the destination: serialize per directory, reserve the name atomically, then move onto it
-        destinationDir.mkdirs()
-        val safeName = sanitizeFileName(fileName)
-        val canonicalDestDir = destinationDir.canonicalFile
-
-        val destPrefix = if (canonicalDestDir.path.endsWith(File.separator)) canonicalDestDir.path else canonicalDestDir.path + File.separator
-        // Two finalizes of the same name (two groups, two members' copies of "photo.jpg") used to both see "free" and then
-        // the second move replaced the first file. The lock keeps the in-process case serial; the exclusive create below
-        // is what protects against another process and against the user's own files.
-        val targetFile = finalizeLockFor(canonicalDestDir.path).withLock {
-            val base: String
-            val ext: String
-            val dotIndex = safeName.lastIndexOf('.')
-            if (dotIndex > 0) {
-                base = safeName.substring(0, dotIndex)
-                ext = safeName.substring(dotIndex)
-            } else {
-                base = safeName
-                ext = ""
-            }
-            var reserved: File? = null
-            var count = 0
-            while (reserved == null) {
-                val candidateName = if (count == 0) safeName else "$base ($count)$ext"
-                val candidate = File(canonicalDestDir, candidateName).canonicalFile
-                val contained = candidate.path.startsWith(destPrefix, ignoreCase = (File.separatorChar == '\\')) ||
-                    candidate.toPath().normalize().startsWith(canonicalDestDir.toPath().normalize())
-                require(contained) {
-                    "Path traversal escape detected for destination: $candidateName (file=${candidate.path}, prefix=$destPrefix)"
-                }
-                try {
-                    // CREATE_NEW is an exclusive create (O_EXCL): it fails if ANYTHING already has this name.
-                    Files.createFile(candidate.toPath())
-                    reserved = candidate
-                } catch (_: java.nio.file.FileAlreadyExistsException) {
-                    count++
-                }
-            }
-            checkNotNull(reserved)
-        }
-
-        // 3. Move the partial file onto the placeholder this call created. REPLACE_EXISTING is only ever applied to
-        // that placeholder, never to a file that was already there.
-        try {
-            try {
-                Files.move(file.toPath(), targetFile.toPath(), StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: Exception) {
-                try {
-                    Files.move(file.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                } catch (_: Exception) {
-                    Files.copy(file.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                    file.delete()
-                }
-            }
-        } catch (e: Exception) {
-            // The placeholder is ours; remove it so a failed finalize leaves no empty file behind.
-            runCatching { targetFile.delete() }
-            return@withContext StorageFinalizeResult(
-                ok = false,
-                errorMessage = "Failed to move file to destination: ${e.message}",
-            )
+        val targetFile = try {
+            File(ReceivedFilePlacement.publish(file.path, destinationDir.path, fileName, mime))
+        } catch (e: java.io.IOException) {
+            return@withContext StorageFinalizeResult(ok = false, errorMessage = "Failed to place received file: ${e.message}")
         }
 
         val identity = FileIdentity(sizeBytes = targetFile.length(), lastModifiedMs = targetFile.lastModified())
@@ -346,11 +286,6 @@ public class AndroidPieceStorage(
     }
 
     public companion object {
-        /** One lock per destination directory, shared by every storage instance in the process. */
-        private val finalizeLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
-
-        private fun finalizeLockFor(dir: String): Mutex = finalizeLocks.getOrPut(dir) { Mutex() }
-
         /** See [com.transfer.flash.core.engine.FlashPathSanitizer.sanitizeFileName]: one rule set for every writer. */
         public fun sanitizeFileName(raw: String): String = FlashPathSanitizer.sanitizeFileName(raw)
     }

@@ -15,6 +15,7 @@ internal fun flashFileTapAction(file: FlashFileAttachmentUi): FlashFileTapAction
     file.transferStatus == FlashFileTransferStatus.Failed || file.transferStatus == FlashFileTransferStatus.Paused ->
         FlashFileTapAction.Resume
     file.transferStatus == FlashFileTransferStatus.NotDownloaded -> FlashFileTapAction.Accept
+    file.transferStatus == FlashFileTransferStatus.AwaitingAcceptance -> FlashFileTapAction.Nothing
     file.localUri == null -> FlashFileTapAction.Nothing
     file.mimeType.startsWith("video/") -> FlashFileTapAction.PlayVideo
     else -> FlashFileTapAction.Open

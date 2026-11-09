@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "server/src/main/resources/admin-ui/css/redesign.css"
+        ],
+        "createdAt": "2026-11-07T11:08:27.157Z",
+        "reason": "Codex verified the approved 2026-11-05 Hub console design record section 7. Banner and toast edges convey operational severity alongside a glyph and text."
+      }
+    ]
+  }
+}

@@ -127,6 +127,7 @@ import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.settings.FlashSettingsScreen
 import com.transfer.flash.ui.settings.FlashThemeMode
+import com.transfer.flash.core.common.model.FlashChatWallpaper
 import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.ui.shell.FlashBottomNav
 import com.transfer.flash.ui.shell.FlashBottomNavDefaults
@@ -837,6 +838,10 @@ fun FlashApp(
     val persistScope = rememberCoroutineScope()
 
     val themeModeKey by store.themeMode.collectAsState(initial = FlashSettingsDataStore.THEME_MODE_SYSTEM)
+    // ADR-355: one app-wide chat wallpaper, chosen from the conversation menu.
+    val chatWallpaper by store.chatWallpaper.collectAsState(initial = FlashChatWallpaper.Default)
+    val chatWallpaperCustom by store.chatWallpaperCustom
+        .collectAsState(initial = FlashChatWallpaper.DefaultCustomColour)
     val dynamicAccent by store.dynamicAccent.collectAsState(initial = false)
     val hapticsEnabled by store.hapticsEnabled.collectAsState(initial = true)
     val backgroundTransfers by store.backgroundTransfers.collectAsState(initial = false)
@@ -1070,6 +1075,10 @@ fun FlashApp(
                     engine = engine,
                     settings = settings,
                     onSettingsChange = onSettingsChange,
+                    chatWallpaper = chatWallpaper,
+                    chatWallpaperCustom = chatWallpaperCustom,
+                    onSetChatWallpaper = { wallpaper -> persistScope.launch { store.setChatWallpaper(wallpaper) } },
+                    onSetChatWallpaperCustom = { hex -> persistScope.launch { store.setChatWallpaperCustom(hex) } },
                     pendingNotificationConversation = pendingNotificationConversation,
                     pendingCallAnswer = pendingCallAnswer,
                     pendingShare = pendingShare,
@@ -1115,6 +1124,10 @@ private fun FlashShell(
     engine: AppEngine,
     settings: FlashSettingsModel,
     onSettingsChange: (FlashSettingsModel) -> Unit,
+    chatWallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
+    chatWallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
+    onSetChatWallpaper: ((FlashChatWallpaper) -> Unit)? = null,
+    onSetChatWallpaperCustom: ((String) -> Unit)? = null,
     pendingNotificationConversation: MutableStateFlow<String?>,
     pendingCallAnswer: MutableStateFlow<Boolean>,
     pendingShare: MutableStateFlow<PendingSharePayload?>,
@@ -1607,9 +1620,24 @@ private fun FlashShell(
     // toasts so tapping Pair always gives feedback instead of silently doing nothing. Keyed on the
     // coordinator instance so collection (re)starts once the engine boots.
     LaunchedEffect(engine.pairing) {
+        android.util.Log.i(
+            "FLASH_PAIRING",
+            "shell.coordinator bound=${engine.pairing != null}",
+        )
         engine.pairing?.messages?.collect { message ->
             Toast.makeText(toastContext, message, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    // Diagnostic for ERROR-1010/1013: one line per visible phase, not per countdown second. Proves
+    // whether the shell's consent-card model is null while the coordinator still holds an active
+    // request (drawing/binding problem) or null together (protocol problem).
+    LaunchedEffect(pairingModel?.phase) {
+        android.util.Log.i(
+            "FLASH_PAIRING",
+            "shell.model phase=${pairingModel?.phase?.name ?: "null"} " +
+                "peer=${pairingModel?.request?.peerName ?: "-"}",
+        )
     }
 
     var pendingShareRecipient by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -1937,9 +1965,6 @@ private fun FlashShell(
                     trusted = trustedPeers,
                     discovered = discoveredRows,
                 ),
-                pairingRequest = pairingModel?.request,
-                pairingPhase = pairingModel?.phase ?: FlashPairingPhase.Idle,
-                pairingSecondsLeft = pairingModel?.secondsLeft ?: 0,
                 scan = sweepState.toNearbyScan(),
                 discoveryQuiet = FlashNearbyMath.discoveryQuiet(
                     pairedPeers = trustedPeers.size,
@@ -2086,6 +2111,10 @@ private fun FlashShell(
         val draftOwnerId = conversationId ?: selectedChatConversationId
         FlashConversationScreen(
             state = conversationState,
+            chatWallpaper = chatWallpaper,
+            chatWallpaperCustom = chatWallpaperCustom,
+            onSetChatWallpaper = onSetChatWallpaper,
+            onSetChatWallpaperCustom = onSetChatWallpaperCustom,
             onBack = {
                 chatRepository.closeConversation()
                 if (twoPane) {
@@ -2170,46 +2199,46 @@ private fun FlashShell(
             onVoiceRecordingStarting = DiscoveryEngineHolder::beginVoiceNote,
             onVoiceRecordingStopped = DiscoveryEngineHolder::endVoiceNote,
             onSendVoiceMessage = { localPath, durationMs, amplitudes ->
-                // B9: a captured voice note rides the same P2P transfer pipeline as any
-                // file, then lands as an inline playback card via sendAttachment (audio/*).
                 val peerId = conversationId
                 val transfers = engine.transfers
                 if (peerId != null && transfers != null) {
                     val fileName = "Voice message.m4a"
-                    val size = runCatching {
-                        android.net.Uri.parse(localPath).path?.let { java.io.File(it).length() } ?: 0L
-                    }.getOrDefault(0L)
-                    if (conversationState.header.isGroup) {
-                        scope.launch(Dispatchers.IO) {
-                            groupFileSender.send(
-                                groupId = peerId,
-                                uri = localPath,
-                                displayName = fileName,
-                                sizeBytes = size,
-                                mimeType = "audio/mp4",
-                                voiceDurationMs = durationMs,
-                                voiceAmplitudes = amplitudes,
-                            )
+                    val isGroup = conversationState.header.isGroup
+                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+                    val target = FlashDevice(
+                        id = FlashDeviceId(peerId),
+                        friendlyName = conversationState.header.title,
+                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                    )
+                    scope.launch(Dispatchers.IO) {
+                        val file = runCatching {
+                            val source = requireNotNull(android.net.Uri.parse(localPath).path)
+                            val root = java.io.File(toastContext.filesDir, "sent")
+                            java.io.File(com.transfer.flash.core.engine.ReceivedFilePlacement.publish(
+                                source, root.path, fileName, "audio/mp4",
+                            ))
+                        }.getOrNull()
+                        if (file == null) {
+                            withContext(Dispatchers.Main) {
+                                android.widget.Toast.makeText(toastContext,
+                                    "Couldn’t save the voice message. Try recording again.", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            return@launch
                         }
-                    } else {
-                        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
-                        val targetDevice = FlashDevice(
-                            id = FlashDeviceId(peerId),
-                            friendlyName = conversationState.header.title,
-                            transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                        )
-                        scope.launch(Dispatchers.IO) {
-                            val transferId = transfers.sendFile(targetDevice, localPath, fileName, size).getOrNull()
+                        val uri = android.net.Uri.fromFile(file).toString()
+                        val size = file.length()
+                        if (isGroup) {
+                            groupFileSender.send(
+                                groupId = peerId, uri = uri, displayName = fileName, sizeBytes = size, mimeType = "audio/mp4",
+                                voiceDurationMs = durationMs, voiceAmplitudes = amplitudes,
+                            )
+                        } else {
+                            val transferId = transfers.sendFile(target, uri, fileName, size).getOrNull()
                             if (transferId != null) {
                                 chatRepository.sendAttachment(
-                                    conversationId = peerId,
-                                    transferId = transferId.value,
-                                    fileName = fileName,
-                                    mimeType = "audio/mp4",
-                                    sizeBytes = size,
-                                    localPath = localPath,
-                                    voiceDurationMs = durationMs,
-                                    voiceAmplitudes = amplitudes,
+                                    conversationId = peerId, transferId = transferId.value, fileName = fileName,
+                                    mimeType = "audio/mp4", sizeBytes = size, localPath = uri,
+                                    voiceDurationMs = durationMs, voiceAmplitudes = amplitudes,
                                 )
                             }
                         }
@@ -2809,8 +2838,6 @@ private fun FlashShell(
                 chatRepository.openConversation(trusted.id)
                 nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
             },
-            onAcceptPairing = { engine.pairing?.acceptLocal() },
-            onDeclinePairing = { engine.pairing?.declineLocal() },
             onManualConnect = { host, port ->
                 scope.launch {
                     val net = engine.network
@@ -3540,17 +3567,17 @@ private fun FlashShell(
             )
         }
 
-        if (nav.current.destination != FlashDestination.NearbyDevices) {
-            pairingModel?.request?.let { request ->
-                FlashPairingDialog(
-                    request = request,
-                    phase = pairingModel?.phase ?: FlashPairingPhase.Idle,
-                    secondsLeft = pairingModel?.secondsLeft ?: 0,
-                    onAccept = { engine.pairing?.acceptLocal() },
-                    onDecline = { engine.pairing?.declineLocal() },
-                    onDismiss = { engine.pairing?.declineLocal() },
-                )
-            }
+        // ERROR-1010: one shell-level card serves every tab, including Nearby. It reads the live
+        // coordinator directly so a tab transition cannot hide or duplicate an active request.
+        pairingModel?.request?.let { request ->
+            FlashPairingDialog(
+                request = request,
+                phase = pairingModel?.phase ?: FlashPairingPhase.Idle,
+                secondsLeft = pairingModel?.secondsLeft ?: 0,
+                onAccept = { engine.pairing?.acceptLocal() },
+                onDecline = { engine.pairing?.declineLocal() },
+                onDismiss = { engine.pairing?.declineLocal() },
+            )
         }
 
         // C7 (calling): full-screen call overlay. Topmost sibling so it renders above

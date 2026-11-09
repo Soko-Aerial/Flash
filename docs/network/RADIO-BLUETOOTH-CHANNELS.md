@@ -135,7 +135,7 @@ is why ADR-214 probes channels instead of trusting SDP.
 | `radio.link.up link=COM15_@115200` | Windows SPP link open; KISS bytes can flow |
 | `radio.link.up link=RFCOMM@<addr>/ch<N>` | Android socket open |
 | `radio.rx.text`, `radio.tx.ack` | frames actually crossed the air in each direction |
-| `radio.path result=not_reachable gateway=true connected=true` | the link is fine: this **peer** has no radio pairing key here (ADR-227), not a radio fault |
+| `radio.path result=not_reachable gateway=true connected=true` | the link is fine; read the fields: `policy=NEVER` is the per-chat choice, `pairKey=false` is a missing 32-byte key, `gateway=false`/`connected=false` is the link (ADR-354) |
 | `radio.path result=refused` + `radio.send.fail reason=…` | the radio step was reached and the bridge said no (see the reason) |
 | `chat.path path=hub` | the message went to the organisation hub, **not** the radio |
 | `chat.path path=hub_mailbox` | the radio refused (temporarily) and the hub is holding it |

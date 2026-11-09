@@ -8,6 +8,98 @@ Unless an entry says *device-verified*, it was built, unit-tested and compiled, 
 laptops**. The only things the owner has device-verified so far are pairing, chat, 1:1 calls, file transfers and upgrading an
 install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
+## Unreleased
+
+## SDK 2.2.0-beta.3 - 2026-11-08
+
+- Added verified Linux AAPT2 and Compose Desktop metadata checksums for JitPack. The stable
+  app and Hub beta are unchanged.
+
+## SDK 2.2.0-beta.2 - 2026-11-08
+
+- Added verified Maven Central checksums for four JUnit BOM Gradle metadata files used by
+  JitPack's cold build. Beta.2 is available as a [Maven repository ZIP](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2);
+  JitPack stopped on a separate Linux dependency check. The Android and Windows app and Hub
+  release tags stay the same.
+
+## 2.2.0 - 2026-11-08
+
+### Flash for Android and Windows 2.2.0
+
+- Redesigned conversations with a new header, composer, message layout, icons and an app-wide
+  wallpaper and appearance sheet. Nearby uses compact paired-device tiles, and Transfers has
+  tighter rows and clearer state summaries. The Hub workspace shows the organisation, role and status.
+- New completed receives use file-type folders under the configured receive root on both
+  platforms. Direct, Hub and swarm downloads share the placement rules. Submitted voice
+  notes survive a restart and are excluded from Android cloud backup and device transfer.
+- Safer pairing revocation and delivery. A peer that misses the first revoke can receive
+  it again, and affected queued messages fail visibly. Paired LAN peers can exchange verified
+  Hub revocation lists while the Hub is unreachable.
+- Pairing approval appears on Nearby without changing tabs, and manual re-pairing after a
+  revoke checks the identity from the current TLS connection. A file offer waiting for consent
+  no longer shows Resume, and revoke no longer marks completed LAN transfers as failed.
+- The Windows About screen reports 2.2.0 and the empty Transfers page shows its heading.
+- Resume checks that the source still matches the original file. A changed source cancels
+  the attempt so old and new chunks cannot be mixed. Retrying a restored empty transfer
+  no longer crashes Android.
+- Discovery, transfer, startup, messaging, calls and desktop received performance and
+  reliability work. Release builds produce a universal Android APK and per-ABI APKs.
+- Push-to-talk keeps the first microphone packet when capture starts before the sender.
+- The LAN TLS trust manager checks the pinned leaf certificate on Android and JVM. This
+  closes a critical impersonation issue in peer certificate-chain handling (ERROR-815).
+
+### Upgrading the apps
+
+- Android uses version code `5`. Install over a release-signed 2.1.0 using the same APK
+  variant and signing key. The older debug-signed 2.0.0 beta requires a separate reinstall,
+  which removes local app data. The 2.1.0 signing instructions below identify that build.
+- Android and Windows migrate the encrypted database from Room schema 19 through 23.
+  Preserve the existing application data and keys during the upgrade. The release test
+  matrix covers chats, pairings, groups, and an interrupted transfer on real installs.
+- Existing received files stay where their transfer records point. New files use categories
+  under the same selected receive root. Restarted transfers validate the source before resuming.
+
+### Release verification
+
+- The release-wide host and console suites passed after reruns of two timing-sensitive tests.
+  Pairing passed on two Android phones with the debug build and between Android and Windows.
+- Signed Android clean-install and in-place upgrade checks, Windows MSI/EXE install and upgrade,
+  and the full Android–Windows file-transfer check were not completed. Keep a backup before an
+  upgrade you rely on. The Windows installers are not Authenticode-signed.
+
+### KMP library 2.2.0-beta.1
+
+- The Android facade exposes UI-free pairing via `FlashEngine.pairing`, including the
+  comparison-code flow, persisted trust and revocation. The JVM readiness seam is
+  `FlashReadiness` / `awaitReady()`. See the [developer guide](docs/developer-guide/README.md).
+- `core-messaging` exports the enterprise module used by its directory and join return types.
+  The WebRTC bindings fork is published with the same library version.
+- The release coordinate uses `com.github.Soko-Aerial.Flash`. Android and Windows application
+  builds use the independent `v2.2.0` tag.
+
+### Hub server 2.2.0-beta.1
+
+- The admin console has a redesigned overview and a join-request inbox. Department paging,
+  join approvals and announcement editing enforce the current scope. Department reassignment
+  requires step-up confirmation.
+- Hub rollout remediation HR1–HR5 adds scoped directory and console queries, database and
+  key validation, group mailbox retirement, console workflows and signed LAN revocation
+  propagation. A root-signed revocation imported at startup removes affected memberships
+  before the Hub serves requests.
+- The standalone distribution reports its version in Hub info, management health and
+  Console Settings → About. See the [operator guide](docs/deploy/HUB-SERVER-DEPLOYMENT.md)
+  for trusted TLS, backups and data restores when rolling back across identity schema v3.
+
+### Experimental
+
+- The Hub and admin console are a pilot for isolated test deployments. Real-host checks and
+  HR6–HR11 remain open. Hub-linked group chat is readable by the Hub. Sealed file payloads
+  use a separate encryption path.
+- The Android screen presenter and radio gateway data and voice paths need physical-device
+  validation. LAN remains the supported discovery and transfer path. Wi-Fi Direct is planned.
+- The KMP library remains a beta. Android and JVM consumption are checked separately from
+  the applications.
+
 ## Library `2.1.0-beta.3` - 2026-10-23 (JitPack tag `v2.1.0-beta.3`, not an app release)
 
 - **Added: `FlashEngine.pairing`.** `Flash.create()` now builds a pairing coordinator and routes `FLASH_PAIR` frames to it, so a host

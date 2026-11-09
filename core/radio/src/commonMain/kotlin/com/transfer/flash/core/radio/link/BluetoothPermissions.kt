@@ -4,22 +4,17 @@ package com.transfer.flash.core.radio.link
  * Which Bluetooth permissions a classic RFCOMM client needs at runtime, by Android API level. Pure data so it is unit-tested on
  * every target; the Android adapter (`AndroidBluetoothCatalog`) asks the OS about exactly these.
  *
- * Source (checked 2026-10-09, official): https://developer.android.com/develop/connectivity/bluetooth/bt-permissions
+ * Source (checked 2026-11-08, official): https://developer.android.com/develop/connectivity/bluetooth/bt-permissions
  *  - API 31 (Android 12) and up: BLUETOOTH_CONNECT is a runtime permission needed to list bonded devices and to connect;
  *    BLUETOOTH_SCAN is needed for discovery and for `cancelDiscovery()`. Both are in the "Nearby devices" group, so the user
  *    sees one prompt.
  *  - API 30 and lower: the install-time permissions BLUETOOTH (list/connect) and BLUETOOTH_ADMIN (the page names it for
  *    "initiate device discovery or manipulate Bluetooth settings") apply, with `android:maxSdkVersion="30"`; there is no
- *    runtime prompt for them. Discovery on those versions also needs location, which this feature does not use: it only
- *    connects to devices already paired in system settings.
- *  - `cancelDiscovery()` before a connect (a running discovery slows a connect) is the one call that may need BLUETOOTH_ADMIN
- *    on API 30 and lower. The page above does NOT say so for that method, and the BluetoothAdapter reference was not read in
- *    full (checked 2026-10-09), so treat it as unverified; the adapter wraps the call in `runCatching`, so a refusal only
- *    costs connect latency.
- *  - R6 (review 2026-10-09): the app manifest currently declares NO Bluetooth permission on purpose (the RFCOMM link is
- *    groundwork, nothing requests them). Before wiring it up, declare BLUETOOTH and BLUETOOTH_ADMIN (maxSdkVersion 30),
- *    BLUETOOTH_CONNECT and BLUETOOTH_SCAN (neverForLocation), and check the Play "Nearby devices" declaration. Until then
- *    this object describes what a future declaration must contain, not what ships.
+ *    runtime prompt for them. The host must also handle the legacy location permission if it uses active discovery.
+ *  - The [BluetoothAdapter reference](https://developer.android.com/reference/android/bluetooth/BluetoothAdapter#cancelDiscovery())
+ *    lists BLUETOOTH_ADMIN for cancelling discovery on the legacy path and BLUETOOTH_SCAN on the modern path.
+ *  - The Flash app declares the Bluetooth permissions for the radio gateway. SDK hosts supply their own manifest
+ *    and runtime permission requests.
  */
 public object BluetoothPermissions {
     /** First API level with the split Bluetooth permissions (Android 12). */

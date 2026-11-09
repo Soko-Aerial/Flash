@@ -63,7 +63,7 @@ A library consumer that needs LOW behaviour today must apply the profile values 
 
 ### Step 2: Single-stream, bounded transfer queues
 
-`FlashTransferProfile.LOW` is: `streamCount = 1`, `chunkSizeBytes = 32 KiB` (adaptive ceiling 64 KiB), `feedBufferFrames = 2`, `sharedBufferFrames = 4`, `allowVideoThumbnails = false`, `maxImagePreviewDimension = 256`, `sqliteCacheSizeKb = 1024`. The (internal) `MultiStreamDispatcher` is given `feedBufferFrames` and `sharedBufferFrames` by the transfer repository, so a bounded queue is about `(2 + 4) frames x 32 KiB = ~192 KiB` of in-flight heap per transfer. (The chunk size bounds in `Chunker` are 16 KiB to 256 KiB, so 32 KiB is within range.)
+`FlashTransferProfile.LOW` is: `streamCount = 1`, `chunkSizeBytes = 32 KiB` (adaptive ceiling 64 KiB), `feedBufferFrames = 2`, `sharedBufferFrames = 4`, `allowVideoThumbnails = false`, `maxImagePreviewDimension = 256`, `sqliteCacheSizeKb = 1024`. The (internal) `MultiStreamDispatcher` is given `feedBufferFrames` and `sharedBufferFrames` by the transfer repository, so a bounded queue is about `(2 + 4) frames x 32 KiB = ~192 KiB` of in-flight heap per transfer. (The chunk size bounds in `Chunker` are 16 KiB to 1 MiB, so 32 KiB is within range.)
 
 ### Step 3: SQLite cache
 

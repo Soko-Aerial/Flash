@@ -1,5 +1,17 @@
 # Android Platform Notes
 
+## 2026-11-08 — Permissions for SDK hosts using transfers or radio
+
+- **Android 14 (API 34) and later:** An app targeting API 34+ must declare the permission for
+  each foreground-service type it uses. For `dataSync`, that is `FOREGROUND_SERVICE_DATA_SYNC`.
+  The Flash app already declares it; an SDK host supplies its own service and manifest.
+  Verified against the [foreground-service types](https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync).
+- **Android 12 (API 31) and later:** A modern radio host needs runtime `BLUETOOTH_CONNECT` to
+  list and connect to bonded radios, and `BLUETOOTH_SCAN` for discovery or cancelling discovery.
+  Cap legacy `BLUETOOTH`/`BLUETOOTH_ADMIN` declarations at API 30 and handle location permission
+  if actively discovering on older Android. Verified against the [Bluetooth permission guide](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions)
+  and [`BluetoothAdapter.cancelDiscovery`](https://developer.android.com/reference/android/bluetooth/BluetoothAdapter#cancelDiscovery()).
+
 ## 2026-11-01 — JCA reset preserves initialized capability; cache Provider selection, not keyed operations (ADR-312/350)
 
 ### Android version / APIs
@@ -956,3 +968,41 @@ https://developer.android.com/reference/android/provider/DocumentsContract.Docum
   difference refuses the resume. A `file://` URI uses
   `File.length()`/`lastModified()`. Querying the two optional columns together would let one unsupported column fail the
   whole cursor and lose the other signal, so they are separate queries.
+
+### 8. Foreground-service start deadline (API 26+) - **verified**
+https://developer.android.com/reference/android/content/Context#startForegroundService(android.content.Intent) (fetched 2026-11-05)
+https://developer.android.com/develop/background-work/services/fgs (fetched 2026-11-05)
+
+- `Context.startForegroundService()` requires the service to call `startForeground()` within five seconds. If it does not, the
+  system throws `android.app.RemoteServiceException$ForegroundServiceDidNotStartInTimeException` on the main thread; the process
+  is killed, not merely warned.
+- **Project implication:** `FlashBackgroundService.onCreate` now promotes first, before constructing or starting
+  `TranssionHiberKeepAlive`; the keep-alive start is dispatched to `Dispatchers.Default`. This is a platform deadline, not a
+  device-specific workaround. The 2026-10-26 Infinix log is the evidence (`ERROR-984` bundle).
+
+### 9. App-specific receive and voice storage (ADR-356) — verified documentation
+
+Checked 2026-11-07 for the app's API 24+ support. Android distinguishes persistent app-specific files from cache files and provides app-specific external storage without new broad storage permission. Flash uses its existing app-specific FlashReceived directory for completed receives and a dedicated private sent voice directory for submitted recordings. FileProvider grants use the existing receive roots and the new narrow `sent/Voice messages/` root. Export uses the existing sharing flow. Device playback and export remain RECEIVE-CAT-02. [Android Developers app-specific storage](https://developer.android.com/training/data-storage/app-specific)
+
+## 2026-11-07 — Offline Hub revocation state in app-private storage
+
+**Verified against Android Developers for API 21+, including Flash's minSdk 24.** `Context.getNoBackupFilesDir()` supplies an internal directory excluded from automatic remote backup and needs no extra permissions. Flash derives the current directory path at runtime and stores signed revocation state beneath it. This preserves the list across process restart and avoids restoring an older list from Android's automatic backup. [Android Developers Context reference](https://developer.android.com/reference/android/content/Context#getNoBackupFilesDir())
+
+The existing Android file helper keeps the temporary and destination files in the same directory, checks rename success and now syncs revocation-list writes before replacement. The Windows Android-host JVM uses atomic NIO replacement because Windows `File.renameTo` failed when a destination already existed. Physical Android replacement remains part of HUBREADY-04. [Android Developers File reference](https://developer.android.com/reference/java/io/File#renameTo(java.io.File))
+
+## 2026-11-07 — Exclude submitted voice recordings from backup
+
+**Verified against Android Developers.** Android 7–11 (API 24–30) uses the manifest's
+`fullBackupContent` rules. Android 12+ (API 31+) uses `dataExtractionRules`, with separate
+cloud backup and device-to-device sections. A file-domain exclusion applies recursively
+under `filesDir`. Flash excludes `sent` in all three applicable sections, so existing and new
+submitted recordings keep their local playback paths. Physical restore verification is
+REL22-01. [Android Developers Auto Backup documentation](https://developer.android.com/identity/data/autobackup).
+
+## 2026-11-07 — Widget pinning API guard
+
+**Verified against Android Developers.** `AppWidgetManager.requestPinAppWidget` and its
+launcher capability query require Android 8.0 (API 26). Flash still supports API 24–25.
+The widget helper returns false below API 26 and annotates that guarantee for release lint.
+[AppWidgetManager](https://developer.android.com/reference/android/appwidget/AppWidgetManager#requestPinAppWidget(android.content.ComponentName,%20android.os.Bundle,%20android.app.PendingIntent))
+and [ChecksSdkIntAtLeast](https://developer.android.com/reference/kotlin/androidx/annotation/ChecksSdkIntAtLeast).

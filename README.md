@@ -17,12 +17,13 @@ is no backend to run and nothing to sign up for. Free and open source under Apac
 Built as a set of small Kotlin Multiplatform library modules (Android and desktop JVM targets) so you can
 take the whole engine or just the transport pieces you need. Supports **Android 7.0 (API 24) and up**.
 
-[![](https://jitpack.io/v/Kali452345/Flash.svg)](https://jitpack.io/#Kali452345/Flash)
+[![](https://jitpack.io/v/Soko-Aerial/Flash.svg)](https://jitpack.io/#Soko-Aerial/Flash)
 
 ## Get the app
 
-The latest Android APK and Windows installers (`Flash-2.1.0.msi`, `Flash-2.1.0.exe`) are on the
-[Releases page](https://github.com/Kali452345/Flash/releases), with a `SHA256SUMS.txt` to check them against.
+Download the signed Android APK and the Windows installers from the
+[Releases page](https://github.com/Soko-Aerial/Flash/releases). The 2.2.0 release uses
+`Flash-2.2.0.msi` and `Flash-2.2.0.exe`. Verify downloads against the release’s `SHA256SUMS.txt`.
 
 - **Android 7.0 (API 24) or newer.** Allow "install unknown apps" for your browser or file manager, then open the APK.
   **If you have `v2.0.0-beta` installed, uninstall it first** (this deletes its chats and pairings): that build was signed with a
@@ -30,7 +31,7 @@ The latest Android APK and Windows installers (`Flash-2.1.0.msi`, `Flash-2.1.0.e
 - **Windows 10/11.** Per-user install, no administrator rights. The installers are not code-signed yet, so SmartScreen shows
   "unknown publisher": choose *More info*, then *Run anyway*.
 - Both devices must be on the same Wi-Fi network (or one phone's hotspot) to find each other.
-- The Flash Hub (organisation server) and the Radio gateway are experimental and not part of this release; see
+- The Flash Hub ships on a separate experimental server beta line. The Radio gateway and Android screen presenter are experimental. See
   [CHANGELOG.md](CHANGELOG.md).
 
 ## Install the library
@@ -42,6 +43,7 @@ one umbrella artifact (`core-engine`) that wires everything together:
 // settings.gradle.kts
 dependencyResolutionManagement {
     repositories {
+        google()
         mavenCentral()
         maven { url = uri("https://jitpack.io") }
     }
@@ -51,59 +53,64 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 
-The install snippet targets the `v2.1.0-beta.3` tag; what changed since `v2.0.0-beta` is in [CHANGELOG.md](CHANGELOG.md). See [Published modules](#published-modules) if
-you want only the lightweight transport pieces without the encrypted database.
+The SDK beta `v2.2.0-beta.3` is available on JitPack. Independent Android and JVM projects
+compiled against this public tag; see [REL22-04](docs/testing/TEST-BACKLOG.md#rel22-04--published-beta-resolves-from-the-current-jitpack-coordinate).
+For a direct download, the [SDK beta.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
+includes a Maven repository ZIP, a SHA-256 manifest, and instructions for `com.transfer.flash` coordinates.
+See [the changelog](CHANGELOG.md) for upgrade notes and [published modules](#published-modules) for smaller dependencies.
 
 ## Quick start
 
-One call builds and starts the whole engine — discovery, advertising, the network
-layer, and transfers all share a single coroutine scope. This snippet is the same sequence of
-calls as `sample/consumer/.../QuickStart.kt`, which is a compile-only module (it takes a
-`displayName` parameter and returns the `FlashResult`; this copy trims both), so a rename in the
-real API breaks that build. Checked against the code on 2026-10-09:
+One call builds and starts the engine. Keep it alive in your host while you observe peers, pair,
+and transfer files. The Android `:sample:consumer` module exercises the same public API.
 
 ```kotlin
+import android.content.Context
+import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.engine.Flash
 import com.transfer.flash.core.engine.FlashConfig
+import com.transfer.flash.core.engine.FlashEngine
+import com.transfer.flash.core.transfer.model.FlashTransferId
 import kotlinx.coroutines.flow.first
 
 // Call off the main thread: create() opens the encrypted database synchronously.
-suspend fun sendFirstFileToAnyPeer(context: Context, fileUri: String, fileSize: Long) {
-    // 1. One call wires + starts discovery, advertising, network, and transfers.
-    val engine = Flash.create(context, FlashConfig(displayName = "My Device"))
-    try {
-        // 2. Suspend until a peer appears on the LAN, then take the first one.
-        val peer = engine.discovery.discoveredEndpoints
-            .first { it.isNotEmpty() }
-            .first()
+fun createFlashEngine(context: Context): FlashEngine =
+    Flash.create(context, FlashConfig(displayName = "My Device"))
 
-        // 3. Send. The receiver sees an OFFER it must accept (autoAcceptIncoming = false).
-        engine.transfers.sendFile(
-            targetDevice = peer.device,
-            fileUri = fileUri,
-            displayName = "photo.jpg",
-            fileSize = fileSize,
-        )
+// Call after pairing. fileUri is the content URI from Android's file picker.
+suspend fun offerFile(
+    engine: FlashEngine,
+    pairedPeerId: String,
+    fileUri: String,
+    fileSize: Long,
+): FlashResult<FlashTransferId> {
+    val peer = engine.discovery.discoveredEndpoints
+        .first { endpoints -> endpoints.any { it.deviceId.value == pairedPeerId } }
+        .first { it.deviceId.value == pairedPeerId }
 
-        // Observe live progress anywhere via the StateFlow:
-        //   engine.transfers.activeTransfers.collect { list -> /* update UI */ }
-    } finally {
-        // 4. One off-switch: cancels the scope, stops radios, closes the DB. Idempotent.
-        engine.close()
-    }
+    return engine.transfers.sendFile(
+        targetDevice = peer.device,
+        fileUri = fileUri,
+        displayName = "photo.jpg",
+        fileSize = fileSize,
+    )
 }
 ```
+
+By default the receiver must accept the offer. A successful result gives you a transfer ID, and
+`engine.transfers.activeTransfers` reports progress and completion. Close the engine when the host
+is done with it, after any transfers you want to finish.
 
 ### `FlashConfig` knobs
 
 | Field | Default | Meaning |
 |---|---|---|
 | `displayName` | `null` | Friendly name advertised to peers; falls back to the stored device name. |
-| `enableResume` | `true` | Persist transfer state so interrupted transfers resume across app restarts. |
+| `enableResume` | `true` | `Flash.create` persists transfer state on Android for resume across restarts. The bundled desktop factory resumes within a session only; a custom JVM factory controls its own persistence. |
 | `autoAcceptIncoming` | `false` | `true` = accept inbound offers automatically; `false` (default) = gate each with `engine.transfers.acceptIncoming(id)` / `declineIncoming(id)`. |
 | `receivedFilesPath` (Android also accepts the legacy `receivedFilesDir: File`) | `null` | Directory for received files; defaults to app-internal storage. |
 
@@ -150,7 +157,7 @@ Flash includes a comprehensive, modular documentation suite located in [`docs/de
 |---|---|
 | [**Beginner's Guide**](docs/developer-guide/getting-started/beginner-guide.md) | Step-by-step setup, prerequisites, Maven coordinates, and complete "Hello World" connection & file transfer tutorial. |
 | [**Architecture Overview**](docs/developer-guide/getting-started/architecture-overview.md) | Multi-module hierarchy, dependency boundaries, lifecycle management, and reactive state paradigms. |
-| [**15 Per-Module Guides**](docs/developer-guide/README.md#1-documentation-map) | Dedicated documentation for each of the 11 `:core:*` and 4 `:ui:*` modules. Written 2026-09 to 2026-10; each guide carries a verification note where it was re-checked against the code. |
+| [**18 Per-Module Guides**](docs/developer-guide/README.md#1-documentation-map) | Documentation for each of the 14 `:core:*` and four `:ui:*` library modules. |
 | [**Ultra-Low Resource Devices (Scenario 1)**](docs/developer-guide/scenarios/scenario-1-ultra-low-resource.md) | Building for devices far more constrained than standard phones (<512MB RAM, IoT, POS, smartwatches, 2.4GHz radios) with memory caps and single-stream transfers. |
 | [**Custom Extensions & Architecture (Scenario 2)**](docs/developer-guide/scenarios/scenario-2-custom-extensions.md) | Custom transports (Bluetooth/BLE, LoRa, USB OTG), custom storage sinks, HSM hardware cryptography, and UI whitelabeling. |
 | [**Open Protocol Specification (Scenario 3)**](docs/developer-guide/scenarios/scenario-3-open-protocol-interop.md) | Complete wire protocol specification with runnable client samples in **Python**, **Rust**, and **Go**. |
@@ -162,12 +169,13 @@ Flash avoids hardcoded flagship assumptions by grading CPU, memory, radio airtim
 
 | Profile Tier | Target Hardware | Streams | Base Chunk | Queue Depths | Video Calls | Voice / PTT | Media Previews |
 |---|---|---|---|---|---|---|---|
+| **`ULTRA_LOW`** | Severely constrained handsets, slow storage, 2.4 GHz only | **1 stream** | 16 KB / 32 KB | 2 / 2 frames | 240p @ 10fps (320x240) | 60ms Opus DTX | 256px, no video thumbnails |
 | **`LOW`** | <512MB RAM, IoT, POS, 2.4GHz radio | **1 stream** | 32 KB / 64 KB | 2 / 4 frames (<250 KB heap) | 360p @ 15fps (480x360) | 60ms Opus DTX | File icons (skip heavy video thumbs) |
 | **`MEDIUM`** | Mid-tier phones, older laptops | **2 streams** | 64 KB | 8 / 16 frames | 540p @ 24fps | 20ms Opus | 512px downsampled |
 | **`HIGH`** | Flagships, desktop workstations | **4 streams** | 64 KB (adaptive to 1MB) | 16 / 64 frames (pipe saturation) | 1080p @ 30fps | 20ms Opus | Full 1024px + video keyframes |
 
 The Video Calls column is the **1:1 call** capture profile (`FlashVideoProfile`). **Group** video calls cap what a
-member sends lower (ADR-098: `HIGH` 540p, `MEDIUM` and `LOW` 360p), and a **screen share** uses its own ladder
+member sends lower (ADR-098: `HIGH` 540p, other tiers 360p), and a **screen share** uses its own ladder
 (ADR-102). Chunk sizes and stream counts are `FlashTransferProfile`; the table's queue depths and voice/preview
 columns were not re-derived on 2026-10-09.
 
@@ -182,13 +190,13 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta.3")
-    implementation("com.github.Kali452345.Flash:ui-callui:v2.1.0-beta.3")   // optional in-call screen
+    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.3")   // optional in-call screen
 }
 ```
 
 `core-calling` brings the WebRTC bindings with it. Since 2.1.0-beta those are Flash's own published artifact,
-`com.github.Kali452345.Flash:webrtc-kmp-android` (and `webrtc-kmp-jvm` for desktop), a vendored fork of
+`com.github.Soko-Aerial.Flash:webrtc-kmp-android` (and `webrtc-kmp-jvm` for desktop), a vendored fork of
 `com.shepeliev:webrtc-kmp` (Apache-2.0; the changes are listed in `third_party/webrtc-kmp/MODIFICATIONS.md`) that is
 built and published in the same JitPack build as the other modules, so there is nothing extra to add. A **desktop JVM**
 app that places calls must also choose the native libwebrtc for its operating system, for example
@@ -317,20 +325,23 @@ it needs.
 | `ACCESS_WIFI_STATE` | Read Wi-Fi/hotspot state to pick the right interface to advertise on. |
 | `CHANGE_WIFI_MULTICAST_STATE` | Acquire a multicast lock so NSD/mDNS discovery packets arrive. |
 
-**Optional** — only if you run transfers with the screen off via a foreground service:
+**Optional** — if your host runs transfers in a foreground service, declare the permissions
+that match the service types you use:
 
 ```xml
 <uses-permission android:name="android.permission.WAKE_LOCK" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 ```
 
 | Permission | Why |
 |---|---|
 | `WAKE_LOCK` | Keep the CPU awake so a transfer completes with the screen off. |
-| `FOREGROUND_SERVICE` | Run the transfer as a foreground service (required on API 26+). |
-| `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Foreground-service type for the connected-device case (API 34+). |
+| `FOREGROUND_SERVICE` | Base foreground-service permission. |
+| `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Required when using the `connectedDevice` type on apps targeting API 34+. |
+| `FOREGROUND_SERVICE_DATA_SYNC` | Required when using the [`dataSync` type](https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync) on apps targeting API 34+. |
 | `POST_NOTIFICATIONS` | Show transfer-progress notifications (runtime-requested on API 33+). |
 
 **Only if you use `core-calling`** — voice/video calls need a microphone, a foreground service that
@@ -397,15 +408,15 @@ you post a session notification, and the platform must be able to promote the se
 a press that happens while the app is backgrounded cannot promote a `microphone` service there, so
 hosts surface the app and let the user complete the press.
 
-Flash needs **no location permission**: discovery uses Android NSD (mDNS), not a
-Wi-Fi/BLE scan, so no `ACCESS_FINE_LOCATION` is required.
+LAN peer discovery uses Android NSD (mDNS) and does not require a location permission.
+If you add the optional Bluetooth radio gateway, see the [radio permissions](docs/developer-guide/modules/core/core-radio.md#android-bluetooth-permissions).
 
 ## Compatibility
 
 | Axis | Requirement |
 |---|---|
 | **minSdk** | 24 (Android 7.0) |
-| **compileSdk (library)** | 35 for `core-*`, 37 for `ui-*` |
+| **compileSdk (Android consumer)** | At least 35 for `core-*`; use 37 if you add `ui-*`. |
 | **AGP (your app)** | 9.3+ |
 | **Gradle** | 9.5+ |
 | **Kotlin** | 2.2+ |
@@ -431,18 +442,19 @@ Take the umbrella, or compose only the lightweight pieces:
 
 | Artifact | Tier | Room/SQLCipher? | Use when |
 |---|---|---|---|
-| `core-engine` | **Supported — umbrella** | Yes | You want everything via `Flash.create` (recommended). |
+| `core-engine` | **Supported — umbrella** | Yes | You want discovery, pairing, chat and transfers through `Flash.create` on Android. |
 | `core-common` | Supported — lightweight | No | Shared models/results (usually transitive). |
 | `core-discovery` | Supported — lightweight | No | Peer discovery/advertising only. |
 | `core-network` | Supported — lightweight | No | Connection/session transport only. |
-| `core-enterprise` | Supported (optional) | No | Enterprise hub client: enrolment, directory, relay client, trust stores. Depends on core-hub-protocol and core-security, not on core-network. |
+| `core-enterprise` | Experimental Hub integration | No | Enrolment, directory, relay and trust. Messaging exports it for the Hub return types. |
 | `core-transfer` | Supported — lightweight | No | Chunked file transfer without a database (DB-less resume off). |
 | `core-security` | Supported — lightweight | No | Trust store / pairing primitives. |
 | `core-hub-protocol` | Internal — shipped (pulled in by `core-security` and `core-enterprise`) | No | The enterprise-hub wire contract: certificates, relay frames, REST DTOs and signing bytes shared by the hub server and its clients (ADR-107). Not a public API; do not depend on it directly. |
 | `core-persistence` | Supported — optional storage | Yes | Add cross-restart persistence to a lightweight setup. |
 | `core-messaging` | Experimental — shipped (API may change) | Yes (transitive) | Chat repository; pulled in transitively by `core-engine`. Don't depend on it directly yet. |
 | `core-calling` | Experimental — shipped | No (but ~30 MB WebRTC) | Voice/video calls. Reachable via `Flash.create` (`engine.attachCalling(...)`) — but the umbrella declares it `compileOnly`, so **add it yourself**; see [Voice & video calls](#voice--video-calls). |
-| `core-ptt` | Experimental — shipped (API may change) | No | Push-to-talk floor, capture, playout and PTT wire codecs. Reachable via `Flash.create` (`engine.attachPtt(...)`) — see [Push-to-talk](#push-to-talk-ptt). |
+| `core-ptt` | Experimental — shipped (API may change) | No | Push-to-talk floor, capture, playout and wire codecs. Included by `core-engine` on Android and JVM; the host calls `engine.attachPtt(...)`. See [Push-to-talk](#push-to-talk-ptt). |
+| `core-radio` | Experimental — shipped (API may change) | No | KISS/AX.25 gateway, hardware links and radio chat. Add it explicitly for radio APIs and wire them in your host. See the [radio module guide](docs/developer-guide/modules/core/core-radio.md). |
 | `core-swarm` | Experimental — shipped (API may change) | No | Sans-IO group swarm file transfer engine, piece math, manifest builder/codec, and FSW1 wire frames. Reachable via `FlashEngine.attachSwarm(...)` — pulled in transitively by `core-engine`. |
 | `ui-theme` | Experimental — shipped | No | The Flash design system (colors, typography, motion, icons) for Compose. |
 | `ui-platform-shims` | Experimental — shipped | No | Platform seams (back handling, clipboard, file picking, permissions, image decode, audio playback, voice capture) that `ui-chat` compiles against. Transitive — depend on it only if you are reimplementing the chat UI. |
@@ -458,17 +470,13 @@ The `ui-*` artifacts are Compose libraries and are deliberately stateless — ev
 source, or take the engine and none of the UI. They build against `compileSdk 37` while the `core-*`
 modules stay on 35.
 
-**Dependency shape inside the set:** `core-engine` `api`s every other `core-*` module — including
-`core-ptt`, so an umbrella consumer gets PTT without naming it (it is declared on the Android target,
-because `core-ptt` is an Android-only library and `:core:engine`'s desktop `jvm()` target cannot
-resolve it). `core-calling` is the one exception: it is declared `compileOnly` on the Android
-target, so `FlashCalling` is on `core-engine`'s *compile* classpath and in its public API, while a
-consumer's runtime classpath stays free of `core-calling` and its ~30 MB-per-ABI WebRTC unless the
-consumer adds the dependency itself — which any app that places a call does. `ui-chat` reaches
-`ui-platform-shims` through an `implementation(project(...))`
-dependency, which Gradle writes into the published metadata for the Android target as a runtime
-dependency: that is why the shims module is published too, and why a `ui-chat` consumer resolves it
-without asking for it.
+**Dependency shape:** `core-engine` exports its discovery, network, security, messaging, transfer,
+persistence, enterprise, swarm and PTT libraries on Android and JVM, along with `core-common`.
+Calling is `compileOnly`, so add `core-calling` when you use calls. The engine has no dependency
+on `core-radio` and exposes no radio gateway. A host that uses radio adds the module and supplies
+the hardware and chat routing. Separately, `ui-chat` has runtime dependencies on `ui-platform-shims`
+and `core-radio` for its UI adapters. On JVM that also brings in jSerialComm and JNA. This does not
+configure a radio link or enable fallback.
 
 ### Desktop JVM consumers (KMP, since the migration)
 
@@ -481,7 +489,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 

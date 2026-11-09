@@ -20,8 +20,10 @@ test('ADR-138: honesty notice explicitly states announcements are not end-to-end
   // Ensure no announcement string anywhere claims encryption
   for (const [k, v] of Object.entries(en)) {
     if (k.startsWith('announcements.') && k !== 'announcements.preview.honesty') {
-      assert.ok(!v.toLowerCase().includes('end-to-end encrypt'), `key ${k} must not claim end-to-end encryption`);
-      assert.ok(!v.toLowerCase().includes('e2ee'), `key ${k} must not claim e2ee`);
+      for (const text of typeof v === 'string' ? [v] : Object.values(v)) {
+        assert.ok(!text.toLowerCase().includes('end-to-end encrypt'), `key ${k} must not claim end-to-end encryption`);
+        assert.ok(!text.toLowerCase().includes('e2ee'), `key ${k} must not claim e2ee`);
+      }
     }
   }
 });

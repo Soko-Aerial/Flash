@@ -11,20 +11,10 @@ import { openDialog, openDrawer, confirmDialog } from '../ui/dialog.js';
 import { toast, toastError } from '../ui/toast.js';
 import { setActiveTable } from '../shortcuts.js';
 import { devicePicker, loadDeviceNames, deviceLabel } from './devicepicker.js';
-import { statusBadge } from './devices.js';
-import { session } from '../state.js';
+import { moveDevice, statusBadge } from './devices.js';
+import { isOrgAdmin } from '../state.js';
 import { icon } from '../icons.js';
 import { iconButton } from '../ui/widgets.js';
-
-/**
- * Only an organisation administrator may move a device between departments (`PUT /devices/{id}` refuses a
- * department head with "Only an organisation administrator can move a device."), so the Members section is
- * shown to them alone. Same test as `announcements.js`.
- */
-function isOrgAdmin() {
-  const role = (session.role || '').toLowerCase();
-  return (role === 'admin' || role === 'org_admin') && (!session.departments || session.departments.length === 0);
-}
 
 function joinModeBadge(mode) {
   return badge(t('org.join.' + mode), mode === 'OPEN_IN_SCOPE' ? 'ok' : mode === 'ADMIN_ONLY' ? 'neutral' : 'accent');
@@ -96,9 +86,10 @@ export function mountOrganization(container, ctx) {
   // ------------------------------------------------------------------ departments
   function renderDepartments() {
     const tableHost = h('div', { class: 'table-host' });
-    mount(panel, h('div', { class: 'section-actions' }, button({ label: t('org.dept.create'), icon: 'plus', variant: 'primary', on: { click: () => editDepartment(null) } })), tableHost);
+    const create = () => button({ label: t('org.dept.create'), icon: 'plus', variant: 'primary', on: { click: () => editDepartment(null) } });
+    mount(panel, isOrgAdmin() && departments.length ? h('div', { class: 'section-actions' }, create()) : null, tableHost);
     if (!departments.length) {
-      mount(tableHost, emptyState({ title: t('org.dept.empty.title'), text: t('org.dept.empty.text'), glyph: 'org', action: button({ label: t('org.dept.create'), icon: 'plus', variant: 'primary', on: { click: () => editDepartment(null) } }) }));
+      mount(tableHost, emptyState({ title: t('org.dept.empty.title'), text: isOrgAdmin() ? t('org.dept.empty.text') : t('scope.noDepartments'), glyph: 'org', action: isOrgAdmin() ? create() : null }));
       return;
     }
     const table = createTable({
@@ -129,7 +120,7 @@ export function mountOrganization(container, ctx) {
     const drawer = openDrawer({
       title: dept.name,
       body,
-      actions: [button({ label: t('common.close'), variant: 'ghost', on: { click: () => drawer.close() } }), edit],
+      actions: [button({ label: t('common.close'), variant: 'ghost', on: { click: () => drawer.close() } }), isOrgAdmin() ? edit : null],
     });
     edit.addEventListener('click', () => {
       drawer.close();
@@ -230,7 +221,7 @@ export function mountOrganization(container, ctx) {
     };
     async function removeMember(d) {
       try {
-        await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: null, moveToDepartment: true });
+        if (!(await moveDevice(d.deviceId, null))) return;
         memberRows = memberRows.filter((x) => x.deviceId !== d.deviceId);
         drawMembers();
         bumpMemberCount(-1);
@@ -245,8 +236,9 @@ export function mountOrganization(container, ctx) {
           exclude: () => new Set(memberRows.map((d) => d.deviceId)),
           onPick: async (d) => {
             try {
-              await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: dept.id, moveToDepartment: true });
-              memberRows = [...memberRows, d].sort((a, b) => memberName(a).localeCompare(memberName(b)));
+              const updated = await moveDevice(d.deviceId, dept.id);
+              if (!updated) return;
+              memberRows = [...memberRows, updated].sort((a, b) => memberName(a).localeCompare(memberName(b)));
               drawMembers();
               bumpMemberCount(1);
               toast(t('org.dept.memberAdded', { name: memberName(d) }), { kind: 'success' });
@@ -335,9 +327,11 @@ export function mountOrganization(container, ctx) {
   // ------------------------------------------------------------------ groups
   function renderGroups() {
     const tableHost = h('div', { class: 'table-host' });
-    mount(panel, h('div', { class: 'section-actions' }, button({ label: t('org.group.create'), icon: 'plus', variant: 'primary', on: { click: () => createGroup() } })), tableHost);
+    const canCreate = isOrgAdmin() || departments.length > 0;
+    const create = () => button({ label: t('org.group.create'), icon: 'plus', variant: 'primary', on: { click: () => createGroup() } });
+    mount(panel, canCreate && groups.length ? h('div', { class: 'section-actions' }, create()) : null, tableHost);
     if (!groups.length) {
-      mount(tableHost, emptyState({ title: t('org.group.empty.title'), text: t('org.group.empty.text'), glyph: 'group', action: button({ label: t('org.group.create'), icon: 'plus', variant: 'primary', on: { click: () => createGroup() } }) }));
+      mount(tableHost, emptyState({ title: t('org.group.empty.title'), text: canCreate ? t('org.group.empty.text') : t('scope.noDepartments'), glyph: 'group', action: canCreate ? create() : null }));
       return;
     }
     const deptName = (id) => (departments.find((d) => d.id === id) || {}).name || t('org.group.orgWide');
@@ -363,7 +357,9 @@ export function mountOrganization(container, ctx) {
   function createGroup() {
     const name = textInput({ maxlength: 128 });
     const nf = field({ label: t('org.group.name'), control: name, required: true });
-    const dept = selectInput([{ value: '', label: t('org.group.orgWide') }, ...departments.map((d) => ({ value: d.id, label: d.name }))], '', { ariaLabel: t('org.col.department') });
+    const departmentOptions = departments.map((d) => ({ value: d.id, label: d.name }));
+    if (isOrgAdmin()) departmentOptions.unshift({ value: '', label: t('org.group.orgWide') });
+    const dept = selectInput(departmentOptions, departmentOptions[0]?.value || '', { ariaLabel: t('org.col.department') });
     const df = field({ label: t('org.col.department'), control: dept, hint: t('org.group.department.hint') });
     const vis = selectInput([{ value: 'LISTED', label: t('org.vis.LISTED') }, { value: 'HIDDEN', label: t('org.vis.HIDDEN') }], 'LISTED', { ariaLabel: t('org.col.visibility') });
     const vf = field({ label: t('org.col.visibility'), control: vis, hint: t('org.vis.hint') });
@@ -497,7 +493,6 @@ export function mountOrganization(container, ctx) {
       mount(panel, emptyState({ title: t('org.req.empty.title'), text: t('org.req.empty.text'), glyph: 'inbox' }));
       return;
     }
-    const groupName = (id) => (groups.find((g) => g.id === id) || {}).name || shortId(id);
     const countLine = focusRequests ? null : h('p', { class: 'muted', role: 'status', text: t('org.req.count', { n: requests.length }) });
     mount(
       panel,
@@ -528,12 +523,24 @@ export function mountOrganization(container, ctx) {
     return ((parts[0] || '?')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
   }
 
+  function groupName(id) {
+    return groups.find((g) => g.id === id)?.name || shortId(id);
+  }
+
   async function decide(r, approve, btn) {
     if (approve) {
       await withBusy(btn, async () => {
+        const name = r.displayName || shortId(r.deviceId);
+        const group = groupName(r.groupId);
+        const confirmed = await confirmDialog({
+          title: t('org.req.approve.title'),
+          message: t('org.req.approve.confirm', { name, group }),
+          confirmLabel: t('org.req.approve'),
+        });
+        if (!confirmed) return;
         try {
           await api.post('/join-requests/' + encodeURIComponent(r.requestId) + '/approve', {});
-          toast(t('org.req.approved', { name: r.displayName }), { kind: 'success' });
+          toast(t('org.req.approved', { name }), { kind: 'success' });
           await refreshRequests();
         } catch (e) {
           toastError(e);

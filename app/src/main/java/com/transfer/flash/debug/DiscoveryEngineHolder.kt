@@ -72,9 +72,12 @@ import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import com.transfer.flash.core.engine.FlashPathSanitizer
+import com.transfer.flash.core.engine.bindLanSession
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.enterprise.AndroidPreferencesEnterpriseTrustStore
 import com.transfer.flash.core.enterprise.EnterpriseHub
+import com.transfer.flash.core.enterprise.HubRevocationCache
+import com.transfer.flash.core.enterprise.HubRevocationGossip
 import com.transfer.flash.core.messaging.hub.FlashRelayHubPort
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -928,9 +931,9 @@ object DiscoveryEngineHolder {
             transportProfile = { connectionPolicy().transport },
             localFeatures = {
             if (swarmBinding != null) {
-                setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+                setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1", HubRevocationGossip.FEATURE)
             } else {
-                setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+                setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1", HubRevocationGossip.FEATURE)
             }
         },
         )
@@ -1191,6 +1194,11 @@ object DiscoveryEngineHolder {
             performanceMode = { performanceMode },
             // ADR-069 / FA-2: an accepted offer that cannot fit is refused by name instead of failing mid-write.
             freeSpaceBytes = { receivedDir.takeIf { it.exists() }?.usableSpace },
+            placeReceivedFile = { path, name ->
+                val root = receivedDir
+                val placed = com.transfer.flash.core.engine.ReceivedFilePlacement.publish(path, root.path, name, preserveFolders = true)
+                placed
+            },
         )
 
         // PC4 (ADR-046): presence sharing. Built before the chat repository, whose Online set it
@@ -1264,6 +1272,12 @@ object DiscoveryEngineHolder {
 
         val enterpriseTrustStore = AndroidPreferencesEnterpriseTrustStore(appContext)
         enterpriseTrustStoreRef = enterpriseTrustStore
+        val hubRevocations = HubRevocationCache(
+            directory = File(appContext.noBackupFilesDir, "hub-revocations").path,
+            credentials = enterpriseTrustStore::getCredentials,
+            verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+        )
+        hubRevocations.load()
 
         val debuggable = (appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         hubContentViaHubFlag.value = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
@@ -1303,6 +1317,9 @@ object DiscoveryEngineHolder {
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
             isEnrolled = { enterpriseTrustStore.isEnrolled },
+            permitsOrg = hubRevocations::permitsOrg,
+            revocations = hubRevocations::current,
+            enrolledRoot = { enterpriseTrustStore.credentials.value?.rootFingerprint },
             localDeviceId = identity.deviceId.value,
             ownFingerprintProvider = {
                 crypto.identityPublicKeyEncoded.let {
@@ -1316,12 +1333,17 @@ object DiscoveryEngineHolder {
         // Plan B B4: the hub-signed group rosters (hub groups keep working on the LAN). The chat is built below; the holder
         // lets the directory sync's refresh reach it once it exists.
         var hubRosterChat: RealFlashChatRepository? = null
-        val hubRevocations = com.transfer.flash.core.enterprise.HubRevocationCache { hub.session.fetchRevocations() }
+        val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
+            orgPeerResolver.onRevocationsChanged()
+            hubRosterChat?.refreshHubGroupRosters()
+        })
         val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
             dao = db.orgDirectoryDao(),
             credentialsProvider = { enterpriseTrustStore.credentials.value },
             verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
             revocationsProvider = { hubRevocations.current() },
+            permitsOrg = hubRevocations::permitsOrg,
+            revocationLoaded = { hubRevocations.scopeId() != null },
             localDeviceId = { identity.deviceId.value },
         )
         // Plan B B1: the one caller of the directory sync. It also deletes the snapshot when the enrolment ends or
@@ -1338,17 +1360,18 @@ object DiscoveryEngineHolder {
             credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
             relayConnected = hub.relay.state.map { it.canSend },
             syncOnce = { force ->
-            hubRevocations.refresh()
+                hubRevocations.refresh(hub.session::fetchRevocations)
+                orgPeerResolver.onRevocationsChanged()
             orgDirectorySync.syncOnce(force)
         },
             clearSnapshot = { orgDirectorySync.clearSnapshot() },
             refreshResolver = {
+                hubRevocations.load()
                 orgPeerResolver.refreshFromSnapshot()
-                hubGroupRosters.refresh()
-                hubRosterChat?.refreshHubGroupRosters()
+                val chat = hubRosterChat
+                if (chat == null) hubGroupRosters.refresh() else chat.refreshHubGroupRosters()
             },
             clearResolver = {
-            hubRevocations.clear()
                 orgPeerResolver.clear()
                 hubRosterChat?.clearHubGroupRosters()
                 hubGroupRosters.clear()
@@ -1443,7 +1466,9 @@ object DiscoveryEngineHolder {
                         } else {
                             0f
                         },
-                        status = when (t.state) {
+                        status = if (t.isAwaitingReceiverAcceptance) {
+                            com.transfer.flash.core.messaging.model.FlashFileTransferStatus.AwaitingAcceptance
+                        } else when (t.state) {
                             com.transfer.flash.core.transfer.model.FlashTransferState.Completed,
                             com.transfer.flash.core.transfer.model.FlashTransferState.Verifying ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Downloaded
@@ -1508,15 +1533,11 @@ object DiscoveryEngineHolder {
                 // PC3 dial on demand: a message to a peer that is seen but not connected dials first
                 // (≤ 1 s) instead of waiting for the next sweep. Receipts and typing never wait.
                 if (wireFrame is MessageWireFrame.TextMessage) {
-                    // ADR-228 / ERROR-869: no LAN dial for a peer only the radio can reach — it cannot
-                    // succeed while the peer is off Wi-Fi, and it cost a second on every outbox pass
-                    // before the radio step ran. A peer discovery sees right now still gets the dial:
-                    // the LAN path is faster, and the radio is the fallback, never the preference.
-                    val radioCanCarry = radioPort?.isRadioReachable(targetDeviceId) == true
-                    val seenNow = targetDeviceId in presence.reachablePeerIds.value
-                    if (!radioCanCarry || seenNow) {
-                        autoConnector?.ensureSession(targetDeviceId)
-                    }
+                    // RADIO-PATH-01: do NOT skip this dial just because a radio key exists. A chat
+                    // may be set to NEVER (the radio step then refuses), and the key can be present
+                    // while the link is down; the old skip left exactly those messages with no path
+                    // at all. The radio is still tried only after this LAN attempt and the hub.
+                    autoConnector?.ensureSession(targetDeviceId)
                 }
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
                 if (session == null) {
@@ -1688,10 +1709,11 @@ object DiscoveryEngineHolder {
             peerFeatures = { peerId ->
                 networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty()
             },
-            onPeerRevoked = { peerId ->
+            onPeerRevoked = { peerId, initiatedLocally ->
                 chatImpl.failPendingToPeer(
                     peerId,
-                    "The other device no longer trusts you. Pair again to reconnect.",
+                    if (initiatedLocally) "You removed this device. Pair again to reconnect."
+                    else "The other device no longer trusts you. Pair again to reconnect.",
                 )
                 appScope.launch { networkImpl.disconnect(FlashDeviceId(peerId)) }
             },
@@ -2021,8 +2043,13 @@ object DiscoveryEngineHolder {
                             resumeRoamKilledSends(transferImpl, networkImpl, session.peerDeviceId.value)
                         }
                         sessionJobs[session] = appScope.launch {
+                            val gossip = revocationGossip.bindLanSession(session, orgPeerResolver) {
+                                networkImpl.activeSessions.value[session.peerDeviceId] === session
+                            }
+                            launch { gossip.announceWhileConnected() }
                             launch {
-                                session.incomingText.collect { text ->
+                                session.incomingText.collect textFrames@{ text ->
+                                    if (gossip.receive(text)) return@textFrames
                                     handleInboundText(
                                         chatImpl,
                                         transferImpl,
@@ -2030,7 +2057,11 @@ object DiscoveryEngineHolder {
                                         callCoordinator,
                                         session.peerDeviceId.value,
                                         text,
-                                    )
+                                    ) { peerId ->
+                                        if (networkImpl.activeSessions.value[session.peerDeviceId] === session) {
+                                            pairingCoordinator.onUnreadableSecuredFrame(peerId)
+                                        }
+                                    }
                                 }
                             }
                             launch {
@@ -2563,6 +2594,7 @@ object DiscoveryEngineHolder {
         calling: FlashCalling,
         peerDeviceId: String,
         text: String,
+        onUnreadableSecuredFrame: (String) -> Unit,
     ) {
         // Calling signaling first — the most latency-sensitive frame class, and the module owns its
         // decode: `onInboundText` returns true for every FLASH_CALL frame it consumed, false when
@@ -2617,6 +2649,7 @@ object DiscoveryEngineHolder {
                 }
             } else {
                 Log.w(TAG_CHAT, "Received FLASH_SEC frame from $peerDeviceId with no stored session key; dropping")
+                onUnreadableSecuredFrame(peerDeviceId)
                 return
             }
         } else {

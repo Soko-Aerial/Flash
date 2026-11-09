@@ -16,6 +16,7 @@ import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode
+import com.transfer.flash.server.directory.JoinRequestResult
 import com.transfer.flash.server.directory.MemberRole
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.identity.IdentityStore
@@ -39,6 +40,7 @@ import io.ktor.server.testing.testApplication
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -52,6 +54,23 @@ class DepartmentHeadScopeTest {
 
     private val bossPassword = "BossPassword123!"
     private val headPassword = "HeadPassword123!"
+
+    @Test
+    fun approvingAJoinChecksTheRequestersCurrentDepartment() = testApplication {
+        val r = Realm()
+        mount(r)
+        val head = client.loginAs(r, "head-a", headPassword, r.headTotp)
+        val boss = client.loginAs(r, "boss", bossPassword, r.bossTotp)
+        val request = assertIs<JoinRequestResult.Pending>(
+            r.directory.requestJoinGroup("g-a", "dev-a1", "dept-a", "please"),
+        ).request
+        r.directory.registerMember(r.directory.getDepartmentMember("dev-a1")!!.copy(departmentId = "dept-b"))
+        val path = "/admin/api/v1/join-requests/${request.id}/approve"
+        assertEquals(HttpStatusCode.Forbidden, client.post(path) { withSession(head) }.status)
+        assertFalse("dev-a1" in r.directory.getGroup("g-a")!!.memberDeviceIds)
+        assertEquals(HttpStatusCode.OK, client.post(path) { withSession(boss) }.status)
+        assertTrue("dev-a1" in r.directory.getGroup("g-a")!!.memberDeviceIds)
+    }
 
     private class Sess(val cookie: String, val csrf: String)
 
@@ -234,6 +253,49 @@ class DepartmentHeadScopeTest {
         val overview = HubRestCodec.decode<OverviewDto>(client.getA("/overview", head).bodyAsText())
 
         assertEquals(3L, overview.devicesByStatus["ACTIVE"])
+    }
+
+    @Test
+    fun departmentAndStateFiltersApplyBeforePagination() = testApplication {
+        val realm = Realm()
+        mount(realm)
+        realm.directory.createDepartment("dept-c", "Gamma", emptyList(), DirectoryActor.CONSOLE)
+        realm.admins.setHeadDepartments("head-a", listOf("dept-a", "dept-b"), "boss")
+        realm.now += 1_000
+        realm.enrollDevice("dev-c1", "dept-c", "member")
+        fun invite(token: String, department: String) = realm.identities.createInvite(
+            token, department, "member", emptySet(), emptySet(), realm.now + 100_000, 1, realm.now++,
+        )
+        val first = invite("scoped-a", "dept-a")
+        val second = invite("scoped-b", "dept-b")
+        val revoked = invite("scoped-revoked", "dept-a")
+        realm.identities.revokeInvite(revoked.inviteId, realm.now)
+        invite("foreign-c", "dept-c")
+        val head = client.loginAs(realm, "head-a", headPassword, realm.headTotp)
+        val empty = client.loginAs(realm, "head-empty", headPassword, realm.headEmptyTotp)
+        suspend fun devices(query: String, session: Sess = head) =
+            HubRestCodec.decodeList<DeviceDto>(client.getA("/devices?$query", session).bodyAsText()).map { it.deviceId }
+        suspend fun invites(query: String, session: Sess = head) =
+            HubRestCodec.decodeList<InviteDto>(client.getA("/invites?$query", session).bodyAsText()).map { it.inviteId }
+
+        assertEquals(listOf("dev-a1"), devices("limit=1"))
+        assertEquals(listOf("dev-b1"), devices("limit=1&offset=1"))
+        assertEquals(listOf("dev-b1"), devices("department=dept-b&search=Device"))
+        assertEquals(emptyList(), devices("department=dept-c"))
+        assertEquals(emptyList(), devices("limit=1", empty))
+        assertEquals(listOf(second.inviteId), invites("state=pending&limit=1"))
+        assertEquals(listOf(first.inviteId), invites("state=pending&limit=1&offset=1"))
+        assertEquals(listOf(revoked.inviteId), invites("state=revoked&limit=1"))
+        assertEquals(emptyList(), invites("limit=1", empty))
+        val overview = HubRestCodec.decode<OverviewDto>(client.getA("/overview", head).bodyAsText())
+        assertEquals(InviteCountsDto(pending = 2, used = 2, revoked = 1), overview.invites)
+
+        val atExpiry = realm.identities.createInvite(
+            "boundary", "dept-a", "member", emptySet(), emptySet(), realm.now, 1, realm.now,
+        )
+        assertEquals(listOf(atExpiry.inviteId), invites("state=pending&limit=1"))
+        realm.now++
+        assertEquals(listOf(atExpiry.inviteId), invites("state=expired&limit=1"))
     }
 
     // DEPH-U05: IDOR answers byte-equal to a non-existent id.
