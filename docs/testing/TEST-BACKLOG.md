@@ -3368,6 +3368,13 @@ Nothing below is runnable yet: the plans are design only (`docs/ENTERPRISE-HYBRI
 ### LNX-01...LNX-10 - Linux desktop port (owner confirmed Linux as a target 2026-10-08, D-L1)
 Pass conditions are in `docs/LINUX-PORT-PLAN.md` section 5 (build and CI, Secret Service key, file fallback, notifications, autostart, context menu, network band, WebRTC call, 10 GB transfer, `.deb`/`.rpm` install). All `TODO`; each needs a real Linux machine.
 
+- **REL22-LINUX-01 — Flash 2.2.0 Linux packages.** On an x86-64 Linux desktop, verify the release
+  checksums, install the `.deb` on Debian or Ubuntu and launch from the app menu, then launch the
+  portable archive from a user-owned directory. On a prior install, verify upgrade/relaunch keeps
+  identity and transfer history. **Status:** OWED. Archive layout, package metadata and SHA-256
+  passed on the Windows host; native installation and launch were not run here. See
+  [Install Flash on Linux](../install-linux.md).
+
 - **LNX-01 (partly covered):** `KeyFileVaultTest` (10 tests, 1 skipped on Windows) passes on Windows 2026-10-08; the POSIX owner-only check (`0600`) and a clean `./gradlew :desktop:compileKotlinJvm :desktop:jvmTest` still need an Ubuntu run (push to CI or a Linux box). **Status:** TODO
 - **LNX-03a (new, L0 fallback):** start `DesktopEngine` on Linux with no keyring: the identity is generated on first run (no crash), the key file (`~/.local/share/flash/identity/vault.key` on a fresh Linux install, or `~/.flash/...` if an old folder with data exists) is `-rw-------`, a restart keeps the same device id. **Source:** Linux plan C4, L0. **Status:** TODO
 - **LNX-02 (new, L1 Secret Service):** on a Linux desktop session with GNOME Keyring (Ubuntu/Fedora), then again with KDE/KWallet (or KeePassXC as the Secret Service provider). Steps: start Flash from a terminal with no prior state; quit; start again. **Pass:** first start creates no `identity/vault.key`; `seahorse` (or `secret-tool search application flash`) shows one item `Flash identity key` with `application=flash`, `account=identity-master-key`; the second start keeps the same device id; log has no `keyring` failure line. Then lock the keyring and start: the unlock prompt appears; dismissing it must not crash the start (an existing keyring-sealed identity cannot be opened without the keyring, so record exactly what the app shows). Then run with no session bus (`env -u DBUS_SESSION_BUS_ADDRESS`): it falls back to the key file. **Note to record:** a blob sealed with the key file stays tagged `0x01` and is opened from the file, so switching tiers later does not lose the identity. **Source:** ADR-092 update (L1). **Status:** TODO
@@ -7859,6 +7866,20 @@ ADR-354, ERROR-985, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` P-2.1, phone log
 PASS (owner, 2026-11-05; core bidirectional text after setting Automatic. Link-down, Never banner and Profile-A UI steps were not separately reported; see Results log.)
 
 ---
+
+## XFER-RETRY-02 — Sender Retry resumes durable data and updates both peers (2026-11-09)
+
+- **Setup:** Use the reported platform pair, a stable source file large enough to span many chunks,
+  and an existing LAN pairing. Record the build, transfer ID, and both peers' byte counts.
+- **Exercise:** Interrupt the connection after the receiver has saved part of the file. Wait for the
+  sender to report failure, restore connectivity, and press **Retry** on that same transfer. Repeat
+  with the direction reversed where practical.
+- **Pass:** The receiver leaves the active state when the attempt ends. Retry uses the same transfer
+  identity and resumes from chunks the receiver can still verify, with no duplicate offer or replay
+  of those durable chunks. Both peers show the resumed progress; the final file SHA-256 matches.
+  An explicit cancel and a changed source remain distinct from a retryable interruption.
+- **Status:** OWED. Owner reported stale receive progress and apparent restart in 2.2.0. The source
+  investigation is delegated to OpenCode; no device result or root cause is recorded yet.
 
 ## XFER-RETRY-01 — Retrying a restored 0-byte attachment must not kill the app (2026-11-05)
 

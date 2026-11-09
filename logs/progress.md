@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-11-09 — Add Linux x86-64 downloads to Flash 2.2.0
+
+- Published the owner-supplied `.deb` and portable `.tar.gz` on the existing `v2.2.0` GitHub
+  release, with `SHA256SUMS-linux.txt`. Normalized the filenames without changing the payloads;
+  both files matched the supplied SHA-256 manifest and GitHub's asset digests.
+- Inspected the `.deb` as `flash` version `2.2.0` for `amd64`, including its desktop launcher.
+  Inspected the tarball's x86-64 ELF launcher and bundled Java runtime. The checksum command in
+  `docs/install-linux.md` passed for both files. Native install and launch are owed (REL22-LINUX-01).
+- Recorded the reported sender retry and stale receiver progress as XFER-RETRY-02. OpenCode owns
+  investigation and a focused fix; these release binaries do not contain a retry change.
+
 ## 2026-11-08 — Correct SDK beta.3 integration docs after review
 
 - Clarified the Android/JVM dependency graph: `core-engine` includes PTT on both targets, leaves
