@@ -128,10 +128,10 @@ public fun FlashGroupInviteSheet(
                         .weight(1f)
                         .height(48.dp)
                         .clip(FlashShapes.chip)
-                        .background(if (copied) colors.statusOnline.copy(alpha = 0.15f) else colors.backgroundSurfaceSubtle)
+                        .background(if (copied) colors.accentFill.copy(alpha = 0.14f) else colors.backgroundSurfaceSubtle)
                         .border(
                             FlashDimensions.borderHairline,
-                            if (copied) colors.statusOnline else colors.borderSubtle,
+                            if (copied) colors.accentFill else colors.borderSubtle,
                             FlashShapes.chip,
                         )
                         .clickable {
@@ -145,14 +145,14 @@ public fun FlashGroupInviteSheet(
                         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                     ) {
                         FlashIcon(
-                            icon = if (copied) FlashIcons.Check else FlashIcons.Share,
+                            icon = if (copied) FlashIcons.Check else FlashIcons.Copy,
                             contentDescription = if (copied) "Copied" else "Copy link",
-                            tint = if (copied) colors.statusOnline else colors.textPrimary,
+                            tint = if (copied) colors.textLink else colors.textPrimary,
                         )
                         FlashText(
                             text = if (copied) "Link copied!" else "Copy link",
                             style = FlashTheme.typography.bodyEmphasis,
-                            color = if (copied) colors.statusOnline else colors.textPrimary,
+                            color = if (copied) colors.textLink else colors.textPrimary,
                         )
                     }
                 }
@@ -164,7 +164,7 @@ public fun FlashGroupInviteSheet(
                             .weight(1f)
                             .height(48.dp)
                             .clip(FlashShapes.chip)
-                            .background(colors.accentPrimary)
+                            .background(colors.accentFill)
                             .clickable { onShare(inviteUrl) },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -175,12 +175,12 @@ public fun FlashGroupInviteSheet(
                             FlashIcon(
                                 icon = FlashIcons.Share,
                                 contentDescription = "Share link",
-                                tint = colors.textOnAccent,
+                                tint = colors.onAccentFill,
                             )
                             FlashText(
                                 text = "Share",
                                 style = FlashTheme.typography.bodyEmphasis,
-                                color = colors.textOnAccent,
+                                color = colors.onAccentFill,
                             )
                         }
                     }

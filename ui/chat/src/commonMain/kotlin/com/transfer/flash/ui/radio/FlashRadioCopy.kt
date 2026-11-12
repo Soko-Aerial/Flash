@@ -107,7 +107,7 @@ public object FlashRadioCopy {
     public const val CHECKLIST_SUBTITLE: String = "Complete these three steps before connecting:"
     public const val CHECKLIST_STEP_1: String = "Turn the radio on and check the battery is charged (over 50%)."
     public const val CHECKLIST_STEP_2: String =
-        "In the radio menu: General Settings ? KISS TNC ? Enable."
+        "In the radio menu: General Settings → KISS TNC → Enable."
     public const val CHECKLIST_STEP_3: String = "Bluetooth is on for this device, and the radio is discoverable."
 
     // --- Candidate Confirmation ---------------------------------------------------------------------------
@@ -199,12 +199,12 @@ public object FlashRadioCopy {
 
     public const val SENTENCE_KISS_NOT_ENABLED: String = "Connected, but no KISS data received."
     public const val NEXT_STEP_KISS_NOT_ENABLED: String =
-        "In the radio menu: Menu -> General Settings -> KISS TNC -> Enable."
+        "In the radio menu: Menu → General Settings → KISS TNC → Enable."
 
     public const val SENTENCE_RADIO_CLOSED_LINK: String =
         "The radio accepted the Bluetooth link, then closed the data channel."
     public const val NEXT_STEP_RADIO_CLOSED_LINK: String =
-        "Turn on KISS TNC in the radio menu (Menu -> General Settings -> KISS TNC). If Bluetooth lists the radio " +
+        "Turn on KISS TNC in the radio menu (Menu → General Settings → KISS TNC). If Bluetooth lists the radio " +
             "twice, check that Flash is using the control entry, not the audio one."
 
     // --- Security Profiles (Plan R §8) --------------------------------------------------------------------
@@ -212,7 +212,7 @@ public object FlashRadioCopy {
 
     public const val PROFILE_M_TITLE: String = "Profile M (Encrypted, tactical)"
     public const val PROFILE_M_SUBTITLE: String =
-        "AES-256-GCM encryption with rotating station tags. Requires frequency authorization."
+        "End-to-end encrypted radio chat (AES-256). Requires regulatory authorisation and a callsign."
     public const val PROFILE_M_RECOMMENDED_BADGE: String = "Required for military"
 
     /** Shown on the Profile M row until the authorisation sheet has been confirmed (redesign v2: a badge, not a card). */
@@ -220,12 +220,12 @@ public object FlashRadioCopy {
 
     public const val PROFILE_A_TITLE: String = "Profile A (Signed cleartext)"
     public const val PROFILE_A_SUBTITLE: String =
-        "Not supported for Flash chat yet: a receiving pair cannot verify a signed frame without the peer's full key. Use Profile M."
+        "Not available for Flash chat yet: receiving radios cannot verify signed messages without a shared key. Use Profile M."
     public const val PROFILE_A_UNSUPPORTED_BADGE: String = "Not supported"
     public const val PROFILE_A_UNSUPPORTED_NOTE: String =
         "Profile A cannot carry Flash chat. Select Profile M; your radio stays connected."
 
-    public const val AUTHORISATION_DIALOG_TITLE: String = "Authorisation required for encrypted RF"
+    public const val AUTHORISATION_DIALOG_TITLE: String = "Authorisation required for encrypted radio"
     public const val AUTHORISATION_DIALOG_BODY: String =
         "Transmitting encrypted messages on radio frequencies is strictly regulated by law. In many civilian amateur bands, encrypted transmissions are prohibited and require cleartext callsigns.\n\nOnly confirm if you are operating under military, government, or other licensed authority permitted to use encryption on this frequency."
     public const val AUTHORISATION_STATEMENT: String =
@@ -275,9 +275,9 @@ public object FlashRadioCopy {
     public const val TEST_MESSAGE_NEEDS_LINK: String =
         "Connect a radio first: the test message is sent over the radio link, so it needs a live connection."
 
-    public const val TRANSMIT_WARNING_TITLE: String = "RF Transmission Warning"
+    public const val TRANSMIT_WARNING_TITLE: String = "Radio transmission warning"
     public const val TRANSMIT_WARNING_BODY: String =
-        "Sending a test message will key the transmitter and broadcast RF over the air on your tuned frequency. Ensure an antenna or 50-ohm dummy load is connected."
+        "Sending a test message will key your radio and broadcast on your tuned frequency. Make sure an antenna or 50-ohm dummy load is connected."
     public const val ACTION_TRANSMIT_NOW: String = "Transmit now"
     public const val ACTION_CANCEL_TRANSMIT: String = "Cancel"
 
@@ -305,6 +305,7 @@ public object FlashRadioCopy {
     public fun a11yUseDevice(name: String): String = "Use $name as the radio"
     public const val A11Y_SELECT_PROFILE_M: String = "Select Profile M encrypted"
     public const val A11Y_SELECT_PROFILE_A: String = "Select Profile A cleartext"
+    public const val A11Y_PROFILE_A_UNSUPPORTED: String = "Profile A cleartext, not supported"
     public fun a11ySelectMode(name: String): String = "Select $name"
     public const val A11Y_STATUS_CHIP: String = "Radio connection status"
     public const val A11Y_TEST_MESSAGE_BTN: String = "Send diagnostic radio test message"

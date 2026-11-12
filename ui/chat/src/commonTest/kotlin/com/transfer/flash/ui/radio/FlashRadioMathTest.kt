@@ -41,6 +41,10 @@ class FlashRadioMathTest {
             FlashRadioCopy.BADGE_COMING_LATER,
             FlashRadioMath.modeBadgeText(RadioGatewayMode.BASE_STATION_RELAY, RadioGatewayMode.FIELD_COMPANION, available)
         )
+        assertEquals(
+            FlashRadioCopy.BADGE_COMING_LATER,
+            FlashRadioMath.modeBadgeText(RadioGatewayMode.BASE_STATION_RELAY, RadioGatewayMode.BASE_STATION_RELAY, available)
+        )
     }
 
     @Test

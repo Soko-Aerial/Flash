@@ -136,6 +136,72 @@ object FlashVoiceRecordingMath {
     fun shouldDiscardShortRecording(elapsedMs: Long): Boolean =
         elapsedMs < MIN_RECORD_MS
 
+    /**
+     * Whether the composer may ask the host to start capture for the gesture beginning now.
+     *
+     * Only an idle composer can start, and a gesture that already asked once cannot ask again. A
+     * refused start (permission prompt, call/PTT lease, busy encoder) must therefore leave the
+     * phase Idle: the same hold cannot slide into a recording panel that has no audio behind it.
+     */
+    fun canStartCapture(phase: FlashRecordingPhase, captureStarted: Boolean): Boolean =
+        !captureStarted && phase == FlashRecordingPhase.Idle
+
+    /**
+     * Whether a hold-drag may change the phase.
+     *
+     * Slides only mean something for the gesture that actually started capture, and only in hold
+     * mode. A locked (hands-free) recording is ended by its own trash/send controls, never by a
+     * stray drag across the trailing key that now sends it.
+     */
+    fun acceptsSlide(phase: FlashRecordingPhase, captureStarted: Boolean): Boolean =
+        captureStarted &&
+            (phase == FlashRecordingPhase.Holding || phase == FlashRecordingPhase.CancelArmed)
+
+    /**
+     * The trailing 44dp slot becomes the voice send key once a locked recording's finger is up.
+     *
+     * While the finger is still down the same slot stays the mic, so the hold/release pointer
+     * stream that produced the lock is never disposed mid-gesture (ERROR-010).
+     */
+    fun showsVoiceSend(phase: FlashRecordingPhase, lockedHandsFree: Boolean): Boolean =
+        lockedHandsFree && phase == FlashRecordingPhase.Locked
+
+    /** Outcome when a voice mic press/hold ends. */
+    enum class ReleaseAction {
+        None,
+        Cancel,
+        DiscardShortTap,
+        LockHandsFree,
+        FinishLockGesture,
+        Send,
+    }
+
+    /**
+     * Resolves what releasing the mic button does given the current gesture state.
+     *
+     * On desktop (`isDesktop == true`), a quick click (< [MIN_RECORD_MS]) locks hands-free mode
+     * so mouse users can click to start recording and click Send/Cancel to finish, whereas touch
+     * users get a "Hold to record" prompt on accidental short taps.
+     */
+    fun resolveReleaseAction(
+        phase: FlashRecordingPhase,
+        captureStarted: Boolean,
+        elapsedMs: Long,
+        isDesktop: Boolean,
+    ): ReleaseAction {
+        if (!captureStarted) return ReleaseAction.None
+        return when (phase) {
+            FlashRecordingPhase.CancelArmed -> ReleaseAction.Cancel
+            FlashRecordingPhase.Locked -> ReleaseAction.FinishLockGesture
+            FlashRecordingPhase.Holding -> when {
+                elapsedMs < MIN_RECORD_MS && isDesktop -> ReleaseAction.LockHandsFree
+                elapsedMs < MIN_RECORD_MS -> ReleaseAction.DiscardShortTap
+                else -> ReleaseAction.Send
+            }
+            FlashRecordingPhase.Idle -> ReleaseAction.None
+        }
+    }
+
     /** Window of strip samples to render: the most recent [count] amplitudes. */
     fun stripSamples(amplitudes: List<Int>, count: Int = STRIP_BAR_COUNT): List<Int> =
         if (amplitudes.size <= count) amplitudes else amplitudes.takeLast(count)
@@ -186,7 +252,7 @@ fun FlashMicButton(
     val backgroundColor by animateColorAsState(
         targetValue = when {
             isNearCancel -> colors.textError.copy(alpha = 0.25f)
-            isRecording -> colors.accentPrimary
+            isRecording -> colors.accentFill
             else -> Color.Transparent
         },
         animationSpec = tween(motion.fastMillis),
@@ -195,7 +261,7 @@ fun FlashMicButton(
     val iconTint by animateColorAsState(
         targetValue = when {
             isNearCancel -> colors.textError
-            isRecording -> colors.textOnAccent
+            isRecording -> colors.onAccentFill
             else -> colors.textTertiary
         },
         animationSpec = tween(motion.fastMillis),
@@ -275,6 +341,7 @@ fun FlashVoiceRecordingBar(
     onTogglePause: () -> Unit,
     onSend: () -> Unit,
     modifier: Modifier = Modifier,
+    showInBarSend: Boolean = true,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -392,7 +459,9 @@ fun FlashVoiceRecordingBar(
                         style = typography.numericEmphasis.copy(fontSize = typography.metadataDefault.fontSize),
                         color = colors.textSecondary,
                     )
-                    FlashRecordingSendButton(onClick = onSend)
+                    if (showInBarSend) {
+                        FlashRecordingSendButton(onClick = onSend)
+                    }
                 }
             } else {
                 FlashText(
@@ -477,7 +546,7 @@ private fun FlashRecordingSendButton(
         modifier = modifier
             .size(32.dp)
             .clip(CircleShape)
-            .background(colors.accentPrimary)
+            .background(colors.accentFill)
             .clickable(onClick = onClick)
             .semantics {
                 role = Role.Button
@@ -488,8 +557,77 @@ private fun FlashRecordingSendButton(
         FlashIcon(
             icon = FlashIcons.Send,
             contentDescription = null,
-            tint = colors.textOnAccent,
+            tint = colors.onAccentFill,
             size = FlashDimensions.iconSm,
+        )
+    }
+}
+
+/**
+ * 44dp accent send key occupying the composer's trailing slot once a locked recording is
+ * hands-free (the hold that produced the lock has ended).
+ *
+ * It replaces the mic in that slot, so tapping the prominent trailing control sends the recording
+ * instead of asking the host to start a second capture. The recording bar keeps its own 32dp send
+ * button as the in-bar alternative.
+ */
+@Composable
+internal fun FlashVoiceTrailingSendButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val haptics = rememberFlashHaptics()
+    Box(
+        modifier = modifier
+            .size(FlashSpacing.space44)
+            .clip(CircleShape)
+            .background(colors.accentFill)
+            .clickable {
+                haptics(FlashHaptic.Tick)
+                onClick()
+            }
+            .semantics {
+                role = Role.Button
+                contentDescription = "Send voice message"
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashIcon(
+            icon = FlashIcons.Send,
+            contentDescription = null,
+            tint = colors.onAccentFill,
+            modifier = Modifier.size(FlashSpacing.space20),
+        )
+    }
+}
+
+/** Compact floating pill shown above the mic during hold or after a short accidental tap. */
+@Composable
+internal fun FlashVoiceHintPill(
+    text: String,
+    isError: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    Box(
+        modifier = modifier
+            .clip(FlashShapes.chip)
+            .background(colors.backgroundSurface)
+            .border(
+                FlashDimensions.borderHairline,
+                if (isError) colors.textError else colors.borderSubtle,
+                FlashShapes.chip,
+            )
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = text,
+            style = typography.captionEmphasis,
+            color = if (isError) colors.textError else colors.textSecondary,
+            maxLines = 1,
         )
     }
 }

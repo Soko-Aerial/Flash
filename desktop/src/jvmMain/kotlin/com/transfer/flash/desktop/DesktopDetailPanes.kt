@@ -22,6 +22,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.nearby.NearbyPeerUi
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
@@ -64,19 +65,31 @@ internal fun TransferDetailPane(
 internal fun NearbyDetailPane(
     peer: NearbyPeerUi,
     onClose: () -> Unit,
+    onPair: (() -> Unit)? = null,
+    onChat: (() -> Unit)? = null,
+    onVoiceCall: (() -> Unit)? = null,
+    onVideoCall: (() -> Unit)? = null,
+    onSendFile: (() -> Unit)? = null,
 ) {
     com.transfer.flash.ui.adaptive.FlashNearbyDetailPane(
         peer = peer,
         onClose = onClose,
+        onPair = onPair,
+        onChat = onChat,
+        onVoiceCall = onVoiceCall,
+        onVideoCall = onVideoCall,
+        onSendFile = onSendFile,
     )
 }
 
 @Composable
 internal fun PlaceholderDetailPane(
     onFindDevices: (() -> Unit)? = null,
+    destination: FlashDestination = FlashDestination.ChatList,
 ) {
     com.transfer.flash.ui.adaptive.FlashPlaceholderDetailPane(
         onFindDevices = onFindDevices,
+        destination = destination,
     )
 }
 

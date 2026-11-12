@@ -101,11 +101,11 @@ fun FlashSelectionToolbar(
         IconButton(
             onClick = onCopy,
             modifier = Modifier
-                .size(FlashSpacing.space40)
+                .size(FlashDimensions.minTouchTarget)
                 .semantics { contentDescription = "Copy selected messages" },
         ) {
             FlashIcon(
-                icon = FlashIcons.Edit,
+                icon = FlashIcons.Copy,
                 contentDescription = null,
                 tint = colors.textPrimary,
             )

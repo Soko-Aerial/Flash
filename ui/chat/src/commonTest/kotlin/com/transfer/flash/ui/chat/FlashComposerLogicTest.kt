@@ -28,4 +28,16 @@ class FlashComposerLogicTest {
     private fun canSend(draft: String, enabled: Boolean): Boolean {
         return draft.isNotBlank() && enabled
     }
+
+    @Test
+    fun `enter key sends on desktop and inserts newline on Android soft keyboard`() {
+        assertTrue(FlashComposerMath.shouldSendOnEnterKey(isDesktop = true, isShiftPressed = false, isCtrlPressed = false))
+        assertFalse(FlashComposerMath.shouldSendOnEnterKey(isDesktop = true, isShiftPressed = true, isCtrlPressed = false))
+        assertFalse(FlashComposerMath.shouldSendOnEnterKey(isDesktop = true, isShiftPressed = false, isCtrlPressed = true))
+
+        // Android soft-keyboard bare Enter inserts newline; Ctrl+Enter sends on hardware keyboard
+        assertFalse(FlashComposerMath.shouldSendOnEnterKey(isDesktop = false, isShiftPressed = false, isCtrlPressed = false))
+        assertFalse(FlashComposerMath.shouldSendOnEnterKey(isDesktop = false, isShiftPressed = true, isCtrlPressed = false))
+        assertTrue(FlashComposerMath.shouldSendOnEnterKey(isDesktop = false, isShiftPressed = false, isCtrlPressed = true))
+    }
 }

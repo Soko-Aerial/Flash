@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,8 +23,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -38,6 +41,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
@@ -46,6 +50,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
@@ -68,6 +73,7 @@ enum class FlashPairingPhase {
     Paired,
     Declined,
     Expired,
+    Failed,
 }
 
 /**
@@ -81,6 +87,8 @@ data class FlashPairingRequestUi(
     val numericCode: String,
     val transport: FlashNetworkTransport,
     val expiresInSeconds: Int = 30,
+    val failureReason: String? = null,
+    val peerDeviceId: String? = null,
 )
 
 /** Pure pairing-flow logic — unit-testable without instrumentation ([FlashPairingLogicTest]). */
@@ -98,6 +106,14 @@ object FlashPairingMath {
     fun canConfirm(phase: FlashPairingPhase): Boolean =
         phase == FlashPairingPhase.RequestReceived
 
+    /** Hardware back / Cancel is allowed while waiting for the peer so a stalled peer never traps the user. */
+    fun allowsBackCancel(phase: FlashPairingPhase): Boolean =
+        phase == FlashPairingPhase.AwaitingPeerConfirmation
+
+    /** Accidental scrim taps are ignored during active pairing phases. */
+    fun allowsScrimDismiss(phase: FlashPairingPhase): Boolean =
+        phase != FlashPairingPhase.RequestReceived && phase != FlashPairingPhase.AwaitingPeerConfirmation
+
     /**
      * Evaluates one countdown tick. Pass the seconds remaining AFTER the tick;
      * at or below zero the flow transitions to [FlashPairingPhase.Expired].
@@ -113,6 +129,7 @@ object FlashPairingMath {
         FlashPairingPhase.Paired -> "Paired"
         FlashPairingPhase.Declined -> "Declined"
         FlashPairingPhase.Expired -> "Request expired"
+        FlashPairingPhase.Failed -> "Pairing failed"
     }
 
     /** Up to two initials: first letter of the first two words; "?" when nameless. */
@@ -154,16 +171,25 @@ fun FlashPairingDialog(
     onDecline: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    onRetry: (() -> Unit)? = null,
+    failureReason: String? = null,
 ) {
     val visible = request != null && phase != FlashPairingPhase.Idle
-    FlashBackHandler(enabled = visible, onBack = onDismiss)
+    val allowScrimDismiss = FlashPairingMath.allowsScrimDismiss(phase)
+    FlashBackHandler(enabled = visible) {
+        when {
+            FlashPairingMath.allowsBackCancel(phase) -> onDecline()
+            allowScrimDismiss -> onDismiss()
+        }
+    }
     if (!visible) return
 
     val colors = FlashTheme.colors
     val safeRequest = requireNotNull(request)
     val initials = safeRequest.peerInitials.ifBlank { FlashPairingMath.initialsFor(safeRequest.peerName) }
+    val resolvedFailureReason = failureReason?.takeIf { it.isNotBlank() } ?: safeRequest.failureReason
 
-    // Dimmed backdrop — tapping it cancels/dismisses on first contact.
+    // Dimmed backdrop — only terminal phases dismiss on scrim tap; active pairing requires explicit Decline.
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -171,14 +197,14 @@ fun FlashPairingDialog(
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onDismiss,
+                onClick = { if (allowScrimDismiss) onDismiss() },
             )
             .padding(FlashSpacing.space20),
         contentAlignment = Alignment.Center,
     ) {
         Column(
             modifier = Modifier
-                .widthIn(min = 340.dp, max = 460.dp)
+                .widthIn(max = 460.dp)
                 .fillMaxWidth()
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
@@ -192,6 +218,7 @@ fun FlashPairingDialog(
                     colors.borderSubtle,
                     RoundedCornerShape(FlashShapes.radius24),
                 )
+                .verticalScroll(rememberScrollState())
                 .padding(FlashSpacing.space24),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -243,6 +270,16 @@ fun FlashPairingDialog(
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(top = FlashSpacing.space12),
                         )
+                        FlashPairingPillButton(
+                            label = "Cancel",
+                            description = "Cancel pairing request",
+                            container = colors.backgroundSurfaceStrong,
+                            contentColor = colors.textPrimary,
+                            onClick = onDecline,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = FlashSpacing.space20),
+                        )
                     }
                     else -> Unit
                 }
@@ -250,7 +287,9 @@ fun FlashPairingDialog(
                 TerminalPhaseBlock(
                     phase = phase,
                     peerName = safeRequest.peerName,
+                    failureReason = resolvedFailureReason,
                     onDismiss = onDismiss,
+                    onRetry = onRetry,
                 )
             }
         }
@@ -286,6 +325,8 @@ private fun PeerIdentityBlock(request: FlashPairingRequestUi, initials: String) 
             style = FlashTheme.typography.headingMedium,
             color = colors.textPrimary,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = FlashSpacing.space16),
         )
         FlashText(
@@ -396,8 +437,8 @@ private fun ActionButtonsRow(onAccept: () -> Unit, onDecline: () -> Unit) {
         FlashPairingPillButton(
             label = "Accept",
             description = "Accept pairing request",
-            container = FlashTheme.colors.accentPrimary,
-            contentColor = FlashTheme.colors.textOnAccent,
+            container = FlashTheme.colors.accentFill,
+            contentColor = FlashTheme.colors.onAccentFill,
             onClick = onAccept,
             modifier = Modifier.weight(1f),
         )
@@ -472,12 +513,14 @@ private fun FlashPulsingDot(modifier: Modifier = Modifier) {
     )
 }
 
-/** Paired / Declined / Expired outcomes with severity-distinct visuals and retry hints. */
+/** Paired / Declined / Expired / Failed outcomes with severity-distinct visuals and retry actions. */
 @Composable
 private fun TerminalPhaseBlock(
     phase: FlashPairingPhase,
     peerName: String,
+    failureReason: String? = null,
     onDismiss: () -> Unit,
+    onRetry: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val (icon, iconTint, medallionFill, headline, body) = when (phase) {
@@ -493,14 +536,22 @@ private fun TerminalPhaseBlock(
             iconTint = colors.textError,
             medallionFill = colors.textError.copy(alpha = 0.12f),
             headline = "Request declined",
-            body = "$peerName declined the pairing request. You can try again from Nearby Devices.",
+            body = "$peerName declined the pairing request. You can try again when both devices are ready.",
+        )
+        FlashPairingPhase.Failed -> PairQuadruple(
+            icon = FlashIcons.Failed,
+            iconTint = colors.textError,
+            medallionFill = colors.textError.copy(alpha = 0.12f),
+            headline = "Pairing failed",
+            body = failureReason?.takeIf { it.isNotBlank() }
+                ?: "Couldn't complete pairing with $peerName. Make sure both devices are nearby and up to date, then try again.",
         )
         else -> PairQuadruple(
             icon = FlashIcons.Clock,
             iconTint = colors.textSecondary,
             medallionFill = colors.backgroundSurfaceStrong,
             headline = FlashPairingMath.phaseStatusLabel(FlashPairingPhase.Expired),
-            body = "The pairing window timed out before both devices confirmed. Try pairing again from Nearby Devices.",
+            body = "The pairing window timed out before both devices confirmed. Try pairing again when both devices are ready.",
         )
     }
 
@@ -518,6 +569,7 @@ private fun TerminalPhaseBlock(
         text = headline,
         style = FlashTheme.typography.headingMedium,
         color = colors.textPrimary,
+        textAlign = TextAlign.Center,
         modifier = Modifier.padding(top = FlashSpacing.space16),
     )
     FlashText(
@@ -529,16 +581,67 @@ private fun TerminalPhaseBlock(
     )
 
     if (phase != FlashPairingPhase.Paired) {
-        FlashPairingPillButton(
-            label = "Close",
-            description = "Close pairing dialog",
-            container = colors.backgroundSurfaceStrong,
-            contentColor = colors.textPrimary,
-            onClick = onDismiss,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = FlashSpacing.space24),
-        )
+        if (onRetry != null) {
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = FlashSpacing.space24),
+            ) {
+                if (maxWidth < 280.dp || LocalDensity.current.fontScale >= 1.3f) {
+                    Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+                        FlashPairingPillButton(
+                            label = "Try again",
+                            description = "Try pairing again",
+                            container = colors.accentFill,
+                            contentColor = colors.onAccentFill,
+                            onClick = onRetry,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        FlashPairingPillButton(
+                            label = "Close",
+                            description = "Close pairing dialog",
+                            container = colors.backgroundSurfaceStrong,
+                            contentColor = colors.textPrimary,
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                    ) {
+                        FlashPairingPillButton(
+                            label = "Close",
+                            description = "Close pairing dialog",
+                            container = colors.backgroundSurfaceStrong,
+                            contentColor = colors.textPrimary,
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f),
+                        )
+                        FlashPairingPillButton(
+                            label = "Try again",
+                            description = "Try pairing again",
+                            container = colors.accentFill,
+                            contentColor = colors.onAccentFill,
+                            onClick = onRetry,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        } else {
+            FlashPairingPillButton(
+                label = "Close",
+                description = "Close pairing dialog",
+                container = colors.backgroundSurfaceStrong,
+                contentColor = colors.textPrimary,
+                onClick = onDismiss,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = FlashSpacing.space24),
+            )
+        }
     }
 }
 

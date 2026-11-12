@@ -127,6 +127,18 @@ class FlashNetworkStatusLogicTest {
     }
 
     @Test
+    fun `offline label personalizes when peerName is provided`() {
+        assertEquals(
+            "Pixel is offline · searching…",
+            FlashNetworkStatusMath.healthLabel(FlashConnectionHealth.Offline, peerName = "Pixel"),
+        )
+        assertEquals(
+            "Searching for devices…",
+            FlashNetworkStatusMath.healthLabel(FlashConnectionHealth.Offline, peerName = "  "),
+        )
+    }
+
+    @Test
     fun `transport badge labels are short and jargon-free`() {
         assertEquals("LAN", FlashNetworkStatusMath.transportLabel(FlashNetworkTransport.Lan))
         assertEquals("Wi-Fi Direct", FlashNetworkStatusMath.transportLabel(FlashNetworkTransport.WifiDirect))

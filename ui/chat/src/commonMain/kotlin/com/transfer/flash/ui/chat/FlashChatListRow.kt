@@ -5,9 +5,10 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -24,24 +25,33 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashChatListItemUi
@@ -53,6 +63,7 @@ import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
@@ -75,7 +86,14 @@ fun FlashChatListRow(
     onArchive: (String) -> Unit = {},
     swipeActionLabel: String = "Archive",
     enableSwipe: Boolean = isSwipeToDismissSupported,
+    enableRightClickMenu: Boolean = isRowRightClickMenuSupported,
+    onPinToggle: (() -> Unit)? = null,
+    onMuteToggle: (() -> Unit)? = null,
+    onMarkRead: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
 ) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
     val motion = FlashTheme.motion
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
@@ -84,6 +102,23 @@ fun FlashChatListRow(
         animationSpec = motion.springSnappySpec(),
         label = "flashChatListRowPress",
     )
+    var contextMenuExpanded by remember { mutableStateOf(false) }
+
+    val rightClickModifier = if (enableRightClickMenu && !selectionMode) {
+        Modifier.pointerInput(item.id) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Main)
+                    if (event.type == PointerEventType.Press && event.buttons.isSecondaryPressed) {
+                        event.changes.forEach { it.consume() }
+                        contextMenuExpanded = true
+                    }
+                }
+            }
+        }
+    } else {
+        Modifier
+    }
 
     // OPT-O04-05: Bypass SwipeToDismissBoxState on Desktop or when in selectionMode to eliminate per-row gesture state allocations
     if (enableSwipe && !selectionMode) {
@@ -110,7 +145,7 @@ fun FlashChatListRow(
                     actionLabel = swipeActionLabel,
                 )
             },
-            modifier = modifier,
+            modifier = modifier.then(rightClickModifier),
         ) {
             FlashChatListRowContent(
                 item = item,
@@ -124,7 +159,7 @@ fun FlashChatListRow(
             )
         }
     } else {
-        Box(modifier = modifier) {
+        Box(modifier = modifier.then(rightClickModifier)) {
             FlashChatListRowContent(
                 item = item,
                 onClick = onClick,
@@ -135,6 +170,157 @@ fun FlashChatListRow(
                 interactionSource = interactionSource,
                 pressScale = pressScale,
             )
+            if (enableRightClickMenu && !selectionMode) {
+                val menuShape = RoundedCornerShape(FlashShapes.radius16)
+                DropdownMenu(
+                    expanded = contextMenuExpanded,
+                    onDismissRequest = { contextMenuExpanded = false },
+                    offset = DpOffset(x = FlashSpacing.space16, y = 0.dp),
+                    shape = menuShape,
+                    containerColor = colors.backgroundSurface,
+                    border = BorderStroke(FlashDimensions.borderHairline, colors.borderSubtle),
+                ) {
+                    if (onPinToggle != null) {
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = if (item.isPinned) "Unpin" else "Pin",
+                                    style = typography.bodyDefault,
+                                    color = colors.textPrimary,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.Pin,
+                                    contentDescription = null,
+                                    tint = colors.textSecondary,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                contextMenuExpanded = false
+                                onPinToggle()
+                            },
+                        )
+                    }
+                    if (onMuteToggle != null) {
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = if (item.isMuted) "Unmute" else "Mute",
+                                    style = typography.bodyDefault,
+                                    color = colors.textPrimary,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.NotificationOff,
+                                    contentDescription = null,
+                                    tint = colors.textSecondary,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                contextMenuExpanded = false
+                                onMuteToggle()
+                            },
+                        )
+                    }
+                    if (onMarkRead != null && item.unreadCount > 0) {
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = "Mark as read",
+                                    style = typography.bodyDefault,
+                                    color = colors.textPrimary,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.Read,
+                                    contentDescription = null,
+                                    tint = colors.textSecondary,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                contextMenuExpanded = false
+                                onMarkRead()
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = {
+                            FlashText(
+                                text = swipeActionLabel,
+                                style = typography.bodyDefault,
+                                color = colors.textPrimary,
+                            )
+                        },
+                        leadingIcon = {
+                            FlashIcon(
+                                icon = FlashIcons.Archive,
+                                contentDescription = null,
+                                tint = colors.textSecondary,
+                                size = FlashDimensions.iconSm,
+                            )
+                        },
+                        onClick = {
+                            contextMenuExpanded = false
+                            onArchive(item.id)
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            FlashText(
+                                text = "Select",
+                                style = typography.bodyDefault,
+                                color = colors.textPrimary,
+                            )
+                        },
+                        leadingIcon = {
+                            FlashIcon(
+                                icon = FlashIcons.Check,
+                                contentDescription = null,
+                                tint = colors.textSecondary,
+                                size = FlashDimensions.iconSm,
+                            )
+                        },
+                        onClick = {
+                            contextMenuExpanded = false
+                            onLongClick()
+                        },
+                    )
+                    if (onDelete != null) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+                            thickness = FlashDimensions.borderHairline,
+                            color = colors.borderSubtle,
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = "Delete",
+                                    style = typography.bodyDefault,
+                                    color = colors.textError,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.Delete,
+                                    contentDescription = null,
+                                    tint = colors.textError,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                contextMenuExpanded = false
+                                onDelete()
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -160,7 +346,7 @@ private fun FlashChatListSwipeBackground(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = FlashDimensions.chatListRowHeight)
-            .background(if (showArchive) colors.accentSecondary else colors.backgroundSurfaceSubtle)
+            .background(if (showArchive) colors.accentFill else colors.backgroundSurfaceSubtle)
             .padding(horizontal = FlashSpacing.space16),
         contentAlignment = Alignment.CenterEnd,
     ) {
@@ -172,12 +358,12 @@ private fun FlashChatListSwipeBackground(
                 FlashIcon(
                     icon = FlashIcons.Archive,
                     contentDescription = null,
-                    tint = colors.textOnAccent,
+                    tint = colors.onAccentFill,
                 )
                 FlashText(
                     text = actionLabel,
                     style = FlashTheme.typography.captionEmphasis,
-                    color = colors.textOnAccent,
+                    color = colors.onAccentFill,
                 )
             }
         }
@@ -245,16 +431,24 @@ private fun FlashChatListRowContent(
                 Spacer(modifier = Modifier.width(FlashSpacing.space8))
             }
 
-            // Group Phase C: groups show a live "M online" count chip instead of the plain dot,
-            // overlaid on the avatar's bottom-end exactly where the single-peer dot sits.
+            // Group Phase C: groups render FlashGroupAvatar and a live "M online" count chip
+            // instead of the single-peer presence dot.
             Box {
-                FlashChatListAvatar(
-                    initials = item.avatarInitials,
-                    seed = item.avatarSeed,
-                    presence = item.presence,
-                )
-                if (item.isGroup && item.groupOnlineCount > 0) {
-                    FlashChatListGroupOnlineBadge(onlineCount = item.groupOnlineCount)
+                if (item.isGroup) {
+                    FlashGroupAvatar(
+                        initials = groupRowInitials(item.title, item.avatarInitials),
+                        seed = item.avatarSeed,
+                        size = FlashDimensions.avatarLg,
+                    )
+                    if (item.groupOnlineCount > 0) {
+                        FlashChatListGroupOnlineBadge(onlineCount = item.groupOnlineCount)
+                    }
+                } else {
+                    FlashChatListAvatar(
+                        initials = item.avatarInitials,
+                        seed = item.avatarSeed,
+                        presence = item.presence,
+                    )
                 }
             }
 
@@ -290,7 +484,7 @@ private fun FlashChatListRowContent(
                         text = item.timestamp,
                         maxLines = 1,
                         style = typography.metadataDefault,
-                        color = if (item.unreadCount > 0) colors.accentPrimary else colors.textTertiary,
+                        color = if (item.unreadCount > 0) colors.textLink else colors.textTertiary,
                     )
                 }
 
@@ -313,7 +507,7 @@ private fun FlashChatListRowContent(
                             overflow = TextOverflow.Ellipsis,
                             style = if (item.isTyping) typography.metadataEmphasis else typography.captionDefault,
                             color = when {
-                                item.isTyping -> colors.accentPrimary
+                                item.isTyping -> colors.textLink
                                 item.isMuted -> colors.textTertiary
                                 else -> colors.textSecondary
                             },
@@ -375,15 +569,24 @@ private fun BoxScope.FlashChatListGroupOnlineBadge(onlineCount: Int) {
             .background(colors.backgroundSurface)
             .padding(2.dp)
             .clip(CircleShape)
-            .background(colors.statusOnline)
+            .background(colors.accentFill)
             .padding(horizontal = 5.dp, vertical = 1.dp)
             .semantics { contentDescription = "$onlineCount members online" },
     ) {
         FlashText(
             text = onlineCount.toString(),
             style = FlashTheme.typography.metadataEmphasis,
-            color = colors.backgroundSurface,
+            color = colors.onAccentFill,
         )
+    }
+}
+
+private fun groupRowInitials(title: String, fallbackInitials: String): List<String> {
+    val words = title.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+    return if (words.size >= 2) {
+        words.take(FlashGroupHeaderMath.MAX_COLLAGE_TILES).map { it.take(1).uppercase() }
+    } else {
+        listOf(fallbackInitials.ifBlank { title.take(2).uppercase() })
     }
 }
 
@@ -476,14 +679,14 @@ private fun FlashUnreadBadge(count: Int) {
         modifier = Modifier
             .heightIn(min = FlashDimensions.unreadBadgeMinSize)
             .clip(CircleShape)
-            .background(colors.accentPrimary)
+            .background(colors.accentFill)
             .padding(horizontal = FlashSpacing.space4),
         contentAlignment = Alignment.Center,
     ) {
         FlashText(
             text = label,
             style = typography.metadataEmphasis,
-            color = colors.textOnAccent,
+            color = colors.onAccentFill,
         )
     }
 }
@@ -497,7 +700,7 @@ private fun FlashChatListSelectionIndicator(selected: Boolean) {
             .clip(CircleShape)
             .then(
                 if (selected) {
-                    Modifier.background(colors.accentPrimary)
+                    Modifier.background(colors.accentFill)
                 } else {
                     Modifier
                         .background(colors.backgroundSurface)
@@ -511,7 +714,7 @@ private fun FlashChatListSelectionIndicator(selected: Boolean) {
                 icon = FlashIcons.Read,
                 contentDescription = "Selected",
                 size = FlashDimensions.iconSm,
-                tint = colors.textOnAccent,
+                tint = colors.onAccentFill,
             )
         }
     }

@@ -1,8 +1,14 @@
 package com.transfer.flash.ui.shell
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import com.transfer.flash.ui.theme.FlashColors
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** JVM tests for UI-046 bottom-nav pure math helpers. */
@@ -88,5 +94,35 @@ class FlashBottomNavLogicTest {
             FlashBottomNavMath.travelAmplitude(-2),
             0.001f,
         )
+    }
+
+    @Test
+    fun `tab labels stay single-line without soft wrap inside the 60dp capsule`() {
+        assertEquals(1, FlashBottomNavMath.LabelMaxLines)
+        assertFalse(FlashBottomNavMath.LabelSoftWrap)
+    }
+
+    @Test
+    fun `badge colors meet WCAG AA contrast in light, dark, and dynamic themes`() {
+        val themes = listOf(
+            FlashColors.light(),
+            FlashColors.dark(),
+            FlashColors.light().withAccent(Color(0xFF6750A4)),
+            FlashColors.dark().withAccent(Color(0xFFD0BCFF)),
+            FlashColors.dark().copy(onAccentFill = Color.White),
+        )
+        themes.forEach { colors ->
+            val (bg, fg) = FlashBottomNavMath.badgeColors(colors)
+            assertTrue(
+                contrastRatio(fg, bg) >= 4.5f,
+                "Bottom nav badge contrast below AA (bg=$bg, fg=$fg, ratio=${contrastRatio(fg, bg)})",
+            )
+        }
+    }
+
+    private fun contrastRatio(a: Color, b: Color): Float {
+        val la = a.luminance()
+        val lb = b.luminance()
+        return (max(la, lb) + 0.05f) / (min(la, lb) + 0.05f)
     }
 }

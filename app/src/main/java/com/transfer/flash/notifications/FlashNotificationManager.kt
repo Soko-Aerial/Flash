@@ -144,7 +144,7 @@ object FlashNotificationManager {
             "Flash nearby presence",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Background mesh and discovery keepalive"
+            description = "Keeps nearby discovery ready in the background"
         }
 
         manager.createNotificationChannels(
@@ -242,7 +242,7 @@ object FlashNotificationManager {
         val cancelPendingIntent = if (transfer.groupOrigin) null else createCancelTransferPendingIntent(appContext, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setProgress(100, percent, transfer.bytesTotal <= 0L)
@@ -289,7 +289,7 @@ object FlashNotificationManager {
         val contentIntent = openIntent ?: viewTransfersIntent
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setProgress(0, 0, false)
@@ -337,7 +337,7 @@ object FlashNotificationManager {
         val contentIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setProgress(0, 0, false)
@@ -388,7 +388,7 @@ object FlashNotificationManager {
         val declineIntent = createDeclineTransferPendingIntent(appContext, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
@@ -438,7 +438,7 @@ object FlashNotificationManager {
         val resumePendingIntent = createResumeTransferPendingIntent(appContext, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setProgress(100, percent, false)

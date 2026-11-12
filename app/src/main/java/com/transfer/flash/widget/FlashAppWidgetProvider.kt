@@ -72,6 +72,14 @@ class FlashAppWidgetProvider : AppWidgetProvider() {
     companion object {
         private const val TAG = "WIDGET"
         const val ACTION_PIN_WIDGET = "com.transfer.flash.action.PIN_WIDGET"
+        const val ACTION_WIDGET_SEND = "com.transfer.flash.action.SHORTCUT_SEND"
+        private const val REQUEST_CODE_OPEN_APP = 0
+        private const val REQUEST_CODE_OPEN_SEND = 1
+
+        internal fun widgetDestinationAction(action: String?): String = when (action) {
+            ACTION_WIDGET_SEND -> "NearbyDevices"
+            else -> "ChatList"
+        }
 
         fun updateAppWidget(
             context: Context,
@@ -79,18 +87,34 @@ class FlashAppWidgetProvider : AppWidgetProvider() {
             appWidgetId: Int,
             statusText: String? = null,
         ) {
-            val intent = Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            val openAppIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
-            val pendingIntent = PendingIntent.getActivity(
+            val openAppPendingIntent = PendingIntent.getActivity(
                 context,
-                0,
-                intent,
+                REQUEST_CODE_OPEN_APP,
+                openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+
+            val openSendIntent = Intent(context, MainActivity::class.java).apply {
+                action = ACTION_WIDGET_SEND
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val openSendPendingIntent = PendingIntent.getActivity(
+                context,
+                REQUEST_CODE_OPEN_SEND,
+                openSendIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
 
             val views = RemoteViews(context.packageName, R.layout.widget_flash).apply {
-                setOnClickPendingIntent(R.id.widget_container, pendingIntent)
+                setOnClickPendingIntent(R.id.widget_container, openAppPendingIntent)
+                setOnClickPendingIntent(R.id.widget_action_icon, openSendPendingIntent)
                 if (statusText != null) {
                     setTextViewText(R.id.widget_status, statusText)
                 }

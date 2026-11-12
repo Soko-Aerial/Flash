@@ -10,6 +10,8 @@ import com.transfer.flash.core.security.pairing.FlashPairingFrame
 import com.transfer.flash.core.security.pairing.PairingWireCodec
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.core.security.trust.VouchVerdict
+import com.transfer.flash.ui.chat.FlashPairingPhase
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
@@ -47,13 +49,31 @@ class PairingCoordinatorHelloTest {
 
         override fun revokeVouch(deviceId: FlashDeviceId, groupId: String) = Unit
 
-        override fun isTrusted(deviceId: FlashDeviceId): Boolean = false
+        val trusted = ConcurrentHashMap<FlashDeviceId, String>()
+        val pins = ConcurrentHashMap<FlashDeviceId, String>()
+        val verified: MutableSet<FlashDeviceId> = ConcurrentHashMap.newKeySet()
+
+        override fun isTrusted(deviceId: FlashDeviceId): Boolean = trusted.containsKey(deviceId)
         override fun isRevoked(deviceId: FlashDeviceId): Boolean = revoked
-        override fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit> =
-            FlashResult.Success(Unit)
-        override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> =
-            FlashResult.Success(Unit)
-        override fun getTrustedPeers(): Map<FlashDeviceId, String> = emptyMap()
+        override fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit> {
+            trusted[deviceId] = friendlyName
+            return FlashResult.Success(Unit)
+        }
+        override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> {
+            trusted.remove(deviceId)
+            return FlashResult.Success(Unit)
+        }
+        override fun getTrustedPeers(): Map<FlashDeviceId, String> = trusted.toMap()
+        override fun getPin(deviceId: FlashDeviceId): String? = pins[deviceId]
+        override fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> {
+            pins[deviceId] = fingerprintHex
+            return FlashResult.Success(Unit)
+        }
+        override fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit> {
+            verified += deviceId
+            return FlashResult.Success(Unit)
+        }
+        override fun isVerified(deviceId: FlashDeviceId): Boolean = deviceId in verified
     }
 
     /** [sent] records every line this device put on the wire, in order. */
@@ -152,6 +172,133 @@ class PairingCoordinatorHelloTest {
         // peer that is waiting to be asked, which is precisely the failure this replaced.
         assertTrue("every ask must carry the flag: $asks", asks.all { it.contains("hrq=1") })
         assertFalse("no answer may be echoed by the asker", asks.any { it.contains("hrq=0") })
+    }
+
+    @Test
+    fun failedPairing_exposesPeerDeviceId_staysVisible_andRetrySucceeds() = runBlocking {
+        val trustA = RecordingTrustStore()
+        val trustB = RecordingTrustStore()
+        trustA.pins[FlashDeviceId(PEER_ID)] = "ffff000011112222"
+        trustB.pins[FlashDeviceId(LOCAL_ID)] = OUR_FP
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        lateinit var a: PairingCoordinator
+        lateinit var b: PairingCoordinator
+        a = PairingCoordinator(
+            localFingerprintHex = OUR_FP,
+            localDeviceId = LOCAL_ID,
+            localName = "Phone A",
+            localModel = "Pixel",
+            ephemeralPublicKey = byteArrayOf(1, 2, 3),
+            trustStore = trustA,
+            scope = scope,
+            sendToPeer = { _, text -> b.onInbound(LOCAL_ID, text); true },
+        )
+        b = PairingCoordinator(
+            localFingerprintHex = PEER_FP,
+            localDeviceId = PEER_ID,
+            localName = "Phone B",
+            localModel = "Pixel",
+            ephemeralPublicKey = byteArrayOf(4, 5, 6),
+            trustStore = trustB,
+            scope = scope,
+            sendToPeer = { _, text -> a.onInbound(PEER_ID, text); true },
+        )
+        a.onSessionUp(PEER_ID)
+        b.onSessionUp(LOCAL_ID)
+
+        a.beginPair(PEER_ID, "Phone B")
+        waitUntil("A must fail on pin mismatch") {
+            a.pairing.value?.phase == FlashPairingPhase.Failed
+        }
+        assertEquals(PEER_ID, a.pairing.value?.peerDeviceId)
+
+        // Stays visible past the old 2.5s terminal linger until user dismisses or retries.
+        delay(2_700L)
+        assertEquals(FlashPairingPhase.Failed, a.pairing.value?.phase)
+
+        // Fix the pin and retry.
+        trustA.pins[FlashDeviceId(PEER_ID)] = PEER_FP
+        b.declineLocal()
+        a.declineLocal()
+        waitUntil("both reset to idle") { a.pairing.value == null && b.pairing.value == null }
+
+        a.beginPair(PEER_ID, "Phone B")
+        waitUntil("B receives retried request") {
+            b.pairing.value?.phase == FlashPairingPhase.RequestReceived
+        }
+        assertEquals(LOCAL_ID, b.pairing.value?.peerDeviceId)
+        b.acceptLocal()
+        a.acceptLocal()
+        waitUntil("retry pairing completes") {
+            trustA.trusted.containsKey(FlashDeviceId(PEER_ID)) &&
+                trustB.trusted.containsKey(FlashDeviceId(LOCAL_ID))
+        }
+    }
+
+    @Test
+    fun newPairingStartedDuringPairedLinger_isNotWipedByOldLingerJob() = runBlocking {
+        val trustA = RecordingTrustStore()
+        val trustB = RecordingTrustStore()
+        trustA.pins[FlashDeviceId(PEER_ID)] = PEER_FP
+        trustB.pins[FlashDeviceId(LOCAL_ID)] = OUR_FP
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        lateinit var a: PairingCoordinator
+        lateinit var b: PairingCoordinator
+        a = PairingCoordinator(
+            localFingerprintHex = OUR_FP,
+            localDeviceId = LOCAL_ID,
+            localName = "Phone A",
+            localModel = "Pixel",
+            ephemeralPublicKey = byteArrayOf(1, 2, 3),
+            trustStore = trustA,
+            scope = scope,
+            sendToPeer = { _, text -> b.onInbound(LOCAL_ID, text); true },
+        )
+        b = PairingCoordinator(
+            localFingerprintHex = PEER_FP,
+            localDeviceId = PEER_ID,
+            localName = "Phone B",
+            localModel = "Pixel",
+            ephemeralPublicKey = byteArrayOf(4, 5, 6),
+            trustStore = trustB,
+            scope = scope,
+            sendToPeer = { _, text -> a.onInbound(PEER_ID, text); true },
+        )
+        a.onSessionUp(PEER_ID)
+        b.onSessionUp(LOCAL_ID)
+
+        a.beginPair(PEER_ID, "Phone B")
+        waitUntil("B sees request") { b.pairing.value?.phase == FlashPairingPhase.RequestReceived }
+        b.acceptLocal()
+        a.acceptLocal()
+        waitUntil("both enter Paired linger") {
+            a.pairing.value?.phase == FlashPairingPhase.Paired &&
+                b.pairing.value?.phase == FlashPairingPhase.Paired
+        }
+
+        // Start a fresh pairing while the 1.8s PAIRED_LINGER_MS timer is active.
+        a.beginPair(PEER_ID, "Phone B")
+        waitUntil("new pairing active on both sides") {
+            a.pairing.value?.phase == FlashPairingPhase.RequestReceived &&
+                b.pairing.value?.phase == FlashPairingPhase.RequestReceived
+        }
+
+        delay(2_100L)
+        assertEquals(FlashPairingPhase.RequestReceived, a.pairing.value?.phase)
+        assertEquals(FlashPairingPhase.RequestReceived, b.pairing.value?.phase)
+    }
+
+    private suspend fun waitUntil(
+        what: String,
+        timeoutMs: Long = 5_000L,
+        condition: () -> Boolean,
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            delay(20)
+        }
+        throw AssertionError("timed out waiting: $what")
     }
 
     private companion object {

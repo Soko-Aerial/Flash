@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,6 +30,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -39,13 +42,21 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -270,9 +281,21 @@ fun FlashMediaViewer(
     // gesture never recomposes — it only redraws backdrop alpha + page transform.
     val dismissDragPx = remember { mutableStateOf(0f) }
     val dismissThresholdPx = with(density) { FlashMediaViewerMath.DISMISS_DISTANCE_DP.dp.toPx() }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
 
     fun requestDismiss() {
         scope.launch { onDismiss() }
+    }
+
+    fun stepPage(delta: Int) {
+        if (pageCount <= 1) return
+        val target = (pagerState.currentPage + delta).coerceIn(0, pageCount - 1)
+        if (target != pagerState.currentPage) {
+            scope.launch { pagerState.animateScrollToPage(target) }
+        }
     }
 
     FlashBackHandler { requestDismiss() }
@@ -280,6 +303,29 @@ fun FlashMediaViewer(
     Box(
         modifier = modifier
             .fillMaxSize()
+            .focusRequester(focusRequester)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && playingPageId == null) {
+                    when (event.key) {
+                        Key.DirectionLeft -> {
+                            stepPage(-1)
+                            true
+                        }
+                        Key.DirectionRight -> {
+                            stepPage(1)
+                            true
+                        }
+                        Key.Escape -> {
+                            requestDismiss()
+                            true
+                        }
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            }
             .drawBehind {
                 drawRect(
                     color = colors.mediaViewerBackdrop.copy(
@@ -372,7 +418,55 @@ fun FlashMediaViewer(
             }
         }
 
-        // Bottom chrome bar — attribution + actions (hidden while a video plays, same reason)
+        // Desktop Prev/Next click navigation buttons when multiple items exist
+        if (isDesktopChatPlatform && chromeEffective && pageCount > 1) {
+            if (pagerState.currentPage > 0) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .padding(start = FlashSpacing.space16)
+                        .size(FlashDimensions.minTouchTarget)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .clickable { stepPage(-1) }
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Previous photo"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Back,
+                        tint = colors.mediaViewerChromeText,
+                        contentDescription = null,
+                    )
+                }
+            }
+            if (pagerState.currentPage < pageCount - 1) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = FlashSpacing.space16)
+                        .size(FlashDimensions.minTouchTarget)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .clickable { stepPage(1) }
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Next photo"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Forward,
+                        tint = colors.mediaViewerChromeText,
+                        contentDescription = null,
+                    )
+                }
+            }
+        }
+
+        // Bottom chrome bar — caption + attribution + labeled actions (hidden while a video plays)
         AnimatedVisibility(
             visible = chromeEffective,
             enter = fadeIn(motion.tweenNormalSpec()),
@@ -383,30 +477,48 @@ fun FlashMediaViewer(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
+                        ),
+                    )
                     .navigationBarsPadding()
                     .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
             ) {
+                val caption = currentItem.image.caption?.trim()
+                if (!caption.isNullOrEmpty()) {
+                    FlashText(
+                        text = caption,
+                        style = FlashTheme.typography.bodyDefault,
+                        color = colors.mediaViewerChromeText,
+                        maxLines = 4,
+                    )
+                    Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                }
                 FlashText(
                     text = "${currentItem.senderName} • ${currentItem.timeLabel}",
                     style = FlashTheme.typography.metadataDefault,
                     color = colors.mediaViewerChromeText.copy(alpha = ChromeTextAlpha),
                 )
                 Spacer(modifier = Modifier.height(FlashSpacing.space8))
-                Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                    FlashIconButtonChrome(
+                Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12)) {
+                    FlashViewerActionButton(
                         icon = FlashIcons.Download,
+                        label = "Save",
                         tint = colors.mediaViewerChromeText,
                         contentDescription = if (currentItem.image.isVideo) "Save video" else "Save image",
                         onClick = { onSave(pagerState.currentPage) },
                     )
-                    FlashIconButtonChrome(
+                    FlashViewerActionButton(
                         icon = FlashIcons.Share,
+                        label = "Share",
                         tint = colors.mediaViewerChromeText,
                         contentDescription = FlashIcons.Share.contentDescription,
                         onClick = { onShare(pagerState.currentPage) },
                     )
-                    FlashIconButtonChrome(
+                    FlashViewerActionButton(
                         icon = FlashIcons.Forward,
+                        label = "Forward",
                         tint = colors.mediaViewerChromeText,
                         contentDescription = FlashIcons.Forward.contentDescription,
                         onClick = { onForward(pagerState.currentPage) },
@@ -728,6 +840,43 @@ private fun FlashIconButtonChrome(
             icon = icon,
             tint = tint,
             contentDescription = contentDescription,
+        )
+    }
+}
+
+/** Labeled viewer action pill — 48dp touch target, clear icon + label for Save / Share / Forward. */
+@Composable
+private fun FlashViewerActionButton(
+    icon: FlashIconSpec,
+    label: String,
+    tint: Color,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .defaultMinSize(minWidth = FlashDimensions.minTouchTarget, minHeight = FlashDimensions.minTouchTarget)
+            .clip(RoundedCornerShape(FlashSpacing.space12))
+            .background(Color.White.copy(alpha = 0.12f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+            .semantics {
+                role = Role.Button
+                this.contentDescription = contentDescription
+            },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+    ) {
+        FlashIcon(
+            icon = icon,
+            tint = tint,
+            contentDescription = null,
+            size = FlashDimensions.iconSm,
+        )
+        FlashText(
+            text = label,
+            style = FlashTheme.typography.metadataEmphasis,
+            color = tint,
         )
     }
 }

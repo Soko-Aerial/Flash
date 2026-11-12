@@ -58,6 +58,11 @@ class FlashNearbyLogicTest {
             NearbyIdentityUi("Pixel", "abcdef123456", 4747),
         )
         assertEquals("id abcdef12 · port 4747", subtitle)
+        assertEquals(null, FlashNearbyMath.identityAddressLine(NearbyIdentityUi("Pixel", "abcdef123456", 4747)))
+        assertEquals(
+            "IP 192.168.1.42 · port 4747",
+            FlashNearbyMath.identityAddressLine(NearbyIdentityUi("Pixel", "abcdef123456", 4747, localAddressLabel = "192.168.1.42")),
+        )
     }
 
     @Test

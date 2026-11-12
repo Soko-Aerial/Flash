@@ -224,6 +224,7 @@ public class DesktopNotificationManager(
         // A row that left the list (cleared history) must not keep a stale entry for the whole session (audit B-14/B-18).
         val liveIds = transfers.mapTo(HashSet()) { it.id }
         previousTransferStates.keys.removeIf { it !in liveIds }
+        val inForeground = isWindowForegroundAndActive()
         transfers.forEach { transfer ->
             val prev = previousTransferStates[transfer.id]
             if (prev != transfer.state) {
@@ -232,7 +233,7 @@ public class DesktopNotificationManager(
                 // An inbound offer is announced on first sight too: with the window minimised it is otherwise invisible
                 // and the sender waits for an answer nobody knows is being asked (audit B-14).
                 if (transfer.state == FlashTransferState.Offered && prev == null) {
-                    if (isNotificationsEnabled()) {
+                    if (!inForeground && isNotificationsEnabled()) {
                         dispatchNotification(
                             title = "Incoming file from ${transfer.peerName.ifBlank { "a nearby device" }}",
                             message = transfer.fileName,
@@ -245,7 +246,7 @@ public class DesktopNotificationManager(
                 // Fire notification only if this is a state transition (not initial discovery)
                 if (prev != null) {
                     if (transfer.state == FlashTransferState.Completed) {
-                        if (isNotificationsEnabled() && !alreadyAnnounced(transfer)) {
+                        if (!inForeground && isNotificationsEnabled() && !alreadyAnnounced(transfer)) {
                             dispatchNotification(
                                 title = "Transfer Complete",
                                 message = "${transfer.fileName} transferred successfully",
@@ -253,7 +254,7 @@ public class DesktopNotificationManager(
                             )
                         }
                     } else if (transfer.state == FlashTransferState.Failed) {
-                        if (isNotificationsEnabled()) {
+                        if (!inForeground && isNotificationsEnabled()) {
                             dispatchNotification(
                                 title = "Transfer Failed",
                                 // The reason is already a sentence for people (ADR-069); say it instead of hiding it.
@@ -284,7 +285,7 @@ public class DesktopNotificationManager(
                 callUi.direction == FlashCallDirection.INCOMING &&
                 callUi.state == FlashCallState.RINGING
             ) {
-                if (isNotificationsEnabled()) {
+                if (!isWindowForegroundAndActive() && isNotificationsEnabled()) {
                     val callType = if (callUi.video) "Video" else "Voice"
                     dispatchNotification(
                         title = "Incoming $callType Call",
@@ -301,7 +302,7 @@ public class DesktopNotificationManager(
         if (currentPhase != previousPairingPhase) {
             previousPairingPhase = currentPhase
             if (pairingUi != null && currentPhase == PairingPhase.RequestReceived) {
-                if (isNotificationsEnabled()) {
+                if (!isWindowForegroundAndActive() && isNotificationsEnabled()) {
                     dispatchNotification(
                         title = "Pairing Request",
                         message = "Pairing request from ${pairingUi.peerName ?: "device"}",

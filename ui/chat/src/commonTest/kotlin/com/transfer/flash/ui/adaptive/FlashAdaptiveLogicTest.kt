@@ -175,4 +175,35 @@ class FlashAdaptiveLogicTest {
             )
         }
     }
+
+    @Test
+    fun `840 to 907dp window minus 68dp rail keeps two-pane detail visible when allowTwoPane is true`() {
+        listOf(840f, 860f, 907f).forEach { totalWindowDp ->
+            val sizeClass = FlashAdaptiveMath.windowSizeForWidth(totalWindowDp)
+            assertTrue(FlashAdaptiveMath.isTwoPaneAllowed(sizeClass))
+
+            val availableDp = totalWindowDp - FlashAdaptiveMath.NavigationRailWidthDp
+            // Without explicit allowTwoPane, availableDp (772..839dp) is Medium and returns availableDp.
+            assertEquals(availableDp, FlashAdaptiveMath.listPaneWidthDp(availableDp))
+
+            // With allowTwoPane = true from the host sizeClass, list stays at min and detail retains usable width.
+            val listWidth = FlashAdaptiveMath.listPaneWidthDp(availableDp, allowTwoPane = true)
+            val detailWidth = availableDp - listWidth
+            assertEquals(FlashAdaptiveMath.ListPaneMinWidthDp, listWidth)
+            assertTrue(
+                detailWidth >= FlashAdaptiveMath.DetailPaneUserMinWidthDp,
+                "Expected usable detail width at window=$totalWindowDp (available=$availableDp), got $detailWidth",
+            )
+        }
+    }
+
+    @Test
+    fun `explicit allowTwoPane false forces full width even above expanded breakpoint`() {
+        assertEquals(960f, FlashAdaptiveMath.listPaneWidthDp(960f, allowTwoPane = false))
+    }
+
+    @Test
+    fun `zero width with allowTwoPane true stays non-negative`() {
+        assertEquals(0f, FlashAdaptiveMath.listPaneWidthDp(0f, allowTwoPane = true))
+    }
 }

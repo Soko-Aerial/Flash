@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.chat
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,8 +18,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +36,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
@@ -149,6 +159,7 @@ fun FlashGroupMembersSheet(
             online = members.count { it.isOnline },
         )
     }
+    var pendingRoleChange by remember { mutableStateOf<Pair<FlashGroupMemberUi, Boolean>?>(null) }
     FlashSheetHost(
         onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
@@ -191,13 +202,13 @@ fun FlashGroupMembersSheet(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                            .background(colors.accentFill.copy(alpha = 0.12f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         FlashIcon(
                             icon = FlashIcons.Gallery,
                             contentDescription = null,
-                            tint = colors.accentPrimary,
+                            tint = colors.accentFill,
                         )
                     }
                     Column(modifier = Modifier.weight(1f)) {
@@ -246,13 +257,13 @@ fun FlashGroupMembersSheet(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                            .background(colors.accentFill.copy(alpha = 0.12f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         FlashIcon(
                             icon = FlashIcons.Settings,
                             contentDescription = null,
-                            tint = colors.accentPrimary,
+                            tint = colors.accentFill,
                         )
                     }
                     Column(modifier = Modifier.weight(1f)) {
@@ -298,20 +309,20 @@ fun FlashGroupMembersSheet(
                         modifier = Modifier
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                            .background(colors.accentFill.copy(alpha = 0.12f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         FlashIcon(
                             icon = FlashIcons.Share,
                             contentDescription = "Invite people",
-                            tint = colors.accentPrimary,
+                            tint = colors.accentFill,
                         )
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         FlashText(
                             text = "Invite people",
                             style = FlashTheme.typography.bodyEmphasis,
-                            color = colors.accentPrimary,
+                            color = colors.textLink,
                         )
                         FlashText(
                             text = "Share link or copy to clipboard",
@@ -398,18 +409,64 @@ fun FlashGroupMembersSheet(
                     member = member,
                     onVerify = onVerifyMember?.takeIf { member.introducedBy != null }?.let { verify -> { verify(member) } },
                     onRemove = onRemoveMember?.takeIf { FlashGroupMembersMath.canRemove(member, isOwner) }?.let { remove -> { remove(member) } },
-                    onPromote = onPromoteAdmin?.takeIf { isOwner && member.role == FlashMemberRole.Member }?.let { promo -> { promo(member) } },
-                    onDemote = onDemoteAdmin?.takeIf { isOwner && member.role == FlashMemberRole.Admin }?.let { demote -> { demote(member) } },
+                    onPromote = onPromoteAdmin?.takeIf { isOwner && member.role == FlashMemberRole.Member }?.let { { pendingRoleChange = member to true } },
+                    onDemote = onDemoteAdmin?.takeIf { isOwner && member.role == FlashMemberRole.Admin }?.let { { pendingRoleChange = member to false } },
                 )
             }
         }
     }
+
+    pendingRoleChange?.let { (member, isPromote) ->
+        FlashConfirmHost(
+            onDismiss = { pendingRoleChange = null },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = if (isPromote) "Make ${member.name} an admin?" else "Dismiss ${member.name} as admin?",
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = if (isPromote) {
+                        "${member.name} will be able to approve join requests, remove members, and change group settings."
+                    } else {
+                        "${member.name} will become a regular member and will no longer be able to manage the group."
+                    },
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingRoleChange = null
+                        if (isPromote) {
+                            onPromoteAdmin?.invoke(member)
+                        } else {
+                            onDemoteAdmin?.invoke(member)
+                        }
+                    },
+                ) {
+                    Text(
+                        text = if (isPromote) "Make admin" else "Dismiss admin",
+                        color = if (isPromote) colors.textLink else colors.textError,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRoleChange = null }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            },
+        )
+    }
 }
 
 /**
- * Single member row: avatar + online dot, name/transport subtitle, transport glyph, role badge, and for a member the
- * owner introduced an "Added by" line and a Verify action; the owner of a v2 group also gets a Remove action. The action
- * buttons sit outside the merged description so each stays a separate accessibility target.
+ * Single member row: avatar + online dot, name/transport subtitle, transport glyph, role badge, and an overflow
+ * menu for Verify / Make admin / Dismiss admin / Remove so member names never crush on 360dp phones.
  */
 @Composable
 private fun FlashMemberRow(
@@ -420,6 +477,9 @@ private fun FlashMemberRow(
     onDemote: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    var menuExpanded by remember { mutableStateOf(false) }
+    val hasActions = onVerify != null || onPromote != null || onDemote != null || onRemove != null
 
     Row(
         modifier = Modifier
@@ -444,14 +504,14 @@ private fun FlashMemberRow(
             ) {
                 FlashText(
                     text = member.name,
-                    style = FlashTheme.typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
+                    style = typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
                     color = colors.textPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 FlashText(
                     text = memberSubtitle(member),
-                    style = FlashTheme.typography.metadataDefault,
+                    style = typography.metadataDefault,
                     color = colors.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -459,7 +519,7 @@ private fun FlashMemberRow(
                 FlashGroupMembersMath.introducedByLabel(member.introducedBy)?.let { label ->
                     FlashText(
                         text = label,
-                        style = FlashTheme.typography.metadataDefault,
+                        style = typography.metadataDefault,
                         color = colors.textTertiary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -474,56 +534,123 @@ private fun FlashMemberRow(
             }
         }
 
-        if (onPromote != null) {
-            FlashText(
-                text = "Make Admin",
-                modifier = Modifier
-                    .semantics { contentDescription = "Promote ${member.name} to admin" }
-                    .clickable(role = Role.Button, onClick = onPromote)
-                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space12),
-                style = FlashTheme.typography.bodyDefault,
-                color = colors.accentPrimary,
-                maxLines = 1,
-            )
-        }
-
-        if (onDemote != null) {
-            FlashText(
-                text = "Dismiss Admin",
-                modifier = Modifier
-                    .semantics { contentDescription = "Demote ${member.name} to member" }
-                    .clickable(role = Role.Button, onClick = onDemote)
-                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space12),
-                style = FlashTheme.typography.bodyDefault,
-                color = colors.textSecondary,
-                maxLines = 1,
-            )
-        }
-
-        if (onVerify != null) {
-            FlashText(
-                text = "Verify",
-                modifier = Modifier
-                    .semantics { contentDescription = "Verify ${member.name}" }
-                    .clickable(role = Role.Button, onClick = onVerify)
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12),
-                style = FlashTheme.typography.bodyDefault,
-                color = colors.accentPrimary,
-                maxLines = 1,
-            )
-        }
-
-        if (onRemove != null) {
-            FlashText(
-                text = "Remove",
-                modifier = Modifier
-                    .semantics { contentDescription = "Remove ${member.name} from the group" }
-                    .clickable(role = Role.Button, onClick = onRemove)
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12),
-                style = FlashTheme.typography.bodyDefault,
-                color = colors.textError,
-                maxLines = 1,
-            )
+        if (hasActions) {
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier
+                        .size(FlashDimensions.minTouchTarget)
+                        .semantics { contentDescription = "Actions for ${member.name}" },
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.More,
+                        contentDescription = null,
+                        tint = colors.textSecondary,
+                    )
+                }
+                val menuShape = RoundedCornerShape(FlashShapes.radius16)
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    offset = DpOffset(x = 0.dp, y = FlashSpacing.space4),
+                    shape = menuShape,
+                    containerColor = colors.backgroundSurface,
+                    border = BorderStroke(FlashDimensions.borderHairline, colors.borderSubtle),
+                ) {
+                    if (onVerify != null) {
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = "Verify",
+                                    style = typography.bodyDefault,
+                                    color = colors.textLink,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.Verified,
+                                    contentDescription = null,
+                                    tint = colors.textLink,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onVerify()
+                            },
+                        )
+                    }
+                    if (onPromote != null) {
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = "Make admin",
+                                    style = typography.bodyDefault,
+                                    color = colors.textPrimary,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.Group,
+                                    contentDescription = null,
+                                    tint = colors.textSecondary,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onPromote()
+                            },
+                        )
+                    }
+                    if (onDemote != null) {
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = "Dismiss admin",
+                                    style = typography.bodyDefault,
+                                    color = colors.textPrimary,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.Group,
+                                    contentDescription = null,
+                                    tint = colors.textSecondary,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onDemote()
+                            },
+                        )
+                    }
+                    if (onRemove != null) {
+                        DropdownMenuItem(
+                            text = {
+                                FlashText(
+                                    text = "Remove",
+                                    style = typography.bodyDefault,
+                                    color = colors.textError,
+                                )
+                            },
+                            leadingIcon = {
+                                FlashIcon(
+                                    icon = FlashIcons.Delete,
+                                    contentDescription = null,
+                                    tint = colors.textError,
+                                    size = FlashDimensions.iconSm,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onRemove()
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -616,11 +743,11 @@ fun FlashJoinRequestRow(
                 text = "Approve",
                 modifier = Modifier
                     .clip(FlashShapes.chip)
-                    .background(colors.accentPrimary.copy(alpha = 0.12f))
+                    .background(colors.accentFill.copy(alpha = 0.12f))
                     .clickable(role = Role.Button, onClick = onApprove)
                     .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
                 style = FlashTheme.typography.captionEmphasis,
-                color = colors.accentPrimary,
+                color = colors.textLink,
             )
         }
     }
@@ -674,13 +801,13 @@ private fun RoleBadge(label: String) {
     Box(
         modifier = Modifier
             .clip(FlashShapes.chip)
-            .background(FlashTheme.colors.accentPrimary.copy(alpha = 0.12f))
+            .background(FlashTheme.colors.accentFill.copy(alpha = 0.12f))
             .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
     ) {
         FlashText(
             text = label,
             style = FlashTheme.typography.metadataEmphasis,
-            color = FlashTheme.colors.accentPrimary,
+            color = FlashTheme.colors.textLink,
             maxLines = 1,
         )
     }

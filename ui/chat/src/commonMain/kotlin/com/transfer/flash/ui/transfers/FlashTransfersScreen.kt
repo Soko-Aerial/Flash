@@ -42,8 +42,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
@@ -62,6 +60,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -71,10 +70,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.transfer.flash.ui.chat.FlashConfirmHost
-import com.transfer.flash.ui.chat.fileCategoryColorFor
-import com.transfer.flash.ui.chat.formatFileSize
 import com.transfer.flash.ui.chat.FlashEmptyState
+import com.transfer.flash.ui.chat.FlashErrorState
 import com.transfer.flash.ui.chat.FlashStateCopy
+import com.transfer.flash.ui.chat.fileCategoryColorFor
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashBrandAnimation
@@ -128,6 +127,8 @@ data class FlashTransferItemUi(
     val pieceBlocks: List<Int> = emptyList(),
     /** True for the sending side of a group file: its cancel stops it for every member, not for one peer. */
     val isGroupFile: Boolean = false,
+    /** True while post-transfer integrity hashing is running ([DomainState.Verifying]). */
+    val isVerifying: Boolean = false,
 )
 
 private val FlashTransferItemUi.isAwaitingReceiverAcceptance: Boolean
@@ -198,10 +199,51 @@ object FlashTransfersMath {
     fun progressBarWidthPx(minWidthPx: Int, maxWidthPx: Int, fraction: Float): Int =
         (maxWidthPx * fraction).roundToInt().coerceIn(minWidthPx, maxWidthPx)
 
+    private fun oneDecimal(value: Long, unit: Long): String {
+        val tenths = value * 10L / unit
+        return "${tenths / 10L}.${tenths % 10L}"
+    }
+
+    /** Decimal SI byte size (`1.4 GB`, `812 KB`, `50.0 MB`), matching [TransferFailureText.formatSize]. */
+    fun formatSize(bytes: Long): String {
+        val b = bytes.coerceAtLeast(0L)
+        return when {
+            b < 1_000L -> "$b B"
+            b < 1_000_000L -> "${b / 1_000L} KB"
+            b < 1_000_000_000L -> oneDecimal(b, 1_000_000L) + " MB"
+            else -> oneDecimal(b, 1_000_000_000L) + " GB"
+        }
+    }
+
+    /** Decimal SI transfer rate (`3.5 MB/s`, `500 KB/s`), consistent with [formatSize]. */
     fun formatSpeed(bytesPerSec: Long): String = when {
-        bytesPerSec >= 1024L * 1024L -> "${(bytesPerSec / (1024f * 1024f) * 10).toInt() / 10.0} MB/s"
-        bytesPerSec > 0L -> "${bytesPerSec / 1024L} KB/s"
-        else -> ""
+        bytesPerSec <= 0L -> ""
+        bytesPerSec < 1_000L -> "$bytesPerSec B/s"
+        bytesPerSec < 1_000_000L -> "${bytesPerSec / 1_000L} KB/s"
+        bytesPerSec < 1_000_000_000L -> oneDecimal(bytesPerSec, 1_000_000L) + " MB/s"
+        else -> oneDecimal(bytesPerSec, 1_000_000_000L) + " GB/s"
+    }
+
+    /** Concise size + percentage summary for transfer rows. */
+    fun progressSummary(item: FlashTransferItemUi): String? = when (item.state) {
+        FlashTransferState.Offered,
+        FlashTransferState.Completed -> formatSize(item.bytesTotal)
+        FlashTransferState.Active,
+        FlashTransferState.Paused,
+        FlashTransferState.Queued -> if (item.bytesTotal > 0L) {
+            val pct = (progressFraction(item.bytesDone, item.bytesTotal) * 100).toInt()
+            "${formatSize(item.bytesDone)} / ${formatSize(item.bytesTotal)} · $pct%"
+        } else {
+            null
+        }
+        FlashTransferState.Failed -> if (item.bytesTotal > 0L && item.bytesDone in 1 until item.bytesTotal) {
+            val pct = (progressFraction(item.bytesDone, item.bytesTotal) * 100).toInt()
+            "${formatSize(item.bytesDone)} / ${formatSize(item.bytesTotal)} · $pct%"
+        } else if (item.bytesTotal > 0L) {
+            formatSize(item.bytesTotal)
+        } else {
+            null
+        }
     }
 
     /**
@@ -232,7 +274,7 @@ object FlashTransfersMath {
      * leaving a stale total behind.
      */
     fun aggregateSpeed(active: List<FlashTransferItemUi>): Long = active
-        .filter { it.state == FlashTransferState.Active }
+        .filter { it.state == FlashTransferState.Active && !it.isVerifying }
         .sumOf { it.speedBytesPerSec.coerceAtLeast(0L) }
 
     fun directionLabel(item: FlashTransferItemUi): String = when (item.direction) {
@@ -262,7 +304,9 @@ object FlashTransfersMath {
         FlashTransferState.Failed -> item.errorMessage?.takeIf { it.isNotBlank() } ?: "Failed"
         FlashTransferState.Completed -> if (item.verified) "Verified" else "Completed"
         FlashTransferState.Active -> {
-            if (item.direction == FlashTransferDirection.Send && item.canGoOffline) {
+            if (item.isVerifying) {
+                "Verifying file…"
+            } else if (item.direction == FlashTransferDirection.Send && item.canGoOffline) {
                 "You can go offline now"
             } else if (item.direction == FlashTransferDirection.Receive && item.holdersOnline > 1) {
                 val speed = formatSpeed(item.speedBytesPerSec).takeIf { it.isNotEmpty() }
@@ -309,8 +353,14 @@ fun FlashTransfersScreen(
     onClearHistory: (() -> Unit)? = null,
     /** Hides one Failed or Cancelled row (C-10). A host that passes this gets a dismiss glyph on those rows. */
     onDismissItem: ((FlashTransferItemUi) -> Unit)? = null,
-    /** Hides every Failed and Cancelled row (C-10): the "Clear" beside those two section labels. */
+    /** Hides Failed rows (C-10): the "Clear" beside the FAILED section label. */
     onClearFailed: (() -> Unit)? = null,
+    /** Hides Cancelled/Declined rows (C-10): the "Clear" beside CANCELLED / DECLINED. */
+    onClearCancelled: (() -> Unit)? = null,
+    /** Optional row tap in two-pane mode to inspect offers, active, paused, queued, or failed transfers. */
+    onItemClick: ((FlashTransferItemUi) -> Unit)? = null,
+    /** Retry callback when loading transfers fails. */
+    onRetryLoad: (() -> Unit)? = null,
 ) {
     // Every branch clears the status bar: this page is its own top-level surface and has no
     // top bar of its own to own that inset (Chats/Conversation do it in their headers).
@@ -325,7 +375,16 @@ fun FlashTransfersScreen(
         label = "transfersPageState",
     ) { page ->
         when (page) {
-            TransfersPageState.Error -> ErrorPanel(surface)
+            TransfersPageState.Error -> Box(
+                modifier = surface.verticalScroll(rememberScrollState()).padding(vertical = FlashSpacing.space24),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashErrorState(
+                    title = "Transfers unavailable",
+                    message = "Your transfers could not be loaded.",
+                    onRetry = { onRetryLoad?.invoke() },
+                )
+            }
             TransfersPageState.Loading -> LoadingRows(surface)
             TransfersPageState.Empty -> Column(modifier = surface) {
                 // The empty state is still the Transfers page: keep the same page heading the
@@ -348,13 +407,7 @@ fun FlashTransfersScreen(
             TransfersPageState.Populated -> PopulatedSections(
                 state = state,
                 onPauseResumeClick = onPauseResumeClick,
-                onCancelClick = { item ->
-                    if (item.direction == FlashTransferDirection.Send) {
-                        pendingCancelItem = item
-                    } else {
-                        onCancelClick(item)
-                    }
-                },
+                onCancelClick = { item -> pendingCancelItem = item },
                 onRetryClick = onRetryClick,
                 onHistoryOpen = onHistoryOpen,
                 onHistoryShare = onHistoryShare,
@@ -363,6 +416,8 @@ fun FlashTransfersScreen(
                 onClearHistory = onClearHistory,
                 onDismissItem = onDismissItem,
                 onClearFailed = onClearFailed,
+                onClearCancelled = onClearCancelled,
+                onItemClick = onItemClick,
                 modifier = surface,
                 listState = listState,
                 bottomInset = bottomInset,
@@ -370,39 +425,60 @@ fun FlashTransfersScreen(
         }
     }
 
-    if (pendingCancelItem != null) {
+    pendingCancelItem?.let { item ->
         val colors = FlashTheme.colors
         FlashConfirmHost(
             onDismiss = { pendingCancelItem = null },
             containerColor = colors.backgroundSurface,
             title = {
                 FlashText(
-                    text = FlashCancelCopy.title(pendingCancelItem?.isGroupFile == true),
+                    text = FlashCancelCopy.title(item.direction, item.isGroupFile),
                     style = FlashTheme.typography.headingMedium,
                     color = colors.textPrimary,
                 )
             },
             text = {
                 FlashText(
-                    text = FlashCancelCopy.body(pendingCancelItem?.isGroupFile == true),
+                    text = FlashCancelCopy.body(item.direction, item.isGroupFile),
                     style = FlashTheme.typography.bodyDefault,
                     color = colors.textSecondary,
                 )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val itm = pendingCancelItem
-                    pendingCancelItem = null
-                    if (itm != null) {
-                        onCancelClick(itm)
-                    }
-                }) {
-                    Text(FlashCancelCopy.confirm(pendingCancelItem?.isGroupFile == true), color = colors.textError)
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = FlashDimensions.minTouchTarget)
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable {
+                            pendingCancelItem = null
+                            onCancelClick(item)
+                        }
+                        .semantics { role = Role.Button }
+                        .padding(horizontal = FlashSpacing.space12),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashText(
+                        text = FlashCancelCopy.confirm(item.direction, item.isGroupFile),
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = colors.textError,
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingCancelItem = null }) {
-                    Text("Keep transfer", color = colors.textSecondary)
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = FlashDimensions.minTouchTarget)
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable { pendingCancelItem = null }
+                        .semantics { role = Role.Button }
+                        .padding(horizontal = FlashSpacing.space12),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashText(
+                        text = "Keep transfer",
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = colors.textSecondary,
+                    )
                 }
             },
         )
@@ -421,26 +497,6 @@ private fun TransfersUiState.pageState(): TransfersPageState = when {
 
 private fun TransfersUiState.isEmpty(): Boolean =
     offers.isEmpty() && active.isEmpty() && failed.isEmpty() && history.isEmpty()
-
-@Composable
-private fun ErrorPanel(modifier: Modifier) {
-    Column(
-        modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(FlashSpacing.space24),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        FlashText(
-            text = "Transfers unavailable",
-            style = FlashTheme.typography.headingSmall,
-            color = FlashTheme.colors.textPrimary,
-        )
-        Spacer(Modifier.height(FlashSpacing.space4))
-        FlashText(
-            text = "Your transfers could not be loaded.",
-            style = FlashTheme.typography.metadataDefault,
-            color = FlashTheme.colors.textSecondary,
-        )
-    }
-}
 
 @Composable
 private fun LoadingRows(modifier: Modifier) {
@@ -484,14 +540,22 @@ private fun PopulatedSections(
     onClearHistory: (() -> Unit)?,
     onDismissItem: ((FlashTransferItemUi) -> Unit)?,
     onClearFailed: (() -> Unit)?,
+    onClearCancelled: (() -> Unit)?,
+    onItemClick: ((FlashTransferItemUi) -> Unit)?,
     modifier: Modifier,
     listState: LazyListState,
     bottomInset: Dp,
 ) {
+    val colors = FlashTheme.colors
     val statusSwap = FlashTheme.motion.statusCrossfade()
     val motion = FlashTheme.motion
     val (retryableFailed, cancelledOrDeclined) = remember(state.failed) {
         state.failed.partition { it.retryable }
+    }
+    val pausableItems = remember(state.active) {
+        state.active.filter {
+            (it.state == FlashTransferState.Active && !it.isVerifying) || it.state == FlashTransferState.Paused
+        }
     }
 
     // Rows are keyed by transfer id and hop between sections as state changes
@@ -514,16 +578,19 @@ private fun PopulatedSections(
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
+                    onRowClick = onItemClick?.let { click -> { click(item) } },
                     trailing = {
                         RowIcon(
                             icon = FlashIcons.Check,
-                            description = "Accept",
+                            description = "Accept ${item.fileName}",
+                            tint = colors.accentFill,
                             onClick = { onAcceptOffer(item) },
                         )
                         Spacer(Modifier.width(FlashSpacing.space8))
                         RowIcon(
                             icon = FlashIcons.Close,
-                            description = "Decline",
+                            description = "Decline ${item.fileName}",
+                            tint = colors.textError,
                             onClick = { onDeclineOffer(item) },
                         )
                     },
@@ -541,19 +608,17 @@ private fun PopulatedSections(
                         text = "ACTIVE",
                         modifier = Modifier.weight(1f).semantics { heading() },
                         style = FlashTheme.typography.captionEmphasis,
-                        color = FlashTheme.colors.textTertiary,
+                        color = colors.textTertiary,
                     )
-                    if (state.active.size > 1 && state.active.any {
-                            it.state == FlashTransferState.Active || it.state == FlashTransferState.Paused
-                        }) {
-                        val anyActiveRunning = state.active.any { it.state == FlashTransferState.Active }
+                    if (pausableItems.size > 1) {
+                        val anyActiveRunning = pausableItems.any { it.state == FlashTransferState.Active }
                         Box(
                             modifier = Modifier
                                 .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clip(RoundedCornerShape(FlashShapes.radius8))
-                                .background(FlashTheme.colors.backgroundSurfaceSubtle)
-                                .clickable {
-                                    state.active.forEach { item ->
+                                .background(colors.backgroundSurfaceSubtle)
+                                .clickable(role = Role.Button) {
+                                    pausableItems.forEach { item ->
                                         if (anyActiveRunning && item.state == FlashTransferState.Active) {
                                             onPauseResumeClick(item)
                                         } else if (!anyActiveRunning && item.state == FlashTransferState.Paused) {
@@ -567,32 +632,37 @@ private fun PopulatedSections(
                             FlashText(
                                 text = if (anyActiveRunning) "Pause all" else "Resume all",
                                 style = FlashTheme.typography.captionEmphasis,
-                                color = FlashTheme.colors.accentFill,
+                                color = colors.accentFill,
                             )
                         }
                     }
                 }
             }
             items(state.active, key = { it.id }, contentType = { "active" }) { item ->
+                val canPauseResume = (item.state == FlashTransferState.Active && !item.isVerifying) ||
+                    item.state == FlashTransferState.Paused
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
+                    onRowClick = onItemClick?.let { click -> { click(item) } },
                     trailing = {
-                        if (!item.isAwaitingReceiverAcceptance) AnimatedContent(
-                            targetState = item.state == FlashTransferState.Paused,
-                            transitionSpec = { statusSwap },
-                            label = "pauseResumeSwap",
-                        ) { isPaused ->
-                            RowIcon(
-                                icon = if (isPaused) FlashIcons.Play else FlashIcons.Pause,
-                                description = if (isPaused) "Resume" else "Pause",
-                                onClick = { onPauseResumeClick(item) },
-                            )
+                        if (canPauseResume) {
+                            AnimatedContent(
+                                targetState = item.state == FlashTransferState.Paused,
+                                transitionSpec = { statusSwap },
+                                label = "pauseResumeSwap",
+                            ) { isPaused ->
+                                RowIcon(
+                                    icon = if (isPaused) FlashIcons.Play else FlashIcons.Pause,
+                                    description = if (isPaused) "Resume ${item.fileName}" else "Pause ${item.fileName}",
+                                    onClick = { onPauseResumeClick(item) },
+                                )
+                            }
+                            Spacer(Modifier.width(FlashSpacing.space8))
                         }
-                        if (!item.isAwaitingReceiverAcceptance) Spacer(Modifier.width(FlashSpacing.space8))
                         RowIcon(
-                            icon = FlashIcons.Close,
-                            description = "Cancel",
+                            icon = FlashIcons.Stop,
+                            description = "Cancel ${item.fileName}",
                             onClick = { onCancelClick(item) },
                         )
                     },
@@ -600,22 +670,29 @@ private fun PopulatedSections(
             }
         }
         if (retryableFailed.isNotEmpty()) {
-            item(key = "label-failed") { SectionLabelWithClear("FAILED", onClearFailed) }
+            item(key = "label-failed") {
+                SectionLabelWithClear(
+                    text = "FAILED",
+                    onClear = onClearFailed,
+                    clearDescription = "Clear failed transfers",
+                )
+            }
             items(retryableFailed, key = { it.id }, contentType = { "failed" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
+                    onRowClick = onItemClick?.let { click -> { click(item) } },
                     trailing = {
                         RowIcon(
                             icon = FlashIcons.Retry,
-                            description = "Retry",
+                            description = "Retry ${item.fileName}",
                             onClick = { onRetryClick(item) },
                         )
                         if (onDismissItem != null) {
                             Spacer(Modifier.width(FlashSpacing.space8))
                             RowIcon(
-                                icon = FlashIcons.Close,
-                                description = "Dismiss",
+                                icon = FlashIcons.Delete,
+                                description = "Dismiss ${item.fileName}",
                                 onClick = { onDismissItem(item) },
                             )
                         }
@@ -624,16 +701,23 @@ private fun PopulatedSections(
             }
         }
         if (cancelledOrDeclined.isNotEmpty()) {
-            item(key = "label-cancelled") { SectionLabelWithClear("CANCELLED / DECLINED", onClearFailed) }
+            item(key = "label-cancelled") {
+                SectionLabelWithClear(
+                    text = "CANCELLED / DECLINED",
+                    onClear = onClearCancelled,
+                    clearDescription = "Clear cancelled transfers",
+                )
+            }
             items(cancelledOrDeclined, key = { it.id }, contentType = { "failed" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
+                    onRowClick = onItemClick?.let { click -> { click(item) } },
                     trailing = {
                         if (onDismissItem != null) {
                             RowIcon(
-                                icon = FlashIcons.Close,
-                                description = "Dismiss",
+                                icon = FlashIcons.Delete,
+                                description = "Dismiss ${item.fileName}",
                                 onClick = { onDismissItem(item) },
                             )
                         }
@@ -652,22 +736,22 @@ private fun PopulatedSections(
                         text = "HISTORY",
                         modifier = Modifier.weight(1f).semantics { heading() },
                         style = FlashTheme.typography.captionEmphasis,
-                        color = FlashTheme.colors.textTertiary,
+                        color = colors.textTertiary,
                     )
                     if (onClearHistory != null) {
                         Box(
                             modifier = Modifier
                                 .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clip(RoundedCornerShape(FlashShapes.radius8))
-                                .background(FlashTheme.colors.backgroundSurfaceSubtle)
-                                .clickable { onClearHistory() }
+                                .background(colors.backgroundSurfaceSubtle)
+                                .clickable(role = Role.Button, onClickLabel = "Clear transfer history") { onClearHistory() }
                                 .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
                             contentAlignment = Alignment.Center,
                         ) {
                             FlashText(
                                 text = "Clear history",
                                 style = FlashTheme.typography.captionEmphasis,
-                                color = FlashTheme.colors.textSecondary,
+                                color = colors.textSecondary,
                             )
                         }
                     }
@@ -680,7 +764,7 @@ private fun PopulatedSections(
                     trailing = {
                         RowIcon(
                             icon = FlashIcons.Share,
-                            description = "Share",
+                            description = "Share ${item.fileName}",
                             onClick = { onHistoryShare(item) },
                         )
                     },
@@ -785,7 +869,11 @@ private fun SectionLabel(text: String) {
 
 /** A section label with an optional "Clear" chip at its end (C-10), styled like the History section's. */
 @Composable
-private fun SectionLabelWithClear(text: String, onClear: (() -> Unit)?) {
+private fun SectionLabelWithClear(
+    text: String,
+    onClear: (() -> Unit)?,
+    clearDescription: String = "Clear $text",
+) {
     if (onClear == null) {
         SectionLabel(text)
         return
@@ -804,9 +892,9 @@ private fun SectionLabelWithClear(text: String, onClear: (() -> Unit)?) {
         Box(
             modifier = Modifier
                 .heightIn(min = FlashDimensions.minTouchTarget)
-                                .clip(RoundedCornerShape(FlashShapes.radius8))
+                .clip(RoundedCornerShape(FlashShapes.radius8))
                 .background(FlashTheme.colors.backgroundSurfaceSubtle)
-                .clickable { onClear() }
+                .clickable(role = Role.Button, onClickLabel = clearDescription) { onClear() }
                 .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
             contentAlignment = Alignment.Center,
         ) {
@@ -843,7 +931,16 @@ private fun TransferRow(
         FlashTransferState.Offered -> colors.statusTransfer
         FlashTransferState.Paused, FlashTransferState.Queued -> colors.statusTransfer
         FlashTransferState.Failed -> colors.textError
-        else -> colors.accentPrimary
+        else -> colors.accentFill
+    }
+    val progressSummary = FlashTransfersMath.progressSummary(item)
+    val subtitleSuffix = buildString {
+        item.transportLabel?.let { append(" · ").append(it) }
+        if ((item.state == FlashTransferState.Completed || item.state == FlashTransferState.Offered) &&
+            progressSummary != null
+        ) {
+            append(" · ").append(progressSummary)
+        }
     }
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
@@ -859,7 +956,8 @@ private fun TransferRow(
                         base.clickable(
                             interactionSource = interactionSource,
                             indication = null,
-                            onClickLabel = "Open",
+                            role = Role.Button,
+                            onClickLabel = if (item.state == FlashTransferState.Completed) "Open" else "Inspect",
                             onClick = onRowClick,
                         )
                     } else {
@@ -880,6 +978,7 @@ private fun TransferRow(
                         // the animation from re-running this whole `buildString` in the semantics phase
                         // on every frame (EXP-013).
                         append(", ${(FlashTransfersMath.progressFraction(item.bytesDone, item.bytesTotal) * 100).toInt()} percent")
+                        progressSummary?.let { append(", $it") }
                         append(", ${FlashTransfersMath.statusLine(item)}")
                     }
                 },
@@ -887,7 +986,6 @@ private fun TransferRow(
         ) {
             TransferBadge(
                 fileName = item.fileName,
-                bytesTotal = item.bytesTotal,
             )
             Spacer(Modifier.width(FlashSpacing.space12))
             Column(Modifier.weight(1f)) {
@@ -899,8 +997,7 @@ private fun TransferRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 FlashText(
-                    text = "${FlashTransfersMath.directionLabel(item)} ${item.peerName}" +
-                        item.transportLabel?.let { " · $it" }.orEmpty(),
+                    text = "${FlashTransfersMath.directionLabel(item)} ${item.peerName}$subtitleSuffix",
                     style = FlashTheme.typography.captionDefault,
                     color = colors.textSecondary,
                     maxLines = 2,
@@ -909,11 +1006,23 @@ private fun TransferRow(
                 TransferProgressBar(
                     fraction = fraction,
                     fillTint = fillTint,
-                    isActive = item.state == FlashTransferState.Active,
+                    isActive = item.state == FlashTransferState.Active && !item.isVerifying,
                     speedBytesPerSec = item.speedBytesPerSec,
                     reduceMotion = FlashTheme.motion.reduceMotion,
                     modifier = Modifier.padding(top = FlashSpacing.space4),
                 )
+                if (progressSummary != null &&
+                    item.state != FlashTransferState.Completed &&
+                    item.state != FlashTransferState.Offered
+                ) {
+                    FlashText(
+                        text = progressSummary,
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 FlashText(
                     text = FlashTransfersMath.statusLine(item),
                     style = FlashTheme.typography.captionDefault,
@@ -1029,22 +1138,26 @@ internal fun TransferProgressBar(
 }
 
 @Composable
-private fun RowIcon(icon: com.transfer.flash.ui.icons.FlashIconSpec, description: String, onClick: () -> Unit) {
+private fun RowIcon(
+    icon: com.transfer.flash.ui.icons.FlashIconSpec,
+    description: String,
+    tint: Color = FlashTheme.colors.textSecondary,
+    onClick: () -> Unit,
+) {
     val haptics = rememberFlashHaptics()
     Box(
         Modifier
             .size(FlashDimensions.minTouchTarget)
-            .clickable(onClickLabel = description) {
+            .clickable(role = Role.Button, onClickLabel = description) {
                 haptics(FlashHaptic.Tick)
                 onClick()
-            }
-            .semantics { role = Role.Button },
+            },
         contentAlignment = Alignment.Center,
     ) {
         FlashIcon(
             icon = icon,
             contentDescription = description,
-            tint = FlashTheme.colors.textSecondary,
+            tint = tint,
             size = FlashDimensions.iconMd,
         )
     }
@@ -1055,7 +1168,7 @@ private fun RowIcon(icon: com.transfer.flash.ui.icons.FlashIconSpec, description
  * the in-bubble interactive overlays — row-level controls own the actions on this surface.
  */
 @Composable
-private fun TransferBadge(fileName: String, bytesTotal: Long) {
+private fun TransferBadge(fileName: String) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     val extension = remember(fileName) { extensionOf(fileName) }

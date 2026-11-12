@@ -44,4 +44,15 @@ class FlashRadioCopyTest {
         assertTrue(FlashRadioCopy.sentenceConnected("VR-N76").contains("VR-N76"))
         assertTrue(FlashRadioCopy.a11yPairDevice("VR-N76").contains("VR-N76"))
     }
+
+    @Test
+    fun testChecklistMenuUsesArrowsNotQuestionMarks() {
+        assertTrue(FlashRadioCopy.CHECKLIST_STEP_2.contains("→"))
+        assertFalse(FlashRadioCopy.CHECKLIST_STEP_2.contains('?'))
+        assertTrue(FlashRadioCopy.NEXT_STEP_KISS_NOT_ENABLED.contains("→"))
+        assertFalse(FlashRadioCopy.NEXT_STEP_KISS_NOT_ENABLED.contains("->"))
+        assertTrue(FlashRadioCopy.NEXT_STEP_RADIO_CLOSED_LINK.contains("→"))
+        assertFalse(FlashRadioCopy.NEXT_STEP_RADIO_CLOSED_LINK.contains("->"))
+        assertFalse(FlashRadioCopy.A11Y_PROFILE_A_UNSUPPORTED.isBlank())
+    }
 }

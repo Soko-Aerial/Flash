@@ -2,13 +2,14 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -19,9 +20,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.background
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.ui.avatar.FlashAvatar
@@ -44,6 +49,7 @@ public fun FlashAddMembersSheet(
     onDismiss: () -> Unit,
     onAdd: (memberIds: Set<String>) -> Unit,
     modifier: Modifier = Modifier,
+    onFindDevicesClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     var selected by remember { mutableStateOf(emptySet<String>()) }
@@ -66,17 +72,53 @@ public fun FlashAddMembersSheet(
                 style = FlashTheme.typography.metadataEmphasis,
             )
             if (availablePeers.isEmpty()) {
-                FlashText(
-                    text = "No paired devices available to add.",
-                    style = FlashTheme.typography.bodyDefault,
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    FlashText(
+                        text = "No paired devices available to add.",
+                        style = FlashTheme.typography.bodyDefault,
+                        color = colors.textSecondary,
+                    )
+                    if (onFindDevicesClick != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = FlashDimensions.minTouchTarget)
+                                .clip(FlashShapes.chip)
+                                .background(colors.accentFill)
+                                .clickable {
+                                    onDismiss()
+                                    onFindDevicesClick()
+                                }
+                                .semantics {
+                                    role = Role.Button
+                                    contentDescription = "Find devices"
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashText(
+                                text = "Find devices",
+                                style = FlashTheme.typography.bodyEmphasis,
+                                color = colors.onAccentFill,
+                            )
+                        }
+                    }
+                }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .heightIn(max = 280.dp),
+                ) {
                     items(availablePeers, key = { it.id }) { peer ->
                         val isSelected = peer.id in selected
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clickable {
                                     selected = if (isSelected) selected - peer.id else selected + peer.id
                                 }
@@ -97,7 +139,11 @@ public fun FlashAddMembersSheet(
                                 maxLines = 1,
                             )
                             if (isSelected) {
-                                FlashIcon(icon = FlashIcons.Check, contentDescription = "Selected")
+                                FlashIcon(
+                                    icon = FlashIcons.Check,
+                                    contentDescription = "Selected",
+                                    tint = colors.accentFill,
+                                )
                             }
                         }
                     }
@@ -118,7 +164,7 @@ public fun FlashAddMembersSheet(
                         onDismiss()
                     },
                 ) {
-                    Text("Add", color = if (canAdd) colors.accentPrimary else colors.textTertiary)
+                    Text("Add", color = if (canAdd) colors.textLink else colors.textTertiary)
                 }
             }
         }
@@ -169,24 +215,30 @@ public fun FlashLeaveGroupDialog(
                     color = colors.textSecondary,
                 )
                 if (isOwner && eligibleSuccessors.isNotEmpty()) {
-                    eligibleSuccessors.take(5).forEach { candidate ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedSuccessorId = candidate.id }
-                                .padding(vertical = FlashSpacing.space4),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-                        ) {
-                            RadioButton(
-                                selected = selectedSuccessorId == candidate.id,
-                                onClick = { selectedSuccessorId = candidate.id },
-                            )
-                            FlashText(
-                                text = candidate.name + if (candidate.role == FlashMemberRole.Admin) " (Admin)" else "",
-                                style = FlashTheme.typography.bodyDefault,
-                                color = colors.textPrimary,
-                            )
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp),
+                    ) {
+                        items(eligibleSuccessors, key = { it.id }) { candidate ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedSuccessorId = candidate.id }
+                                    .padding(vertical = FlashSpacing.space4),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                            ) {
+                                RadioButton(
+                                    selected = selectedSuccessorId == candidate.id,
+                                    onClick = { selectedSuccessorId = candidate.id },
+                                )
+                                FlashText(
+                                    text = candidate.name + if (candidate.role == FlashMemberRole.Admin) " (Admin)" else "",
+                                    style = FlashTheme.typography.bodyDefault,
+                                    color = colors.textPrimary,
+                                )
+                            }
                         }
                     }
                 }

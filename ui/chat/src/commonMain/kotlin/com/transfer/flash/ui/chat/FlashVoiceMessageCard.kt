@@ -152,7 +152,37 @@ object FlashVoiceMath {
         return (fraction.coerceIn(0f, 1f) * barCount).toInt().coerceIn(0, barCount)
     }
 
+    /** Advance demo-mode playback elapsed ms using fractional [playbackSpeed] (e.g. 1.5x). */
+    fun advanceDemoElapsedMs(
+        elapsedMs: Long,
+        durationMs: Long,
+        tickMs: Long,
+        playbackSpeed: Float,
+    ): Long {
+        val step = (tickMs * playbackSpeed).toLong().coerceAtLeast(1L)
+        return (elapsedMs + step).coerceAtMost(durationMs)
+    }
+
     const val MIN_BAR_HEIGHT = 0.12f
+}
+
+/**
+ * Coordinates single active voice playback across [FlashVoiceMessageCard] instances and
+ * [FlashSharedContentSheet] audio rows so starting one note pauses any previously playing note.
+ */
+internal object FlashVoicePlaybackCoordinator {
+    var activePlaybackKey by mutableStateOf<String?>(null)
+        private set
+
+    fun claim(key: String) {
+        activePlaybackKey = key
+    }
+
+    fun release(key: String) {
+        if (activePlaybackKey == key) {
+            activePlaybackKey = null
+        }
+    }
 }
 
 /**
@@ -229,10 +259,28 @@ fun FlashVoiceMessageCard(
     var playbackSpeed by remember(attachment.id) { mutableStateOf(1.0f) }
     var scrubFraction by remember(attachment.id) { mutableStateOf<Float?>(null) }
 
+    val playbackKey = remember(attachment.id) {
+        "voice_card_${attachment.id}_${kotlin.random.Random.nextLong()}"
+    }
+    DisposableEffect(playbackKey) {
+        onDispose { FlashVoicePlaybackCoordinator.release(playbackKey) }
+    }
+    val activePlaybackKey = FlashVoicePlaybackCoordinator.activePlaybackKey
+    LaunchedEffect(activePlaybackKey, isPlaying) {
+        if (isPlaying && activePlaybackKey != null && activePlaybackKey != playbackKey) {
+            isPlaying = false
+        }
+    }
+
     val durationMs = attachment.durationMs
     val elapsedMsProvider: () -> Long = { scrubFraction?.let { FlashVoiceMath.elapsedForFraction(it, durationMs) } ?: elapsedMs }
 
     LaunchedEffect(isPlaying, playbackSpeed, attachment.id) {
+        if (isPlaying) {
+            FlashVoicePlaybackCoordinator.claim(playbackKey)
+        } else {
+            FlashVoicePlaybackCoordinator.release(playbackKey)
+        }
         if (audioPlayer != null) {
             audioPlayer.setSpeed(playbackSpeed)
             if (isPlaying) audioPlayer.play() else audioPlayer.pause()
@@ -242,6 +290,7 @@ fun FlashVoiceMessageCard(
                     // Reached the end (MediaPlayer stops itself) — snap to full and reset.
                     if (durationMs > 0L) elapsedMs = durationMs
                     isPlaying = false
+                    FlashVoicePlaybackCoordinator.release(playbackKey)
                     break
                 }
                 delay(FlashVoiceMath.TICK_MS)
@@ -249,19 +298,24 @@ fun FlashVoiceMessageCard(
         } else {
             while (isPlaying && elapsedMs < durationMs) {
                 delay(FlashVoiceMath.TICK_MS)
-                elapsedMs = (elapsedMs + (FlashVoiceMath.TICK_MS * playbackSpeed.toLong())).coerceAtMost(durationMs)
+                elapsedMs = FlashVoiceMath.advanceDemoElapsedMs(
+                    elapsedMs = elapsedMs,
+                    durationMs = durationMs,
+                    tickMs = FlashVoiceMath.TICK_MS,
+                    playbackSpeed = playbackSpeed,
+                )
             }
             if (elapsedMs >= durationMs && durationMs > 0L) {
                 isPlaying = false
+                FlashVoicePlaybackCoordinator.release(playbackKey)
             }
         }
     }
 
-    // --- Surface treatment (matches UI-016 file card language) ---
-    val surfaceBg = if (isParentOutgoing) colors.chatBgAttachmentOutgoing else colors.chatBgAttachmentIncoming
+    // --- Surface treatment (matches UI-016 file card language, ADR-355) ---
     val primaryTextColor = if (isParentOutgoing) colors.chatTextOutgoing else colors.chatTextIncoming
     val secondaryTextColor = if (isParentOutgoing) colors.chatTextTimestampOutgoing else colors.chatTextTimestamp
-    val playedColor = if (isParentOutgoing) colors.chatTextOutgoing else colors.accentPrimary
+    val playedColor = if (isParentOutgoing) colors.chatTextOutgoing else colors.accentFill
     val unplayedColor = secondaryTextColor.copy(alpha = 0.45f)
 
     val cardInteraction = remember { MutableInteractionSource() }
@@ -296,6 +350,7 @@ fun FlashVoiceMessageCard(
         else -> ""
     }
 
+    val canSeek = attachment.transferStatus == FlashFileTransferStatus.Downloaded
     val togglePlay = {
         haptics(FlashHaptic.Tick)
         if (selectionMode) {
@@ -311,7 +366,13 @@ fun FlashVoiceMessageCard(
                 elapsedMs = 0L
                 audioPlayer?.seekTo(0L)
             }
-            isPlaying = !isPlaying
+            val nextPlaying = !isPlaying
+            if (nextPlaying) {
+                FlashVoicePlaybackCoordinator.claim(playbackKey)
+            } else {
+                FlashVoicePlaybackCoordinator.release(playbackKey)
+            }
+            isPlaying = nextPlaying
             onActionClick()
         }
     }
@@ -324,12 +385,9 @@ fun FlashVoiceMessageCard(
                 scaleY = cardScale
             }
             .clip(FlashShapes.attachment)
-            .background(surfaceBg)
-            .border(
-                width = FlashDimensions.borderHairline,
-                color = colors.borderSubtle.copy(alpha = 0.5f),
-                shape = FlashShapes.attachment,
-            )
+            // Flattened inner card per ADR-355 to match FlashFileMessageCard: the bubble's own
+            // surface shows through with no nested border or card-inside-a-card box.
+            .background(Color.Transparent)
             .combinedClickable(
                 interactionSource = cardInteraction,
                 indication = null,
@@ -375,6 +433,7 @@ fun FlashVoiceMessageCard(
             playedColor = playedColor,
             unplayedColor = unplayedColor,
             playedBarCount = { FlashVoiceMath.playedBarCount(elapsedMsProvider(), durationMs, FlashVoiceMath.WAVEFORM_BAR_COUNT) },
+            seekEnabled = canSeek,
             onSeek = { fraction ->
                 scrubFraction = null
                 elapsedMs = FlashVoiceMath.elapsedForFraction(fraction, durationMs)
@@ -428,14 +487,14 @@ private fun FlashVoiceBadge(
         label = "voiceBadgePressScale",
     )
 
-    val badgeColor = when (transferStatus) {
-        FlashFileTransferStatus.Downloaded -> colors.accentPrimary
+    val (badgeColor, iconTint) = when (transferStatus) {
+        FlashFileTransferStatus.Downloaded -> colors.accentFill to colors.onAccentFill
         FlashFileTransferStatus.Transferring,
-        FlashFileTransferStatus.Paused -> colors.accentSecondary
-        FlashFileTransferStatus.NotDownloaded -> Color(0xFF5A6472)
-        FlashFileTransferStatus.AwaitingAcceptance -> colors.accentSecondary
-        FlashFileTransferStatus.Failed -> colors.textError
-        FlashFileTransferStatus.Cancelled -> Color(0xFF5A6472)
+        FlashFileTransferStatus.Paused,
+        FlashFileTransferStatus.AwaitingAcceptance -> Color(0xFF475569) to Color.White
+        FlashFileTransferStatus.NotDownloaded,
+        FlashFileTransferStatus.Cancelled -> Color(0xFF5A6472) to Color.White
+        FlashFileTransferStatus.Failed -> Color(0xFFC62828) to Color.White
     }
 
     val (icon, description) = when (transferStatus) {
@@ -490,7 +549,7 @@ private fun FlashVoiceBadge(
             FlashIcon(
                 icon = currentIcon,
                 contentDescription = null,
-                tint = Color.White,
+                tint = iconTint,
                 size = FlashDimensions.iconMd,
             )
         }
@@ -507,6 +566,7 @@ private fun FlashVoiceWaveform(
     playedColor: Color,
     unplayedColor: Color,
     playedBarCount: () -> Int,
+    seekEnabled: Boolean,
     onSeek: (Float) -> Unit,
     onScrub: (Float) -> Unit,
     onScrubEnd: () -> Unit,
@@ -522,32 +582,39 @@ private fun FlashVoiceWaveform(
     Canvas(
         modifier = modifier
             .height(28.dp)
-            .pointerInput(barCount) {
-                detectTapGestures(
-                    onTap = { offset ->
-                        onSeek(FlashVoiceMath.fractionForTap(offset.x, size.width.toFloat()))
-                    },
-                )
-            }
-            .pointerInput(barCount) {
-                detectHorizontalDragGestures(
-                    onDragStart = { offset ->
-                        isScrubbing = true
-                        onScrub(FlashVoiceMath.fractionForTap(offset.x, size.width.toFloat()))
-                    },
-                    onDragEnd = {
-                        isScrubbing = false
-                        onScrubEnd()
-                    },
-                    onDragCancel = {
-                        isScrubbing = false
-                        onScrubEnd()
-                    },
-                ) { change, _ ->
-                    onScrub(FlashVoiceMath.fractionForTap(change.position.x, size.width.toFloat()))
-                    change.consume()
-                }
-            },
+            .then(
+                if (seekEnabled) {
+                    Modifier
+                        .pointerInput(barCount) {
+                            detectTapGestures(
+                                onTap = { offset ->
+                                    onSeek(FlashVoiceMath.fractionForTap(offset.x, size.width.toFloat()))
+                                },
+                            )
+                        }
+                        .pointerInput(barCount) {
+                            detectHorizontalDragGestures(
+                                onDragStart = { offset ->
+                                    isScrubbing = true
+                                    onScrub(FlashVoiceMath.fractionForTap(offset.x, size.width.toFloat()))
+                                },
+                                onDragEnd = {
+                                    isScrubbing = false
+                                    onScrubEnd()
+                                },
+                                onDragCancel = {
+                                    isScrubbing = false
+                                    onScrubEnd()
+                                },
+                            ) { change, _ ->
+                                onScrub(FlashVoiceMath.fractionForTap(change.position.x, size.width.toFloat()))
+                                change.consume()
+                            }
+                        }
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         val currentPlayed = playedBarCount()
         if (isUltraLow) {
@@ -629,7 +696,7 @@ private fun FlashVoiceSpeedPill(
             .clip(FlashShapes.chip)
             .border(
                 width = FlashDimensions.borderHairline,
-                color = if (isActive) colors.accentPrimary else colors.borderSubtle.copy(alpha = 0.6f),
+                color = if (isActive) colors.accentFill else colors.borderSubtle.copy(alpha = 0.6f),
                 shape = FlashShapes.chip,
             )
             .clickable(onClick = onClick)
@@ -642,7 +709,7 @@ private fun FlashVoiceSpeedPill(
         FlashText(
             text = FlashVoiceMath.speedLabel(speed),
             style = FlashTheme.typography.metadataEmphasis,
-            color = if (isActive) colors.accentPrimary else textColor,
+            color = if (isActive) colors.accentFill else textColor,
         )
     }
 }

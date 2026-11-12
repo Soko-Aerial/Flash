@@ -6,7 +6,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -39,6 +41,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
@@ -560,15 +565,32 @@ fun FlashImageTile(
     Box(
         modifier = tileModifier
             .pointerInput(Unit) {
-                detectTapGestures(
-                    onPress = {
-                        isPressed = true
-                        tryAwaitRelease()
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    // Leave secondary (right-click) and tertiary clicks unconsumed so Desktop
+                    // bubble context menus receive them cleanly.
+                    if (currentEvent.buttons.isSecondaryPressed || currentEvent.buttons.isTertiaryPressed) {
+                        return@awaitEachGesture
+                    }
+                    isPressed = true
+                    var longPressed = false
+                    val upOrCancel = try {
+                        withTimeout(viewConfiguration.longPressTimeoutMillis) {
+                            waitForUpOrCancellation()
+                        }
+                    } catch (_: PointerEventTimeoutCancellationException) {
+                        longPressed = true
                         isPressed = false
-                    },
-                    onTap = { currentOnClick() },
-                    onLongPress = { currentOnLongPress() },
-                )
+                        currentOnLongPress()
+                        waitForUpOrCancellation()
+                        null
+                    }
+                    isPressed = false
+                    if (!longPressed && upOrCancel != null) {
+                        upOrCancel.consume()
+                        currentOnClick()
+                    }
+                }
             }
             // detectTapGestures is invisible to accessibility services: the tile had a described
             // Image inside but no activatable node, so TalkBack could read a photo and never open

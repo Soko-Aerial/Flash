@@ -79,14 +79,8 @@ enum class FlashAttachmentType(
     ),
     Audio(
         label = "Audio",
-        icon = FlashIcons.Microphone,
+        icon = FlashIcons.Headphones,
         containerColor = Color(0xFF7209B7),
-    ),
-    FlashTransfer(
-        label = "Flash P2P",
-        icon = FlashIcons.Device,
-        containerColor = Color(0xFF00E5BC),
-        iconTint = Color.Black,
     ),
 }
 

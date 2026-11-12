@@ -16,6 +16,8 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.enterprise.HubLinkState
 import com.transfer.flash.core.messaging.FlashChatRepository
@@ -131,6 +133,8 @@ public fun FlashHubRoute(
     modifier: Modifier = Modifier,
     /** Bumped by the host each time the Hub tab is tapped while it is already showing (scroll to top, then News). */
     reselectSignal: Int = 0,
+    /** Space the hanging shell bar occupies; scrollable Hub content pads beneath it (UI-046). */
+    bottomInset: Dp = 0.dp,
 ) {
     val scope = rememberCoroutineScope()
     var selection by rememberSaveable(stateSaver = FlashHubSelectionCodec.saver) { mutableStateOf(FlashHubSelection()) }
@@ -151,7 +155,8 @@ public fun FlashHubRoute(
     val searchHits by remember(repository, searching, query) {
         if (searching) repository.searchHubPeople(query).map<List<HubPersonUi>, List<HubPersonUi>?> { it } else flowOf(null)
     }.collectAsState(initial = null)
-    val people = if (searching) searchHits ?: allPeople else allPeople
+    val searchPeopleLoading = searching && searchHits == null
+    val people = resolveHubPeopleForScreen(searching = searching, searchHits = searchHits, allPeople = allPeople)
     val openedPerson by remember(repository, selection.personId) {
         selection.personId?.let { repository.hubPerson(it) } ?: flowOf<HubPersonUi?>(null)
     }.collectAsState(initial = null)
@@ -226,6 +231,7 @@ public fun FlashHubRoute(
         orgHost = host.orgHost,
         showMovedTip = !tipSeen,
         pendingRoute = FlashHubMath.parseRoute(host.pendingRoute),
+        searchPeopleLoading = searchPeopleLoading,
     )
     FlashHubScreen(
         data = data,
@@ -234,5 +240,6 @@ public fun FlashHubRoute(
         actions = actions,
         modifier = modifier,
         reselectSignal = reselectSignal,
+        bottomInset = bottomInset,
     )
 }

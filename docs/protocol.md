@@ -1837,7 +1837,7 @@ A 1:1 transfer is steered by text frames `FLASH_XFER` with fields `action` (`pau
 and, since ADR-221, an optional `reason`. Fields the receiver does not know are ignored, so the extension is compatible
 both ways.
 
-`reason` is only meaningful on `action=cancel` sent **by the receiving side**. It says the receiver could not take the
+On `action=cancel` sent **by the receiving side**, these `reason` values say the receiver could not take the
 file, rather than the person changing their mind:
 
 | `reason` | Sent when | Sender shows |
@@ -1850,6 +1850,17 @@ A sender that sees one of these tokens marks the row **Failed** (retryable) with
 `reason`, or with a token it does not know, is a plain cancel (**Cancelled**, final). A re-declared session
 (`SESSION_CONFLICT`) is deliberately never refused this way, because that would end a healthy running transfer. An older
 sender ignores `reason` and shows "Cancelled by the other device", the behaviour before ADR-221.
+
+A sender whose attempt fails without an explicit cancellation can send `pause` with
+`reason=sender_interrupted`. An updated receiver marks an accepted transfer as **Failed** and
+retryable, preserving saved chunks. An unaccepted offer remains **Offered**. Older receivers treat
+the frame as an ordinary pause. An explicit cancellation still uses `cancel`.
+
+On an identical `FILE_START` re-offer, the receiver can re-announce its verified saved chunk indexes
+with existing `ACK_BATCH` frames. Updated senders skip those indexes once the ACKs arrive; chunks
+already sent before then may be duplicated. The receiver suppresses duplicate announcements within
+an attempt and resets that suppression on interruption or resume. Different file facts are still
+a session conflict; the receiver still checks the final whole-file digest.
 
 ## Offline Hub revocations on the LAN (ADR-359)
 

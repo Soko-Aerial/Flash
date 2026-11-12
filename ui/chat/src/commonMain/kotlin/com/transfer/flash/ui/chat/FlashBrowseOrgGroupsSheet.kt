@@ -3,6 +3,7 @@
 package com.transfer.flash.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,11 +17,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,6 +35,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
@@ -145,31 +152,78 @@ public fun FlashBrowseOrgGroupsSheet(
                 Box(
                     modifier = Modifier
                         .clip(FlashShapes.chip)
-                        .background(colors.accentPrimary.copy(alpha = 0.15f))
+                        .background(colors.accentFill.copy(alpha = 0.15f))
                         .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
                 ) {
                     FlashText(
                         text = "HUB DIRECTORY",
                         style = FlashTheme.typography.metadataEmphasis,
-                        color = colors.accentPrimary,
+                        color = colors.textLink,
                     )
                 }
             }
 
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                singleLine = true,
-                placeholder = { Text("Search groups by name...", style = FlashTheme.typography.bodyDefault) },
-                leadingIcon = { FlashIcon(FlashIcons.Search, contentDescription = "Search") },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(FlashShapes.composerInput)
+                    .background(colors.composerInputBackground)
+                    .border(FlashDimensions.borderHairline, colors.borderDefault, FlashShapes.composerInput)
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                FlashIcon(
+                    icon = FlashIcons.Search,
+                    contentDescription = "Search",
+                    size = FlashDimensions.iconSm,
+                    tint = colors.textSecondary,
+                )
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = FlashSpacing.space4),
+                    singleLine = true,
+                    textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
+                    cursorBrush = SolidColor(colors.accentFill),
+                    decorationBox = { innerTextField ->
+                        if (searchQuery.isEmpty()) {
+                            FlashText(
+                                text = "Search groups by name...",
+                                style = FlashTheme.typography.bodyDefault,
+                                color = colors.textTertiary,
+                                maxLines = 1,
+                            )
+                        }
+                        innerTextField()
+                    },
+                )
+                if (searchQuery.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .clickable { searchQuery = "" }
+                            .semantics { role = Role.Button; contentDescription = "Clear search" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Close,
+                            contentDescription = null,
+                            size = FlashDimensions.iconSm,
+                            tint = colors.textSecondary,
+                        )
+                    }
+                }
+            }
 
             feedback?.let { text ->
                 FlashText(
                     text = text,
                     style = FlashTheme.typography.metadataEmphasis,
-                    color = colors.accentPrimary,
+                    color = colors.textLink,
                 )
             }
 
@@ -192,7 +246,7 @@ public fun FlashBrowseOrgGroupsSheet(
                         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                     ) {
                         CircularProgressIndicator(
-                            color = colors.accentPrimary,
+                            color = colors.accentFill,
                             modifier = Modifier.size(28.dp),
                             strokeWidth = 2.dp,
                         )
@@ -220,7 +274,7 @@ public fun FlashBrowseOrgGroupsSheet(
                         TextButton(
                             onClick = { scope.launch { load() } },
                         ) {
-                            Text("Retry", color = colors.accentPrimary)
+                            Text("Retry", color = colors.textLink)
                         }
                     }
                 }
@@ -288,13 +342,13 @@ public fun FlashBrowseOrgGroupsSheet(
                                     isJoined -> Box(
                                         modifier = Modifier
                                             .clip(FlashShapes.chip)
-                                            .background(colors.accentPrimary.copy(alpha = 0.15f))
+                                            .background(colors.accentFill.copy(alpha = 0.15f))
                                             .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
                                     ) {
                                         FlashText(
                                             text = FlashHubStatusMath.joinButtonLabel(group.requiresApproval, joined = true, pending = false),
                                             style = FlashTheme.typography.metadataEmphasis,
-                                            color = colors.accentPrimary,
+                                            color = colors.textLink,
                                         )
                                     }
                                     isPending -> Box(
@@ -331,14 +385,14 @@ public fun FlashBrowseOrgGroupsSheet(
                                         },
                                         shape = RoundedCornerShape(6.dp),
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = colors.accentPrimary,
-                                            contentColor = colors.backgroundSurface,
+                                            containerColor = colors.accentFill,
+                                            contentColor = colors.onAccentFill,
                                         ),
                                         modifier = Modifier.height(34.dp),
                                     ) {
                                         if (isJoining) {
                                             CircularProgressIndicator(
-                                                color = colors.backgroundSurface,
+                                                color = colors.onAccentFill,
                                                 modifier = Modifier.size(14.dp),
                                                 strokeWidth = 2.dp,
                                             )
@@ -357,7 +411,7 @@ public fun FlashBrowseOrgGroupsSheet(
                                 FlashText(
                                     text = if (open) "Hide requests" else badges.adminPendingText.orEmpty(),
                                     style = FlashTheme.typography.metadataEmphasis,
-                                    color = colors.accentPrimary,
+                                    color = colors.textLink,
                                     modifier = Modifier
                                         .clip(FlashShapes.chip)
                                         .clickable(onClickLabel = "Review requests") { openRequestsFor = if (open) null else group.groupId }
@@ -447,7 +501,7 @@ private fun FlashJoinRequestsPanel(
                     ) {
                         Text(
                             text = if (busy) "..." else label,
-                            color = if (approve) colors.accentPrimary else colors.textSecondary,
+                            color = if (approve) colors.textLink else colors.textSecondary,
                         )
                     }
                 }

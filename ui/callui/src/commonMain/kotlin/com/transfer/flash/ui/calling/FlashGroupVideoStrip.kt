@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -39,6 +38,7 @@ import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 
@@ -151,7 +151,7 @@ private fun FlashGroupVideoChip(
             if (pinned) {
                 FlashIcon(icon = FlashIcons.Pin, contentDescription = null, tint = Color.White, size = BADGE_ICON)
             }
-            Text(
+            FlashText(
                 text = participant.name.substringBefore(' '),
                 style = FlashTheme.typography.metadataDefault,
                 color = Color.White,

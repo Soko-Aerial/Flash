@@ -25,8 +25,8 @@ class PairingUiMapperTest {
         assertEquals(FlashPairingPhase.Paired, PairingUiMapper.corePhaseToUi(PairingPhase.Confirmed))
         assertEquals(FlashPairingPhase.Declined, PairingUiMapper.corePhaseToUi(PairingPhase.DeclinedByPeer))
         assertEquals(FlashPairingPhase.Expired, PairingUiMapper.corePhaseToUi(PairingPhase.Expired))
-        // No dedicated failure card exists; a protocol failure reads as a decline (docs mapping table).
-        assertEquals(FlashPairingPhase.Declined, PairingUiMapper.corePhaseToUi(PairingPhase.Failed))
+        // Protocol/security/rate-limit failures must surface as Failed, never as a peer decline.
+        assertEquals(FlashPairingPhase.Failed, PairingUiMapper.corePhaseToUi(PairingPhase.Failed))
     }
 
     @Test

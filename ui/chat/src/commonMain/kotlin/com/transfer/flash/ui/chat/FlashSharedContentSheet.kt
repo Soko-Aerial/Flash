@@ -7,6 +7,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +28,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -88,6 +91,7 @@ public fun FlashSharedContentSheet(
     onDownloadFile: (transferId: String) -> Unit = {},
     onOpenUrl: (url: String) -> Unit = {},
     onJoinInviteGroup: ((inviteUri: String) -> Unit)? = null,
+    onResumeTransfer: (transferId: String) -> Unit = onDownloadFile,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -97,6 +101,7 @@ public fun FlashSharedContentSheet(
     val fileItems = remember(messages) { FlashSharedContentMath.extractFiles(messages) }
     val audioItems = remember(messages) { FlashSharedContentMath.extractAudio(messages) }
     val linkItems = remember(messages) { FlashSharedContentMath.extractLinks(messages) }
+    val messageIsMine = remember(messages) { messages.associate { it.id to it.isMine } }
 
     var selectedTab by remember { mutableStateOf(FlashSharedContentTab.Media) }
 
@@ -173,10 +178,11 @@ public fun FlashSharedContentSheet(
                 }
             }
 
-            // Tabs row
+            // Tabs row (horizontally scrollable so labels never clip on narrow screens)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
                     .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             ) {
@@ -191,28 +197,28 @@ public fun FlashSharedContentSheet(
 
                     Box(
                         modifier = Modifier
-                            .weight(1f)
+                            .defaultMinSize(minHeight = FlashDimensions.minTouchTarget)
                             .clip(FlashShapes.chip)
                             .background(
-                                if (isSelected) colors.accentPrimary.copy(alpha = 0.15f)
+                                if (isSelected) colors.accentFill.copy(alpha = 0.15f)
                                 else colors.backgroundSurfaceStrong,
                             )
                             .border(
                                 width = FlashDimensions.borderHairline,
-                                color = if (isSelected) colors.accentPrimary else colors.borderSubtle,
+                                color = if (isSelected) colors.accentFill else colors.borderSubtle,
                                 shape = FlashShapes.chip,
                             )
                             .clickable {
                                 haptics(FlashHaptic.Tick)
                                 selectedTab = tab
                             }
-                            .padding(vertical = FlashSpacing.space8),
+                            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
                         contentAlignment = Alignment.Center,
                     ) {
                         FlashText(
                             text = FlashSharedContentMath.tabLabelWithCount(tab, count),
                             style = FlashTheme.typography.captionEmphasis,
-                            color = if (isSelected) colors.accentPrimary else colors.textSecondary,
+                            color = if (isSelected) colors.accentFill else colors.textSecondary,
                             maxLines = 1,
                         )
                     }
@@ -363,8 +369,10 @@ public fun FlashSharedContentSheet(
                                     items(filteredFiles, key = { it.file.id }) { item ->
                                         SharedFileRow(
                                             item = item,
+                                            isOutgoing = messageIsMine[item.messageId] == true,
                                             onOpenFile = { onOpenFile(item.file.localUri, item.file.mimeType, item.file.name) },
                                             onDownload = { onDownloadFile(item.file.id) },
+                                            onResume = { onResumeTransfer(item.file.id) },
                                             onJumpToMessage = { onJumpToMessage(item.messageId) },
                                         )
                                     }
@@ -394,7 +402,9 @@ public fun FlashSharedContentSheet(
                                     items(filteredAudio, key = { it.voice.id }) { item ->
                                         SharedAudioRow(
                                             item = item,
+                                            isOutgoing = messageIsMine[item.messageId] == true,
                                             onDownload = { onDownloadFile(item.voice.id) },
+                                            onResume = { onResumeTransfer(item.voice.id) },
                                             onJumpToMessage = { onJumpToMessage(item.messageId) },
                                         )
                                     }
@@ -444,17 +454,70 @@ public fun FlashSharedContentSheet(
     }
 }
 
+internal enum class FlashSharedTransferAction { Open, Download, Resume, None }
+
+internal fun resolveSharedFileAction(
+    status: FlashFileTransferStatus,
+    hasLocalUri: Boolean,
+    isOutgoing: Boolean,
+): FlashSharedTransferAction = when {
+    hasLocalUri && status == FlashFileTransferStatus.Downloaded -> FlashSharedTransferAction.Open
+    status == FlashFileTransferStatus.Failed || status == FlashFileTransferStatus.Paused -> FlashSharedTransferAction.Resume
+    status == FlashFileTransferStatus.NotDownloaded -> FlashSharedTransferAction.Download
+    status == FlashFileTransferStatus.AwaitingAcceptance && !isOutgoing -> FlashSharedTransferAction.Download
+    else -> FlashSharedTransferAction.None
+}
+
+internal fun sharedFileStatusNote(
+    status: FlashFileTransferStatus,
+    hasLocalUri: Boolean,
+    isOutgoing: Boolean,
+): String? = when {
+    hasLocalUri && status == FlashFileTransferStatus.Downloaded -> null
+    status == FlashFileTransferStatus.Transferring -> "Downloading…"
+    status == FlashFileTransferStatus.Failed -> "Failed · Tap to retry"
+    status == FlashFileTransferStatus.Paused -> "Paused · Tap to resume"
+    status == FlashFileTransferStatus.Cancelled -> "Cancelled"
+    status == FlashFileTransferStatus.AwaitingAcceptance ->
+        if (isOutgoing) "Waiting for recipient" else "Tap to download"
+    else -> "Tap to download"
+}
+
+internal fun resolveSharedAudioAction(
+    status: FlashFileTransferStatus,
+    hasUri: Boolean,
+    isOutgoing: Boolean,
+): FlashSharedTransferAction = when {
+    hasUri && status == FlashFileTransferStatus.Downloaded -> FlashSharedTransferAction.Open
+    status == FlashFileTransferStatus.Failed || status == FlashFileTransferStatus.Paused -> FlashSharedTransferAction.Resume
+    status == FlashFileTransferStatus.NotDownloaded -> FlashSharedTransferAction.Download
+    status == FlashFileTransferStatus.AwaitingAcceptance && !isOutgoing -> FlashSharedTransferAction.Download
+    else -> FlashSharedTransferAction.None
+}
+
 @Composable
 private fun SharedFileRow(
     item: FlashSharedFileItem,
+    isOutgoing: Boolean,
     onOpenFile: () -> Unit,
     onDownload: () -> Unit,
+    onResume: () -> Unit,
     onJumpToMessage: () -> Unit,
 ) {
     val colors = FlashTheme.colors
     val file = item.file
     val extensionBadge = remember(file.name) { FlashSharedContentMath.badgeForExtension(file.name) }
     val sizeText = remember(file.sizeBytes) { FlashSharedContentMath.formatFileSize(file.sizeBytes) }
+    val action = resolveSharedFileAction(
+        status = file.transferStatus,
+        hasLocalUri = file.localUri != null,
+        isOutgoing = isOutgoing,
+    )
+    val statusNote = sharedFileStatusNote(
+        status = file.transferStatus,
+        hasLocalUri = file.localUri != null,
+        isOutgoing = isOutgoing,
+    )
 
     Row(
         modifier = Modifier
@@ -462,7 +525,14 @@ private fun SharedFileRow(
             .clip(FlashShapes.attachment)
             .background(colors.backgroundSurfaceStrong)
             .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.attachment)
-            .clickable(onClick = onOpenFile)
+            .clickable(enabled = action != FlashSharedTransferAction.None) {
+                when (action) {
+                    FlashSharedTransferAction.Open -> onOpenFile()
+                    FlashSharedTransferAction.Resume -> onResume()
+                    FlashSharedTransferAction.Download -> onDownload()
+                    FlashSharedTransferAction.None -> Unit
+                }
+            }
             .padding(FlashSpacing.space12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
@@ -472,13 +542,13 @@ private fun SharedFileRow(
             modifier = Modifier
                 .size(42.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(colors.accentPrimary.copy(alpha = 0.15f)),
+                .background(colors.accentFill.copy(alpha = 0.15f)),
             contentAlignment = Alignment.Center,
         ) {
             FlashText(
                 text = extensionBadge,
                 style = FlashTheme.typography.captionEmphasis.copy(fontWeight = FontWeight.Bold),
-                color = colors.accentPrimary,
+                color = colors.accentFill,
             )
         }
 
@@ -492,24 +562,28 @@ private fun SharedFileRow(
                 overflow = TextOverflow.Ellipsis,
             )
             FlashText(
-                text = "$sizeText • ${item.senderName} • ${item.timeLabel}",
+                text = listOfNotNull(sizeText, statusNote, item.senderName, item.timeLabel).joinToString(" • "),
                 style = FlashTheme.typography.metadataDefault,
-                color = colors.textSecondary,
+                color = if (file.transferStatus == FlashFileTransferStatus.Failed) colors.textError else colors.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         }
 
         // Actions
-        if (file.localUri == null && file.transferStatus != FlashFileTransferStatus.Downloaded) {
+        if (action == FlashSharedTransferAction.Download || action == FlashSharedTransferAction.Resume) {
             IconButton(
-                onClick = onDownload,
+                onClick = { if (action == FlashSharedTransferAction.Resume) onResume() else onDownload() },
                 modifier = Modifier.size(FlashDimensions.minTouchTarget),
             ) {
                 FlashIcon(
-                    icon = FlashIcons.Download,
-                    contentDescription = "Download file",
-                    tint = colors.accentPrimary,
+                    icon = if (file.transferStatus == FlashFileTransferStatus.Failed) FlashIcons.Retry else FlashIcons.Download,
+                    contentDescription = when (file.transferStatus) {
+                        FlashFileTransferStatus.Failed -> "Retry download"
+                        FlashFileTransferStatus.Paused -> "Resume download"
+                        else -> "Download file"
+                    },
+                    tint = colors.accentFill,
                     size = FlashDimensions.iconSm,
                 )
             }
@@ -520,7 +594,7 @@ private fun SharedFileRow(
             modifier = Modifier.size(FlashDimensions.minTouchTarget),
         ) {
             FlashIcon(
-                icon = FlashIcons.Forward,
+                icon = FlashIcons.Chat,
                 contentDescription = "Jump to message",
                 tint = colors.textSecondary,
                 size = FlashDimensions.iconSm,
@@ -532,15 +606,24 @@ private fun SharedFileRow(
 @Composable
 private fun SharedAudioRow(
     item: FlashSharedAudioItem,
+    isOutgoing: Boolean,
     onDownload: () -> Unit,
+    onResume: () -> Unit,
     onJumpToMessage: () -> Unit,
 ) {
     val colors = FlashTheme.colors
     val voice = item.voice
-    val hasAudio = voice.uri != null && voice.transferStatus == FlashFileTransferStatus.Downloaded
-    // H-23: a note that is not on this device cannot play; its button downloads it (or waits, while it is already coming).
+    val action = resolveSharedAudioAction(
+        status = voice.transferStatus,
+        hasUri = voice.uri != null,
+        isOutgoing = isOutgoing,
+    )
+    val hasAudio = action == FlashSharedTransferAction.Open
+    // H-23: a note that is not on this device cannot play; its button downloads/resumes it (or waits, while it is already coming).
     val inFlight = voice.transferStatus == FlashFileTransferStatus.Transferring
-    val needsDownload = !hasAudio && voice.transferStatus != FlashFileTransferStatus.Downloaded && !inFlight
+    val isCancelled = voice.transferStatus == FlashFileTransferStatus.Cancelled
+    val isOutgoingAwaiting = isOutgoing && voice.transferStatus == FlashFileTransferStatus.AwaitingAcceptance
+    val canTriggerTransfer = action == FlashSharedTransferAction.Download || action == FlashSharedTransferAction.Resume
     val audioPlayer = rememberFlashAudioPlayer(uri = if (hasAudio) voice.uri else null)
 
     DisposableEffect(audioPlayer) {
@@ -551,7 +634,25 @@ private fun SharedAudioRow(
     var elapsedMs by remember { mutableLongStateOf(0L) }
     val durationMs = voice.durationMs
 
+    val playbackKey = remember(voice.id) {
+        "shared_audio_${voice.id}_${kotlin.random.Random.nextLong()}"
+    }
+    DisposableEffect(playbackKey) {
+        onDispose { FlashVoicePlaybackCoordinator.release(playbackKey) }
+    }
+    val activePlaybackKey = FlashVoicePlaybackCoordinator.activePlaybackKey
+    LaunchedEffect(activePlaybackKey, isPlaying) {
+        if (isPlaying && activePlaybackKey != null && activePlaybackKey != playbackKey) {
+            isPlaying = false
+        }
+    }
+
     LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            FlashVoicePlaybackCoordinator.claim(playbackKey)
+        } else {
+            FlashVoicePlaybackCoordinator.release(playbackKey)
+        }
         if (audioPlayer != null) {
             if (isPlaying) audioPlayer.play() else audioPlayer.pause()
             while (isPlaying) {
@@ -559,6 +660,7 @@ private fun SharedAudioRow(
                 if (!audioPlayer.isPlaying() && elapsedMs > 0L) {
                     if (durationMs > 0L) elapsedMs = durationMs
                     isPlaying = false
+                    FlashVoicePlaybackCoordinator.release(playbackKey)
                     break
                 }
                 delay(FlashVoiceMath.TICK_MS)
@@ -567,6 +669,15 @@ private fun SharedAudioRow(
     }
 
     val durationLabel = remember(durationMs) { FlashVoiceMath.formatDuration(durationMs) }
+    val statusNote = when {
+        hasAudio -> null
+        inFlight -> "Downloading…"
+        voice.transferStatus == FlashFileTransferStatus.Failed -> "Failed · Tap to retry"
+        voice.transferStatus == FlashFileTransferStatus.Paused -> "Paused · Tap to resume"
+        isCancelled -> "Cancelled"
+        isOutgoingAwaiting -> "Waiting for recipient"
+        else -> "Tap to download"
+    }
 
     Row(
         modifier = Modifier
@@ -578,31 +689,52 @@ private fun SharedAudioRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        // Play / Pause button
+        // Play / Pause / Transfer action button
         Box(
             modifier = Modifier
-                .size(42.dp)
+                .size(FlashDimensions.minTouchTarget)
                 .clip(CircleShape)
-                .background(if (hasAudio || needsDownload || inFlight) colors.accentPrimary else colors.accentPrimary.copy(alpha = 0.4f))
-                .clickable(enabled = !inFlight) {
-                    if (needsDownload) onDownload() else if (hasAudio) isPlaying = !isPlaying
-                },
+                .background(if (hasAudio || canTriggerTransfer || inFlight) colors.accentFill else colors.accentFill.copy(alpha = 0.4f))
+                .clickable(enabled = !inFlight && (hasAudio || canTriggerTransfer)) {
+                    when (action) {
+                        FlashSharedTransferAction.Resume -> onResume()
+                        FlashSharedTransferAction.Download -> onDownload()
+                        FlashSharedTransferAction.Open -> {
+                            val nextPlaying = !isPlaying
+                            if (nextPlaying) {
+                                FlashVoicePlaybackCoordinator.claim(playbackKey)
+                            } else {
+                                FlashVoicePlaybackCoordinator.release(playbackKey)
+                            }
+                            isPlaying = nextPlaying
+                        }
+                        FlashSharedTransferAction.None -> Unit
+                    }
+                }
+                .semantics { role = Role.Button },
             contentAlignment = Alignment.Center,
         ) {
             FlashIcon(
                 icon = when {
-                    needsDownload -> FlashIcons.Download
-                    inFlight -> FlashIcons.Clock
+                    action == FlashSharedTransferAction.Resume ->
+                        if (voice.transferStatus == FlashFileTransferStatus.Failed) FlashIcons.Retry else FlashIcons.Download
+                    action == FlashSharedTransferAction.Download -> FlashIcons.Download
+                    inFlight || isOutgoingAwaiting -> FlashIcons.Clock
+                    isCancelled -> FlashIcons.Close
                     isPlaying -> FlashIcons.Pause
                     else -> FlashIcons.Play
                 },
                 contentDescription = when {
-                    needsDownload -> "Download voice message"
+                    action == FlashSharedTransferAction.Resume ->
+                        if (voice.transferStatus == FlashFileTransferStatus.Failed) "Retry voice download" else "Resume voice download"
+                    action == FlashSharedTransferAction.Download -> "Download voice message"
+                    isOutgoingAwaiting -> "Waiting for recipient"
                     inFlight -> "Downloading voice message"
+                    isCancelled -> "Voice message cancelled"
                     isPlaying -> "Pause audio"
                     else -> "Play audio"
                 },
-                tint = Color.White,
+                tint = colors.onAccentFill,
                 size = FlashDimensions.iconSm,
             )
         }
@@ -616,10 +748,11 @@ private fun SharedAudioRow(
                 maxLines = 1,
             )
             FlashText(
-                text = "${item.senderName} • ${item.timeLabel}",
+                text = listOfNotNull(statusNote, item.senderName, item.timeLabel).joinToString(" • "),
                 style = FlashTheme.typography.metadataDefault,
-                color = colors.textSecondary,
+                color = if (voice.transferStatus == FlashFileTransferStatus.Failed) colors.textError else colors.textSecondary,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
 
@@ -628,7 +761,7 @@ private fun SharedAudioRow(
             modifier = Modifier.size(FlashDimensions.minTouchTarget),
         ) {
             FlashIcon(
-                icon = FlashIcons.Forward,
+                icon = FlashIcons.Chat,
                 contentDescription = "Jump to message",
                 tint = colors.textSecondary,
                 size = FlashDimensions.iconSm,
@@ -662,7 +795,7 @@ private fun SharedLinkRow(
                 .size(42.dp)
                 .clip(CircleShape)
                 .background(
-                    if (item.isInvite) colors.accentPrimary.copy(alpha = 0.15f)
+                    if (item.isInvite) colors.accentFill.copy(alpha = 0.15f)
                     else colors.borderSubtle,
                 ),
             contentAlignment = Alignment.Center,
@@ -670,7 +803,7 @@ private fun SharedLinkRow(
             FlashIcon(
                 icon = if (item.isInvite) FlashIcons.Group else FlashIcons.Share,
                 contentDescription = null,
-                tint = if (item.isInvite) colors.accentPrimary else colors.textSecondary,
+                tint = if (item.isInvite) colors.accentFill else colors.textSecondary,
                 size = FlashDimensions.iconSm,
             )
         }
@@ -687,7 +820,7 @@ private fun SharedLinkRow(
             FlashText(
                 text = item.url,
                 style = FlashTheme.typography.metadataDefault,
-                color = colors.accentPrimary,
+                color = colors.accentFill,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -707,7 +840,7 @@ private fun SharedLinkRow(
             modifier = Modifier.size(FlashDimensions.minTouchTarget),
         ) {
             FlashIcon(
-                icon = FlashIcons.Forward,
+                icon = FlashIcons.Chat,
                 contentDescription = "Jump to message",
                 tint = colors.textSecondary,
                 size = FlashDimensions.iconSm,

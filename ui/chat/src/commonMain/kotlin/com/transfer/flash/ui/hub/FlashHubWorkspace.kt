@@ -5,6 +5,7 @@ package com.transfer.flash.ui.hub
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -18,7 +19,10 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.enterprise.HubLinkState
+import com.transfer.flash.core.messaging.model.HubPersonUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
@@ -105,6 +109,17 @@ internal fun FlashHubWorkspaceHeader(
         }
     }
 }
+
+/** Scrollable list padding that clears the floating bottom navigation capsule when [bottomInset] > 0. */
+internal fun hubContentPadding(bottomInset: Dp = 0.dp): PaddingValues =
+    PaddingValues(bottom = FlashSpacing.space16 + bottomInset.coerceAtLeast(0.dp))
+
+/** Prevents flashing unfiltered [allPeople] while async people search results ([searchHits]) are still loading. */
+internal fun resolveHubPeopleForScreen(
+    searching: Boolean,
+    searchHits: List<HubPersonUi>?,
+    allPeople: List<HubPersonUi>,
+): List<HubPersonUi> = if (searching) searchHits.orEmpty() else allPeople
 
 @Composable
 internal fun FlashHubWorkspaceSection(segment: FlashHubSegment, count: Int?) {

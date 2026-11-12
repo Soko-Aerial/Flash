@@ -1,10 +1,59 @@
 # Current Handoff
 
+> **2026-11-12 — Phase 7 UI/UX diff audit, bug remediation & final gate PASSED (uncommitted on `dev`, atop `31e1551c`).**
+> Seven-phase UI/UX overhaul and audit remediation pass across `:core:security`, `:ui:theme`, `:ui:chat`,
+> `:ui:callui`, `:ui:platform-shims`, `:app`, and `:desktop`, preserving the pre-existing uncommitted
+> `ERROR-1018` (transfer retry) and `ERROR-1019` (voice-button lock/capture guard) working-tree candidates.
+> - **Resolved in Phase 7 audit:** 12 Must-Fix bugs and 12 Half-Baked features identified during comprehensive
+>   diff review (Notification banner shell unmounting, two-pane `BackHandler` priority, desktop tab trapping/selection
+>   reset, reactions sheet deduplication, pairing `lingerJob` tracking/cancellation, `AwaitingPeerConfirmation` Cancel
+>   button and BackHandler, desktop pairing retry target resolution, conversation 3-dot `REVOKE_TRUST` confirmation dialog,
+>   `FlashSharedContentSheet` resume routing and label fixes, SI decimal sizing in `FlashDetailPanes`, call screen share
+>   autoStart loop elimination, desktop search result context menu, `ultraLowUi` desktop theme roots, conversation trust/transport
+>   wiring, colleague chat and single-pane detail inspection in Nearby, `isVerifying` detail handling, share-initiated pairing
+>   retry preservation, widget `ACTION_WIDGET_SEND`, desktop gallery file extensions, member sheet `Find devices` CTA,
+>   empty list `topBanners` top-alignment, `savedInstanceState == null` intent guard, and `.heic`/`.3gp` MIME fallbacks).
+> - **Verified Phase 7 Gate (`tools\flash-gradle.cmd :core:security:jvmTest :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :ui:callui:testAndroidHostTest :ui:platform-shims:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :desktop:compileKotlinJvm`):**
+>   `BUILD SUCCESSFUL in 3m 22s` (exit code `0`); **304 suites, 2,446 tests, 0 failures, 0 errors, 4 skipped**
+>   (`:core:security:jvmTest` 25/177 + 2 skips, `:ui:theme:jvmTest` 8/68, `:ui:chat:jvmTest` 87/790,
+>   `:ui:chat:testAndroidHostTest` 81/765, `:ui:callui:jvmTest` 16/113, `:ui:callui:testAndroidHostTest` 10/90,
+>   `:ui:platform-shims:jvmTest` 5/42, `:desktop:jvmTest` 52/291 + 2 skips, `:app:testDebugUnitTest` 20/110);
+>   `:desktop:compileKotlinJvm` clean; `:app:lintDebug` passed with **0 errors, 0 fatal issues** (156 pre-existing/advisory warnings, 2 hints).
+> - **Integrity:** 6 core protected files (`DiscoveryEngineHolder.kt`, `DesktopEngine.kt`, `Flash.kt`, `RealFlashTransferRepository.kt`,
+>   `ReceivePipeline.kt`, `MultiStreamDispatcher.kt`) verified SHA-256 unchanged; `ERROR-1018` and `ERROR-1019` candidates intact.
+> - **Owed on physical devices / desktop:** `UXPOL-01..11`, `XFER-RETRY-02`, and `VOICE-BTN-01..06` in
+>   `docs/testing/TEST-BACKLOG.md`.
+
+> **2026-11-12 — Phases 1–5 UI/UX polish pass & Phase 6 regression/lint gate PASSED (uncommitted on `dev`, atop `31e1551c`).**
+> Five-phase UI/UX fix pass across `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`, `:app`,
+> and `:desktop`, preserving the pre-existing uncommitted `ERROR-1018` (transfer retry) and `ERROR-1019`
+> (voice-button lock/capture guard) working-tree candidates.
+> - **Covered:** theme/contrast/splash/avatar tokens, light-mode quoted replies, video error controls,
+>   Radio Gateway PTT/semantics/scroll, Settings no-dead-rows/collapsed Advanced/search & Android/Desktop
+>   host wiring, Hub `bottomInset`/visual truncation/people search, Android `840–907 dp` two-pane/Back/
+>   deferred notification banner/Quick Tile/Widget, Desktop DnD off-screen guard/share-to-group/shortcuts/
+>   toast bounds/foreground notification suppression, Pairing `Failed`/`Idle` phase mapping & local IPv4,
+>   Transfers `Verifying`/receive-cancel confirm/split Clear, Calling stats pill/PiP scrim/share picker/
+>   Android PTT touch-blocking scrim, Voice lock hint & single playback (`FlashVoicePlaybackCoordinator`),
+>   delete confirmations, extended emoji picker & reactor detail sheet, 10-item staging tray, media viewer
+>   captions/actions/keys, chat list/search declutter, and group sheets.
+> - **Verified Phase 6 Gate (`tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :ui:callui:testAndroidHostTest :ui:platform-shims:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :desktop:compileKotlinJvm`):**
+>   `BUILD SUCCESSFUL in 6m 34s` (exit code `0`); **279 suites, 2,249 tests, 0 failures, 0 errors, 2 opt-in render skips**
+>   (`:ui:theme:jvmTest` 8/68, `:ui:chat:jvmTest` 87/785, `:ui:chat:testAndroidHostTest` 81/760,
+>   `:ui:callui:jvmTest` 16/113, `:ui:callui:testAndroidHostTest` 10/90, `:ui:platform-shims:jvmTest` 5/42,
+>   `:desktop:jvmTest` 52/284 + 2 skips, `:app:testDebugUnitTest` 20/107); `:desktop:compileKotlinJvm` clean;
+>   `:app:lintDebug` passed with **0 errors, 0 fatal issues** (156 pre-existing/advisory warnings, 2 hints).
+> - **Owed on physical devices / desktop:** `UXPOL-01..11`, `XFER-RETRY-02`, and `VOICE-BTN-01..06` in
+>   `docs/testing/TEST-BACKLOG.md`.
+
 > **2026-11-09 — Linux x86-64 packages added to Flash 2.2.0.** The `.deb`, portable archive and
 > separate SHA-256 manifest are on the existing release. Package metadata and GitHub asset digests
 > were verified. Install/launch/upgrade on Linux is owed under REL22-LINUX-01. Install steps:
 > `docs/install-linux.md`. The reported retry mismatch is tracked separately as XFER-RETRY-02;
-> OpenCode is investigating the sender restart and stale receiver state. No retry fix was shipped.
+> the uncommitted candidate passed 894 host cases (two documented skips), including repeated
+> retry and delayed ACKs (ERROR-1018). The uncommitted voice-button candidate prevents a second
+> capture after locking and passed 1,455 chat host cases (ERROR-1019). Next: XFER-RETRY-02 and
+> VOICE-BTN-01..06 on physical devices. Neither fix has shipped.
 
 > **2026-11-08 — Flash 2.2.0, Hub beta.1 and SDK beta.3 published.** The original release tags point to `322a92aa`:
 > [Android and Windows](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0),

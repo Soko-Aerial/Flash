@@ -217,6 +217,22 @@ object FlashShareTargetMath {
         }
     }
 
+    fun emptyStateTitle(isScanning: Boolean, searchQuery: String): String {
+        val trimmed = searchQuery.trim()
+        return when {
+            trimmed.isNotEmpty() -> "No matches for \"$trimmed\""
+            isScanning -> "Searching for nearby devices…"
+            else -> "No devices found"
+        }
+    }
+
+    fun emptyStateSubtitle(searchQuery: String): String =
+        if (searchQuery.trim().isNotEmpty()) {
+            "Try a different name or clear your search."
+        } else {
+            "Make sure Flash is open on the target device and connected to the same Wi-Fi network."
+        }
+
     fun initialsFor(name: String): String {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return "?"
@@ -306,12 +322,12 @@ fun FlashShareTargetSheet(
                         modifier = Modifier
                             .size(32.dp)
                             .clip(CircleShape)
-                            .background(colors.accentPrimary.copy(alpha = 0.15f)),
+                            .background(colors.accentFill.copy(alpha = 0.15f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         FlashIcon(
                             icon = FlashIcons.Share,
-                            tint = colors.accentPrimary,
+                            tint = colors.accentFill,
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -449,7 +465,10 @@ fun FlashShareTargetSheet(
                 // Empty / Discovery State
                 if (filteredPaired.isEmpty() && filteredNearby.isEmpty() && filteredChats.isEmpty()) {
                     item {
-                        EmptyDiscoveryCard(isScanning = isScanning)
+                        EmptyDiscoveryCard(
+                            isScanning = isScanning,
+                            searchQuery = searchQuery,
+                        )
                     }
                 } else if (isScanning) {
                     item {
@@ -486,7 +505,7 @@ fun FlashShareTargetSheet(
                             FlashText(
                                 text = "${selectedRecipientIds.size}/$maxSelectCount selected",
                                 style = FlashTheme.typography.captionEmphasis,
-                                color = colors.accentPrimary,
+                                color = colors.accentFill,
                             )
                             val previewText = FlashShareTargetMath.formatItemSubtitle(payload)
                             if (previewText.isNotBlank()) {
@@ -501,14 +520,16 @@ fun FlashShareTargetSheet(
                         }
                         Box(
                             modifier = Modifier
+                                .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clip(FlashShapes.composerBar)
-                                .background(colors.accentPrimary)
+                                .background(colors.accentFill)
                                 .clickable {
                                     val all = (pairedDevices + recentChats + nearbyDevices)
                                     val chosen = all.filter { it.id in selectedRecipientIds }.distinctBy { it.id }
                                     onForward?.invoke(chosen)
                                 }
                                 .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
+                            contentAlignment = Alignment.Center,
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -516,13 +537,13 @@ fun FlashShareTargetSheet(
                             ) {
                                 FlashIcon(
                                     icon = FlashIcons.Send,
-                                    tint = colors.textOnAccent,
+                                    tint = colors.onAccentFill,
                                     modifier = Modifier.size(16.dp),
                                 )
                                 FlashText(
                                     text = "Forward",
                                     style = FlashTheme.typography.captionEmphasis,
-                                    color = colors.textOnAccent,
+                                    color = colors.onAccentFill,
                                 )
                             }
                         }
@@ -695,7 +716,7 @@ private fun ShareRecipientRow(
                     FlashText(
                         text = transportText,
                         style = FlashTheme.typography.metadataEmphasis,
-                        color = colors.accentPrimary,
+                        color = colors.accentFill,
                     )
                 } else if (!recipient.isPaired) {
                     FlashText(
@@ -718,7 +739,7 @@ private fun ShareRecipientRow(
                 modifier = Modifier
                     .size(24.dp)
                     .clip(CircleShape)
-                    .background(if (isSelected) colors.accentPrimary else Color.Transparent)
+                    .background(if (isSelected) colors.accentFill else Color.Transparent)
                     .border(
                         width = if (isSelected) 0.dp else 1.5.dp,
                         color = if (isSelected) Color.Transparent else colors.borderSubtle,
@@ -729,7 +750,7 @@ private fun ShareRecipientRow(
                 if (isSelected) {
                     FlashIcon(
                         icon = FlashIcons.Check,
-                        tint = colors.textOnAccent,
+                        tint = colors.onAccentFill,
                         modifier = Modifier.size(16.dp),
                     )
                 }
@@ -738,7 +759,7 @@ private fun ShareRecipientRow(
             // Action Chip
             Surface(
                 shape = RoundedCornerShape(16.dp),
-                color = if (recipient.isOnline) colors.accentPrimary.copy(alpha = 0.15f) else colors.borderSubtle,
+                color = if (recipient.isOnline) colors.accentFill.copy(alpha = 0.15f) else colors.borderSubtle,
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -747,13 +768,13 @@ private fun ShareRecipientRow(
                 ) {
                     FlashIcon(
                         icon = if (recipient.isPaired) FlashIcons.Send else FlashIcons.Share,
-                        tint = if (recipient.isOnline) colors.accentPrimary else colors.textSecondary,
+                        tint = if (recipient.isOnline) colors.accentFill else colors.textSecondary,
                         modifier = Modifier.size(14.dp),
                     )
                     FlashText(
                         text = if (recipient.isPaired) "Send" else "Pair & Send",
                         style = FlashTheme.typography.metadataEmphasis,
-                        color = if (recipient.isOnline) colors.accentPrimary else colors.textPrimary,
+                        color = if (recipient.isOnline) colors.accentFill else colors.textPrimary,
                     )
                 }
             }
@@ -762,7 +783,10 @@ private fun ShareRecipientRow(
 }
 
 @Composable
-private fun EmptyDiscoveryCard(isScanning: Boolean) {
+private fun EmptyDiscoveryCard(
+    isScanning: Boolean,
+    searchQuery: String = "",
+) {
     val colors = FlashTheme.colors
     Column(
         modifier = Modifier
@@ -774,16 +798,16 @@ private fun EmptyDiscoveryCard(isScanning: Boolean) {
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
         FlashIcon(
-            icon = FlashIcons.Nearby,
+            icon = if (searchQuery.trim().isNotEmpty()) FlashIcons.Search else FlashIcons.Nearby,
             tint = colors.textSecondary,
             modifier = Modifier.size(32.dp),
         )
         FlashText(
-            text = if (isScanning) "Searching for nearby devices…" else "No devices found",
+            text = FlashShareTargetMath.emptyStateTitle(isScanning, searchQuery),
             style = FlashTheme.typography.bodyDefault,
         )
         FlashText(
-            text = "Make sure Flash is open on the target device and connected to the same Wi-Fi network.",
+            text = FlashShareTargetMath.emptyStateSubtitle(searchQuery),
             style = FlashTheme.typography.metadataEmphasis,
             color = colors.textSecondary,
         )
@@ -854,7 +878,7 @@ private fun ManualConnectRow(onClick: () -> Unit) {
         FlashText(
             text = "Connect directly by IP address…",
             style = FlashTheme.typography.metadataEmphasis,
-            color = colors.accentPrimary,
+            color = colors.accentFill,
         )
     }
 }

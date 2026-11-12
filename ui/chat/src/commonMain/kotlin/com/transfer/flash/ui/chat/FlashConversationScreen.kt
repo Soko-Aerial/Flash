@@ -67,6 +67,7 @@ import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
 import com.transfer.flash.core.common.model.FlashChatWallpaper
 import com.transfer.flash.core.messaging.model.FlashMessageUi
+import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.core.messaging.model.FlashSelfMembership
@@ -89,19 +90,22 @@ private class FlashConversationDraftState(initialText: String = "") {
     var text by mutableStateOf(initialText)
 }
 
+private sealed interface FlashConversationConfirm {
+    data class ClearConversation(val conversationId: String) : FlashConversationConfirm
+    data class DeleteMessages(val messageIds: Set<String>) : FlashConversationConfirm
+    data class DeleteForEveryone(val messageId: String) : FlashConversationConfirm
+    data class RevokeTrust(val peerTitle: String) : FlashConversationConfirm
+}
+
+private data class ConfirmDialogSpec(
+    val title: String,
+    val body: String,
+    val confirmLabel: String,
+    val action: () -> Unit,
+)
+
 /** How often "typing…" is repeated while the composer holds text; the receiver forgets it after 6 s (TYPING_EXPIRY_MS). */
 private const val TYPING_KEEPALIVE_MS: Long = 3_000L
-
-/**
- * Upper bound on how long a staged attachment may show its sending spinner (OPT-O24-02).
- *
- * The send reports no completion of its own: a staged *file* item is normally retired when its
- * durable attachment message arrives (see the staging reconciliation effect below), and an image
- * message carries no file name to match on, so this bound is what retires an image item. Either way
- * the spinner is gone within this bound, so a send that never produces a message cannot leave one
- * that keeps Send disabled.
- */
-private const val STAGED_SEND_FALLBACK_MS: Long = 4_000L
 
 @Composable
 fun FlashConversationScreen(
@@ -359,6 +363,11 @@ fun FlashConversationScreen(
      */
     targetMessageId: String? = null,
     targetNonce: Int = 0,
+    isPeerVerified: Boolean = isPeerTrusted,
+    onVerifyPeerTrust: (() -> Unit)? = onVerifySecurityCodes,
+    connectionTransport: FlashNetworkTransport = state.header.transport,
+    onFindDevicesClick: (() -> Unit)? = null,
+    localDeviceId: String? = null,
 ) {
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
@@ -395,29 +404,45 @@ fun FlashConversationScreen(
             "png" -> "image/png"
             "gif" -> "image/gif"
             "webp" -> "image/webp"
+            "heic", "heif" -> "image/heic"
             "mp4", "mkv", "mov", "webm" -> "video/mp4"
             "mp3", "m4a", "wav", "ogg", "aac" -> "audio/mp4"
+            "3gp" -> "audio/3gpp"
             "pdf" -> "application/pdf"
             "txt" -> "text/plain"
             "zip" -> "application/zip"
             else -> "*/*"
         }
-        stagedAttachments = stagedAttachments + FlashShareItemUi(
-            uri = picked.uri,
-            name = picked.name,
-            sizeBytes = picked.size,
-            mimeType = mime,
+        val (updated, added) = FlashStagingMath.appendUpToLimit(
+            stagedAttachments,
+            FlashShareItemUi(
+                uri = picked.uri,
+                name = picked.name,
+                sizeBytes = picked.size,
+                mimeType = mime,
+            ),
         )
+        stagedAttachments = updated
+        if (!added) {
+            showMessage("Maximum ${FlashStagingMath.MAX_STAGED_ATTACHMENTS} attachments at once")
+        }
     }
 
     val cameraLauncher = rememberFlashCameraCaptureLauncher(
         onCaptured = { captured ->
-            stagedAttachments = stagedAttachments + FlashShareItemUi(
-                uri = captured.uri,
-                name = captured.name,
-                sizeBytes = captured.size,
-                mimeType = "image/jpeg",
+            val (updated, added) = FlashStagingMath.appendUpToLimit(
+                stagedAttachments,
+                FlashShareItemUi(
+                    uri = captured.uri,
+                    name = captured.name,
+                    sizeBytes = captured.size,
+                    mimeType = "image/jpeg",
+                ),
             )
+            stagedAttachments = updated
+            if (!added) {
+                showMessage("Maximum ${FlashStagingMath.MAX_STAGED_ATTACHMENTS} attachments at once")
+            }
         },
         onFailure = { message -> showMessage(message) },
     )
@@ -471,23 +496,6 @@ fun FlashConversationScreen(
         }
     }
 
-    // OPT-O24-02: retire a staged attachment when its own durable message arrives — the real completion
-    // signal, not a clock. A file attachment carries the file name the tray staged, so the two can be
-    // matched. An image message carries no file name (only a caption), so an image item can only be
-    // retired by the bounded wait in the send handler.
-    // OPT-O24-01 note: this is `state.messages` (the durable rows) on purpose — an optimistic echo is
-    // never a completion signal, or a send that never reached the database would look finished.
-    LaunchedEffect(state.messages) {
-        if (stagedAttachments.any { it.isSending }) {
-            val receivedNames = state.messages.flatMap { msg ->
-                msg.fileAttachments.map { it.name }
-            }.toSet()
-            val remaining = stagedAttachments.filterNot { it.isSending && it.name in receivedNames }
-            if (remaining.size != stagedAttachments.size) {
-                stagedAttachments = remaining
-            }
-        }
-    }
     val draftState = remember { FlashConversationDraftState() }
     // #11: whether we've told the peer we're currently typing, so we only send on transitions.
     var isTypingSignalled by remember { mutableStateOf(false) }
@@ -523,6 +531,8 @@ fun FlashConversationScreen(
         }
     }
     var focusedMessage by remember { mutableStateOf<FlashMessageUi?>(null) }
+    var emojiPickerMessage by remember { mutableStateOf<FlashMessageUi?>(null) }
+    var reactionDetailsTarget by remember { mutableStateOf<Pair<FlashMessageUi, String?>?>(null) }
     // UI-051: the message whose info sheet is open (its id, so the content follows the live list).
     var messageInfoId by remember { mutableStateOf<String?>(null) }
     val messageInfoOffered = !state.header.isGroup || observeMessageInfo != null
@@ -579,7 +589,9 @@ fun FlashConversationScreen(
     var inviteUrl by remember { mutableStateOf<String?>(null) }
     var memberToRemove by remember { mutableStateOf<FlashGroupMemberUi?>(null) }
     var pendingCancelFileId by remember { mutableStateOf<String?>(null) }
+    var pendingConfirm by remember { mutableStateOf<FlashConversationConfirm?>(null) }
     var pendingForwardPayload by remember { mutableStateOf<FlashSharePayloadUi?>(null) }
+    val hasScrollableBanners = (state.groupHistory != null && conversationId != null) || state.hubNotice != null
     val menuItems = if (state.header.isGroup) {
         FlashConversationMenuMath.groupItems(
             canLeave = state.header.memberCount > 1,
@@ -597,7 +609,7 @@ fun FlashConversationScreen(
     } else {
         FlashEncryptionMath.badgeState(
             isEncrypted = state.header.isEncrypted,
-            isVerified = isPeerTrusted,
+            isVerified = isPeerVerified,
         )
     }
 
@@ -726,9 +738,13 @@ fun FlashConversationScreen(
                             onClose = { selectedMessageIds = emptySet() },
                             onCopy = {
                                 val selectedTexts = localMessages
-                                    .filter { it.id in selectedMessageIds }
+                                    .filter { it.id in selectedMessageIds && it.text.isNotBlank() }
                                     .joinToString("\n") { it.text }
-                                copyText(selectedTexts)
+                                if (selectedTexts.isNotBlank()) {
+                                    copyText(selectedTexts)
+                                } else {
+                                    showMessage("No text in selected messages")
+                                }
                                 selectedMessageIds = emptySet()
                             },
                             onReply = {
@@ -764,8 +780,7 @@ fun FlashConversationScreen(
                                 selectedMessageIds = emptySet()
                             },
                             onDelete = {
-                                onDeleteMessage(selectedMessageIds)
-                                selectedMessageIds = emptySet()
+                                pendingConfirm = FlashConversationConfirm.DeleteMessages(selectedMessageIds)
                             },
                         )
                     }
@@ -857,11 +872,17 @@ fun FlashConversationScreen(
                                                 FlashConversationMenuItem.SEARCH -> isSearchActive = true
                                                 FlashConversationMenuItem.CHAT_APPEARANCE ->
                                                     showChatAppearance = true
-                                                FlashConversationMenuItem.REVOKE_TRUST -> onRevokePeerTrust?.invoke()
+                                                FlashConversationMenuItem.REVOKE_TRUST -> {
+                                                    if (onRevokePeerTrust != null) {
+                                                        pendingConfirm = FlashConversationConfirm.RevokeTrust(state.header.title)
+                                                    }
+                                                }
                                                 FlashConversationMenuItem.MARK_UNREAD ->
                                                     conversationId?.let { onMarkUnread(it) }
                                                 FlashConversationMenuItem.CLEAR_CONVERSATION ->
-                                                    conversationId?.let { onClearConversation(it) }
+                                                    conversationId?.let {
+                                                        pendingConfirm = FlashConversationConfirm.ClearConversation(it)
+                                                    }
                                                 FlashConversationMenuItem.GROUP_INFO -> showGroupMembers = true
                                                 FlashConversationMenuItem.GROUP_SETTINGS -> showGroupSettings = true
                                                 FlashConversationMenuItem.INVITE_LINK -> showGroupInvite = true
@@ -896,6 +917,8 @@ fun FlashConversationScreen(
                                             },
                                         )
                                     },
+                                    transport = connectionTransport,
+                                    peerName = if (state.header.isGroup) null else state.header.title,
                                 )
                             }
                             var lastOngoingCall by remember { mutableStateOf<com.transfer.flash.core.messaging.model.FlashActiveGroupCallBarUi?>(null) }
@@ -926,47 +949,6 @@ fun FlashConversationScreen(
                                 exit = fadeOut(motion.tweenFastSpec()),
                             ) {
                                 (state.groupSync ?: lastGroupSync)?.let { sync -> FlashGroupSyncBanner(sync = sync) }
-                            }
-
-                            // UI-057 (ADR-100): the one-time "how much earlier history?" card of a newly joined member.
-                            var lastGroupHistory by remember { mutableStateOf<FlashGroupHistoryUi?>(null) }
-                            if (state.groupHistory != null) {
-                                lastGroupHistory = state.groupHistory
-                            }
-                            AnimatedVisibility(
-                                visible = state.groupHistory != null && conversationId != null,
-                                enter = fadeIn(motion.tweenNormalSpec()) + expandVertically(motion.tweenNormalSpec()),
-                                exit = fadeOut(motion.tweenFastSpec()) + shrinkVertically(motion.tweenFastSpec()),
-                            ) {
-                                val history = state.groupHistory ?: lastGroupHistory
-                                if (history != null && conversationId != null) {
-                                    FlashGroupHistoryCard(
-                                        history = history,
-                                        onChoose = { windowMs, includeFiles ->
-                                            onChooseGroupHistory?.invoke(conversationId, windowMs, includeFiles)
-                                        },
-                                        onSkip = { onSkipGroupHistory?.invoke(conversationId) },
-                                    )
-                                }
-                            }
-
-                            // ADR-126: how this chat travels through the organisation hub (changed key, waiting, group honesty).
-                            var lastHubNotice by remember { mutableStateOf<FlashHubNoticeUi?>(null) }
-                            if (state.hubNotice != null) {
-                                lastHubNotice = state.hubNotice
-                            }
-                            AnimatedVisibility(
-                                visible = state.hubNotice != null,
-                                enter = fadeIn(motion.tweenNormalSpec()) + expandVertically(motion.tweenNormalSpec()),
-                                exit = fadeOut(motion.tweenFastSpec()) + shrinkVertically(motion.tweenFastSpec()),
-                            ) {
-                                (state.hubNotice ?: lastHubNotice)?.let { notice ->
-                                    FlashHubNotice(
-                                        notice = notice,
-                                        onContinue = { onConfirmHubKeyChange?.invoke(notice.peerId) },
-                                        onVerify = { showPeerDetails = true },
-                                    )
-                                }
                             }
 
                             // Task 3.4: Pinned message banner.
@@ -1033,7 +1015,7 @@ fun FlashConversationScreen(
                                     contentDescription = "Turn on radio fallback for this chat"
                                 },
                             style = FlashTheme.typography.captionDefault.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold),
-                            color = FlashTheme.colors.accentPrimary,
+                            color = FlashTheme.colors.accentFill,
                         )
                     }
                 }
@@ -1070,31 +1052,18 @@ fun FlashConversationScreen(
                 },
                 onSend = {
                     val text = draftState.text.trim()
-                    // OPT-O24-02: an item already marked isSending is being sent right now, so it is
-                    // neither a reason to send nor part of what a second tap would send again.
                     val itemsToSend = stagedAttachments.filterNot { it.isSending }
                     val hasAttachments = itemsToSend.isNotEmpty()
                     if (text.isNotEmpty() || hasAttachments) {
                         val quoted = replyingToMessage
                         if (itemsToSend.isNotEmpty()) {
-                            // OPT-O24-02: Keep the item in the tray with a spinner instead of vanishing instantly.
                             val sendingIds = itemsToSend.mapTo(mutableSetOf()) { it.id }
-                            stagedAttachments = stagedAttachments.map {
-                                if (it.id in sendingIds) it.copy(isSending = true) else it
+                            itemsToSend.forEach { item ->
+                                onSendFile(item.uri, item.name, item.sizeBytes)
                             }
-                            coroutineScope.launch {
-                                itemsToSend.forEach { item ->
-                                    onSendFile(item.uri, item.name, item.sizeBytes)
-                                }
-                                // onSendFile reports no completion. For a file, the durable attachment
-                                // message arriving in state.messages is the completion signal and retires
-                                // the item (see the staging reconciliation effect above); an image message
-                                // carries no file name to match on, so this wait is what retires it. Either
-                                // way the spinner is gone within this bound, so a send that never produces
-                                // a row cannot leave one behind for ever.
-                                delay(STAGED_SEND_FALLBACK_MS)
-                                stagedAttachments = stagedAttachments.filterNot { it.isSending && it.id in sendingIds }
-                            }
+                            // Retire staged attachments cleanly once enqueued instead of leaving a
+                            // stale 4s spinner in the tray.
+                            stagedAttachments = stagedAttachments.filterNot { it.id in sendingIds }
                         }
                         if (text.isNotEmpty()) {
                             // OPT-O24-01: the echo appears as soon as this click handler records it — the
@@ -1180,7 +1149,12 @@ fun FlashConversationScreen(
                         } else {
                             voiceRecordingLeaseId = leaseId
                             val started = voiceRecorder.start()
-                            if (!started) releaseVoiceRecordingLease()
+                            if (!started) {
+                                releaseVoiceRecordingLease()
+                                // A busy/missing encoder used to leave the mic looking dead with no
+                                // explanation. Tell the user capture did not start.
+                                showMessage("Couldn’t start recording — check the microphone")
+                            }
                             started
                         }
                     }
@@ -1190,6 +1164,10 @@ fun FlashConversationScreen(
                     releaseVoiceRecordingLease()
                 },
                 voiceAmplitudeProvider = { voiceRecorder.maxAmplitude() },
+                onVoiceTapTooShort = {
+                    showMessage(if (isDesktopChatPlatform) "Recording too short" else "Hold to record")
+                },
+                onVoiceRecordingTooShort = { showMessage("Recording too short") },
             )
             }
         },
@@ -1211,6 +1189,9 @@ fun FlashConversationScreen(
                 onToggleReaction = { messageId, emoji ->
                     localMessages = toggleMessageReaction(localMessages, messageId, emoji)
                     onToggleReaction(messageId, emoji)
+                },
+                onOpenReactionDetails = { msg, reaction ->
+                    reactionDetailsTarget = msg to reaction?.emoji
                 },
                 onReplySwipe = { msg ->
                     replyingToMessage = msg
@@ -1283,6 +1264,32 @@ fun FlashConversationScreen(
                 highlightedMessageId = highlightedMessageId,
                 wallpaper = chatWallpaper,
                 wallpaperCustom = chatWallpaperCustom,
+                topBanners = if (hasScrollableBanners) {
+                    {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            state.groupHistory?.let { history ->
+                                conversationId?.let { cid ->
+                                    FlashGroupHistoryCard(
+                                        history = history,
+                                        onChoose = { windowMs, includeFiles ->
+                                            onChooseGroupHistory?.invoke(cid, windowMs, includeFiles)
+                                        },
+                                        onSkip = { onSkipGroupHistory?.invoke(cid) },
+                                    )
+                                }
+                            }
+                            state.hubNotice?.let { notice ->
+                                FlashHubNotice(
+                                    notice = notice,
+                                    onContinue = { onConfirmHubKeyChange?.invoke(notice.peerId) },
+                                    onVerify = { showPeerDetails = true },
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    null
+                },
                 peerTypingName = currentPeerTypingName,
                 listState = listState,
                 showSenderHeaders = state.header.isGroup,
@@ -1295,7 +1302,7 @@ fun FlashConversationScreen(
             )
 
             // UI-025 empty conversation state (the echo counts: a conversation showing an echo is not empty)
-            if (displayedMessages.isEmpty()) {
+            if (displayedMessages.isEmpty() && !hasScrollableBanners) {
                 FlashEmptyState(
                     kind = FlashStateCopy.EmptyKind.ConversationEmpty,
                     modifier = Modifier
@@ -1323,6 +1330,10 @@ fun FlashConversationScreen(
                 onToggleReaction(msg.id, reaction)
                 showMessage("Reacted $reaction")
             },
+            onOpenEmojiPicker = {
+                emojiPickerMessage = msg
+                focusedMessage = null
+            },
             onReply = {
                 replyingToMessage = msg
             },
@@ -1330,34 +1341,24 @@ fun FlashConversationScreen(
                 copyText(msg.text)
             },
             onForward = {
-                val image = msg.images.firstOrNull()
-                val file = msg.fileAttachments.firstOrNull()
-                val voice = msg.voiceAttachments.firstOrNull()
-                val imgUri = image?.uri
-                val voiceUri = voice?.uri
-                val fileLocalUri = file?.localUri
-                val payload = when {
-                    msg.text.isNotBlank() -> FlashSharePayloadUi(text = msg.text)
-                    imgUri != null -> FlashSharePayloadUi(
-                        items = listOf(FlashShareItemUi(uri = imgUri, name = "Image", mimeType = image.mimeType)),
-                    )
-                    voiceUri != null -> FlashSharePayloadUi(
-                        items = listOf(FlashShareItemUi(uri = voiceUri, name = "Voice message", mimeType = voice.mimeType)),
-                    )
-                    fileLocalUri != null -> FlashSharePayloadUi(
-                        items = listOf(FlashShareItemUi(uri = fileLocalUri, name = file.name, sizeBytes = file.sizeBytes, mimeType = file.mimeType)),
-                    )
-                    else -> null
-                }
-                if (payload != null && (forwardRecipients.isNotEmpty() || forwardRecentChats.isNotEmpty() || forwardPairedDevices.isNotEmpty())) {
+                val payload = FlashShareTargetMath.buildMultiForwardPayload(listOf(msg))
+                if (payload == null) {
+                    if (FlashShareTargetMath.hasUnforwardableAttachments(listOf(msg))) {
+                        showMessage("Attachments are not downloaded yet")
+                    } else {
+                        showMessage("Nothing to forward yet")
+                    }
+                } else if (forwardRecipients.isNotEmpty() || forwardRecentChats.isNotEmpty() || forwardPairedDevices.isNotEmpty()) {
                     pendingForwardPayload = payload
                 } else {
-                    when {
-                        msg.text.isNotBlank() -> onShareText?.invoke(msg.text) ?: showMessage("Sharing isn't available here")
-                        imgUri != null -> onShareImage(imgUri, image.mimeType)
-                        voiceUri != null -> onShareImage(voiceUri, voice.mimeType)
-                        fileLocalUri != null -> onShareImage(fileLocalUri, file.mimeType)
-                        else -> showMessage("Nothing to forward yet")
+                    val text = payload.text
+                    if (text != null) {
+                        onShareText?.invoke(text) ?: showMessage("Sharing isn't available here")
+                    } else if (payload.items.isNotEmpty()) {
+                        val first = payload.items.first()
+                        onShareImage(first.uri, first.mimeType)
+                    } else {
+                        showMessage("Nothing to forward yet")
                     }
                 }
                 focusedMessage = null
@@ -1375,12 +1376,12 @@ fun FlashConversationScreen(
                 null
             },
             onDelete = {
-                onDeleteMessage(setOf(msg.id))
+                pendingConfirm = FlashConversationConfirm.DeleteMessages(setOf(msg.id))
                 focusedMessage = null
             },
             onDeleteForEveryone = if (msg.isMine) {
                 {
-                    onDeleteMessageForEveryone(msg.id)
+                    pendingConfirm = FlashConversationConfirm.DeleteForEveryone(msg.id)
                     focusedMessage = null
                 }
             } else {
@@ -1390,6 +1391,114 @@ fun FlashConversationScreen(
                 { messageInfoId = msg.id }
             } else {
                 null
+            },
+        )
+    }
+
+    // UI-009 Extended emoji picker sheet opened from "More reactions" in the focus overlay
+    emojiPickerMessage?.let { targetMsg ->
+        FlashExtendedEmojiPickerSheet(
+            onSelectEmoji = { emoji ->
+                localMessages = toggleMessageReaction(localMessages, targetMsg.id, emoji)
+                onToggleReaction(targetMsg.id, emoji)
+                showMessage("Reacted $emoji")
+            },
+            onDismiss = { emojiPickerMessage = null },
+        )
+    }
+
+    // UI-009 Reactions who-reacted sheet opened from +N overflow or chip long-press
+    reactionDetailsTarget?.let { (targetMsg, initialEmoji) ->
+        val liveMsg = localMessages.firstOrNull { it.id == targetMsg.id } ?: targetMsg
+        if (liveMsg.reactions.isEmpty()) {
+            LaunchedEffect(targetMsg.id, liveMsg.reactions.size) {
+                reactionDetailsTarget = null
+            }
+        } else {
+            FlashReactionsDetailSheet(
+                reactions = liveMsg.reactions,
+                initialEmoji = initialEmoji,
+                members = groupMembers,
+                peerTitle = state.header.title,
+                isGroup = state.header.isGroup,
+                onToggleReaction = { emoji ->
+                    localMessages = toggleMessageReaction(localMessages, liveMsg.id, emoji)
+                    onToggleReaction(liveMsg.id, emoji)
+                },
+                onDismiss = { reactionDetailsTarget = null },
+                selfDeviceId = localDeviceId,
+            )
+        }
+    }
+
+    // Destructive confirmations (Clear conversation, Delete message(s), Delete for everyone)
+    pendingConfirm?.let { confirm ->
+        val colors = FlashTheme.colors
+        val spec = when (confirm) {
+            is FlashConversationConfirm.ClearConversation -> ConfirmDialogSpec(
+                title = "Clear conversation?",
+                body = "All messages in this chat will be removed from this device. This cannot be undone.",
+                confirmLabel = "Clear",
+                action = { onClearConversation(confirm.conversationId) },
+            )
+            is FlashConversationConfirm.DeleteMessages -> ConfirmDialogSpec(
+                title = if (confirm.messageIds.size == 1) "Delete message?" else "Delete ${confirm.messageIds.size} messages?",
+                body = if (confirm.messageIds.size == 1) "This message will be removed from this device."
+                else "These messages will be removed from this device.",
+                confirmLabel = "Delete",
+                action = {
+                    onDeleteMessage(confirm.messageIds)
+                    selectedMessageIds = selectedMessageIds - confirm.messageIds
+                },
+            )
+            is FlashConversationConfirm.DeleteForEveryone -> ConfirmDialogSpec(
+                title = "Delete for everyone?",
+                body = "This message will be removed for everyone in this chat who is online or syncs later.",
+                confirmLabel = "Delete for everyone",
+                action = { onDeleteMessageForEveryone(confirm.messageId) },
+            )
+            is FlashConversationConfirm.RevokeTrust -> ConfirmDialogSpec(
+                title = if (confirm.peerTitle.isNotBlank()) "Unpair ${confirm.peerTitle}?" else "Unpair device?",
+                body = if (confirm.peerTitle.isNotBlank()) {
+                    "You won't be able to message or send files to ${confirm.peerTitle} until you pair again with a 6-digit code."
+                } else {
+                    "You won't be able to message or send files to this device until you pair again with a 6-digit code."
+                },
+                confirmLabel = "Unpair",
+                action = { onRevokePeerTrust?.invoke() },
+            )
+        }
+        FlashConfirmHost(
+            onDismiss = { pendingConfirm = null },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = spec.title,
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = spec.body,
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingConfirm = null
+                        spec.action()
+                    },
+                ) {
+                    Text(spec.confirmLabel, color = colors.textError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingConfirm = null }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
             },
         )
     }
@@ -1427,7 +1536,7 @@ fun FlashConversationScreen(
                     // only be sent through the generic Files action.
                     FlashAttachmentType.Gallery -> listOf("image/*", "video/*")
                     FlashAttachmentType.Audio -> listOf("audio/*")
-                    FlashAttachmentType.Files, FlashAttachmentType.FlashTransfer -> listOf("*/*")
+                    FlashAttachmentType.Files -> listOf("*/*")
                     FlashAttachmentType.Camera -> null
                 }
                 if (action == FlashAttachmentType.Camera) {
@@ -1503,6 +1612,12 @@ fun FlashConversationScreen(
             availablePeers = addablePeers,
             onDismiss = { showAddMembers = false },
             onAdd = { memberIds -> onAddGroupMembers(conversationId, memberIds) },
+            onFindDevicesClick = onFindDevicesClick?.let { find ->
+                {
+                    showAddMembers = false
+                    find()
+                }
+            },
         )
     }
     memberToRemove?.let { member ->
@@ -1654,6 +1769,8 @@ fun FlashConversationScreen(
             onOpenSharedContent = { showSharedContent = true },
             radioPolicy = state.radioPolicy,
             onSetRadioPolicy = onSetRadioPolicy,
+            isVerified = isPeerVerified,
+            onVerifyTrust = onVerifyPeerTrust,
         )
     }
 
@@ -1679,6 +1796,10 @@ fun FlashConversationScreen(
             onDownloadFile = { transferId ->
                 onAcceptOffer(transferId)
                 showMessage("Download started")
+            },
+            onResumeTransfer = { transferId ->
+                onResumeTransfer(transferId)
+                showMessage("Resuming transfer")
             },
             onOpenUrl = { url ->
                 // A tap on a link opens it. It used to call the share chooser, which sent the link away instead.
@@ -1718,7 +1839,7 @@ fun FlashConversationScreen(
     if (showFingerprintSheet) {
         FlashFingerprintSheet(
             peerTitle = state.header.title,
-            isVerified = isPeerTrusted,
+            isVerified = isPeerVerified,
             localFingerprint = localFingerprint,
             peerFingerprint = peerFingerprint,
             onDismiss = { showFingerprintSheet = false },
@@ -1744,7 +1865,12 @@ fun FlashConversationScreen(
                 onSave = { index ->
                     val image = mediaViewerItems.getOrNull(index)?.image
                     if (image?.uri != null) {
-                        onSaveImage(image.uri, image.mimeType)
+                        val resolvedMime = if (image.isVideo && !image.mimeType.startsWith("video/", ignoreCase = true)) {
+                            "video/mp4"
+                        } else {
+                            image.mimeType
+                        }
+                        onSaveImage(image.uri, resolvedMime)
                     } else {
                         showMessage(notReadyLabel(image))
                     }

@@ -86,7 +86,7 @@ fun FlashReactionsDock(
         if (overflowCount > 0) {
             Box(
                 modifier = Modifier
-                    .sizeIn(minWidth = 28.dp, minHeight = 28.dp)
+                    .sizeIn(minWidth = FlashDimensions.minTouchTarget, minHeight = 32.dp)
                     .clip(CircleShape)
                     .background(colors.backgroundSurfaceSubtle)
                     .border(FlashDimensions.borderHairline, colors.borderSubtle, CircleShape)
@@ -95,7 +95,7 @@ fun FlashReactionsDock(
                         indication = null,
                         onClick = onOverflowClick,
                     )
-                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4)
                     .semantics {
                         role = Role.Button
                         contentDescription = "$overflowCount more reactions. Tap to view all."

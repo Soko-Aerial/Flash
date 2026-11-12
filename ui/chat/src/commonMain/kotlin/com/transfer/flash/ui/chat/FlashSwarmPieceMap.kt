@@ -68,7 +68,7 @@ public fun FlashSwarmPieceMap(
         val verifiedCount = remember(blocks) { blocks.count { it == 3 } }
         val totalCount = blocks.size
         val percent = if (totalCount > 0) (verifiedCount * 100) / totalCount else 0
-        val text = "[Swarm Pieces: $verifiedCount/$totalCount ($percent%) • $holdersOnline peers]"
+        val text = "[Transfer pieces: $verifiedCount/$totalCount ($percent%) • $holdersOnline peers]"
 
         Box(
             modifier = modifier
@@ -127,7 +127,7 @@ public fun FlashSwarmPieceMap(
             .border(FlashDimensions.borderHairline, colors.borderSubtle, RoundedCornerShape(FlashShapes.radius8))
             .padding(FlashSpacing.space8)
             .semantics(mergeDescendants = true) {
-                contentDescription = "Swarm piece availability map: $summary"
+                contentDescription = "Transfer piece availability: $summary"
             },
     ) {
         // Top status summary line
@@ -143,11 +143,11 @@ public fun FlashSwarmPieceMap(
                 FlashIcon(
                     icon = FlashIcons.Group,
                     contentDescription = null,
-                    tint = if (holdersOnline > 0) colors.accentPrimary else colors.textTertiary,
+                    tint = if (holdersOnline > 0) colors.accentFill else colors.textTertiary,
                     size = 12.dp,
                 )
                 FlashText(
-                    text = "Piece Map",
+                    text = "Transfer details",
                     style = FlashTheme.typography.captionEmphasis,
                     color = colors.textPrimary,
                 )
@@ -219,7 +219,7 @@ public fun FlashSwarmPieceMap(
         ) {
             LegendIndicator(color = verifiedColor, label = "Verified")
             LegendIndicator(color = inFlightColor, label = "In-flight")
-            LegendIndicator(color = swarmColor, label = "Swarm")
+            LegendIndicator(color = swarmColor, label = "On peers")
             LegendIndicator(color = missingColor, label = "Missing")
         }
     }

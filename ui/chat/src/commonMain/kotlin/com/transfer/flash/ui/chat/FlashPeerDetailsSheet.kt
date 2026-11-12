@@ -7,22 +7,30 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,6 +72,15 @@ object FlashPeerDetailsMath {
         // ADR-228: no session to call "connected", but the text still goes out, so "Not connected" would be
         // a lie in the other direction.
         if (transport == FlashNetworkTransport.Radio) return "Radio"
+        if (presence == FlashPeerPresence.Reachable) {
+            return when (transport) {
+                FlashNetworkTransport.Lan -> "Local network (connects when you send)"
+                FlashNetworkTransport.WifiDirect -> "Wi-Fi Direct (connects when you send)"
+                FlashNetworkTransport.Relay -> "Relay (connects when you send)"
+                FlashNetworkTransport.Radio -> "Radio"
+                FlashNetworkTransport.Unknown -> "Connects when you send"
+            }
+        }
         if (!isReachable(presence)) return "Not connected"
         return when (transport) {
             FlashNetworkTransport.Lan -> "Local network (Wi-Fi)"
@@ -94,14 +111,18 @@ fun FlashPeerDetailsSheet(
     onOpenSharedContent: (() -> Unit)? = null,
     radioPolicy: FlashRadioPolicy = FlashRadioPolicy.AUTO,
     onSetRadioPolicy: (FlashRadioPolicy) -> Unit = {},
+    isVerified: Boolean = true,
+    onVerifyTrust: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
+    var confirmUnpair by remember { mutableStateOf(false) }
     val presenceLabel = remember(header.presence) {
         FlashPeerDetailsMath.presenceLabel(header.presence)
     }
     val reachable = remember(header.presence) {
         FlashPeerDetailsMath.isReachable(header.presence)
     }
+    val radioAutomatic = radioPolicy == FlashRadioPolicy.AUTO
 
     FlashSheetHost(
         onDismiss = onDismiss,
@@ -129,13 +150,21 @@ fun FlashPeerDetailsSheet(
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
         ) {
             Box(modifier = Modifier.fillMaxWidth()) {
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier.align(Alignment.TopEnd),
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(FlashDimensions.minTouchTarget)
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismiss)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Close"
+                        },
+                    contentAlignment = Alignment.Center,
                 ) {
                     FlashIcon(
                         icon = FlashIcons.Close,
-                        contentDescription = "Close",
+                        contentDescription = null,
                         tint = colors.textSecondary,
                     )
                 }
@@ -190,18 +219,77 @@ fun FlashPeerDetailsSheet(
                 )
                 DetailDivider()
                 PeerDetailRow(
-                    icon = if (isTrusted) FlashIcons.Verified else FlashIcons.Device,
+                    icon = if (isTrusted && isVerified) FlashIcons.Verified else FlashIcons.Device,
                     label = "Trust",
-                    value = if (isTrusted) "Paired device" else "Not paired",
+                    value = when {
+                        isTrusted && isVerified -> "Paired device"
+                        isTrusted -> "Needs verification"
+                        else -> "Not paired"
+                    },
                 )
+                if (isTrusted && !isVerified) {
+                    DetailDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = FlashDimensions.minTouchTarget)
+                            .clip(FlashShapes.bubbleGrouped)
+                            .then(
+                                if (onVerifyTrust != null) {
+                                    Modifier.clickable {
+                                        onDismiss()
+                                        onVerifyTrust()
+                                    }
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .semantics(mergeDescendants = true) {
+                                if (onVerifyTrust != null) role = Role.Button
+                                contentDescription = "Verify pairing. Compare a 6-digit code on both devices to finish securing this connection."
+                            }
+                            .padding(vertical = FlashSpacing.space12),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Verified,
+                            contentDescription = null,
+                            size = FlashDimensions.iconSm,
+                            tint = colors.accentFill,
+                        )
+                        Column(Modifier.weight(1f).padding(start = FlashSpacing.space12)) {
+                            FlashText(
+                                text = "Verify pairing",
+                                style = FlashTheme.typography.bodyDefault,
+                                color = colors.textPrimary,
+                            )
+                            FlashText(
+                                text = "Compare a 6-digit code on both devices to confirm this pairing.",
+                                style = FlashTheme.typography.metadataDefault,
+                                color = colors.textSecondary,
+                            )
+                        }
+                        if (onVerifyTrust != null) {
+                            Spacer(Modifier.width(FlashSpacing.space8))
+                            FlashText(
+                                text = "Verify",
+                                style = FlashTheme.typography.captionEmphasis,
+                                color = colors.accentFill,
+                            )
+                        }
+                    }
+                }
                 DetailDivider()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = FlashDimensions.minTouchTarget)
                         .clip(FlashShapes.bubbleGrouped)
-                        .clickable { onSetRadioPolicy(if (radioPolicy == FlashRadioPolicy.AUTO) FlashRadioPolicy.NEVER else FlashRadioPolicy.AUTO) }
+                        .clickable { onSetRadioPolicy(if (radioAutomatic) FlashRadioPolicy.NEVER else FlashRadioPolicy.AUTO) }
                         .semantics(mergeDescendants = true) {
-                            contentDescription = "Radio fallback: ${if (radioPolicy == FlashRadioPolicy.AUTO) "Automatic" else "Never"}"
+                            role = Role.Switch
+                            stateDescription = if (radioAutomatic) "Automatic" else "Never"
+                            contentDescription = "Radio fallback: ${if (radioAutomatic) "Automatic" else "Never"}. Send short texts over radio when Wi-Fi isn't available."
                         }
                         .padding(vertical = FlashSpacing.space12),
                     verticalAlignment = Alignment.CenterVertically,
@@ -212,16 +300,23 @@ fun FlashPeerDetailsSheet(
                         size = FlashDimensions.iconSm,
                         tint = colors.textTertiary,
                     )
+                    Column(Modifier.weight(1f).padding(start = FlashSpacing.space12)) {
+                        FlashText(
+                            text = "Radio fallback",
+                            style = FlashTheme.typography.bodyDefault,
+                            color = colors.textPrimary,
+                        )
+                        FlashText(
+                            text = "Send short texts over radio when Wi-Fi isn't available.",
+                            style = FlashTheme.typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    Spacer(Modifier.width(FlashSpacing.space8))
                     FlashText(
-                        text = "Radio fallback",
-                        modifier = Modifier.weight(1f).padding(start = FlashSpacing.space12),
-                        style = FlashTheme.typography.bodyDefault,
-                        color = colors.textSecondary,
-                    )
-                    FlashText(
-                        if (radioPolicy == FlashRadioPolicy.AUTO) "Automatic" else "Never",
+                        text = if (radioAutomatic) "Automatic" else "Never",
                         style = FlashTheme.typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
-                        color = colors.textPrimary,
+                        color = if (radioAutomatic) colors.accentFill else colors.textSecondary,
                     )
                 }
                 if (onOpenSharedContent != null) {
@@ -229,12 +324,14 @@ fun FlashPeerDetailsSheet(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(min = FlashDimensions.minTouchTarget)
                             .clip(FlashShapes.bubbleGrouped)
                             .clickable {
                                 onDismiss()
                                 onOpenSharedContent()
                             }
                             .semantics(mergeDescendants = true) {
+                                role = Role.Button
                                 contentDescription = "Shared media, files, and links"
                             }
                             .padding(vertical = FlashSpacing.space12),
@@ -266,14 +363,70 @@ fun FlashPeerDetailsSheet(
 
             if (isTrusted && onRevokeTrust != null) {
                 RevokeTrustButton(
-                    onClick = {
-                        onRevokeTrust()
-                        onDismiss()
-                    },
+                    onClick = { confirmUnpair = true },
                     modifier = Modifier.padding(top = FlashSpacing.space24),
                 )
             }
         }
+    }
+
+    if (confirmUnpair && onRevokeTrust != null) {
+        FlashConfirmHost(
+            onDismiss = { confirmUnpair = false },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = "Unpair ${header.title}?",
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = "You won't be able to message or send files to ${header.title} until you pair again with a 6-digit code.",
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = FlashDimensions.minTouchTarget)
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable {
+                            confirmUnpair = false
+                            onRevokeTrust()
+                            onDismiss()
+                        }
+                        .semantics { role = Role.Button }
+                        .padding(horizontal = FlashSpacing.space12),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashText(
+                        text = "Unpair",
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = colors.textError,
+                    )
+                }
+            },
+            dismissButton = {
+                Box(
+                    modifier = Modifier
+                        .heightIn(min = FlashDimensions.minTouchTarget)
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable { confirmUnpair = false }
+                        .semantics { role = Role.Button }
+                        .padding(horizontal = FlashSpacing.space12),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashText(
+                        text = "Cancel",
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = colors.textSecondary,
+                    )
+                }
+            },
+        )
     }
 }
 
@@ -331,15 +484,17 @@ private fun RevokeTrustButton(onClick: () -> Unit, modifier: Modifier = Modifier
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .clip(FlashShapes.button)
             .border(FlashDimensions.borderHairline, colors.textError, FlashShapes.button)
             .clickable(onClick = onClick)
+            .semantics { role = Role.Button }
             .padding(vertical = FlashSpacing.space12),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         FlashText(
-            text = "Unpair this device",
+            text = "Unpair device",
             style = FlashTheme.typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
             color = colors.textError,
             maxLines = 1,

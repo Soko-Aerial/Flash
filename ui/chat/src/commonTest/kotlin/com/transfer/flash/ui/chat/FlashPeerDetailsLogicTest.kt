@@ -54,6 +54,18 @@ class FlashPeerDetailsLogicTest {
     }
 
     @Test
+    fun `reachable peer never contradicts Online with Not connected`() {
+        assertEquals(
+            "Connects when you send",
+            FlashPeerDetailsMath.transportLabel(FlashNetworkTransport.Unknown, FlashPeerPresence.Reachable),
+        )
+        assertEquals(
+            "Local network (connects when you send)",
+            FlashPeerDetailsMath.transportLabel(FlashNetworkTransport.Lan, FlashPeerPresence.Reachable),
+        )
+    }
+
+    @Test
     fun `a radio-only peer is named, not called disconnected`() {
         // ADR-228: there is no session, but a text goes out, so "Not connected" would be the wrong claim.
         assertEquals(

@@ -8,10 +8,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -20,26 +22,29 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.ui.icons.FlashIcon
@@ -139,6 +144,10 @@ fun FlashChatSearchBar(
     val typography = FlashTheme.typography
     // UI-041: press-scale micro-interaction on search chrome, token-driven springSnappy.
     val motion = FlashTheme.motion
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
     val closeInteraction = remember { MutableInteractionSource() }
     val isClosePressed by closeInteraction.collectIsPressedAsState()
     val closePressScale by animateFloatAsState(
@@ -146,115 +155,177 @@ fun FlashChatSearchBar(
         animationSpec = motion.springSnappySpec(),
         label = "searchClosePressScale",
     )
+    val hasNonBlankQuery = FlashChatSearchMath.normalizeQuery(query).isNotEmpty()
 
-    Row(
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .background(colors.backgroundSurface)
-            .statusBarsPadding()
-            .padding(horizontal = FlashSpacing.space4),
-        verticalAlignment = Alignment.CenterVertically,
+            .statusBarsPadding(),
     ) {
-        // Close search
-        Box(
+        // Row 1: Back + spacious query input + Clear button (prevents 360dp crowding)
+        Row(
             modifier = Modifier
-                .size(FlashDimensions.minTouchTarget)
-                .graphicsLayer {
-                    scaleX = closePressScale
-                    scaleY = closePressScale
-                }
-                .clip(CircleShape)
-                .clickable(
-                    interactionSource = closeInteraction,
-                    indication = null,
-                    onClick = onClose,
-                )
-                .semantics { role = Role.Button; contentDescription = "Close search" },
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .padding(start = FlashSpacing.space4, end = FlashSpacing.space12, top = FlashSpacing.space4),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            FlashIcon(icon = FlashIcons.Back)
-        }
+            Box(
+                modifier = Modifier
+                    .size(FlashDimensions.minTouchTarget)
+                    .graphicsLayer {
+                        scaleX = closePressScale
+                        scaleY = closePressScale
+                    }
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = closeInteraction,
+                        indication = null,
+                        onClick = onClose,
+                    )
+                    .semantics { role = Role.Button; contentDescription = "Close search" },
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashIcon(icon = FlashIcons.Back)
+            }
 
-        // Query field pill
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .clip(FlashShapes.composerInput)
-                .background(colors.composerInputBackground)
-                .border(
-                    width = FlashDimensions.borderHairline,
-                    color = colors.borderSubtle,
-                    shape = FlashShapes.composerInput,
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(FlashShapes.composerInput)
+                    .background(colors.composerInputBackground)
+                    .border(
+                        width = FlashDimensions.borderHairline,
+                        color = colors.borderSubtle,
+                        shape = FlashShapes.composerInput,
+                    )
+                    .padding(start = FlashSpacing.space12, end = FlashSpacing.space4, top = FlashSpacing.space4, bottom = FlashSpacing.space4),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChanged,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = FlashSpacing.space4)
+                        .focusRequester(focusRequester),
+                    singleLine = true,
+                    textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
+                    cursorBrush = SolidColor(colors.accentFill),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { if (resultCount > 0) onNext() }),
+                    decorationBox = { innerTextField ->
+                        if (query.isEmpty()) {
+                            FlashText(
+                                text = "Search in conversation",
+                                style = typography.bodyDefault,
+                                color = colors.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        innerTextField()
+                    },
                 )
-                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
-        ) {
-            BasicTextField(
-                value = query,
-                onValueChange = onQueryChanged,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
-                cursorBrush = SolidColor(colors.accentPrimary),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { if (resultCount > 0) onNext() }),
-                decorationBox = { innerTextField ->
-                    if (query.isEmpty()) {
-                        FlashText(
-                            text = "Search in conversation",
-                            style = typography.bodyDefault,
-                            color = colors.textTertiary,
-                            maxLines = 1,
+                if (query.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .clickable { onQueryChanged("") }
+                            .semantics { role = Role.Button; contentDescription = "Clear search" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Close,
+                            contentDescription = null,
+                            size = FlashDimensions.iconSm,
+                            tint = colors.textSecondary,
                         )
                     }
-                    innerTextField()
-                },
-            )
+                }
+            }
         }
 
-        Spacer(modifier = Modifier.size(FlashSpacing.space4))
+        // Row 2: Live counter, All-matches drawer toggle (always clickable when provided), and Prev/Next steppers
+        if (hasNonBlankQuery || resultsExpanded || onToggleResults != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = FlashSpacing.space16, end = FlashSpacing.space4),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val counterText = when {
+                    resultCount > 0 && activeResultIndex >= 0 ->
+                        FlashChatSearchMath.counterLabel(activeResultIndex, resultCount)
+                    hasNonBlankQuery -> "No matches"
+                    else -> "Filters & matches"
+                }
+                val counterColor = when {
+                    resultCount > 0 && activeResultIndex >= 0 -> colors.textSecondary
+                    else -> colors.textTertiary
+                }
+                FlashText(
+                    text = counterText,
+                    style = if (resultCount > 0 && activeResultIndex >= 0) {
+                        typography.numericEmphasis.copy(fontSize = typography.metadataDefault.fontSize)
+                    } else {
+                        typography.metadataDefault
+                    },
+                    color = counterColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                )
 
-        // Result counter (polite live region for TalkBack)
-        if (resultCount > 0 && activeResultIndex >= 0) {
-            FlashText(
-                text = FlashChatSearchMath.counterLabel(activeResultIndex, resultCount),
-                style = typography.numericEmphasis.copy(fontSize = typography.metadataDefault.fontSize),
-                color = colors.textSecondary,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
-        } else if (FlashChatSearchMath.normalizeQuery(query).isNotEmpty()) {
-            FlashText(
-                text = "No matches",
-                style = typography.metadataDefault,
-                color = colors.textTertiary,
-                maxLines = 1,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
+                if (onToggleResults != null) {
+                    Row(
+                        modifier = Modifier
+                            .heightIn(min = FlashDimensions.minTouchTarget)
+                            .clip(FlashShapes.chip)
+                            .clickable(onClick = onToggleResults)
+                            .padding(horizontal = FlashSpacing.space8)
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = if (resultsExpanded) "Hide all matches" else "Show all matches"
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+                    ) {
+                        FlashText(
+                            text = if (resultsExpanded) "Hide list" else "All matches",
+                            style = typography.metadataEmphasis,
+                            color = colors.textLink,
+                            maxLines = 1,
+                        )
+                        FlashIcon(
+                            icon = FlashIcons.ChevronDown,
+                            contentDescription = null,
+                            tint = colors.textLink,
+                            size = FlashDimensions.iconSm,
+                            modifier = Modifier.graphicsLayer {
+                                rotationZ = if (resultsExpanded) 180f else 0f
+                            },
+                        )
+                    }
+                }
+
+                SearchStepButton(
+                    rotationZ = 90f,
+                    description = "Previous match",
+                    enabled = resultCount > 0,
+                    onClick = onPrevious,
+                )
+                SearchStepButton(
+                    rotationZ = -90f,
+                    description = "Next match",
+                    enabled = resultCount > 0,
+                    onClick = onNext,
+                )
+            }
         }
-
-        // UI-023 upgrade: list every match instead of stepping 1/18 times.
-        if (onToggleResults != null) {
-            SearchStepButton(
-                rotationZ = if (resultsExpanded) 180f else 0f,
-                description = if (resultsExpanded) "Hide all matches" else "Show all matches",
-                enabled = resultCount > 0,
-                onClick = onToggleResults,
-                icon = FlashIcons.ChevronDown,
-            )
-        }
-
-        // Previous / next steppers (Flash back glyph rotated into chevrons)
-        SearchStepButton(
-            rotationZ = 90f,
-            description = "Previous match",
-            enabled = resultCount > 0,
-            onClick = onPrevious,
-        )
-        SearchStepButton(
-            rotationZ = -90f,
-            description = "Next match",
-            enabled = resultCount > 0,
-            onClick = onNext,
-        )
     }
 }
 

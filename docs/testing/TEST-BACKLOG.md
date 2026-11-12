@@ -7875,11 +7875,28 @@ PASS (owner, 2026-11-05; core bidirectional text after setting Automatic. Link-d
   sender to report failure, restore connectivity, and press **Retry** on that same transfer. Repeat
   with the direction reversed where practical.
 - **Pass:** The receiver leaves the active state when the attempt ends. Retry uses the same transfer
-  identity and resumes from chunks the receiver can still verify, with no duplicate offer or replay
-  of those durable chunks. Both peers show the resumed progress; the final file SHA-256 matches.
+  identity and skips durable chunks once their ACKs reach the sender, without asking for consent
+  again. Record any chunks sent before the ACK arrives. Both peers show resumed progress; the final SHA-256 matches.
   An explicit cancel and a changed source remain distinct from a retryable interruption.
-- **Status:** OWED. Owner reported stale receive progress and apparent restart in 2.2.0. The source
-  investigation is delegated to OpenCode; no device result or root cause is recorded yet.
+- **Status:** OWED. The local candidate passed 894 host cases (two documented skips), including
+  repeat attempts with unchanged saved progress and a delayed-ACK reproduction. Physical devices
+  must still verify recovery in both directions, including another interruption before progress moves.
+
+## VOICE-BTN-01..06 — Voice-note recording controls (2026-11-09)
+
+**Status:** OWED on Android and Windows. The chat JVM and Android-host gates passed; no microphone
+or gesture on a physical device was exercised.
+
+1. **01 — Hold:** Hold the mic, speak for at least a second and release. One voice note is sent.
+2. **02 — Android lock:** Hold, slide up and release. The trailing Send submits the locked take once;
+   no unrelated PTT error appears.
+3. **03 — Windows lock:** Repeat and confirm the active take is not replaced. Verify both send controls.
+4. **04 — Refused start:** With permission denied or the mic owned by a call, hold and slide up. No
+   recording panel opens. Restore access and verify the next hold works.
+5. **05 — Failed capture:** Force a microphone start error. The UI explains the failure and the next
+   attempt can start after the mic is free.
+6. **06 — Other controls:** Short tap does not send, slide-left cancels, locked-bar controls work, and
+   a received voice note still downloads, plays, pauses and seeks.
 
 ## XFER-RETRY-01 — Retrying a restored 0-byte attachment must not kill the app (2026-11-05)
 
@@ -8318,3 +8335,145 @@ Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT
   listener hears the opening syllable"), so it needs two physically paired peers, live microphones and a
   person listening. No audio observation is possible in this session; the test pair was revoked after the
   W1 runs. The first-packet ordering remains host-tested only.
+
+
+## 2026-11-12 — Phases 1–5 UI/UX polish verification (`UXPOL-01..11`)
+
+Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`, `:app`, and `:desktop`. All cases below are host-verified by unit/render/wiring tests only and still require physical Android and Windows device checks.
+
+### UXPOL-01 — Light/dark theme tokens, quoted reply contrast, avatar scaling, launch splash & video player error
+- **Setup:** Android phone + Windows desktop in both Light and Dark themes (plus Dynamic Accent enabled and OS Reduced Motion toggled on); conversation containing outgoing and incoming quoted replies, single-initial avatars at multiple sizes, and an unplayable/corrupt video attachment.
+- **Steps:**
+  1. Inspect outgoing and incoming `FlashQuotedReplyCard` bubbles in Light and Dark modes.
+  2. Cold-launch the app with Reduced Motion enabled (`FlashTheme.motion.reduceMotion = true`).
+  3. Open a broken video attachment in `FlashVideoPlayer`.
+- **Pass:**
+  - Outgoing and incoming quoted reply sender names, accent bars, and snippet texts are clearly legible (`>= 4.5:1` contrast; no white-on-light-bubble washout).
+  - Error texts (`textError`), tertiary timestamps (`textTertiary`/`chatTextTimestamp`), and dynamic accent fills/links remain readable across surfaces; avatar initials scale proportionally without clipping.
+  - Launch splash exits immediately (`ExitTransition.None`, 0 ms fade) under Reduced Motion.
+  - Video player hides the centered Play button and bottom scrubber on error while keeping the top `Close` bar visible and rendering a `>= 48 dp` `"Open in system player"` button.
+- **Status:** TODO
+
+### UXPOL-02 — Radio Gateway PTT contrast, Listen/Profile M semantics & bottom inset scroll
+- **Setup:** Android phone with TalkBack enabled (Light and Dark modes) and a Radio Gateway controller/device state showing Listen switch, PTT button, Profile M un-authorised state, `"Coming later"` / `"Not supported"` rows, and hidden bottom dock.
+- **Steps:**
+  1. Open Radio Gateway in Light and Dark modes, scroll to the bottom, and toggle Listen and PTT (ready, talking, disabled/no-link states).
+  2. Inspect un-authorised Profile M, `"Coming later"`, and Profile A preview rows with TalkBack.
+- **Pass:**
+  - PTT button and `"Talking"`/`"No link"` status pills remain clearly legible in both Light and Dark modes (`accentFill`/`onAccentFill` and `accentSecondary` ink); `CHECKLIST_STEP_2` uses `→` (no `?` or `->`).
+  - Listen switch and authorisation toggles announce `Switch` role; un-authorised Profile M is not announced as `selected = true` and prompts authorisation; `"Coming later"` and `"Not supported"` rows are announced disabled and ignore clicks.
+  - Bottom list content scrolls clear of the system/navigation bottom inset when the bottom dock is hidden.
+- **Status:** TODO
+
+### UXPOL-03 — Settings no-dead-rows, collapsed Advanced section, search & Transsion theme
+- **Setup:** Android phone (including a Transsion device or pending `TranssionSetupGuide`) and Windows desktop.
+- **Steps:**
+  1. Open Settings on both Android and Desktop; verify initial collapse state of `Advanced & Power` (`Section.ADVANCED`).
+  2. Tap `Encryption`, `Trusted peers`, and `Save location` on both platforms; verify Android-only rows (`Haptics`, `Battery optimization`) on Desktop.
+  3. Expand `Advanced & Power` and toggle `Group file sharing (swarm, experimental)`, `Performance mode` chips, and `Discovery mode`.
+  4. Search `"battery"`, `"Unrestricted battery"`, and a query matching no rows; tap the search Clear (`X`) button; open `TranssionGuideDialog` in Light and Dark modes.
+- **Pass:**
+  - `Advanced & Power` starts collapsed; `Performance mode` chips wrap cleanly without `packets/s` jargon; `Help share group files` and `Keep finished files available for others` disable/indent under the master swarm toggle.
+  - Every clickable row acts (`Encryption` opens `FlashEncryptionSheet`, `Trusted peers` switches to `NearbyDevices`); Android `Save location` is read-only (`App storage / FlashReceived`) with no dead tap; Desktop hides `Haptics` and `Battery optimization` and opens `JFileChooser` for `Save location`.
+  - Search hides empty sections, returns only `Network` for `"Unrestricted battery"` and `Network` + `Advanced & Power` for `"battery"`, and clears via a `>= 48 dp` Clear target.
+  - `TranssionGuideDialog` follows user Light/Dark/Dynamic Accent `FlashTheme`.
+- **Status:** TODO
+
+### UXPOL-04 — Hub `bottomInset`, visual announcement truncation & people search
+- **Setup:** Android phone + Windows desktop enrolled in a Hub with long multi-line announcements and a populated directory.
+- **Steps:**
+  1. Scroll Hub News/People/Org lists to the very bottom on Android (with floating bottom bar) and Desktop.
+  2. Inspect short vs visually overflowing announcements in `FlashAnnouncementCard`.
+  3. Search in People (`searchHits` loading state) and press system/UI Back; inspect `PERSON_UNPAIRED_FOOTER`.
+- **Pass:**
+  - Last Hub item clears the floating bottom bar (`bottomInset`) cleanly.
+  - `"Read more"` appears only on announcements that visually overflow; `allPeople` does not flash momentarily while search results are loading; Back exits search consistently; unpaired footer directs users to `Settings → Enterprise & Organization` (`"Messages through the hub"`).
+- **Status:** TODO
+
+### UXPOL-05 — Android 840–907 dp two-pane layout, Back handling, deferred notifications, Quick Tile & Widget
+- **Setup:** Android tablet/foldable or resizable window at 840–907 dp width (and a standard phone), with `POST_NOTIFICATIONS` ungranted on first launch, Quick Settings tile added, and home-screen widget placed.
+- **Steps:**
+  1. Cold-launch the app without notification permission; watch the splash finish and observe the notification prompt; decline permanently and re-check on resume.
+  2. Resize or open on an 840–907 dp screen; switch across Chats, Transfers, Nearby, Hub, and Settings; tap a conversation, use system Back, and tap `ChatList` on the Medium navigation rail.
+  3. Share a file or `file://` URI into Flash via `ACTION_SEND` or tap the widget send icon; toggle the Quick Settings tile.
+- **Pass:**
+  - Cold start never pops a raw system notification dialog during launch; after splash settles, an inline rationale banner (`Allow` / `Not now`) appears, and permanent denial offers `Open Settings` (`ACTION_APP_NOTIFICATION_SETTINGS`) refreshed in `onResume`.
+  - 840–907 dp width enters two-pane mode (`320 dp` list + detail pane); `Settings` occupies full width; non-chat placeholders show tab-specific headers without `"Find devices"` on `NearbyDevices`/`Hub`/`Settings`; Medium rail `ChatList` tap and gated `BackHandler` clear active selections cleanly.
+  - `ACTION_SEND` / `flash://` / `SHORTCUT_*` skip the launch splash (`singleTop`); rejected `file://` URIs display toast feedback; widget send action opens the send flow; Quick Tile toggles 2-state `Active (Discoverable)` ↔ `Off` (`GHOST` reports active) with plain-text subtitles; notifications use `ic_notification_flash`.
+- **Status:** TODO
+
+### UXPOL-06 — Desktop DnD off-screen guard, share-to-group, keyboard shortcuts, toast reposition & foreground notifications
+- **Setup:** Windows desktop app on primary and secondary/compact monitor bounds, with an active chat, a trusted group, and a paired peer sending messages/files/calls.
+- **Steps:**
+  1. Open a chat, then switch to `Transfers` or `Settings` and drag-and-drop a file onto the window; also drop an empty folder onto an open chat.
+  2. Share files directly to a trusted group; test `Esc` priority (closing overlays/search/detail before chat), `Ctrl+1..4`, `Ctrl+5`/`Ctrl+T` (enrolled vs non-enrolled), sidebar tooltips/profile target, and `NearbyDetailPane` actions.
+  3. Trigger a transfer toast near the bottom-right edge and vary toast height; receive a transfer/call/pairing event while the Desktop window is foreground and active vs minimized/unfocused.
+- **Pass:**
+  - Dropping a file while another tab is active never silently sends to the off-screen chat; dropping an empty folder shows `EMPTY_FOLDER_SHARE_MESSAGE`.
+  - Direct group share delivers to the trusted group; `Settings` and `Hub` occupy full width; `Esc` and `Ctrl+1..5`/`Ctrl+T` route cleanly; sidebar items expose tooltips and `>= 48 dp` profile button.
+  - Transfer toast repositions upward cleanly inside `maximumWindowBounds` without clipping off-screen; OS notifications for transfers, ringing calls, and pairing requests are suppressed while the Desktop window is foreground and active, and appear when unfocused.
+- **Status:** TODO
+
+### UXPOL-07 — Pairing phase mapping, failure recovery, local IPv4 & peer details clarity
+- **Setup:** Two devices (Android + Android or Android + Windows) on the same LAN, plus an offline/unreachable IP test target.
+- **Steps:**
+  1. Initiate pairing and observe `AwaitingPeerNonce`/`AwaitingPeerReveal`, `RequestReceived`, `AwaitingPeerConfirmation`, and a forced failure/decline/expiry.
+  2. Open `Nearby` with radios on and off, run a manual scan with 0 peers, open `Connect by IP` and submit an unreachable IP/port, and open `FlashPeerDetailsSheet` for a `Reachable` peer.
+  3. Attempt `"Unpair device"` from `Nearby` and from `FlashPeerDetailsSheet`.
+- **Pass:**
+  - No bogus `"000 000"` code or false waiting card appears during `AwaitingPeerNonce`/`AwaitingPeerReveal`; `RequestReceived` and `AwaitingPeerConfirmation` cannot be dismissed by outside tap or Back; `Failed`/`Declined`/`Expired` show `"Try again"` and `"Close"` with `failureReason`.
+  - `Nearby` displays the local IPv4/port (`localAddressLabel`), labeled `"Connect by IP"` button, dismissible scan caption, immediate quiet-network hint on 0-peer manual scan, and `"Open Wi-Fi Settings"` when radios are off.
+  - `Connect by IP` uses numeric port input and retains typed fields on failure; `Reachable` peer details read `"Connects when you send"` with plain-language `"Verify pairing"` / `"Radio fallback"` descriptions; `"Unpair device"` requires `FlashConfirmHost` confirmation.
+- **Status:** TODO
+
+### UXPOL-08 — Transfers `Verifying` state, receive-cancel confirmation, split Clear & two-pane inspection
+- **Setup:** Two peers transferring a multi-hundred-MB file (plus failed and cancelled history rows) on Android and Desktop (wide/two-pane and narrow).
+- **Steps:**
+  1. Observe the receiver during whole-file integrity verification (`DomainState.Verifying`) and observe `Queued` rows.
+  2. Tap Cancel on an active inbound receive vs an outbound send, and decline an incoming offer; tap `"Clear cancelled"` and `"Clear failed"` separately.
+  3. Inspect sizes/speeds, tap a transfer row in wide/two-pane mode, and trigger a load error (`FlashErrorState`).
+- **Pass:**
+  - `Verifying` rows display `"Verifying file…"` with zeroed speed/ETA, are excluded from `aggregateSpeed`, and hide Pause/Resume buttons (as do `Queued` rows).
+  - Cancelling an active inbound receive prompts confirmation (`FlashCancelCopy`); `Decline`, `Cancel`, and `Dismiss` use distinct icons/semantics; `"Clear cancelled"` and `"Clear failed"` clear only their respective buckets.
+  - File sizes/speeds use consistent decimal SI units (`MB` / `MB/s`) with `done / total · %`; two-pane selection opens `detailPane` with plain-language labels and non-colliding ellipsis on long `"Saved To"` paths.
+- **Status:** TODO
+
+### UXPOL-09 — Calling stats pill, PiP top scrim, share picker & Android PTT scrim
+- **Setup:** 1:1 and group video calls on Android and Desktop (including `1.3x+` font scale at 360 dp width), screen share, and an active Android PTT session.
+- **Steps:**
+  1. In a video call, inspect the top peer header, `120 dp` PiP overlay, and `FlashShareIndicator` banner; tap the signal-quality pill to open `CallPanel.STATS` (including when `rttMs == null`).
+  2. Check control dock layout at 360 dp normal vs `1.5x` font scale and with `audioRoutes.needsPicker == true`; start screen share on Android (`usesSystemPicker == true`).
+  3. End a call (`ENDED`) and tap `X` or Back immediately; separately start an Android PTT session and tap behind the card and press Back.
+- **Pass:**
+  - `FlashShareIndicator` docks above the video canvas without overlapping the PiP or top-start header; top `160 dp` gradient scrim and trailing padding keep the header clear of PiP.
+  - Signal-quality pill opens scrollable `CallPanel.STATS` with no fabricated `"<1 ms"` when `rttMs == null`; control dock fits cleanly at 360 dp, wraps into 2 balanced rows at `1.3x+` font scale, and shows the chevron cue when audio route picker is available; Android screen share jumps directly to the system picker when `presenterId == null`.
+  - `ENDED` call dismisses immediately (`dismissedEndedCallId`); Android `PttSessionOverlay` blocks clicks on underlying UI, stops PTT on Back, caps card width at `400 dp`, renders `>= 48 dp` `Stop`/`Leave`, and displays `Good`/`Fair`/`Weak signal` labels.
+- **Status:** TODO
+
+### UXPOL-10 — Voice lock hint, single playback, delete confirmations, emoji picker, reactor sheet & media/attachments
+- **Setup:** Android phone and Windows desktop with an active conversation containing voice notes, images with captions, files, failed messages, and reacted messages.
+- **Steps:**
+  1. Tap the mic briefly (`<500 ms`), hold and observe lock hint, lock recording, and test `Enter` key on Android soft keyboard vs Desktop; play a voice note in chat and then play another in `SharedContentSheet` (`SharedAudioRow`), and try scrubbing an undownloaded voice note.
+  2. Trigger `Clear chat`, multi-select `Delete`, and context-menu `Delete` / `Delete for everyone`.
+  3. Open `"More reactions"` (`FlashExtendedEmojiPickerSheet`), long-press a reaction chip / tap `+N` (`FlashReactionsDetailSheet`), open context menu on an image-only message, and single-forward a message.
+  4. Stage up to 10 attachments (`OpenMultipleDocuments` on Android), inspect thumbnails and send; open `FlashMediaViewer` (caption, `Save`/`Share`/`Forward`, desktop `←`/`→`/`Esc`), `FlashSharedContentSheet` tabs/undownloaded file tap, `FlashGroupHistoryCard`/`FlashHubNotice` scroll position, and swipe-to-reply on incoming bubbles.
+- **Pass:**
+  - Short tap shows `"Hold to record"` feedback; holding shows `"↑ Slide up to lock"` pill; once `FlashVoiceTrailingSendButton` appears, the redundant in-bar Send hides; Android `Enter` inserts newline while Desktop `Enter` sends; starting a second voice note pauses the first across chat and `SharedAudioRow`; scrubbing is disabled until `Downloaded`.
+  - All 4 destructive chat actions require `FlashConfirmHost` confirmation.
+  - Extended emoji picker and reactor detail sheet (with emoji filter tabs) open and behave cleanly; `"Copy Text"` is hidden on blank messages and uses `FlashIcons.Copy`; single-message Forward works via multi-forward; focus overlay scrolls cleanly on tall messages.
+  - Staging tray accepts up to 10 items, renders thumbnails with `48 dp` remove buttons, and clears on enqueue; `FlashMediaViewer` shows captions and labeled actions + desktop arrow/Esc keys; `FlashGroupHistoryCard`/`FlashHubNotice` render at the top of `LazyColumn(reverseLayout = true)` without breaking scroll-to-bottom (`isAtBottom`).
+- **Status:** TODO
+
+### UXPOL-11 — Chat list declutter, search drawer, right-click menu & group sheets
+- **Setup:** Android phone (`<408 dp` narrow width) and Windows desktop with paired peers, existing groups (admin and non-admin), archived chats, and empty-peer state.
+- **Steps:**
+  1. Inspect `FlashChatListTopBar`, group rows (with online badge), archived row alignment, and narrow (`<408 dp`) multi-select toolbar (`Pin`/`Unpin`, `Mute`/`Unmute`, `Delete`).
+  2. On Desktop, right-click a chat row and right-click an image tile inside a conversation.
+  3. Open chat search with zero chats/recents, then on 360 dp width toggle `All matches` / `Hide list`.
+  4. Open `New group` / `Add members` with 0 peers and with >10 peers, `Leave group` with >5 `eligibleSuccessors`, `Group members` sheet (`Promote`/`Demote`/`Remove`), `Group settings` steppers, and `Group invite` / conversation menu.
+- **Pass:**
+  - Group rows show `FlashGroupAvatar` without an overlapping `FlashPresenceDot`; Archived medallion/divider aligns with chat rows; narrow multi-select bar fits `>= 48 dp` targets without clipping `"N selected"` and gates bulk/single delete behind `FlashConfirmHost`.
+  - Desktop right-click opens the row menu on chat rows and the bubble context menu on image tiles.
+  - Search auto-focuses, offers Clear (`X`), shows empty state instead of blank screen when empty, and keeps 2-row `FlashChatSearchBar` + drawer toggle clickable at 360 dp.
+  - Group member sheets cap list height (`<= 280 dp`), offer `"Find devices"` when empty, scroll all `eligibleSuccessors` in Leave dialog, move per-member actions into `More` with confirmation on Promote/Demote, step max members cleanly (`2 ↔ 5 ↔ 10 ↔ 15 ↔ 20`) with `48 dp` buttons and plain-language labels, and use distinct icons (`Copy`, `Connection`, `Forward`).
+- **Status:** TODO

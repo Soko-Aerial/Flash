@@ -12,14 +12,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -28,6 +26,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
@@ -63,7 +62,7 @@ internal fun FlashHubStatusRow(status: HubStatus, nowMs: Long, onOpenDetails: ()
     val dotColor by animateColorAsState(
         when (FlashHubStatusMath.dot(status)) {
             FlashHubDot.GOOD -> colors.statusOnline
-            FlashHubDot.PROGRESS -> colors.accentPrimary
+            FlashHubDot.PROGRESS -> colors.accentFill
             FlashHubDot.WARNING -> colors.statusTransfer
             FlashHubDot.BAD -> colors.textError
             FlashHubDot.NEUTRAL -> colors.statusOffline
@@ -75,12 +74,14 @@ internal fun FlashHubStatusRow(status: HubStatus, nowMs: Long, onOpenDetails: ()
     Row(
         Modifier
             .fillMaxWidth()
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .flashPressScale(interactionSource)
-            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .clip(FlashShapes.button)
             .background(colors.backgroundSurface)
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
+                role = Role.Button,
                 onClickLabel = "Show connection details",
                 onLongClickLabel = "Show connection details",
                 onClick = onOpenDetails,
@@ -111,7 +112,7 @@ internal fun FlashOrgTrustStatusRow(
     val dotColor by animateColorAsState(
         when (FlashHubStatusMath.orgTrustDot(state)) {
             FlashHubDot.GOOD -> colors.statusOnline
-            FlashHubDot.PROGRESS -> colors.accentPrimary
+            FlashHubDot.PROGRESS -> colors.accentFill
             FlashHubDot.WARNING -> colors.statusTransfer
             FlashHubDot.BAD -> colors.textError
             FlashHubDot.NEUTRAL -> colors.statusOffline
@@ -122,7 +123,8 @@ internal fun FlashOrgTrustStatusRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .heightIn(min = FlashDimensions.minTouchTarget)
+            .clip(FlashShapes.button)
             .background(colors.backgroundSurface)
             .padding(FlashSpacing.space12)
             .semantics(mergeDescendants = true) { contentDescription = "Colleague trust, $text" },
@@ -151,7 +153,7 @@ internal fun FlashHubBannerCard(
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .clip(FlashShapes.button)
             .background(colors.backgroundSurfaceSubtle)
             .padding(FlashSpacing.space12)
             .semantics(mergeDescendants = false) { },
@@ -165,24 +167,19 @@ internal fun FlashHubBannerCard(
         FlashText(text = banner.body, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
         if (banner.primary != FlashHubBannerAction.NONE) {
             Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                Box(
-                    Modifier
-                        .clip(FlashShapes.chip)
-                        .background(colors.accentPrimary.copy(alpha = 0.15f))
-                        .clickable(onClickLabel = banner.primaryLabel, onClick = onPrimary)
-                        .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
-                ) {
-                    FlashText(text = banner.primaryLabel, style = FlashTheme.typography.metadataEmphasis, color = colors.accentPrimary)
-                }
+                HubCardActionChip(
+                    label = banner.primaryLabel,
+                    emphasized = true,
+                    onClickLabel = banner.primaryLabel,
+                    onClick = onPrimary,
+                )
                 if (banner.dismissible) {
-                    Box(
-                        Modifier
-                            .clip(FlashShapes.chip)
-                            .clickable(onClickLabel = "Dismiss", onClick = onDismiss)
-                            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
-                    ) {
-                        FlashText(text = "Dismiss", style = FlashTheme.typography.metadataEmphasis, color = colors.textSecondary)
-                    }
+                    HubCardActionChip(
+                        label = "Dismiss",
+                        emphasized = false,
+                        onClickLabel = "Dismiss",
+                        onClick = onDismiss,
+                    )
                 }
             }
         }
@@ -207,7 +204,9 @@ internal fun FlashHubDetailDialog(status: HubStatus, nowMs: Long, onClose: () ->
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("Close", color = colors.accentPrimary) } },
+        confirmButton = {
+            FlashSettingsTextButton(label = "Close", color = colors.textLink, onClick = onClose)
+        },
         dismissButton = {},
     )
 }
@@ -221,8 +220,12 @@ internal fun FlashHubContentDisclosureDialog(onConfirm: () -> Unit, onCancel: ()
         containerColor = colors.backgroundSurface,
         title = { FlashText(text = "Let the hub read these messages?", style = FlashTheme.typography.headingMedium, color = colors.textPrimary) },
         text = { FlashText(text = FlashHubStatusMath.CONTENT_VIA_HUB_DISCLOSURE, style = FlashTheme.typography.bodyDefault, color = colors.textSecondary) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Allow", color = colors.accentPrimary) } },
-        dismissButton = { TextButton(onClick = onCancel) { Text("Not now", color = colors.textSecondary) } },
+        confirmButton = {
+            FlashSettingsTextButton(label = "Allow", color = colors.textLink, onClick = onConfirm)
+        },
+        dismissButton = {
+            FlashSettingsTextButton(label = "Not now", color = colors.textSecondary, onClick = onCancel)
+        },
     )
 }
 
@@ -233,30 +236,50 @@ internal fun FlashHubRelinkOffer(count: Int, onRestore: () -> Unit, onForget: ()
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .clip(FlashShapes.button)
             .background(colors.backgroundSurfaceSubtle)
             .padding(FlashSpacing.space12),
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
         FlashText(text = FlashHubStatusMath.relinkOfferText(count), style = FlashTheme.typography.bodyDefault, color = colors.textPrimary)
         Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-            Box(
-                Modifier
-                    .clip(FlashShapes.chip)
-                    .background(colors.accentPrimary.copy(alpha = 0.15f))
-                    .clickable(onClickLabel = "Restore groups", onClick = onRestore)
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
-            ) {
-                FlashText(text = "Restore", style = FlashTheme.typography.metadataEmphasis, color = colors.accentPrimary)
-            }
-            Box(
-                Modifier
-                    .clip(FlashShapes.chip)
-                    .clickable(onClickLabel = "Not now", onClick = onForget)
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
-            ) {
-                FlashText(text = "No thanks", style = FlashTheme.typography.metadataEmphasis, color = colors.textSecondary)
-            }
+            HubCardActionChip(
+                label = "Restore",
+                emphasized = true,
+                onClickLabel = "Restore groups",
+                onClick = onRestore,
+            )
+            HubCardActionChip(
+                label = "No thanks",
+                emphasized = false,
+                onClickLabel = "Not now",
+                onClick = onForget,
+            )
         }
+    }
+}
+
+@Composable
+private fun HubCardActionChip(
+    label: String,
+    emphasized: Boolean,
+    onClickLabel: String,
+    onClick: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    Box(
+        modifier = Modifier
+            .heightIn(min = FlashDimensions.minTouchTarget)
+            .clip(FlashShapes.chip)
+            .then(if (emphasized) Modifier.background(colors.accentFill.copy(alpha = 0.14f)) else Modifier)
+            .clickable(role = Role.Button, onClickLabel = onClickLabel, onClick = onClick)
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = label,
+            style = FlashTheme.typography.metadataEmphasis,
+            color = if (emphasized) colors.textLink else colors.textSecondary,
+        )
     }
 }

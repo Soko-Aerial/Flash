@@ -15,18 +15,26 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,7 +57,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
+import com.transfer.flash.core.messaging.model.FlashReaction
+import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
@@ -82,6 +93,7 @@ fun FlashMessageFocusOverlay(
     onDelete: () -> Unit,
     onDeleteForEveryone: (() -> Unit)? = null,
     onStopRadioRetry: (() -> Unit)? = null,
+    onOpenEmojiPicker: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     /** UI-051: shows a "Message Info" item. The host passes it only for a message that offers it. */
     onMessageInfo: (() -> Unit)? = null,
@@ -136,6 +148,7 @@ fun FlashMessageFocusOverlay(
                 // eat the tap; every genuinely empty pixel falls through to the scrim's onDismiss.
                 // Side placement now comes from aligning the column itself, not horizontalAlignment.
                 .align(if (message.isMine) Alignment.CenterEnd else Alignment.CenterStart)
+                .verticalScroll(rememberScrollState())
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -149,10 +162,15 @@ fun FlashMessageFocusOverlay(
                         onReactionSelect(reaction)
                         onDismiss()
                     },
+                    onOpenEmojiPicker = {
+                        if (onOpenEmojiPicker != null) {
+                            onOpenEmojiPicker()
+                        }
+                    },
                     modifier = Modifier.padding(bottom = FlashSpacing.space8),
                 )
 
-                // Elevated Focus Bubble Mirror
+                // Elevated Focus Bubble Mirror (capped height + internal scroll for long messages)
                 FlashFocusedBubblePreview(
                     message = message,
                     modifier = Modifier.padding(bottom = FlashSpacing.space12),
@@ -366,9 +384,11 @@ fun FlashFocusedBubblePreview(
     Box(
         modifier = modifier
             .widthIn(max = 280.dp)
+            .heightIn(max = 220.dp)
             .clip(shape)
             .background(bubbleBg)
-            .border(1.dp, colors.accentPrimary.copy(alpha = 0.5f), shape)
+            .border(1.dp, colors.accentFill.copy(alpha = 0.5f), shape)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
     ) {
         Column {
@@ -376,7 +396,7 @@ fun FlashFocusedBubblePreview(
                 Text(
                     text = message.senderName,
                     style = typography.captionEmphasis,
-                    color = colors.accentPrimary,
+                    color = colors.accentFill,
                     modifier = Modifier.padding(bottom = FlashSpacing.space2),
                 )
             }
@@ -422,6 +442,7 @@ fun FlashContextMenuCard(
     isPinned: Boolean = false,
 ) {
     val colors = FlashTheme.colors
+    val hasCopyableText = message.text.isNotBlank()
 
     Column(
         modifier = modifier
@@ -436,11 +457,13 @@ fun FlashContextMenuCard(
             label = "Reply",
             onClick = onReply,
         )
-        FlashContextMenuItem(
-            icon = FlashIcons.Edit,
-            label = "Copy Text",
-            onClick = onCopy,
-        )
+        if (hasCopyableText) {
+            FlashContextMenuItem(
+                icon = FlashIcons.Copy,
+                label = "Copy Text",
+                onClick = onCopy,
+            )
+        }
         FlashContextMenuItem(
             icon = FlashIcons.Forward,
             label = "Forward",
@@ -501,9 +524,10 @@ internal fun messageActionLabels(
     hasMessageInfo: Boolean = false,
     canPin: Boolean = false,
     canStopRadioRetry: Boolean = false,
+    hasText: Boolean = true,
 ): List<String> = buildList {
     add("Reply")
-    add("Copy Text")
+    if (hasText) add("Copy Text")
     add("Forward")
     if (canPin) add("Pin")
     add("Select Multiple")
@@ -511,6 +535,367 @@ internal fun messageActionLabels(
     if (canStopRadioRetry) add("Stop sending")
     if (isMine) add("Delete for everyone")
     add("Delete")
+}
+
+/** Curated extended emoji palette and pure reaction attribution helpers (UI-009). */
+internal object FlashReactionPickerMath {
+    val EXTENDED_REACTIONS: List<String> = listOf(
+        "❤️", "👍", "🔥", "😂", "😮", "🙏",
+        "🎉", "👏", "💯", "🙌", "🤩", "😍",
+        "🤔", "😢", "😭", "😡", "👎", "🤝",
+        "👌", "✌️", "💪", "⚡", "🚀", "⭐",
+        "✨", "💡", "✅", "❌", "👀", "🫡",
+        "😅", "😊", "🥳", "🫶", "💬", "📌",
+    )
+
+    data class ReactorDisplayRow(
+        val emoji: String,
+        val displayName: String,
+        val initials: String,
+        val isSelf: Boolean,
+    )
+
+    fun buildReactorRows(
+        reactions: List<FlashReaction>,
+        selectedEmoji: String?,
+        members: List<FlashGroupMemberUi>,
+        peerTitle: String,
+        isGroup: Boolean,
+        selfDeviceId: String? = null,
+    ): List<ReactorDisplayRow> {
+        val targetReactions = if (selectedEmoji == null) {
+            reactions
+        } else {
+            reactions.filter { it.emoji == selectedEmoji }
+        }
+        val memberMap = members.associateBy { it.id }
+        val rows = mutableListOf<ReactorDisplayRow>()
+        for (reaction in targetReactions) {
+            if (reaction.isSelfReacted) {
+                rows.add(
+                    ReactorDisplayRow(
+                        emoji = reaction.emoji,
+                        displayName = "You",
+                        initials = "ME",
+                        isSelf = true,
+                    ),
+                )
+            }
+            val peerReactorIds = if (reaction.isSelfReacted) {
+                val maxPeers = (reaction.count - 1).coerceAtLeast(0)
+                val withoutSelf = if (selfDeviceId != null) {
+                    reaction.reactorIds.filterNot { it == selfDeviceId }
+                } else {
+                    reaction.reactorIds
+                }
+                if (withoutSelf.size > maxPeers) withoutSelf.take(maxPeers) else withoutSelf
+            } else {
+                reaction.reactorIds
+            }
+            var emittedPeers = 0
+            for (reactorId in peerReactorIds) {
+                val member = memberMap[reactorId]
+                val name = member?.name?.takeIf { it.isNotBlank() }
+                    ?: if (!isGroup && peerTitle.isNotBlank()) peerTitle else "Member ${reactorId.take(6)}"
+                val initials = member?.initials?.takeIf { it.isNotBlank() }
+                    ?: FlashShareTargetMath.initialsFor(name)
+                rows.add(
+                    ReactorDisplayRow(
+                        emoji = reaction.emoji,
+                        displayName = name,
+                        initials = initials,
+                        isSelf = false,
+                    ),
+                )
+                emittedPeers++
+            }
+            val remainingPeers = (reaction.count - (if (reaction.isSelfReacted) 1 else 0) - emittedPeers).coerceAtLeast(0)
+            for (i in 0 until remainingPeers) {
+                val fallbackName = if (!isGroup && peerTitle.isNotBlank()) peerTitle else "Member ${i + 1}"
+                rows.add(
+                    ReactorDisplayRow(
+                        emoji = reaction.emoji,
+                        displayName = fallbackName,
+                        initials = FlashShareTargetMath.initialsFor(fallbackName),
+                        isSelf = false,
+                    ),
+                )
+            }
+        }
+        return rows
+    }
+}
+
+/**
+ * UI-009 Extended Emoji Reaction Picker Sheet opened from "More reactions" in [FlashQuickReactionsBar].
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun FlashExtendedEmojiPickerSheet(
+    onSelectEmoji: (String) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val haptics = rememberFlashHaptics()
+
+    FlashSheetHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
+        modifier = modifier,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = FlashSpacing.space20)
+                .padding(bottom = FlashSpacing.space24),
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "More reactions",
+                    style = typography.headingSmall,
+                    color = colors.textPrimary,
+                )
+                Box(
+                    modifier = Modifier
+                        .size(FlashDimensions.minTouchTarget)
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismiss)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Close reactions picker"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = null,
+                        tint = colors.textSecondary,
+                        size = FlashDimensions.iconSm,
+                    )
+                }
+            }
+
+            FlowRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                FlashReactionPickerMath.EXTENDED_REACTIONS.forEach { emoji ->
+                    Box(
+                        modifier = Modifier
+                            .size(FlashDimensions.minTouchTarget)
+                            .clip(CircleShape)
+                            .background(colors.backgroundSurfaceSubtle)
+                            .clickable {
+                                haptics(FlashHaptic.Confirm)
+                                onSelectEmoji(emoji)
+                                onDismiss()
+                            }
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = "React with $emoji"
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = emoji,
+                            fontSize = 24.sp,
+                            lineHeight = 28.sp,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * UI-009 "Reactions" who-reacted sheet opened from `+N` overflow or long-pressing a chip
+ * in [FlashReactionsDock].
+ */
+@Composable
+fun FlashReactionsDetailSheet(
+    reactions: List<FlashReaction>,
+    initialEmoji: String?,
+    members: List<FlashGroupMemberUi>,
+    peerTitle: String,
+    isGroup: Boolean,
+    onToggleReaction: (String) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    selfDeviceId: String? = null,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    var selectedEmoji by remember(initialEmoji, reactions) {
+        mutableStateOf(initialEmoji?.takeIf { e -> reactions.any { it.emoji == e } })
+    }
+    val totalCount = remember(reactions) { reactions.sumOf { it.count } }
+    val rows = remember(reactions, selectedEmoji, members, peerTitle, isGroup, selfDeviceId) {
+        FlashReactionPickerMath.buildReactorRows(
+            reactions = reactions,
+            selectedEmoji = selectedEmoji,
+            members = members,
+            peerTitle = peerTitle,
+            isGroup = isGroup,
+            selfDeviceId = selfDeviceId,
+        )
+    }
+
+    FlashSheetHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
+        modifier = modifier,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 240.dp, max = 460.dp)
+                .padding(horizontal = FlashSpacing.space20)
+                .padding(bottom = FlashSpacing.space24),
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Reactions",
+                    style = typography.headingSmall,
+                    color = colors.textPrimary,
+                )
+                Box(
+                    modifier = Modifier
+                        .size(FlashDimensions.minTouchTarget)
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismiss)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Close reactions"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = null,
+                        tint = colors.textSecondary,
+                        size = FlashDimensions.iconSm,
+                    )
+                }
+            }
+
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                item(key = "all_tab") {
+                    val isAll = selectedEmoji == null
+                    Box(
+                        modifier = Modifier
+                            .clip(FlashShapes.chip)
+                            .background(if (isAll) colors.accentFill.copy(alpha = 0.15f) else colors.backgroundSurfaceSubtle)
+                            .border(
+                                FlashDimensions.borderHairline,
+                                if (isAll) colors.accentFill else colors.borderSubtle,
+                                FlashShapes.chip,
+                            )
+                            .clickable { selectedEmoji = null }
+                            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                    ) {
+                        Text(
+                            text = "All $totalCount",
+                            style = typography.metadataEmphasis,
+                            color = if (isAll) colors.accentFill else colors.textSecondary,
+                        )
+                    }
+                }
+                items(reactions, key = { it.emoji }) { reaction ->
+                    val isSelected = selectedEmoji == reaction.emoji
+                    Box(
+                        modifier = Modifier
+                            .clip(FlashShapes.chip)
+                            .background(if (isSelected) colors.accentFill.copy(alpha = 0.15f) else colors.backgroundSurfaceSubtle)
+                            .border(
+                                FlashDimensions.borderHairline,
+                                if (isSelected) colors.accentFill else colors.borderSubtle,
+                                FlashShapes.chip,
+                            )
+                            .clickable { selectedEmoji = reaction.emoji }
+                            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                    ) {
+                        Text(
+                            text = "${reaction.emoji} ${reaction.count}",
+                            style = typography.metadataEmphasis,
+                            color = if (isSelected) colors.accentFill else colors.textPrimary,
+                        )
+                    }
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false),
+                verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                items(rows) { row ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(FlashShapes.attachment)
+                            .then(
+                                if (row.isSelf) {
+                                    Modifier.clickable {
+                                        onToggleReaction(row.emoji)
+                                        onDismiss()
+                                    }
+                                } else {
+                                    Modifier
+                                },
+                            )
+                            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space8),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                    ) {
+                        FlashAvatar(
+                            initials = row.initials,
+                            seed = row.displayName,
+                            size = 36.dp,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = row.displayName,
+                                style = typography.bodyDefault,
+                                color = colors.textPrimary,
+                            )
+                            if (row.isSelf) {
+                                Text(
+                                    text = "Tap to remove",
+                                    style = typography.captionDefault,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                        }
+                        Text(
+                            text = row.emoji,
+                            fontSize = 20.sp,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

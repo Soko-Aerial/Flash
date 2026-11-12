@@ -6,13 +6,16 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -25,17 +28,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.core.ptt.PttPressOutcome
+import com.transfer.flash.core.ptt.PttSessionStats
 import com.transfer.flash.core.ptt.pttElapsedRealtimeMs
+import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
-import com.transfer.flash.ui.theme.FlashTypography
 import kotlin.math.abs
-import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.sample
@@ -56,9 +60,8 @@ import kotlinx.coroutines.flow.sample
  *
  * @param animateLevels tier gate from the host (false on LOW); reduce-motion is read from
  * [FlashTheme.motion] here.
- * @param scrimModifier extra modifier for the full-window scrim. Android passes nothing (the scrim does
- * not intercept touches, as shipped); desktop passes a pointer-swallowing modifier so a click cannot
- * reach the list behind the card.
+ * @param scrimModifier extra modifier for the full-window scrim; both Android and desktop pass a
+ * touch-blocking modifier so taps cannot reach underlying screens.
  */
 @Composable
 public fun PttSessionOverlayContent(
@@ -75,6 +78,8 @@ public fun PttSessionOverlayContent(
     val colors = FlashTheme.colors
     val shapes = FlashShapes
     val reduceMotion = FlashTheme.motion.reduceMotion
+    val actionLabel = if (isTalking) "Stop" else "Leave"
+    val buttonInteraction = remember { MutableInteractionSource() }
 
     Box(
         modifier = Modifier
@@ -86,6 +91,7 @@ public fun PttSessionOverlayContent(
     ) {
         Column(
             modifier = Modifier
+                .widthIn(max = PTT_CARD_MAX_WIDTH)
                 .fillMaxWidth()
                 .background(colors.backgroundSurfaceStrong, shapes.button)
                 .border(1.dp, colors.borderSubtle, shapes.button)
@@ -95,7 +101,7 @@ public fun PttSessionOverlayContent(
         ) {
             FlashText(
                 text = if (isTalking) "You're talking" else "Listening — ${listening?.holderName ?: "Peer"}",
-                style = FlashTypography.default().bodyEmphasis,
+                style = FlashTheme.typography.bodyEmphasis,
                 color = colors.textPrimary,
             )
             PttElapsedText(startedAtMs)
@@ -105,28 +111,37 @@ public fun PttSessionOverlayContent(
             } else {
                 FlashText(
                     text = if (isTalking) "Transmitting…" else "Receiving audio…",
-                    style = FlashTypography.default().captionDefault,
+                    style = FlashTheme.typography.captionDefault,
                     color = colors.textSecondary,
                 )
             }
             Box(
                 modifier = Modifier
-                    .background(colors.accentPrimary, shapes.chip)
-                    .clickable(onClickLabel = if (isTalking) "Stop" else "Leave") {
+                    .heightIn(min = FlashDimensions.minTouchTarget)
+                    .widthIn(min = FlashDimensions.minTouchTarget)
+                    .background(colors.accentFill, shapes.chip)
+                    .clickable(
+                        interactionSource = buttonInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClickLabel = actionLabel,
+                    ) {
                         engine.stopLocal()
                     }
-                    .padding(horizontal = 28.dp, vertical = 10.dp),
+                    .padding(horizontal = 28.dp, vertical = 12.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashText(
-                    text = if (isTalking) "Stop" else "Leave",
-                    style = FlashTypography.default().bodyEmphasis,
-                    color = colors.textOnAccent,
+                    text = actionLabel,
+                    style = FlashTheme.typography.bodyEmphasis,
+                    color = colors.onAccentFill,
                 )
             }
         }
     }
 }
+
+private val PTT_CARD_MAX_WIDTH = 400.dp
 
 /**
  * The host-facing words for a refused press, one place so Android (toast) and desktop (snackbar) cannot
@@ -158,7 +173,7 @@ private fun PttElapsedText(startedAtMs: Long) {
     }
     FlashText(
         text = formatPttElapsed(nowMs - startedAtMs),
-        style = FlashTypography.default().bodyDefault,
+        style = FlashTheme.typography.bodyDefault,
         color = FlashTheme.colors.textSecondary,
     )
 }
@@ -169,6 +184,33 @@ public fun formatPttElapsed(elapsedMs: Long): String {
     return "${totalSec / 60}:${(totalSec % 60).toString().padStart(2, '0')}"
 }
 
+/** Plain signal-quality grade for a PTT session, hiding raw ms and % loss from users. */
+internal fun pttSignalQualityLabel(snapshot: PttSessionStats): String? {
+    val rtt = snapshot.rttMs
+    val loss = snapshot.lossPercent
+    if (rtt == null && loss <= 0f) return null
+    return when {
+        (rtt != null && rtt > 200L) || loss > 0.08f -> "Weak signal"
+        (rtt != null && rtt > 60L) || loss > 0.02f -> "Fair signal"
+        else -> "Good signal"
+    }
+}
+
+/** Plain-language PTT status summary without raw telemetry units. */
+internal fun pttStatsLabel(snapshot: PttSessionStats?, talking: Boolean): String {
+    if (snapshot == null) return "Live"
+    val quality = pttSignalQualityLabel(snapshot)
+    return if (talking) {
+        listOfNotNull(
+            "Live",
+            "${snapshot.members} listening".takeIf { snapshot.members > 0 },
+            quality,
+        ).joinToString(" • ")
+    } else {
+        listOfNotNull("Live", quality).joinToString(" • ")
+    }
+}
+
 /** 1 Hz stats line; owns its sampled subscription so the card never tick-recomposes. */
 @Composable
 private fun PttStatsText(engine: FlashPtt, talking: Boolean) {
@@ -177,20 +219,9 @@ private fun PttStatsText(engine: FlashPtt, talking: Boolean) {
     val stats by remember(engine) {
         engine.stats.sample(1000L)
     }.collectAsState(initial = engine.stats.value)
-    val snapshot = stats
-    val body = when {
-        snapshot == null -> "Live"
-        talking -> listOfNotNull(
-            "Live",
-            "${snapshot.members} listening".takeIf { snapshot.members > 0 },
-            snapshot.rttMs?.let { "$it ms" },
-        ).joinToString(" • ")
-        else -> "Live • ${(snapshot.lossPercent * 100).roundToInt()}% loss" +
-            (snapshot.rttMs?.let { " • $it ms" } ?: "")
-    }
     FlashText(
-        text = body,
-        style = FlashTypography.default().captionDefault,
+        text = pttStatsLabel(stats, talking),
+        style = FlashTheme.typography.captionDefault,
         color = FlashTheme.colors.textSecondary,
     )
 }

@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.unit.Density
+import com.transfer.flash.core.calling.model.FlashCallAudioRoute
+import com.transfer.flash.core.calling.model.FlashCallAudioRoutes
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallUiState
@@ -135,5 +137,50 @@ class FlashCallControlDockRenderTest {
         val hostCannot = dockBytes(voice.copy(canUpgradeToVideo = true), upgrade = null)
         assertTrue(!plain.contentEquals(offered), "the add camera button did not appear")
         assertTrue(plain.contentEquals(hostCannot), "a host with no upgrade callback must show no button")
+    }
+
+    @Test
+    fun `audio route dropdown cue renders when picker is needed and dock renders at 360dp and large font scale`() {
+        val noPicker = dockBytesWithRoutes(FlashCallAudioRoutes())
+        val withPicker = dockBytesWithRoutes(
+            FlashCallAudioRoutes(
+                available = listOf(
+                    FlashCallAudioRoute.EARPIECE,
+                    FlashCallAudioRoute.SPEAKER,
+                    FlashCallAudioRoute.BLUETOOTH,
+                ),
+                active = FlashCallAudioRoute.SPEAKER,
+            ),
+        )
+        assertTrue(!noPicker.contentEquals(withPicker), "needsPicker=true should render dropdown cue on route button")
+
+        for (fontScale in listOf(1f, 1.5f)) {
+            val scene = ImageComposeScene(width = 720, height = 360, density = Density(2f, fontScale = fontScale)) {
+                FlashTheme(darkTheme = true, motion = rememberFlashMotion(reduceMotion = true)) {
+                    FlashCallControlDock(callState(), {}, {}, {}, {}, {}, onOpenMore = {})
+                }
+            }
+            try {
+                scene.render(nanoTime = 1_000_000_000L)
+                val bytes = scene.render(nanoTime = 1_100_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes
+                assertTrue(bytes.size > 2_000, "360dp 6-button dock failed to draw at fontScale=$fontScale")
+            } finally {
+                scene.close()
+            }
+        }
+    }
+
+    private fun dockBytesWithRoutes(routes: FlashCallAudioRoutes): ByteArray {
+        val scene = ImageComposeScene(width = width, height = height, density = Density(2f)) {
+            FlashTheme(darkTheme = true, motion = rememberFlashMotion(reduceMotion = true)) {
+                FlashCallControlDock(callState(speaker = true), {}, {}, {}, {}, {}, audioRoutes = routes, onOpenMore = {})
+            }
+        }
+        try {
+            scene.render(nanoTime = 1_000_000_000L)
+            return scene.render(nanoTime = 1_100_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes
+        } finally {
+            scene.close()
+        }
     }
 }

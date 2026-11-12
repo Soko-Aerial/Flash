@@ -105,4 +105,20 @@ class FlashConversationMenuMathTest {
         assertFalse(legacyItems.contains(FlashConversationMenuItem.GROUP_SETTINGS))
         assertFalse(legacyItems.contains(FlashConversationMenuItem.INVITE_LINK))
     }
+
+    @Test
+    fun menuItemsUseDistinctIconsWithinEachMenu() {
+        val group = FlashConversationMenuMath.groupItems(
+            canLeave = true,
+            isMember = true,
+            canAddMembers = true,
+            canContinueInNewGroup = true,
+            canShareInvite = true,
+            isV2 = true,
+        )
+        assertEquals(group.size, group.map { it.icon }.distinct().size)
+
+        val direct = FlashConversationMenuMath.directItems(canRevokeTrust = true)
+        assertEquals(direct.size, direct.map { it.icon }.distinct().size)
+    }
 }

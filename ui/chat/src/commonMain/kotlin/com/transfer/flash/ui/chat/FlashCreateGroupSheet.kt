@@ -1,15 +1,21 @@
 package com.transfer.flash.ui.chat
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -19,9 +25,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
@@ -81,8 +91,10 @@ public fun FlashCreateGroupSheet(
     isEnterpriseEnrolled: Boolean = false,
     initialUseHub: Boolean = false,
     onCreateWithHub: ((title: String, memberIds: Set<String>, linkToHub: Boolean) -> Unit)? = null,
+    onFindDevicesClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
     var title by rememberSaveable { mutableStateOf("") }
     var selected by remember { mutableStateOf(emptySet<String>()) }
     var linkToHub by rememberSaveable { mutableStateOf(initialUseHub) }
@@ -99,15 +111,67 @@ public fun FlashCreateGroupSheet(
                 .padding(bottom = FlashSpacing.space24),
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         ) {
-            FlashText(text = "New group", style = FlashTheme.typography.headingMedium)
+            FlashText(text = "New group", style = typography.headingMedium)
 
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                singleLine = true,
-                label = { Text("Group name") },
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
+                FlashText(
+                    text = "Group name",
+                    style = typography.metadataEmphasis,
+                    color = colors.textSecondary,
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(FlashShapes.composerInput)
+                        .background(colors.composerInputBackground)
+                        .border(
+                            width = FlashDimensions.borderHairline,
+                            color = colors.borderDefault,
+                            shape = FlashShapes.composerInput,
+                        )
+                        .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BasicTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = FlashSpacing.space4),
+                        singleLine = true,
+                        textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
+                        cursorBrush = SolidColor(colors.accentFill),
+                        decorationBox = { innerTextField ->
+                            if (title.isEmpty()) {
+                                FlashText(
+                                    text = "Enter a group name",
+                                    style = typography.bodyDefault,
+                                    color = colors.textTertiary,
+                                    maxLines = 1,
+                                )
+                            }
+                            innerTextField()
+                        },
+                    )
+                    if (title.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .clickable { title = "" }
+                                .semantics { role = Role.Button; contentDescription = "Clear group name" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashIcon(
+                                icon = FlashIcons.Close,
+                                contentDescription = null,
+                                size = FlashDimensions.iconSm,
+                                tint = colors.textSecondary,
+                            )
+                        }
+                    }
+                }
+            }
 
             if (isEnterpriseEnrolled) {
                 Row(
@@ -121,38 +185,72 @@ public fun FlashCreateGroupSheet(
                     Column(modifier = Modifier.weight(1f)) {
                         FlashText(
                             text = "Link to Organization Hub",
-                            style = FlashTheme.typography.bodyDefault,
+                            style = typography.bodyDefault,
                         )
                         FlashText(
                             text = "Relays new messages to remote & offline coworkers",
-                            style = FlashTheme.typography.metadataDefault,
+                            style = typography.metadataDefault,
                             color = colors.textSecondary,
                         )
                     }
                     androidx.compose.material3.Switch(
                         checked = linkToHub,
                         onCheckedChange = { linkToHub = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = colors.onAccentFill,
+                            checkedTrackColor = colors.accentFill,
+                        ),
                     )
                 }
             }
 
             FlashText(
                 text = FlashCreateGroupMath.countLabel(selected.size),
-                style = FlashTheme.typography.metadataEmphasis,
+                style = typography.metadataEmphasis,
             )
 
             if (peers.isEmpty()) {
-                FlashText(
-                    text = "Pair a device first — groups are built from trusted peers only.",
-                    style = FlashTheme.typography.bodyDefault,
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    FlashText(
+                        text = "Pair a device first — groups are built from trusted peers only.",
+                        style = typography.bodyDefault,
+                        color = colors.textSecondary,
+                    )
+                    if (onFindDevicesClick != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = FlashDimensions.minTouchTarget)
+                                .clip(FlashShapes.chip)
+                                .background(colors.accentFill)
+                                .clickable(onClick = onFindDevicesClick)
+                                .semantics { role = Role.Button; contentDescription = "Find devices" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashText(
+                                text = "Find devices",
+                                style = typography.bodyEmphasis,
+                                color = colors.onAccentFill,
+                            )
+                        }
+                    }
+                }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .heightIn(max = 280.dp),
+                ) {
                     items(peers, key = { it.id }) { peer ->
                         val isSelected = peer.id in selected
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clickable(
                                     enabled = isSelected || FlashCreateGroupMath.selectionAllowed(selected.size),
                                 ) {
@@ -171,19 +269,23 @@ public fun FlashCreateGroupSheet(
                             Column(modifier = Modifier.weight(1f)) {
                                 FlashText(
                                     text = peer.name,
-                                    style = FlashTheme.typography.bodyDefault,
+                                    style = typography.bodyDefault,
                                     maxLines = 1,
                                 )
                                 if (peer.department != null) {
                                     FlashText(
                                         text = peer.department,
-                                        style = FlashTheme.typography.metadataDefault,
-                                        color = colors.accentPrimary,
+                                        style = typography.metadataDefault,
+                                        color = colors.textLink,
                                     )
                                 }
                             }
                             if (isSelected) {
-                                FlashIcon(icon = FlashIcons.Check, contentDescription = "Selected")
+                                FlashIcon(
+                                    icon = FlashIcons.Check,
+                                    contentDescription = "Selected",
+                                    tint = colors.accentFill,
+                                )
                             }
                         }
                     }
@@ -210,7 +312,7 @@ public fun FlashCreateGroupSheet(
                         }
                     },
                 ) {
-                    Text("Create", color = if (canCreate) colors.accentPrimary else colors.textTertiary)
+                    Text("Create", color = if (canCreate) colors.textLink else colors.textTertiary)
                 }
             }
         }

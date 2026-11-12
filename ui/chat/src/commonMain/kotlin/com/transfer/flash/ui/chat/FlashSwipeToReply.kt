@@ -66,6 +66,7 @@ fun FlashSwipeToReplyContainer(
     val density = LocalDensity.current
     // pointerInput(enabled) keeps the lambdas it first saw, so the reply must be read through this (RVW22 F31).
     val currentOnReply by rememberUpdatedState(onReply)
+    val currentIsMine by rememberUpdatedState(isMine)
 
     val thresholdPx = with(density) { thresholdDp.toPx() }
     val dampingConstantPx = with(density) { 24.dp.toPx() }
@@ -104,6 +105,8 @@ fun FlashSwipeToReplyContainer(
         }
     }
 
+    var swipeFromRight by remember { mutableStateOf(true) }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -112,6 +115,7 @@ fun FlashSwipeToReplyContainer(
                     onDragStart = {
                         hasTriggeredHaptic = false
                         lastTarget[0] = offsetX.value
+                        swipeFromRight = currentIsMine
                         revealed = true
                     },
                     onDragEnd = {
@@ -131,25 +135,34 @@ fun FlashSwipeToReplyContainer(
                         val current = lastTarget[0]
                         val newRaw = current + dragAmount
 
-                        // Only allow leftward swipe (negative translationX)
-                        if (newRaw <= 0f) {
+                        // Outgoing bubbles swipe inward (left, negative); incoming bubbles support
+                        // inward swipe (right, positive) as well as leftward swipe.
+                        val allowed = if (currentIsMine) {
+                            newRaw <= 0f
+                        } else {
+                            true
+                        }
+                        if (allowed) {
                             change.consume()
                             val dragDistance = abs(newRaw)
-                            val dampened = if (dragDistance <= thresholdPx) {
-                                -dragDistance
+                            val sign = if (newRaw >= 0f) 1f else -1f
+                            swipeFromRight = newRaw <= 0f
+                            val dampenedMagnitude = if (dragDistance <= thresholdPx) {
+                                dragDistance
                             } else {
                                 val extra = dragDistance - thresholdPx
                                 val dampenedExtra = dampingConstantPx * ln(1f + extra / dampingConstantPx)
-                                -(thresholdPx + dampenedExtra).coerceAtMost(maxDragPx)
+                                (thresholdPx + dampenedExtra).coerceAtMost(maxDragPx)
                             }
+                            val dampened = sign * dampenedMagnitude
 
                             lastTarget[0] = dampened
                             dragEvents.trySend(dampened)
 
-                            if (abs(dampened) >= thresholdPx && !hasTriggeredHaptic) {
+                            if (dampenedMagnitude >= thresholdPx && !hasTriggeredHaptic) {
                                 haptics(FlashHaptic.Confirm)
                                 hasTriggeredHaptic = true
-                            } else if (abs(dampened) < thresholdPx && hasTriggeredHaptic) {
+                            } else if (dampenedMagnitude < thresholdPx && hasTriggeredHaptic) {
                                 hasTriggeredHaptic = false
                             }
                         }
@@ -157,29 +170,32 @@ fun FlashSwipeToReplyContainer(
                 )
             },
     ) {
-        // Behind-the-bubble reply icon badge (revealed on the right side)
+        // Behind-the-bubble reply icon badge (right side for leftward swipe, left side for rightward swipe)
         if (revealed) {
             Box(
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = FlashSpacing.space8)
+                    .align(if (swipeFromRight) Alignment.CenterEnd else Alignment.CenterStart)
+                    .padding(
+                        start = if (swipeFromRight) 0.dp else FlashSpacing.space8,
+                        end = if (swipeFromRight) FlashSpacing.space8 else 0.dp,
+                    )
                     .graphicsLayer {
                         val progress = (abs(offsetX.value) / thresholdPx).coerceIn(0f, 1f)
                         val iconScale = (0.4f + (0.6f * progress)).coerceIn(0.4f, 1.15f)
                         scaleX = iconScale
                         scaleY = iconScale
-                        rotationZ = -35f * (1f - progress)
+                        rotationZ = (if (swipeFromRight) -35f else 35f) * (1f - progress)
                         alpha = if (progress > 0.05f) (progress * progress).coerceIn(0f, 1f) else 0f
                     }
                     .size(FlashSpacing.space32)
                     .clip(CircleShape)
-                    .background(colors.accentPrimary),
+                    .background(colors.accentFill),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashIcon(
                     icon = FlashIcons.Reply,
                     contentDescription = "Reply",
-                    tint = colors.textOnAccent,
+                    tint = colors.onAccentFill,
                     modifier = Modifier.size(FlashDimensions.iconSm),
                 )
             }

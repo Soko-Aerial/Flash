@@ -1,6 +1,7 @@
 package com.transfer.flash.ui.chat
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -17,27 +18,37 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.shims.FlashImageDecoder
+import com.transfer.flash.ui.shims.rememberFlashImageDecoder
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Pure logic for attachment staging calculations (JVM-testable). */
 object FlashStagingMath {
@@ -45,6 +56,21 @@ object FlashStagingMath {
 
     fun canAddMore(currentCount: Int, maxLimit: Int = MAX_STAGED_ATTACHMENTS): Boolean =
         currentCount < maxLimit
+
+    /**
+     * Appends [incoming] to [current] only when below [maxLimit], returning the updated list and
+     * whether [incoming] was accepted.
+     */
+    fun appendUpToLimit(
+        current: List<FlashShareItemUi>,
+        incoming: FlashShareItemUi,
+        maxLimit: Int = MAX_STAGED_ATTACHMENTS,
+    ): Pair<List<FlashShareItemUi>, Boolean> =
+        if (canAddMore(current.size, maxLimit)) {
+            (current + incoming) to true
+        } else {
+            current to false
+        }
 
     fun formatTotalBytes(items: List<FlashShareItemUi>): String {
         val total = items.sumOf { it.sizeBytes }
@@ -118,12 +144,31 @@ private fun StagedAttachmentCard(
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
+    val isImage = item.mimeType.startsWith("image/")
+    val isVideo = item.mimeType.startsWith("video/")
     val icon = when {
-        item.mimeType.startsWith("image/") -> FlashIcons.Gallery
-        item.mimeType.startsWith("video/") -> FlashIcons.VideoCall
-        item.mimeType.startsWith("audio/") -> FlashIcons.Microphone
+        isImage -> FlashIcons.Gallery
+        isVideo -> FlashIcons.VideoCall
+        item.mimeType.startsWith("audio/") -> FlashIcons.Headphones
         else -> FlashIcons.Attach
     }
+    val imageDecoder = rememberFlashImageDecoder()
+    val thumbnailState = produceState<ImageBitmap?>(null, item.uri, item.mimeType) {
+        if (!isImage && !isVideo) {
+            value = null
+            return@produceState
+        }
+        value = withContext(Dispatchers.IO) {
+            imageDecoder.decode(
+                source = item.uri,
+                isVideo = isVideo,
+                maxLongEdge = 240,
+                lowColorDepth = true,
+                computeInSampleSize = FlashMediaViewerMath::computeInSampleSize,
+            )
+        }
+    }
+    val thumbnail = thumbnailState.value
 
     Surface(
         modifier = modifier
@@ -133,74 +178,131 @@ private fun StagedAttachmentCard(
             .border(FlashDimensions.borderHairline, colors.borderSubtle, RoundedCornerShape(FlashShapes.radius12)),
         color = colors.backgroundSurfaceSubtle,
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(FlashSpacing.space8),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (thumbnail != null) {
+                Image(
+                    bitmap = thumbnail,
+                    contentDescription = item.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
                 Box(
                     modifier = Modifier
-                        .size(24.dp)
-                        .clip(CircleShape)
-                        .background(colors.accentPrimary.copy(alpha = 0.12f)),
-                    contentAlignment = Alignment.Center,
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(Color.Black.copy(alpha = 0.15f), Color.Black.copy(alpha = 0.68f)),
+                            ),
+                        ),
+                )
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
                 ) {
-                    FlashIcon(
-                        icon = icon,
-                        tint = colors.accentPrimary,
-                        modifier = Modifier.size(14.dp),
+                    FlashText(
+                        text = item.name,
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    FlashText(
+                        text = FlashShareTargetMath.formatBytes(item.sizeBytes),
+                        style = FlashTheme.typography.captionDefault,
+                        color = Color.White.copy(alpha = 0.85f),
+                        maxLines = 1,
                     )
                 }
-                if (item.isSending) {
-                    Box(
-                        modifier = Modifier.size(20.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 1.5.dp,
-                            color = colors.accentPrimary,
-                        )
-                    }
-                } else {
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(FlashSpacing.space8),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) {
                     Box(
                         modifier = Modifier
-                            .size(20.dp)
+                            .size(24.dp)
                             .clip(CircleShape)
-                            .background(colors.backgroundSurface)
-                            .clickable(onClick = onRemove)
-                            .semantics { role = Role.Button },
+                            .background(colors.accentFill.copy(alpha = 0.12f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         FlashIcon(
-                            icon = FlashIcons.Close,
-                            contentDescription = "Remove attachment",
-                            tint = colors.textSecondary,
-                            modifier = Modifier.size(12.dp),
+                            icon = icon,
+                            tint = colors.accentFill,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        FlashText(
+                            text = item.name,
+                            style = FlashTheme.typography.captionEmphasis,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        FlashText(
+                            text = FlashShareTargetMath.formatBytes(item.sizeBytes),
+                            style = FlashTheme.typography.captionDefault,
+                            color = colors.textSecondary,
+                            maxLines = 1,
                         )
                     }
                 }
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                FlashText(
-                    text = item.name,
-                    style = FlashTheme.typography.captionEmphasis,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                FlashText(
-                    text = FlashShareTargetMath.formatBytes(item.sizeBytes),
-                    style = FlashTheme.typography.captionDefault,
-                    color = colors.textSecondary,
-                    maxLines = 1,
-                )
+            if (item.isSending) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(FlashSpacing.space8)
+                        .size(20.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 1.5.dp,
+                        color = if (thumbnail != null) Color.White else colors.accentFill,
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(FlashDimensions.minTouchTarget)
+                        .clickable(onClick = onRemove)
+                        .padding(FlashSpacing.space4)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Remove ${item.name}"
+                        },
+                    contentAlignment = Alignment.TopEnd,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (thumbnail != null) Color.Black.copy(alpha = 0.65f)
+                                else colors.backgroundSurface,
+                            )
+                            .border(
+                                FlashDimensions.borderHairline,
+                                if (thumbnail != null) Color.White.copy(alpha = 0.4f) else colors.borderSubtle,
+                                CircleShape,
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Close,
+                            contentDescription = null,
+                            tint = if (thumbnail != null) Color.White else colors.textSecondary,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
+                }
             }
         }
     }
@@ -233,13 +335,13 @@ private fun AddMoreTile(
         ) {
             FlashIcon(
                 icon = FlashIcons.Attach,
-                tint = colors.accentPrimary,
+                tint = colors.accentFill,
                 modifier = Modifier.size(20.dp),
             )
             FlashText(
                 text = "Add",
                 style = FlashTheme.typography.captionEmphasis,
-                color = colors.accentPrimary,
+                color = colors.accentFill,
             )
         }
     }

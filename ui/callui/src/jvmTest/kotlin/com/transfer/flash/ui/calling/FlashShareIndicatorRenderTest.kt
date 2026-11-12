@@ -65,5 +65,18 @@ class FlashShareIndicatorRenderTest {
         // Idle: the same band is not the strip's colour.
         assertTrue(idle.getColor(2, 4) != sharing.getColor(2, 4))
         assertEquals(sharing.getColor(2, 4), sharing.getColor(width - 3, 4), "full-width strip")
+
+        // The docked strip must not obscure the top-end PiP border/preview below it: when sharing is active,
+        // the strip ends cleanly above the top-end PiP region (no accentFill pixels inside the PiP area).
+        val stripColor = sharing.getColor(2, 4)
+        var stripBottomY = 0
+        while (stripBottomY < 160 && sharing.getColor(2, stripBottomY) == stripColor) {
+            stripBottomY++
+        }
+        assertTrue(stripBottomY in 32..140, "unexpected strip height: $stripBottomY")
+        assertTrue(
+            sharing.getColor(width - 40, stripBottomY + 24) != stripColor,
+            "share strip should sit above the PiP region rather than painting over it",
+        )
     }
 }

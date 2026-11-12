@@ -7,10 +7,10 @@ import com.transfer.flash.ui.chat.FlashPairingPhase
  * Pure mappers from the engine-owned pairing state ([PairingPhase] + expiry) to the UI dialog
  * model ([FlashPairingPhase], seconds remaining) consumed by `FlashPairingDialog` (UI-032).
  *
- * The engine machine has eight phases; the demo dialog has six. The two "in-flight" engine
+ * The engine machine has eight phases; the demo dialog has seven. The two "in-flight" engine
  * sub-states collapse into the single UI [FlashPairingPhase.RequestReceived], and a protocol
- * [PairingPhase.Failed] surfaces as [FlashPairingPhase.Declined] because the dialog has no
- * dedicated failure card (the docs mapping table calls this out).
+ * [PairingPhase.Failed] maps to [FlashPairingPhase.Failed] so failures are never misrepresented
+ * as a peer decline.
  */
 object PairingUiMapper {
 
@@ -31,8 +31,7 @@ object PairingUiMapper {
         PairingPhase.Confirmed -> FlashPairingPhase.Paired
         PairingPhase.DeclinedByPeer -> FlashPairingPhase.Declined
         PairingPhase.Expired -> FlashPairingPhase.Expired
-        // No failure card exists (UI-032); a protocol failure reads as a decline to the user.
-        PairingPhase.Failed -> FlashPairingPhase.Declined
+        PairingPhase.Failed -> FlashPairingPhase.Failed
     }
 
     /** Whole seconds left until [expiresAtMs], clamped to 0; 0 when there is no active deadline. */

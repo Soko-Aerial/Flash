@@ -1862,18 +1862,26 @@ object DiscoveryEngineHolder {
         // Sends one FLASH_XFER control frame to a peer's WebSocket session (ADR-018). Shared by the
         // outgoingControl collector and the offer-accept path (which must RESUME the sender only
         // AFTER the local sink is resolved, so it cannot go through the fire-and-forget flow).
-        val sendXfer: (String, String, String) -> Unit = { peerId, action, transferId ->
+        // `reason` carries a refusal token or REASON_SENDER_INTERRUPTED; older peers ignore it.
+        val sendXferWithReason: (String, String, String, String?) -> Unit = { peerId, action, transferId, reason ->
             val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
             if (session == null) {
                 Log.w(TAG_TRANSFER, "Cannot deliver XFER $action: no session for $peerId")
             } else {
                 val frame = FlashTextFraming.encodeFields(
                     XFER_PREFIX,
-                    listOf("action" to action, "transferId" to transferId),
+                    listOfNotNull(
+                        "action" to action,
+                        "transferId" to transferId,
+                        reason?.let { "reason" to it },
+                    ),
                 )
                 val ok = session.connection.sendText(frame)
                 Log.i(TAG_TRANSFER, "XFER $action → $peerId (sent=$ok) transferId=$transferId")
             }
+        }
+        val sendXfer: (String, String, String) -> Unit = { peerId, action, transferId ->
+            sendXferWithReason(peerId, action, transferId, null)
         }
         sendXferControl = sendXfer
         sendXferRefuseControl = { peerId, transferId, reason ->
@@ -1977,6 +1985,10 @@ object DiscoveryEngineHolder {
                     }
                     RealFlashTransferRepository.ACTION_ACCEPT -> acceptOffer(control.transferId)
                     RealFlashTransferRepository.ACTION_DECLINE -> declineOffer(control.transferId)
+                    RealFlashTransferRepository.ACTION_RESET_ANNOUNCEMENT -> {
+                        receivePipeline.resetResumeAnnouncement(control.transferId)
+                        Log.i(TAG_TRANSFER, "Resume bitmap reset transferId=${control.transferId}")
+                    }
                 }
             }
         }
@@ -1986,20 +1998,7 @@ object DiscoveryEngineHolder {
         appScope.launch {
             transferImpl.outgoingControl.collect { control ->
                 val peerId = control.peerDeviceId ?: return@collect
-                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
-                if (session == null) {
-                    Log.w(TAG_TRANSFER, "Cannot deliver XFER ${control.action}: no session for $peerId")
-                    return@collect
-                }
-                val frame = FlashTextFraming.encodeFields(
-                    XFER_PREFIX,
-                    listOf(
-                        "action" to control.action,
-                        "transferId" to control.transferId,
-                    ),
-                )
-                val ok = session.connection.sendText(frame)
-                Log.i(TAG_TRANSFER, "XFER ${control.action} → $peerId (sent=$ok) transferId=${control.transferId}")
+                sendXferWithReason(peerId, control.action, control.transferId, control.reason)
             }
         }
 

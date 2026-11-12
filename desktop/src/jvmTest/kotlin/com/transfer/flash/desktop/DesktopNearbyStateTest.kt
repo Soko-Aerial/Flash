@@ -5,6 +5,7 @@ import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
+import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.network.sweep.SweepRefusal
 import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
@@ -293,6 +294,73 @@ class DesktopNearbyStateTest {
         // Paired peer must be filtered from peers list and present in trustedPeers
         assertTrue(state.peers.none { it.id == pairedColleagueId })
         assertTrue(state.trustedPeers.any { it.id == pairedColleagueId })
+    }
+
+    @Test
+    fun `pairingPhaseOf maps AwaitingPeerNonce to Idle and Failed to Failed`() {
+        assertEquals(FlashPairingPhase.Idle, pairingPhaseOf(PairingPhase.AwaitingPeerNonce))
+        assertEquals(FlashPairingPhase.Failed, pairingPhaseOf(PairingPhase.Failed))
+
+        val awaitingNonceState = stateOf(
+            trusted = emptyList(),
+            discovered = emptyList(),
+            ui = FlashPairingCoordinator.PairingUi(
+                peerName = "Pixel 9",
+                numericCode = "",
+                phase = PairingPhase.AwaitingPeerNonce,
+                secondsLeft = 30,
+            ),
+        )
+        assertEquals(FlashPairingPhase.Idle, awaitingNonceState.pairingPhase)
+
+        val failedState = nearbyUiStateOf(
+            trusted = emptyList(),
+            discovered = emptyList(),
+            discoveryState = FlashDiscoveryState(isDiscovering = true, advertisedPort = 45822),
+            ui = FlashPairingCoordinator.PairingUi(
+                peerName = "Pixel 9",
+                numericCode = "",
+                phase = PairingPhase.Failed,
+                secondsLeft = 0,
+            ),
+            ready = true,
+            localFriendlyName = "Flash Desktop",
+            localDeviceId = LOCAL_ID,
+            liveSessions = 0,
+            localAddressLabel = "192.168.1.25",
+            radiosAvailable = true,
+            failureReason = "Too many pairing attempts.",
+        )
+        assertEquals(FlashPairingPhase.Failed, failedState.pairingPhase)
+        assertEquals(FlashNetworkTransport.Unknown, failedState.pairingRequest?.transport)
+        assertEquals("Too many pairing attempts.", failedState.pairingRequest?.failureReason)
+        assertEquals("192.168.1.25", failedState.identity.localAddressLabel)
+
+        val duplicateNameDisambiguated = stateOf(
+            trusted = emptyList(),
+            discovered = listOf(
+                endpoint("id-lan", "Pixel 9"),
+                FlashDiscoveredEndpoint(
+                    device = FlashDevice(
+                        id = FlashDeviceId("id-wfd"),
+                        friendlyName = "Pixel 9",
+                        transportType = FlashTransportType.WIFI_DIRECT,
+                    ),
+                    hostAddress = "192.168.49.1",
+                    port = 45822,
+                    serviceName = "Flash Pixel 9",
+                ),
+            ),
+            ui = FlashPairingCoordinator.PairingUi(
+                peerName = "Pixel 9",
+                numericCode = "123456",
+                phase = PairingPhase.RequestReceived,
+                secondsLeft = 25,
+                peerDeviceId = "id-wfd",
+            ),
+        )
+        assertEquals(FlashNetworkTransport.WifiDirect, duplicateNameDisambiguated.pairingRequest?.transport)
+        assertEquals("id-wfd", duplicateNameDisambiguated.pairingRequest?.peerDeviceId)
     }
 
     private fun endpoint(id: String, name: String) = FlashDiscoveredEndpoint(

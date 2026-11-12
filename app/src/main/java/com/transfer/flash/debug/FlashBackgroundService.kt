@@ -26,6 +26,7 @@ import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.MainActivity
+import com.transfer.flash.R
 import com.transfer.flash.notifications.FlashNotificationManager
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -176,18 +177,10 @@ class FlashBackgroundService : Service() {
 
     private fun buildIdleNotification(activeTransfersCount: Int = 0): Notification {
         val mode = DiscoveryEngineHolder.currentDiscoveryMode()
-        val (title, text) = when (mode) {
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.STANDARD ->
-                "Flash is discoverable" to "Nearby devices can find and reach this phone."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.GHOST ->
-                "Flash is hidden" to "Browse only — nearby devices cannot see this phone."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.ECO ->
-                "Flash is in eco mode" to "Battery-saving discovery active."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.BOOST ->
-                "Flash is in boost mode" to "High-responsiveness discovery active."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.RECEIVE_KIOSK ->
-                "Flash is in kiosk mode" to "Advertising kiosk availability."
-        }
+        val content = FlashBackgroundNotificationCopy.idleContent(
+            mode = mode,
+            activeTransfersCount = activeTransfersCount,
+        )
         val tapIntent = PendingIntent.getActivity(
             this,
             NOTIFICATION_ID,
@@ -196,15 +189,10 @@ class FlashBackgroundService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val bodyText = if (activeTransfersCount > 0) {
-            "$text • $activeTransfersCount active transfer(s)"
-        } else {
-            text
-        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(bodyText)
-            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+            .setContentTitle(content.title)
+            .setContentText(content.body)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentIntent(tapIntent)
             .setProgress(0, 0, false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -569,5 +557,41 @@ class FlashBackgroundService : Service() {
 
         fun currentKeepAliveTier(): TranssionHiberKeepAlive.KeepAliveTier =
             activeInstance?.keepAlive?.currentTier ?: TranssionHiberKeepAlive.KeepAliveTier.NONE
+    }
+}
+
+internal data class FlashIdleNotificationContent(
+    val title: String,
+    val body: String,
+)
+
+internal object FlashBackgroundNotificationCopy {
+    fun idleContent(
+        mode: com.transfer.flash.core.discovery.core.FlashDiscoveryMode,
+        activeTransfersCount: Int = 0,
+    ): FlashIdleNotificationContent {
+        val (title, baseText) = when (mode) {
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.STANDARD ->
+                "Flash is discoverable" to "Nearby devices can find and connect to this phone."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.GHOST ->
+                "Flash is hidden" to "Searching nearby — other devices cannot see this phone."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.ECO ->
+                "Flash is saving battery" to "Battery-saving nearby discovery is on."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.BOOST ->
+                "Flash is in fast discovery" to "High-responsiveness nearby discovery is on."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.RECEIVE_KIOSK ->
+                "Flash is ready to receive" to "Waiting for incoming files from paired devices."
+        }
+        val body = if (activeTransfersCount > 0) {
+            val transferLabel = if (activeTransfersCount == 1) {
+                "1 active transfer"
+            } else {
+                "$activeTransfersCount active transfers"
+            }
+            "$baseText • $transferLabel"
+        } else {
+            baseText
+        }
+        return FlashIdleNotificationContent(title = title, body = body)
     }
 }

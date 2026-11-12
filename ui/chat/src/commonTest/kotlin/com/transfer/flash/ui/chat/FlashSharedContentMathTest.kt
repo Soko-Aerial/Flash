@@ -1,6 +1,7 @@
 package com.transfer.flash.ui.chat
 
 import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
+import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
@@ -223,5 +224,67 @@ class FlashSharedContentMathTest {
         assertEquals(listOf("m2"), FlashSharedContentMath.filterLinks(links, "join us").map { it.messageId })
         assertEquals(listOf("m2"), FlashSharedContentMath.filterLinks(links, "abcdef").map { it.messageId })
         assertTrue(FlashSharedContentMath.filterLinks(links, "yellow").isEmpty())
+    }
+
+    @Test
+    fun testSharedRowActionsAndStatusNotes() {
+        assertEquals(
+            FlashSharedTransferAction.Resume,
+            resolveSharedFileAction(FlashFileTransferStatus.Failed, hasLocalUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            FlashSharedTransferAction.Resume,
+            resolveSharedFileAction(FlashFileTransferStatus.Paused, hasLocalUri = false, isOutgoing = true),
+        )
+        assertEquals(
+            FlashSharedTransferAction.Download,
+            resolveSharedFileAction(FlashFileTransferStatus.NotDownloaded, hasLocalUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            FlashSharedTransferAction.Download,
+            resolveSharedFileAction(FlashFileTransferStatus.AwaitingAcceptance, hasLocalUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            FlashSharedTransferAction.None,
+            resolveSharedFileAction(FlashFileTransferStatus.AwaitingAcceptance, hasLocalUri = false, isOutgoing = true),
+        )
+        assertEquals(
+            FlashSharedTransferAction.None,
+            resolveSharedFileAction(FlashFileTransferStatus.Cancelled, hasLocalUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            FlashSharedTransferAction.Open,
+            resolveSharedFileAction(FlashFileTransferStatus.Downloaded, hasLocalUri = true, isOutgoing = false),
+        )
+
+        assertEquals(
+            "Waiting for recipient",
+            sharedFileStatusNote(FlashFileTransferStatus.AwaitingAcceptance, hasLocalUri = false, isOutgoing = true),
+        )
+        assertEquals(
+            "Tap to download",
+            sharedFileStatusNote(FlashFileTransferStatus.AwaitingAcceptance, hasLocalUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            "Cancelled",
+            sharedFileStatusNote(FlashFileTransferStatus.Cancelled, hasLocalUri = false, isOutgoing = false),
+        )
+
+        assertEquals(
+            FlashSharedTransferAction.Resume,
+            resolveSharedAudioAction(FlashFileTransferStatus.Failed, hasUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            FlashSharedTransferAction.Resume,
+            resolveSharedAudioAction(FlashFileTransferStatus.Paused, hasUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            FlashSharedTransferAction.None,
+            resolveSharedAudioAction(FlashFileTransferStatus.Cancelled, hasUri = false, isOutgoing = false),
+        )
+        assertEquals(
+            FlashSharedTransferAction.None,
+            resolveSharedAudioAction(FlashFileTransferStatus.AwaitingAcceptance, hasUri = false, isOutgoing = true),
+        )
     }
 }

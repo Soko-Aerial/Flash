@@ -283,4 +283,8 @@ Dependencies: **none added**.
 
 - [x] Unit tests green: slide-target resolution (dominant axis + thresholds), EMA smoothing bounds, demo-amplitude clamping, short-press discard rule
 - [ ] Physical device: hold→speak→release sends; slide-left arms cancel (bar tints red); release cancels; slide-up locks; trash/pause/send work; timer runs; short tap discards silently
+
+2026-11-09: After a lock gesture is released, the trailing slot sends the active recording instead
+of starting a second capture. A start refused by the host cannot enter the slide or lock states.
+The original hold and in-bar controls remain. See VOICE-BTN-01..06 for physical verification.
 - [ ] Dark mode; large fonts; reduced motion (pulse collapses)

@@ -6,8 +6,11 @@ import com.transfer.flash.core.calling.model.FlashCallParticipantState
 import com.transfer.flash.core.calling.model.FlashCallParticipantUi
 import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallState
+import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.FlashLinkQuality
+import com.transfer.flash.core.ptt.PttRole
+import com.transfer.flash.core.ptt.PttSessionStats
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -118,5 +121,42 @@ class FlashCallExtrasTest {
         // Muted outranks both: it is what blocks the conversation.
         assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true, handRaised = true, cameraOff = true)))
         assertEquals(null, participantStatusLabel(p))
+    }
+
+    @Test
+    fun `call signal quality and details omit fabricated latency when rttMs is null`() {
+        assertEquals("Good signal", callSignalQualityLabel(FlashLinkQuality.GOOD))
+        assertEquals("Fair signal", callSignalQualityLabel(FlashLinkQuality.FAIR))
+        assertEquals("Weak signal", callSignalQualityLabel(FlashLinkQuality.POOR))
+        assertEquals("Checking signal", callSignalQualityLabel(FlashLinkQuality.UNKNOWN))
+
+        val rowsWithoutRtt = buildCallStatsRows(FlashCallStats(audioJitterMs = 4))
+        assertTrue(rowsWithoutRtt.none { it.second.contains("<1 ms") }, rowsWithoutRtt.toString())
+        assertEquals(listOf("Audio jitter" to "4 ms"), rowsWithoutRtt)
+
+        val emptyRows = buildCallStatsRows(FlashCallStats())
+        assertTrue(emptyRows.isEmpty(), emptyRows.toString())
+
+        val richRows = buildCallStatsRows(
+            FlashCallStats(rttMs = 18, remoteWidth = 1280, remoteHeight = 720, fps = 30, inboundKbps = 1500),
+        )
+        assertTrue(richRows.contains("Latency" to "18 ms"))
+        assertTrue(richRows.contains("Video" to "720p · 30 fps"))
+        assertTrue(richRows.contains("Bitrate" to "1.5 Mbps"))
+    }
+
+    @Test
+    fun `ptt stats line uses plain signal quality without raw loss or ms`() {
+        assertEquals("Live", pttStatsLabel(null, talking = true))
+        val talking = PttSessionStats("s", PttRole.TALKER, 1000L, rttMs = 42L, lossPercent = 0f, depthMs = 0L, amplitude01 = 0f, members = 2)
+        assertEquals("Live • 2 listening • Good signal", pttStatsLabel(talking, talking = true))
+
+        val listeningFair = PttSessionStats("s", PttRole.LISTENER, 1000L, rttMs = 120L, lossPercent = 0.03f, depthMs = 0L, amplitude01 = 0f, members = 1)
+        val listeningText = pttStatsLabel(listeningFair, talking = false)
+        assertEquals("Live • Fair signal", listeningText)
+        assertTrue(!listeningText.contains("%") && !listeningText.contains("ms"))
+
+        val listeningPoor = listeningFair.copy(rttMs = 250L, lossPercent = 0.12f)
+        assertEquals("Live • Weak signal", pttStatsLabel(listeningPoor, talking = false))
     }
 }

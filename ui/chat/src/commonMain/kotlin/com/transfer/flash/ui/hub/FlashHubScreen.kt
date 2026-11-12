@@ -68,6 +68,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.Dp
 
 /** Where the user is inside the Hub tab. Owned by the route (it drives the repository queries); saved across rotation. */
 public data class FlashHubSelection(
@@ -103,6 +104,8 @@ public data class FlashHubScreenData(
     public val showMovedTip: Boolean = false,
     /** A deep link waiting to be applied (cold start / notification). */
     public val pendingRoute: FlashHubMath.Route? = null,
+    /** True while a colleague directory search query has not emitted results yet. */
+    public val searchPeopleLoading: Boolean = false,
 )
 
 /** Where announcement drafts are kept per audience (Plan A3: the draft survives an offline failure and a restart). */
@@ -164,6 +167,7 @@ public fun FlashHubScreen(
     actions: FlashHubActions,
     modifier: Modifier = Modifier,
     reselectSignal: Int = 0,
+    bottomInset: Dp = 0.dp,
 ) {
     val colors = FlashTheme.colors
     val mode = FlashHubMath.mode(data.state, data.link)
@@ -171,8 +175,11 @@ public fun FlashHubScreen(
         val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(FlashAdaptiveMath.windowSizeForWidth(maxWidth.value))
         when (mode) {
             FlashHubMode.HIDDEN -> Unit
-            FlashHubMode.REVOKED -> FlashHubRevokedView(actions.onSignOut)
-            else -> FlashHubBody(mode, data, selection, onSelection, actions, twoPane, maxWidth.value, reselectSignal)
+            FlashHubMode.REVOKED -> FlashHubRevokedView(
+                onSignOut = actions.onSignOut,
+                modifier = Modifier.padding(bottom = if (twoPane) 0.dp else bottomInset),
+            )
+            else -> FlashHubBody(mode, data, selection, onSelection, actions, twoPane, maxWidth.value, reselectSignal, bottomInset)
         }
     }
 }
@@ -188,6 +195,7 @@ private fun FlashHubBody(
     twoPane: Boolean,
     widthDp: Float,
     reselectSignal: Int,
+    bottomInset: Dp,
 ) {
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
@@ -382,9 +390,9 @@ private fun FlashHubBody(
 
     fun submitSearch() {
         when (val hit = FlashHubMath.firstHit(searchPeople, searchDepartments, searchNews, searchGroups)) {
-            is FlashHubMath.SearchHit.Person -> onSelection(selection.copy(personId = hit.deviceId, searchOpen = false, query = ""))
-            is FlashHubMath.SearchHit.Department -> onSelection(selection.copy(segment = FlashHubSegment.DEPARTMENTS, departmentId = hit.id, searchOpen = false, query = ""))
-            is FlashHubMath.SearchHit.News -> onSelection(selection.copy(segment = FlashHubSegment.NEWS, announcementId = hit.id, searchOpen = false, query = ""))
+            is FlashHubMath.SearchHit.Person -> openPerson(hit.deviceId)
+            is FlashHubMath.SearchHit.Department -> onSelection(selection.copy(departmentId = hit.id))
+            is FlashHubMath.SearchHit.News -> onSelection(selection.copy(announcementId = hit.id))
             is FlashHubMath.SearchHit.Group -> onSelection(selection.copy(segment = FlashHubSegment.GROUPS, searchOpen = false, query = ""))
             null -> Unit
         }
@@ -419,9 +427,10 @@ private fun FlashHubBody(
                 }
                 actionNote?.let { NoticeLine(it) }
                 if (data.showMovedTip) FlashHubTip(actions.onDismissTip)
+                val compactBottomPad = if (twoPane) 0.dp else bottomInset
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                     when (mode) {
-                        FlashHubMode.LOADING -> FlashHubSkeleton()
+                        FlashHubMode.LOADING -> FlashHubSkeleton(Modifier.padding(bottom = compactBottomPad))
                         FlashHubMode.NEVER_SYNCED_OFFLINE -> FlashHubEmptyState(
                             icon = FlashIcons.Hub,
                             headline = FlashHubCopy.NEVER_SYNCED_TITLE,
@@ -429,6 +438,7 @@ private fun FlashHubBody(
                             actionLabel = FlashHubCopy.RETRY,
                             onAction = actions.onRefresh,
                             actionBusy = state.isRefreshing,
+                            modifier = Modifier.padding(bottom = compactBottomPad),
                         )
                         else -> PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = actions.onRefresh, modifier = Modifier.fillMaxSize()) {
                             AnimatedContent(
@@ -441,6 +451,7 @@ private fun FlashHubBody(
                             val pageSegment = FlashHubSegment.entries.getOrElse(pageNow) { FlashHubSegment.PEOPLE }
                             LazyColumn(
                                 state = if (pageSearching) searchState else listStates.getValue(pageSegment),
+                                contentPadding = hubContentPadding(compactBottomPad),
                                 modifier = Modifier.fillMaxSize().widthIn(max = FlashHubContentMaxWidth),
                             ) {
                                 if (!pageSearching) {
@@ -458,10 +469,11 @@ private fun FlashHubBody(
                                         query = query, people = searchPeople, departments = searchDepartments, news = searchNews, groups = searchGroups,
                                         nowMs = data.nowMs, deptName = deptName,
                                         onOpenPerson = ::openPerson,
-                                        onOpenDepartment = { onSelection(selection.copy(segment = FlashHubSegment.DEPARTMENTS, departmentId = it, searchOpen = false, query = "")) },
+                                        onOpenDepartment = { onSelection(selection.copy(departmentId = it)) },
                                         onOpenNews = { onSelection(selection.copy(announcementId = it)) },
-                                        onSeeAllPeople = { onSelection(selection.copy(segment = FlashHubSegment.PEOPLE, searchOpen = false)) },
+                                        onSeeAllPeople = { onSelection(selection.copy(segment = FlashHubSegment.PEOPLE, searchOpen = false, query = "")) },
                                         onGroup = ::groupAction, joiningGroupId = joiningGroupId,
+                                        searchLoading = data.searchPeopleLoading,
                                     )
                                     pageSegment == FlashHubSegment.NEWS -> hubNewsItems(
                                         news = news, posting = data.posting, unsupported = data.newsUnsupported, nowMs = data.nowMs,
@@ -509,6 +521,7 @@ private fun FlashHubBody(
         pairAvailable = actions.onPairColleague != null,
     )
 
+    val overlayBottomInset = if (twoPane) 0.dp else bottomInset
     val readerFor: @Composable (HubAnnouncementUi) -> Unit = { a ->
         FlashAnnouncementReader(
             a, FlashHubMath.scopeLabel(a, deptName), FlashHubMath.rights(a, data.posting), a.pinned, data.nowMs,
@@ -516,10 +529,11 @@ private fun FlashHubBody(
             onEdit = { startComposer(a) }, onDelete = { deleteConfirmId = a.id },
             onTogglePin = { togglePin(a) },
             onCopy = { clipboard.setText(AnnotatedString("${a.title}\n\n${a.body}")) }, onLink = ::openLink,
+            bottomInset = overlayBottomInset,
         )
     }
     val departmentFor: @Composable (HubDepartmentUi) -> Unit = { d ->
-        HubDepartmentPane(d, data, news, onSelection, selection, ::openPerson, ::groupAction, joiningGroupId, scope, actions, ::message)
+        HubDepartmentPane(d, data, news, onSelection, selection, ::openPerson, ::groupAction, joiningGroupId, scope, actions, ::message, overlayBottomInset)
     }
 
     val detailPane: @Composable () -> Unit = {
@@ -722,6 +736,7 @@ private fun HubDepartmentPane(
     scope: kotlinx.coroutines.CoroutineScope,
     actions: FlashHubActions,
     message: (HubPersonUi) -> Unit,
+    bottomInset: Dp = 0.dp,
 ) {
     val groups = remember(data.groups, department) {
         // The hub names a group's department by id; older previews and fakes carry the display name. HubFacade.departments accepts both.
@@ -740,10 +755,21 @@ private fun HubDepartmentPane(
             if (head != null) message(head) else openPerson(id)
         },
         onOpenAnnouncement = { onSelection(selection.copy(announcementId = it)) },
-        onSeeAllPeople = { onSelection(selection.copy(segment = FlashHubSegment.PEOPLE, peopleFilter = FlashHubPeopleFilter.Department(department.id), departmentId = null)) },
+        onSeeAllPeople = {
+            onSelection(
+                selection.copy(
+                    segment = FlashHubSegment.PEOPLE,
+                    peopleFilter = FlashHubPeopleFilter.Department(department.id),
+                    departmentId = null,
+                    searchOpen = false,
+                    query = "",
+                ),
+            )
+        },
         onGroupAction = groupAction,
         joiningGroupId = joiningGroupId,
         modifier = Modifier.verticalScroll(sc),
+        bottomInset = bottomInset,
     )
 }
 

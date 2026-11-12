@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -35,14 +36,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
@@ -51,6 +60,7 @@ import androidx.compose.ui.util.lerp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.navigation.FlashDestination
+import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashElevation
 import com.transfer.flash.ui.theme.FlashHaptic
@@ -151,7 +161,32 @@ object FlashBottomNavMath {
     fun travelAmplitude(tabDistance: Int): Float =
         (abs(tabDistance).toFloat() / 3f).coerceIn(0.45f, 1f)
 
+    /** Single-line constraints on capsule tab labels so large font scales ellipsize instead of clipping. */
+    const val LabelMaxLines = 1
+    const val LabelSoftWrap = false
+
     fun formatBadgeCount(count: Int): String = if (count > 9) "9+" else count.toString()
+
+    /**
+     * Background/foreground pair for unread tab badges.
+     * Keeps [FlashColors.textError] as the badge fill while choosing a foreground with >= 4.5:1
+     * WCAG AA contrast in both light mode (white on error600) and dark mode (dark ink on error400,
+     * where white on #F87171 was only 2.77:1).
+     */
+    fun badgeColors(colors: FlashColors): Pair<Color, Color> {
+        val bg = colors.textError
+        val candidates = listOf(colors.onAccentFill, Color.White, colors.backgroundApp, Color(0xFF07080A))
+        val fg = candidates.firstOrNull { contrastRatio(it, bg) >= 4.5f }
+            ?: candidates.maxByOrNull { contrastRatio(it, bg) }
+            ?: colors.onAccentFill
+        return bg to fg
+    }
+
+    private fun contrastRatio(a: Color, b: Color): Float {
+        val la = a.luminance()
+        val lb = b.luminance()
+        return (maxOf(la, lb) + 0.05f) / (minOf(la, lb) + 0.05f)
+    }
 }
 
 private val ChipHeight = 44.dp
@@ -442,11 +477,13 @@ private fun FlashBottomNavItemCell(
         }
     }
 
-    val tint by animateColorAsState(
+    val tintState = animateColorAsState(
         targetValue = if (isSelected) colors.accentPrimary else colors.textSecondary,
         animationSpec = motion.tweenFastSpec(),
         label = "flashNavItemTint",
     )
+    val tint by tintState
+    val labelColorProducer = remember(tintState) { ColorProducer { tintState.value } }
     val labelWeight by animateIntAsState(
         targetValue = if (isSelected) LabelWeightSelected else LabelWeightIdle,
         animationSpec = motion.tweenFastSpec(),
@@ -456,6 +493,7 @@ private fun FlashBottomNavItemCell(
     Box(
         modifier = modifier
             .height(FlashBottomNavDefaults.barHeight)
+            .pointerHoverIcon(PointerIcon.Hand)
             .selectable(
                 selected = isSelected,
                 role = Role.Tab,
@@ -468,7 +506,13 @@ private fun FlashBottomNavItemCell(
                     }
                 },
             )
-            .semantics { contentDescription = "${item.label} tab" },
+            .semantics {
+                contentDescription = if (item.badgeCount != null && item.badgeCount > 0) {
+                    "${item.label} tab, ${item.badgeCount} unread"
+                } else {
+                    "${item.label} tab"
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -481,21 +525,30 @@ private fun FlashBottomNavItemCell(
                     tint = tint,
                     size = FlashDimensions.iconMd,
                     contentDescription = null,
-                    modifier = Modifier.graphicsLayer {
-                        scaleX = scale.value
-                        scaleY = scale.value
-                        rotationZ = tilt.value
-                    },
+                    modifier = Modifier
+                        .clearAndSetSemantics {}
+                        .graphicsLayer {
+                            scaleX = scale.value
+                            scaleY = scale.value
+                            rotationZ = tilt.value
+                        },
                 )
                 Badge(
                     count = item.badgeCount,
                     modifier = Modifier.align(Alignment.TopEnd),
                 )
             }
-            FlashText(
+            BasicText(
                 text = item.label,
-                style = typography.captionDefault.copy(fontWeight = FontWeight(labelWeight)),
-                color = tint,
+                modifier = Modifier.padding(horizontal = FlashSpacing.space2),
+                style = typography.captionDefault.copy(
+                    fontWeight = FontWeight(labelWeight),
+                    textAlign = TextAlign.Center,
+                ),
+                maxLines = FlashBottomNavMath.LabelMaxLines,
+                softWrap = FlashBottomNavMath.LabelSoftWrap,
+                overflow = TextOverflow.Ellipsis,
+                color = labelColorProducer,
             )
         }
     }
@@ -519,6 +572,7 @@ private fun PulseRing(progress: Float) {
 private fun Badge(count: Int?, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
+    val (badgeBg, badgeFg) = FlashBottomNavMath.badgeColors(colors)
     // Kept mounted so a count arriving (or clearing) plays the pop instead of appearing and
     // vanishing between frames. The last non-null count is retained so the exit animation has
     // something to render while it collapses.
@@ -535,13 +589,15 @@ private fun Badge(count: Int?, modifier: Modifier = Modifier) {
         Box(
             Modifier
                 .clip(FlashShapes.navBar)
-                .background(colors.textError)
-                .padding(horizontal = BadgeMinPadding),
+                .background(badgeBg)
+                .padding(horizontal = BadgeMinPadding)
+                .clearAndSetSemantics {},
         ) {
             FlashText(
                 text = FlashBottomNavMath.formatBadgeCount(lastCount),
                 style = FlashTheme.typography.numericEmphasis,
-                color = colors.mediaViewerChromeText,
+                color = badgeFg,
+                maxLines = 1,
             )
         }
     }

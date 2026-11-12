@@ -1,19 +1,33 @@
 package com.transfer.flash.ui.nearby
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
 import com.transfer.flash.ui.chat.FlashConfirmHost
+import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 
 /**
@@ -25,70 +39,129 @@ import com.transfer.flash.ui.theme.FlashTheme
 fun FlashManualConnectDialog(
     onDismiss: () -> Unit,
     onConnect: (host: String, port: Int) -> Unit,
+    isConnecting: Boolean = false,
+    errorMessage: String? = null,
+    onClearError: () -> Unit = {},
 ) {
+    val colors = FlashTheme.colors
     var host by remember { mutableStateOf("") }
     var portText by remember { mutableStateOf("") }
 
     val parsedPort = portText.trim().toIntOrNull()
     val isPortValid = portText.isBlank() || (parsedPort != null && parsedPort in 1..65535)
-    val canConnect = host.isNotBlank() && isPortValid
+    val canConnect = host.isNotBlank() && isPortValid && !isConnecting
+
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = colors.textPrimary,
+        unfocusedTextColor = colors.textPrimary,
+        disabledTextColor = colors.textTertiary,
+        cursorColor = colors.accentFill,
+        focusedBorderColor = colors.accentFill,
+        unfocusedBorderColor = colors.borderDefault,
+        errorBorderColor = colors.textError,
+        focusedLabelColor = colors.textLink,
+        unfocusedLabelColor = colors.textSecondary,
+        focusedContainerColor = colors.composerInputBackground,
+        unfocusedContainerColor = colors.composerInputBackground,
+    )
 
     FlashConfirmHost(
-        onDismiss = onDismiss,
-        containerColor = FlashTheme.colors.backgroundSurface,
+        onDismiss = { if (!isConnecting) onDismiss() },
+        containerColor = colors.backgroundSurface,
         title = {
-            Text(
+            FlashText(
                 text = "Connect by IP",
                 style = FlashTheme.typography.headingMedium,
-                color = FlashTheme.colors.textPrimary,
+                color = colors.textPrimary,
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                Text(
-                    text = "Enter the IP address and port of the target Flash device on your local network.",
+                FlashText(
+                    text = "Enter the IP address and port shown on the other device's Nearby screen.",
                     style = FlashTheme.typography.metadataDefault,
-                    color = FlashTheme.colors.textSecondary,
+                    color = colors.textSecondary,
                 )
                 OutlinedTextField(
                     value = host,
-                    onValueChange = { host = it },
+                    onValueChange = {
+                        host = it
+                        onClearError()
+                    },
+                    enabled = !isConnecting,
                     singleLine = true,
-                    label = { Text("IP Address / Host") },
-                    placeholder = { Text("192.168.1.100") },
+                    textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
+                    shape = FlashShapes.attachment,
+                    colors = fieldColors,
+                    label = { FlashText("IP Address / Host", style = FlashTheme.typography.captionDefault, color = colors.textSecondary) },
+                    placeholder = { FlashText("192.168.1.100", style = FlashTheme.typography.bodyDefault, color = colors.textTertiary) },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = portText,
-                    onValueChange = { portText = it },
+                    onValueChange = { next ->
+                        portText = next.filter { it.isDigit() }
+                        onClearError()
+                    },
+                    enabled = !isConnecting,
                     singleLine = true,
-                    label = { Text("Port (default 45822)") },
-                    placeholder = { Text("45822") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
+                    shape = FlashShapes.attachment,
+                    colors = fieldColors,
+                    label = { FlashText("Port (default 45822)", style = FlashTheme.typography.captionDefault, color = colors.textSecondary) },
+                    placeholder = { FlashText("45822", style = FlashTheme.typography.bodyDefault, color = colors.textTertiary) },
                     isError = !isPortValid,
                     supportingText = if (!isPortValid) {
-                        { Text("Port must be between 1 and 65535", color = FlashTheme.colors.textError) }
+                        { FlashText("Port must be between 1 and 65535", style = FlashTheme.typography.metadataDefault, color = colors.textError) }
                     } else null,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (!errorMessage.isNullOrBlank()) {
+                    FlashText(
+                        text = errorMessage,
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textError,
+                    )
+                }
             }
         },
         confirmButton = {
-            TextButton(
-                enabled = canConnect,
-                onClick = {
-                    val targetPort = portText.trim().toIntOrNull() ?: 45822
-                    onConnect(host.trim(), targetPort)
-                },
+            Box(
+                modifier = Modifier
+                    .heightIn(min = FlashDimensions.minTouchTarget)
+                    .clip(FlashShapes.bubbleGrouped)
+                    .background(if (canConnect) colors.accentFill else colors.backgroundSurfaceStrong)
+                    .clickable(enabled = canConnect) {
+                        val targetPort = portText.trim().toIntOrNull() ?: 45822
+                        onConnect(host.trim(), targetPort)
+                    }
+                    .semantics { role = Role.Button }
+                    .padding(horizontal = FlashSpacing.space16),
+                contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = "Connect",
-                    color = if (canConnect) FlashTheme.colors.accentPrimary else FlashTheme.colors.textTertiary,
+                FlashText(
+                    text = if (isConnecting) "Connecting…" else "Connect",
+                    style = FlashTheme.typography.captionEmphasis,
+                    color = if (canConnect) colors.onAccentFill else colors.textTertiary,
                 )
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = FlashTheme.colors.textSecondary)
+            Box(
+                modifier = Modifier
+                    .heightIn(min = FlashDimensions.minTouchTarget)
+                    .clip(FlashShapes.bubbleGrouped)
+                    .clickable(enabled = !isConnecting, onClick = onDismiss)
+                    .semantics { role = Role.Button }
+                    .padding(horizontal = FlashSpacing.space12),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    text = "Cancel",
+                    style = FlashTheme.typography.captionEmphasis,
+                    color = if (isConnecting) colors.textTertiary else colors.textSecondary,
+                )
             }
         },
     )

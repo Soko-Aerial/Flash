@@ -103,6 +103,9 @@ internal const val DESKTOP_SIDE_RAIL_DP: Float = 68f
 /** Hit area of the splitter in dp: wide enough to grab with a mouse, the visible line stays a hairline. */
 private const val SPLITTER_HIT_DP = 12
 
+internal fun desktopTwoPaneAvailableWidthDp(windowWidthDp: Float): Float =
+    (windowWidthDp - DESKTOP_SIDE_RAIL_DP - SPLITTER_HIT_DP).coerceAtLeast(0f)
+
 /**
  * List-detail two-pane for the desktop shell: on [FlashWindowSizeClass.Expanded] the panes sit
  * side by side with a draggable splitter between them (AD-2, owner request 2026-10-16); on Compact/Medium only [listPane] renders
@@ -135,7 +138,7 @@ internal fun DesktopTwoPane(
     if (FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)) {
         val widthDp = rememberFlashDesktopWindowWidthDp(window)
         val density = LocalDensity.current
-        val available = (widthDp - DESKTOP_SIDE_RAIL_DP).coerceAtLeast(0f)
+        val available = desktopTwoPaneAvailableWidthDp(widthDp)
         var preferred by remember { mutableStateOf(prefs?.listPaneWidthDp()) }
         val listWidthDp = FlashAdaptiveMath.effectiveListPaneWidthDp(widthDp, available, preferred)
 

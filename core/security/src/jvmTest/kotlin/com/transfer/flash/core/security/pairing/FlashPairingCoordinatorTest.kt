@@ -376,6 +376,72 @@ class FlashPairingCoordinatorTest {
         assertTrue(codeOne.all { it.isDigit() }, "the displayed code must be digits only: $codeOne")
     }
 
+    @Test
+    fun failedPairing_exposesPeerDeviceId_staysVisible_andRetrySucceeds() = runBlocking {
+        val pair = Pair()
+        pair.a.onSessionUp(ID_B)
+        pair.b.onSessionUp(ID_A)
+        // Force a pin mismatch on A so pairing transitions to Failed.
+        pair.trustA.pins[FlashDeviceId(ID_B)] = "ffff000011112222"
+
+        pair.a.beginPair(ID_B, "Harness B")
+        waitUntil("A must fail on pin mismatch") {
+            pair.a.pairing.value?.phase == PairingPhase.Failed
+        }
+        assertEquals(ID_B, pair.a.pairing.value?.peerDeviceId)
+
+        // Must stay visible past the old 2.5s terminal linger until user dismisses or retries.
+        delay(2_700L)
+        assertEquals(PairingPhase.Failed, pair.a.pairing.value?.phase)
+
+        // Fix the pin and retry: must complete cleanly.
+        pair.trustA.pins[FlashDeviceId(ID_B)] = FP_B
+        pair.b.declineLocal()
+        pair.a.declineLocal()
+        waitUntil("both sides reset to idle") {
+            pair.a.pairing.value == null && pair.b.pairing.value == null
+        }
+
+        pair.a.beginPair(ID_B, "Harness B")
+        waitUntil("B must see retried request") {
+            pair.b.pairing.value?.phase == PairingPhase.RequestReceived
+        }
+        assertEquals(ID_A, pair.b.pairing.value?.peerDeviceId)
+        pair.b.acceptLocal()
+        pair.a.acceptLocal()
+        waitUntil("retry pairing must complete") {
+            pair.trustA.trusted.containsKey(FlashDeviceId(ID_B))
+        }
+    }
+
+    @Test
+    fun newPairingStartedDuringPairedLinger_isNotWipedByOldLingerJob() = runBlocking {
+        val pair = Pair()
+        pair.a.onSessionUp(ID_B)
+        pair.b.onSessionUp(ID_A)
+
+        pair.a.beginPair(ID_B, "Harness B")
+        waitUntil("B sees request") { pair.b.pairing.value?.phase == PairingPhase.RequestReceived }
+        pair.b.acceptLocal()
+        pair.a.acceptLocal()
+        waitUntil("both sides enter Confirmed linger") {
+            pair.a.pairing.value?.phase == PairingPhase.Confirmed &&
+                pair.b.pairing.value?.phase == PairingPhase.Confirmed
+        }
+
+        // Start a fresh pairing immediately while the 1.8s PAIRED_LINGER_MS timer is active on both sides.
+        pair.a.beginPair(ID_B, "Harness B")
+        waitUntil("retried pairing is active on both sides") {
+            pair.a.pairing.value?.phase == PairingPhase.AwaitingLocalDecision &&
+                pair.b.pairing.value?.phase == PairingPhase.RequestReceived
+        }
+
+        // Wait past the first pairing's 1.8s PAIRED_LINGER_MS; the new pairing must NOT be wiped.
+        delay(2_100L)
+        assertEquals(PairingPhase.AwaitingLocalDecision, pair.a.pairing.value?.phase)
+        assertEquals(PairingPhase.RequestReceived, pair.b.pairing.value?.phase)
+    }
+
     /** Drives a pair to the point where the responder displays its code, and returns it. */
     private suspend fun codeFor(pair: Pair): String {
         pair.a.onSessionUp(ID_B)

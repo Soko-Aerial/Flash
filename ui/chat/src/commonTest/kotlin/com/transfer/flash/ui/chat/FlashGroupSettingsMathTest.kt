@@ -26,6 +26,32 @@ class FlashGroupSettingsMathTest {
     }
 
     @Test
+    fun testStepMaxMembersIsSymmetricAcrossGrid() {
+        val up = buildList {
+            var v = 2
+            add(v)
+            repeat(5) {
+                v = FlashGroupSettingsMath.stepMaxMembers(v, forward = true)
+                add(v)
+            }
+        }
+        assertEquals(listOf(2, 5, 10, 15, 20, 20), up)
+
+        val down = buildList {
+            var v = 20
+            add(v)
+            repeat(5) {
+                v = FlashGroupSettingsMath.stepMaxMembers(v, forward = false)
+                add(v)
+            }
+        }
+        assertEquals(listOf(20, 15, 10, 5, 2, 2), down)
+
+        assertEquals(10, FlashGroupSettingsMath.stepMaxMembers(6, forward = true))
+        assertEquals(5, FlashGroupSettingsMath.stepMaxMembers(6, forward = false))
+    }
+
+    @Test
     fun testJoinPolicyLabels() {
         assertEquals("Approval required", FlashGroupSettingsMath.joinPolicyLabel(GroupSettings.POLICY_APPROVE))
         assertEquals("Open to anyone with link", FlashGroupSettingsMath.joinPolicyLabel(GroupSettings.POLICY_OPEN))
@@ -50,5 +76,7 @@ class FlashGroupSettingsMathTest {
         assertEquals("Keep completed files available for 1 day.", FlashGroupSettingsMath.keepAvailableDaysDescription(1))
         assertEquals("Keep completed files available for 7 days.", FlashGroupSettingsMath.keepAvailableDaysDescription(7))
         assertEquals("30 members", FlashGroupSettingsMath.maxMembersLabel(30))
+        assertFalse(FlashGroupSettingsMath.swarmServingDescription(true).contains("swarming", ignoreCase = true))
+        assertFalse(FlashGroupSettingsMath.swarmServingDescription(false).contains("swarming", ignoreCase = true))
     }
 }

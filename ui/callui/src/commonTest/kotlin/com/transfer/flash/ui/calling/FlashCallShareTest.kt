@@ -81,6 +81,36 @@ class FlashCallShareTest {
         )
     }
 
+    @Test
+    fun `lower quality wording avoids saying computer on non-desktop devices`() {
+        val androidSubtitle = CallShareText.lowerSubtitle(isDesktop = false)
+        val androidHint = CallShareText.loweredHint(isDesktop = false)
+        assertFalse(androidSubtitle.contains("computer", ignoreCase = true), androidSubtitle)
+        assertFalse(androidHint.contains("computer", ignoreCase = true), androidHint)
+        assertTrue(androidSubtitle.contains("device", ignoreCase = true), androidSubtitle)
+        assertTrue(androidHint.contains("device", ignoreCase = true), androidHint)
+
+        val desktopSubtitle = CallShareText.lowerSubtitle(isDesktop = true)
+        val desktopHint = CallShareText.loweredHint(isDesktop = true)
+        assertFalse(desktopSubtitle.contains("computer", ignoreCase = true), desktopSubtitle)
+        assertFalse(desktopHint.contains("computer", ignoreCase = true), desktopHint)
+        assertTrue(desktopSubtitle.contains("desktop", ignoreCase = true), desktopSubtitle)
+        assertTrue(desktopHint.contains("desktop", ignoreCase = true), desktopHint)
+    }
+
+    @Test
+    fun `system picker uses direct action for a single screen regardless of presenter so quality toggle stays reachable`() {
+        val screen = ShareSource(0L, "This device's screen", ShareSourceKind.SCREEN)
+        val window = ShareSource(1L, "Docs", ShareSourceKind.WINDOW)
+
+        assertEquals(screen, singleSystemPickerScreen(usesSystemPicker = true, sources = listOf(screen)))
+        assertNull(singleSystemPickerScreen(usesSystemPicker = false, sources = listOf(screen)))
+        assertNull(singleSystemPickerScreen(usesSystemPicker = true, sources = listOf(window)))
+        assertNull(singleSystemPickerScreen(usesSystemPicker = true, sources = listOf(screen, window)))
+        assertNull(singleSystemPickerScreen(usesSystemPicker = true, sources = emptyList()))
+        assertNull(singleSystemPickerScreen(usesSystemPicker = true, sources = null))
+    }
+
     // ---- who presents
 
     @Test

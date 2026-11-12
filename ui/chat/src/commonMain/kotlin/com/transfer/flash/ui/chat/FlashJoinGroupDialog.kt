@@ -14,10 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,9 +24,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.avatar.FlashAvatar
@@ -100,13 +101,13 @@ public fun FlashJoinGroupDialog(
                         modifier = Modifier
                             .size(56.dp)
                             .clip(CircleShape)
-                            .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                            .background(colors.accentFill.copy(alpha = 0.12f)),
                         contentAlignment = Alignment.Center,
                     ) {
                         FlashIcon(
                             icon = FlashIcons.Clock,
                             contentDescription = "Pending",
-                            tint = colors.accentPrimary,
+                            tint = colors.accentFill,
                         )
                     }
                     FlashText(
@@ -146,33 +147,52 @@ public fun FlashJoinGroupDialog(
                         style = FlashTheme.typography.bodyDefault,
                         color = colors.textSecondary,
                     )
-                    Box(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(FlashShapes.bubbleGrouped)
-                            .background(colors.backgroundSurfaceSubtle)
-                            .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.bubbleGrouped)
-                            .padding(FlashSpacing.space8),
+                            .clip(FlashShapes.composerInput)
+                            .background(colors.composerInputBackground)
+                            .border(FlashDimensions.borderHairline, colors.borderDefault, FlashShapes.composerInput)
+                            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        TextField(
+                        BasicTextField(
                             value = inputUrl,
                             onValueChange = { inputUrl = it },
-                            placeholder = {
-                                FlashText(
-                                    text = "flash://g/1/...",
-                                    style = FlashTheme.typography.bodyDefault,
-                                    color = colors.textTertiary,
-                                )
-                            },
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(vertical = FlashSpacing.space4),
                             maxLines = 2,
-                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
+                            cursorBrush = SolidColor(colors.accentFill),
+                            decorationBox = { innerTextField ->
+                                if (inputUrl.isEmpty()) {
+                                    FlashText(
+                                        text = "flash://g/1/...",
+                                        style = FlashTheme.typography.bodyDefault,
+                                        color = colors.textTertiary,
+                                    )
+                                }
+                                innerTextField()
+                            },
                         )
+                        if (inputUrl.isNotEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .clickable { inputUrl = "" }
+                                    .semantics { role = Role.Button; contentDescription = "Clear invite link" },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                FlashIcon(
+                                    icon = FlashIcons.Close,
+                                    contentDescription = null,
+                                    size = FlashDimensions.iconSm,
+                                    tint = colors.textSecondary,
+                                )
+                            }
+                        }
                     }
                     // Paste Button
                     Row(
@@ -193,14 +213,14 @@ public fun FlashJoinGroupDialog(
                         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                     ) {
                         FlashIcon(
-                            icon = FlashIcons.Attach,
+                            icon = FlashIcons.Copy,
                             contentDescription = "Paste",
-                            tint = colors.accentPrimary,
+                            tint = colors.textLink,
                         )
                         FlashText(
                             text = "Paste from clipboard",
                             style = FlashTheme.typography.metadataEmphasis,
-                            color = colors.accentPrimary,
+                            color = colors.textLink,
                         )
                     }
                     if (inputUrl.isNotBlank() && parsedInvite == null) {
@@ -222,7 +242,7 @@ public fun FlashJoinGroupDialog(
                 }
             } else if (parsedInvite != null) {
                 TextButton(onClick = { onJoin(inputUrl) }) {
-                    androidx.compose.material3.Text("Join group", color = colors.accentPrimary)
+                    androidx.compose.material3.Text("Join group", color = colors.textLink)
                 }
             }
         },
