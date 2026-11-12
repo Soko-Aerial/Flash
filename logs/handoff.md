@@ -1,9 +1,12 @@
 # Current Handoff
 
-> **2026-11-12 — Phase 7 UI/UX diff audit, bug remediation & final gate PASSED (uncommitted on `dev`, atop `31e1551c`).**
-> Seven-phase UI/UX overhaul and audit remediation pass across `:core:security`, `:ui:theme`, `:ui:chat`,
-> `:ui:callui`, `:ui:platform-shims`, `:app`, and `:desktop`, preserving the pre-existing uncommitted
-> `ERROR-1018` (transfer retry) and `ERROR-1019` (voice-button lock/capture guard) working-tree candidates.
+> **2026-11-12 — Phase 7 UI/UX diff audit & ERROR-1018 transfer retry committed on `dev` (`37c45602`, `58f9b236`).**
+> Seven-phase UI/UX overhaul, audit remediation pass, and transfer retry boundary re-announcements committed on `dev`
+> across `:core:transfer`, `:core:engine`, `:core:security`, `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`,
+> `:app`, and `:desktop`.
+> - **Commits:**
+>   - `58f9b236`: `fix(transfer): re-announce saved chunks across retry boundaries and reject invalid ACKs (ERROR-1018)`
+>   - `37c45602`: `feat(ui): cross-platform UI/UX polish, theme contrast, adaptive layouts and audit fixes (Phases 1-7)`
 > - **Resolved in Phase 7 audit:** 12 Must-Fix bugs and 12 Half-Baked features identified during comprehensive
 >   diff review (Notification banner shell unmounting, two-pane `BackHandler` priority, desktop tab trapping/selection
 >   reset, reactions sheet deduplication, pairing `lingerJob` tracking/cancellation, `AwaitingPeerConfirmation` Cancel
