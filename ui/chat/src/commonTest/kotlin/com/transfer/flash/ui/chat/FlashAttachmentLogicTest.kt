@@ -8,16 +8,16 @@ import kotlin.test.assertTrue
 class FlashAttachmentLogicTest {
 
     @Test
-    fun `attachment types define all 5 core Flash action categories`() {
+    fun `attachment types define all 4 distinct Flash action categories`() {
         val types = FlashAttachmentType.values()
-        assertEquals(5, types.size)
+        assertEquals(4, types.size)
 
         val labels = types.map { it.label }
         assertTrue(labels.contains("Gallery"))
         assertTrue(labels.contains("Files"))
         assertTrue(labels.contains("Camera"))
         assertTrue(labels.contains("Audio"))
-        assertTrue(labels.contains("Flash P2P"))
+        kotlin.test.assertFalse(labels.contains("Flash P2P"))
     }
 
     @Test

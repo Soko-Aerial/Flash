@@ -18,15 +18,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -42,14 +43,17 @@ import androidx.compose.ui.Modifier
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.ui.shims.FlashBackHandler
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.WebRtc
@@ -63,6 +67,8 @@ import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.core.calling.model.FlashLinkQuality
+import com.transfer.flash.core.calling.model.linkQuality
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
@@ -70,12 +76,14 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import com.transfer.flash.core.common.perf.FlashNetworkBand
+import kotlin.math.roundToInt
 
 /**
  * Full-screen in-call surface (UI-050, docs/ui/calling-ui.md).
@@ -89,9 +97,11 @@ import com.transfer.flash.core.common.perf.FlashNetworkBand
  * metrics only. Every control is a lambda the host wires to `FlashCalling`, so this screen
  * cannot mutate a call, and the module never sees the concrete session type.
  *
- * Back behavior: decline while ringing, otherwise [onDismiss]. A host that does not implement
- * minimize should leave `onDismiss` empty for a live call — the call outlives this screen either
- * way, since call state is owned by `FlashCalling`, not by composition.
+ * Back / close behavior: decline while ringing; while `ENDED`, both Back and the close (`X`)
+ * button immediately hide this overlay and invoke [onDismiss] (hosts should also unmount the
+ * ended call immediately instead of waiting for `CallCoordinator`'s grace timer). While live
+ * (`DIALING`/`CONNECTING`/`ACTIVE`), `X` is hidden and Back invokes [onDismiss], where hosts
+ * should minimize/enter PiP or confirm ending the call rather than silently ignoring Back.
  */
 @Composable
 public fun FlashCallScreen(
@@ -131,6 +141,9 @@ public fun FlashCallScreen(
 ) {
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
+    var dismissedEndedCallId by remember(state.callId) { mutableStateOf<String?>(null) }
+    if (ended && dismissedEndedCallId == state.callId) return
+
     var panel by remember { mutableStateOf<CallPanel?>(null) }
     var mirrorSelf by remember { mutableStateOf(false) }
     // UI-050h: how far a shared screen is magnified, held here rather than in the surface so both layouts (1:1 and group)
@@ -146,8 +159,11 @@ public fun FlashCallScreen(
     FlashBackHandler(enabled = true) {
         when {
             state.state == FlashCallState.RINGING -> onDecline()
-            ended -> onDismiss()
-            else -> onDismiss() // minimize: call continues, coordinator keeps state.
+            ended -> {
+                dismissedEndedCallId = state.callId
+                onDismiss()
+            }
+            else -> onDismiss()
         }
     }
 
@@ -158,163 +174,193 @@ public fun FlashCallScreen(
         return
     }
 
-    Box(
+    val shareDockedTop = state.sharing && !ended
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .background(if (isVideoActive) Color.Black else colors.backgroundApp),
     ) {
-        if (isVideoActive) {
-            if (state.isGroup) {
-                // G1 (UI-050b): every participant's video, not only the last one to arrive.
-                FlashGroupVideoSurfaces(
-                    state = state,
-                    session = session,
-                    onVideoFocus = onVideoFocus,
-                    modifier = Modifier.fillMaxSize(),
-                    presentationZoom = presentationZoom,
-                )
-            } else {
-                FlashCallVideoSurfaces(
-                    state = state,
-                    session = session,
-                    mirrorSelf = mirrorSelf,
-                    peerVerified = peerVerified,
-                    presentationZoom = presentationZoom,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Spacer(Modifier.weight(0.7f))
-
-            if (!isVideoActive || ended) {
-                FlashCallIdentityBlock(state = state, session = session, peerVerified = peerVerified)
-            }
-
-            Spacer(Modifier.weight(1.3f))
-
-            if (isVideoActive && !ended && state.isGroup) {
-                // G6 (UI-050d): heat / CPU / software-decode warning, or the "Show all" pill.
-                FlashCallHealthBanner(
-                    state = state,
-                    onShowFewerVideos = onShowFewerVideos,
-                    onSendSmallerVideo = onSendSmallerVideo,
-                )
-                Spacer(Modifier.height(FlashSpacing.space8))
-            }
-
-            if (isVideoActive && !ended && state.isGroup && state.compactVideo) {
-                // G5 (UI-050c): everyone as a chip; a tap picks whose video the main tile shows.
-                FlashGroupVideoStrip(state = state, onVideoFocus = onVideoFocus)
-                Spacer(Modifier.height(FlashSpacing.space16))
-            }
-
-            val notice = state.notice
-            var noticeDismissed by remember(state.callId, notice) { mutableStateOf(false) }
-            if (notice != null && !noticeDismissed && !ended && state.state != FlashCallState.RINGING) {
-                // ERROR-105: a video call joined with the microphone only, and why.
-                FlashCallMessagePill(text = callNoticeText(notice), onDismiss = { noticeDismissed = true })
-                Spacer(Modifier.height(FlashSpacing.space12))
-            }
-
-            val shareNotice = state.shareNotice
-            if (shareNotice != null && !ended) {
-                // ADR-102: why a share stopped or did not start, once.
-                FlashCallMessagePill(
-                    text = CallShareText.notice(shareNotice, sharePresenterName(state), SHARE_NOTICE_DEFAULT_CAP),
-                    onDismiss = { share?.onDismissNotice?.invoke() },
-                )
-                Spacer(Modifier.height(FlashSpacing.space12))
-            }
-
-            val cameraProblem = state.cameraProblem
-            if (cameraProblem != null && !ended) {
-                // ERROR-105: this device's own camera stopped or would not switch. "Try again" is the camera button.
-                FlashCallMessagePill(
-                    text = cameraProblemText(cameraProblem),
-                    actionLabel = cameraProblemAction(cameraProblem),
-                    onAction = { onToggleCamera() },
-                )
-                Spacer(Modifier.height(FlashSpacing.space12))
-            }
-
-            if (state.dataSaver && state.video && !ended) {
-                // The way back from a call that stopped receiving video; the dock's More panel has the same switch.
-                FlashDataSaverPill(onTurnOff = { onSetDataSaver(false) })
-                Spacer(Modifier.height(FlashSpacing.space12))
-            }
-
-            FlashCallControls(
-                state = state,
-                onAccept = onAccept,
-                onDecline = onDecline,
-                onHangUp = onHangUp,
-                onDismiss = onDismiss,
-                onToggleMute = onToggleMute,
-                onToggleSpeaker = onToggleSpeaker,
-                onToggleCamera = onToggleCamera,
-                onSwitchCamera = onSwitchCamera,
-                audioRoutes = audioRoutes,
-                onOpenRoutes = { panel = CallPanel.ROUTES },
-                onOpenMore = { panel = CallPanel.MORE },
-                moreActive = state.handRaised || state.dataSaver || state.sharing,
-                onUpgradeToVideo = onUpgradeToVideo,
-            )
-            Spacer(Modifier.height(FlashSpacing.space40))
-        }
-
+        // ADR-102: docked above the call surface so it is always visible without obscuring the PiP or top header.
         if (!ended) {
-            FlashCallReactionLayer(
-                reactions = state.reactions,
-                nameOf = { id -> reactionSenderName(state, id) },
-                modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
-            )
-        }
-
-        when (panel) {
-            CallPanel.ROUTES -> FlashAudioRoutePicker(
-                routes = audioRoutes,
-                onSelect = onSelectRoute,
-                onDismiss = { panel = null },
-            )
-            CallPanel.MORE -> FlashCallMorePanel(
-                state = state,
-                mirrorSelf = mirrorSelf,
-                onToggleMirror = { mirrorSelf = !mirrorSelf },
-                onSetHandRaised = onSetHandRaised,
-                onSendReaction = onSendReaction,
-                onSetDataSaver = onSetDataSaver,
-                onEnterPictureInPicture = onEnterPictureInPicture,
-                onShareScreen = if (shareStartAvailable(state, share) && !state.sharing) ({ panel = CallPanel.SHARE }) else null,
-                onStopShare = { share?.onStop?.invoke() },
-                onDismiss = { panel = null },
-            )
-            CallPanel.SHARE -> if (share != null) {
-                FlashSharePicker(state = state, host = share, onDismiss = { panel = null })
-            }
-            null -> Unit
-        }
-
-        // ADR-102: drawn last, so it is above the video, the dock and every panel; a person who shares always sees it.
-        if (state.sharing && !ended) {
             FlashShareIndicator(
                 state = state,
                 onStop = { share?.onStop?.invoke() },
-                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding(),
+                modifier = Modifier
+                    .background(colors.accentFill)
+                    .statusBarsPadding(),
             )
+        }
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+        ) {
+            if (isVideoActive) {
+                if (state.isGroup) {
+                    // G1 (UI-050b): every participant's video, not only the last one to arrive.
+                    FlashGroupVideoSurfaces(
+                        state = state,
+                        session = session,
+                        onVideoFocus = onVideoFocus,
+                        modifier = Modifier.fillMaxSize(),
+                        presentationZoom = presentationZoom,
+                        topInset = !shareDockedTop,
+                        onInspectStats = { panel = CallPanel.STATS },
+                    )
+                } else {
+                    FlashCallVideoSurfaces(
+                        state = state,
+                        session = session,
+                        mirrorSelf = mirrorSelf,
+                        peerVerified = peerVerified,
+                        presentationZoom = presentationZoom,
+                        topInset = !shareDockedTop,
+                        onInspectStats = { panel = CallPanel.STATS },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (!shareDockedTop) Modifier.statusBarsPadding() else Modifier)
+                    .navigationBarsPadding(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Spacer(Modifier.weight(0.7f))
+
+                if (!isVideoActive || ended) {
+                    FlashCallIdentityBlock(
+                        state = state,
+                        session = session,
+                        peerVerified = peerVerified,
+                        onInspectStats = { panel = CallPanel.STATS },
+                    )
+                }
+
+                Spacer(Modifier.weight(1.3f))
+
+                if (isVideoActive && !ended && state.isGroup) {
+                    // G6 (UI-050d): heat / CPU / software-decode warning, or the "Show all" pill.
+                    FlashCallHealthBanner(
+                        state = state,
+                        onShowFewerVideos = onShowFewerVideos,
+                        onSendSmallerVideo = onSendSmallerVideo,
+                    )
+                    Spacer(Modifier.height(FlashSpacing.space8))
+                }
+
+                if (isVideoActive && !ended && state.isGroup && state.compactVideo) {
+                    // G5 (UI-050c): everyone as a chip; a tap picks whose video the main tile shows.
+                    FlashGroupVideoStrip(state = state, onVideoFocus = onVideoFocus)
+                    Spacer(Modifier.height(FlashSpacing.space16))
+                }
+
+                val notice = state.notice
+                var noticeDismissed by remember(state.callId, notice) { mutableStateOf(false) }
+                if (notice != null && !noticeDismissed && !ended && state.state != FlashCallState.RINGING) {
+                    // ERROR-105: a video call joined with the microphone only, and why.
+                    FlashCallMessagePill(text = callNoticeText(notice), onDismiss = { noticeDismissed = true })
+                    Spacer(Modifier.height(FlashSpacing.space12))
+                }
+
+                val shareNotice = state.shareNotice
+                if (shareNotice != null && !ended) {
+                    // ADR-102: why a share stopped or did not start, once.
+                    FlashCallMessagePill(
+                        text = CallShareText.notice(shareNotice, sharePresenterName(state), SHARE_NOTICE_DEFAULT_CAP),
+                        onDismiss = { share?.onDismissNotice?.invoke() },
+                    )
+                    Spacer(Modifier.height(FlashSpacing.space12))
+                }
+
+                val cameraProblem = state.cameraProblem
+                if (cameraProblem != null && !ended) {
+                    // ERROR-105: this device's own camera stopped or would not switch. "Try again" is the camera button.
+                    FlashCallMessagePill(
+                        text = cameraProblemText(cameraProblem),
+                        actionLabel = cameraProblemAction(cameraProblem),
+                        onAction = { onToggleCamera() },
+                    )
+                    Spacer(Modifier.height(FlashSpacing.space12))
+                }
+
+                if (state.dataSaver && state.video && !ended) {
+                    // The way back from a call that stopped receiving video; the dock's More panel has the same switch.
+                    FlashDataSaverPill(onTurnOff = { onSetDataSaver(false) })
+                    Spacer(Modifier.height(FlashSpacing.space12))
+                }
+
+                FlashCallControls(
+                    state = state,
+                    onAccept = onAccept,
+                    onDecline = onDecline,
+                    onHangUp = onHangUp,
+                    onDismiss = {
+                        if (ended) dismissedEndedCallId = state.callId
+                        onDismiss()
+                    },
+                    onToggleMute = onToggleMute,
+                    onToggleSpeaker = onToggleSpeaker,
+                    onToggleCamera = onToggleCamera,
+                    onSwitchCamera = onSwitchCamera,
+                    audioRoutes = audioRoutes,
+                    onOpenRoutes = { panel = CallPanel.ROUTES },
+                    onOpenMore = { panel = CallPanel.MORE },
+                    moreActive = state.handRaised || state.dataSaver || state.sharing,
+                    onUpgradeToVideo = onUpgradeToVideo,
+                )
+                Spacer(Modifier.height(FlashSpacing.space40))
+            }
+
+            if (!ended) {
+                FlashCallReactionLayer(
+                    reactions = state.reactions,
+                    nameOf = { id -> reactionSenderName(state, id) },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (!shareDockedTop) Modifier.statusBarsPadding() else Modifier)
+                        .navigationBarsPadding(),
+                )
+            }
+
+            when (panel) {
+                CallPanel.ROUTES -> FlashAudioRoutePicker(
+                    routes = audioRoutes,
+                    onSelect = onSelectRoute,
+                    onDismiss = { panel = null },
+                )
+                CallPanel.MORE -> FlashCallMorePanel(
+                    state = state,
+                    mirrorSelf = mirrorSelf,
+                    onToggleMirror = { mirrorSelf = !mirrorSelf },
+                    onSetHandRaised = onSetHandRaised,
+                    onSendReaction = onSendReaction,
+                    onSetDataSaver = onSetDataSaver,
+                    onEnterPictureInPicture = onEnterPictureInPicture,
+                    onShareScreen = if (shareStartAvailable(state, share) && !state.sharing) ({ panel = CallPanel.SHARE }) else null,
+                    onStopShare = { share?.onStop?.invoke() },
+                    onDismiss = { panel = null },
+                )
+                CallPanel.SHARE -> if (share != null) {
+                    FlashSharePicker(state = state, host = share, onDismiss = { panel = null })
+                }
+                CallPanel.STATS -> FlashCallStatsPanel(
+                    state = state,
+                    session = session,
+                    peerVerified = peerVerified && !state.isGroup,
+                    onDismiss = { panel = null },
+                )
+                null -> Unit
+            }
         }
     }
 }
 
 /** Which panel is open over the call. */
-private enum class CallPanel { ROUTES, MORE, SHARE }
+private enum class CallPanel { ROUTES, MORE, SHARE, STATS }
 
 /** Who sent a reaction, for its caption: the peer or a participant by name, anyone else is this device. */
 internal fun reactionSenderName(state: FlashCallUiState, senderId: String): String =
@@ -379,7 +425,12 @@ internal fun rememberCallPulseScale(pulsing: Boolean): State<Float> =
 
 /** Peer avatar + name + live-region status line (audio calls / ended video calls). */
 @Composable
-private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMedia?, peerVerified: Boolean) {
+private fun FlashCallIdentityBlock(
+    state: FlashCallUiState,
+    session: FlashCallMedia?,
+    peerVerified: Boolean,
+    onInspectStats: (() -> Unit)? = null,
+) {
     val colors = FlashTheme.colors
     val pulsing = state.state == FlashCallState.RINGING || state.state == FlashCallState.ACTIVE
     val scale = rememberCallPulseScale(pulsing)
@@ -435,10 +486,12 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
             )
         }
         Spacer(Modifier.height(FlashSpacing.space20))
-        Text(
+        FlashText(
             text = state.peerName,
             style = FlashTheme.typography.headingLarge,
             color = colors.textPrimary,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.height(FlashSpacing.space8))
         FlashCallStatusLine(state = state, color = colors.textSecondary)
@@ -450,7 +503,12 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
             modifier = Modifier.padding(top = FlashSpacing.space8),
         )
         Spacer(Modifier.height(FlashSpacing.space8))
-        FlashCallStatsBadge(session = session, state = state, onDark = false)
+        FlashCallStatsBadge(
+            session = session,
+            state = state,
+            onDark = false,
+            onClick = onInspectStats,
+        )
         Spacer(Modifier.height(FlashSpacing.space8))
         FlashCallLinkChip(session = session, state = state, peerVerified = peerVerified && !state.isGroup, onDark = false)
     }
@@ -503,15 +561,16 @@ private fun FlashGroupParticipantsGrid(
                             )
                         }
                         Spacer(Modifier.height(FlashSpacing.space4))
-                        Text(
+                        FlashText(
                             text = participant.name,
                             style = FlashTheme.typography.metadataDefault,
                             color = colors.textPrimary,
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                         val statusLabel = participantStatusLabel(participant)
                         if (statusLabel != null) {
-                            Text(
+                            FlashText(
                                 text = statusLabel,
                                 style = FlashTheme.typography.metadataDefault,
                                 color = colors.textTertiary,
@@ -540,6 +599,8 @@ private fun FlashCallVideoSurfaces(
     peerVerified: Boolean,
     /** UI-050h: the magnification of the presentation; null when this host offers no zooming. */
     presentationZoom: FlashVideoZoomState? = null,
+    topInset: Boolean = true,
+    onInspectStats: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var pipIsLocal by remember { mutableStateOf(false) }
@@ -581,6 +642,23 @@ private fun FlashCallVideoSurfaces(
             FlashRemoteVideoPlaceholder(state = state, modifier = Modifier.fillMaxSize())
         }
 
+        // Subtle top gradient scrim so white peer names and timers remain legible over bright video/slides.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .height(CALL_TOP_SCRIM_HEIGHT)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Black.copy(alpha = 0.65f),
+                            Color.Black.copy(alpha = 0.28f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+
         FlashCallVideoSurface(
             track = if (swapped) remoteTrack else localTrack,
             fit = CallVideoFit.Fit,
@@ -588,12 +666,12 @@ private fun FlashCallVideoSurfaces(
             zOrderMediaOverlay = true,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .statusBarsPadding()
+                .then(if (topInset) Modifier.statusBarsPadding() else Modifier)
                 .padding(FlashSpacing.space16)
                 // A fixed width, not widthIn(min): with only a minimum the PiP took the
                 // Box's full max width (~352 dp on a 1080p phone) and covered the remote
                 // surface it is supposed to sit on top of.
-                .width(PIP_WIDTH)
+                .widthIn(min = PIP_WIDTH, max = PIP_WIDTH)
                 .aspectRatio(3f / 4f)
                 .clip(RoundedCornerShape(FlashShapes.radius12))
                 .border(1.dp, FlashTheme.colors.backgroundSurfaceSubtle, RoundedCornerShape(FlashShapes.radius12))
@@ -603,19 +681,27 @@ private fun FlashCallVideoSurfaces(
                 ) { if (remoteShown) pipIsLocal = !pipIsLocal },
         )
 
-        // Identity + status overlay for video calls (small, top-start).
+        // Identity + status overlay for video calls (top-start, padded clear of the top-end PiP).
         Column(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(FlashSpacing.space16),
+                .fillMaxWidth()
+                .then(if (topInset) Modifier.statusBarsPadding() else Modifier)
+                .padding(
+                    start = FlashSpacing.space16,
+                    top = FlashSpacing.space16,
+                    bottom = FlashSpacing.space16,
+                    end = PIP_WIDTH + FlashSpacing.space16 * 2,
+                ),
         ) {
-            Text(
+            FlashText(
                 text = state.peerName,
                 style = FlashTheme.typography.headingMedium,
                 color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
-            FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.8f))
+            FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.85f))
             if (state.presenterId != null && remoteShown) {
                 FlashPresenterLabel(name = state.peerName, modifier = Modifier.padding(top = FlashSpacing.space4))
             }
@@ -627,16 +713,20 @@ private fun FlashCallVideoSurfaces(
                 modifier = Modifier.padding(top = FlashSpacing.space4),
             )
             Spacer(Modifier.height(FlashSpacing.space4))
-            FlashCallStatsBadge(session = session, state = state, onDark = true)
+            FlashCallStatsBadge(
+                session = session,
+                state = state,
+                onDark = true,
+                onClick = onInspectStats,
+            )
             Spacer(Modifier.height(FlashSpacing.space4))
             FlashCallLinkChip(session = session, state = state, peerVerified = peerVerified, onDark = true)
             if (state.peerDataSaver) {
                 Spacer(Modifier.height(FlashSpacing.space4))
-                Text(
+                FlashText(
                     text = CallExtrasText.peerDataSaverNote(state.peerName),
                     style = FlashTheme.typography.metadataDefault,
-                    color = Color.White.copy(alpha = 0.72f),
-                    modifier = Modifier.width(200.dp),
+                    color = Color.White.copy(alpha = 0.78f),
                 )
             }
         }
@@ -654,7 +744,7 @@ private fun FlashRemoteVideoPlaceholder(state: FlashCallUiState, modifier: Modif
     ) {
         FlashAvatar(initials = state.peerName.take(2), seed = state.peerId, size = 96.dp)
         Spacer(Modifier.height(FlashSpacing.space16))
-        Text(
+        FlashText(
             text = if (state.dataSaver) "Video paused" else "${state.peerName}'s camera is off",
             style = FlashTheme.typography.bodyDefault,
             color = colors.textSecondary,
@@ -713,7 +803,7 @@ private fun FlashCallControls(
                         onClick = onDecline,
                     )
                     Spacer(Modifier.height(FlashSpacing.space8))
-                    Text(
+                    FlashText(
                         text = "Decline",
                         style = FlashTheme.typography.captionDefault,
                         color = FlashTheme.colors.textSecondary,
@@ -725,8 +815,8 @@ private fun FlashCallControls(
                 ) {
                     FlashIncomingCallButton(
                         icon = FlashIcons.CallAccept,
-                        background = FlashTheme.colors.accentPrimary,
-                        contentColor = FlashTheme.colors.textOnAccent,
+                        background = FlashTheme.colors.accentFill,
+                        contentColor = FlashTheme.colors.onAccentFill,
                         description = "Accept call",
                         haptic = FlashHaptic.Confirm,
                         ringing = true,
@@ -734,7 +824,7 @@ private fun FlashCallControls(
                         onClick = onAccept,
                     )
                     Spacer(Modifier.height(FlashSpacing.space8))
-                    Text(
+                    FlashText(
                         text = "Accept",
                         style = FlashTheme.typography.captionDefault,
                         color = FlashTheme.colors.textSecondary,
@@ -820,14 +910,14 @@ private fun FlashCallControlButton(
  * [FlashCallVideoSurfaces] (two video-surface composables and their whole modifier chains) — so an
  * ACTIVE call recomposed them once per second, which is not what [activeDuration]'s own KDoc
  * describes. A Unit-returning composable is always restartable, so putting the call behind one stops
- * the invalidation here, at the single `Text` that actually shows the changing value.
+ * the invalidation here, at the single `FlashText` that actually shows the changing value.
  *
  * Purely a scope change: same text, style, colour and live-region semantics as before, at every
  * performance tier.
  */
 @Composable
 internal fun FlashCallStatusLine(state: FlashCallUiState, color: Color) {
-    Text(
+    FlashText(
         text = statusLine(state),
         style = FlashTheme.typography.bodyDefault,
         color = color,
@@ -924,21 +1014,45 @@ internal fun formatCallDuration(elapsedMillis: Long): String {
     return "%02d:%02d".format(elapsedSec / 60, elapsedSec % 60)
 }
 
+/** Plain-language signal quality label for the tap-to-inspect indicator pill. */
+internal fun callSignalQualityLabel(quality: FlashLinkQuality): String = when (quality) {
+    FlashLinkQuality.GOOD -> "Good signal"
+    FlashLinkQuality.FAIR -> "Fair signal"
+    FlashLinkQuality.POOR -> "Weak signal"
+    FlashLinkQuality.UNKNOWN -> "Checking signal"
+}
+
 /**
- * Live transport readout — the call screen's latency counter (UI-050).
- *
- * Renders round-trip time, received resolution/framerate and inbound bitrate, resampled once a
- * second by the session's `getStats()` poller. Every field is independently nullable because
- * WebRTC publishes each one only when the corresponding report first exists (RTT needs an RTCP
- * round trip, fps needs a decoded frame, bitrate needs two samples), so the badge grows into
- * itself over the first few seconds instead of showing zeros.
- *
- * The dot is the at-a-glance verdict on RTT: green under 60 ms, amber under 150, red past that.
- * Shown only while ACTIVE — a stale number on a dead call is worse than no number.
- *
- * A second line appears when the audio-protective governor has traded video away
- * ([FlashCallUiState.videoLimitReason], D8): the picture getting worse on purpose has to be
- * distinguishable from the picture getting worse because the app is broken.
+ * Diagnostic rows for the tap-to-inspect connection details panel, omitting any unmeasured
+ * metric rather than fabricating placeholder values such as `"<1 ms"`.
+ */
+internal fun buildCallStatsRows(stats: FlashCallStats?): List<Pair<String, String>> {
+    if (stats == null) return emptyList()
+    return buildList {
+        stats.rttMs?.let { add("Latency" to "$it ms") }
+        val resolutionText = when {
+            stats.remoteResolutionLabel != null && stats.sendResolutionLabel != null -> {
+                val recv = stats.fps?.let { "${stats.remoteResolutionLabel} · ${it} fps" } ?: stats.remoteResolutionLabel!!
+                "$recv (sending ${stats.sendResolutionLabel})"
+            }
+            stats.remoteResolutionLabel != null -> {
+                stats.fps?.let { "${stats.remoteResolutionLabel} · ${it} fps" } ?: stats.remoteResolutionLabel!!
+            }
+            stats.sendResolutionLabel != null -> "Sending ${stats.sendResolutionLabel}"
+            else -> null
+        }
+        resolutionText?.let { add("Video" to it) }
+        val rate = stats.inboundKbps ?: stats.outboundKbps
+        rate?.let { add("Bitrate" to formatBitrate(it)) }
+        stats.packetLoss?.takeIf { it >= 0.02 }?.let { add("Packet loss" to "${(it * 100).roundToInt()}%") }
+        stats.audioJitterMs?.let { add("Audio jitter" to "$it ms") }
+        stats.networkBand?.takeIf { it != FlashNetworkBand.UNKNOWN }?.let { add("Band" to it.label) }
+    }
+}
+
+/**
+ * Compact signal-quality indicator pill (replaces permanently visible raw WebRTC numbers).
+ * Tapping it opens [FlashCallStatsPanel] to inspect detailed transport metrics when available.
  */
 @Composable
 internal fun FlashCallStatsBadge(
@@ -946,96 +1060,178 @@ internal fun FlashCallStatsBadge(
     state: FlashCallUiState,
     onDark: Boolean,
     modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val stats = rememberCallStats(session?.stats)
-    if (state.state != FlashCallState.ACTIVE || stats == null || !stats.hasData) return
-
-    val parts = buildList {
-        stats.rttMs?.let { add("$it ms") }
-        val resolutionText = when {
-            stats.remoteResolutionLabel != null && stats.sendResolutionLabel != null -> {
-                val recv = stats.fps?.let { "${stats.remoteResolutionLabel} · ${it}fps" } ?: stats.remoteResolutionLabel
-                "$recv (↑${stats.sendResolutionLabel})"
-            }
-            stats.remoteResolutionLabel != null -> {
-                stats.fps?.let { "${stats.remoteResolutionLabel} · ${it}fps" } ?: stats.remoteResolutionLabel
-            }
-            stats.sendResolutionLabel != null -> "↑${stats.sendResolutionLabel}"
-            else -> null
-        }
-        resolutionText?.let { add(it) }
-        val rate = stats.inboundKbps ?: stats.outboundKbps
-        rate?.let { add(formatBitrate(it)) }
-        // Loss below a couple of percent is normal on Wi-Fi and not worth a readout.
-        stats.packetLoss?.takeIf { it >= 0.02 }?.let { add("${(it * 100).toInt()}% loss") }
-        // G2: a group call's slowest link band (debug readout until G4 uses it for budgets).
-        stats.networkBand?.takeIf { it != FlashNetworkBand.UNKNOWN }?.let { add(it.label) }
-        if (isEmpty() && state.state == FlashCallState.ACTIVE) {
-            add("<1 ms")
-        }
-    }
-    if (parts.isEmpty() && state.videoLimitReason == null) return
-
-    val dotColor = when (val rtt = stats.rttMs) {
-        null -> colors.textTertiary
-        in 0..59 -> colors.textSuccess
-        in 60..149 -> colors.statusTransfer
-        else -> colors.textError
-    }
-    val textColor = if (onDark) Color.White.copy(alpha = 0.85f) else colors.textSecondary
-
-    // ERROR-031 / D8: when the governor has traded video away to keep voice intelligible, say so.
-    // Degraded video with no explanation reads as a broken app; the same picture with a reason
-    // reads as a working one, and it is the only signal that the trade is deliberate.
+    if (state.state != FlashCallState.ACTIVE) return
+    val hasStats = stats != null && stats.hasData
     val limitReason = state.videoLimitReason
+    if (!hasStats && limitReason == null) return
+
+    val quality = stats?.linkQuality() ?: FlashLinkQuality.UNKNOWN
+    val label = callSignalQualityLabel(quality)
+    val dotColor = when (quality) {
+        FlashLinkQuality.GOOD -> colors.textSuccess
+        FlashLinkQuality.FAIR -> colors.statusTransfer
+        FlashLinkQuality.POOR -> colors.textError
+        FlashLinkQuality.UNKNOWN -> colors.textTertiary
+    }
+    val textColor = if (onDark) Color.White.copy(alpha = 0.9f) else colors.textSecondary
+    val interaction = remember { MutableInteractionSource() }
+    val pillBg = if (onDark) Color.Black.copy(alpha = 0.42f) else colors.backgroundSurfaceSubtle
 
     Column(
         modifier = modifier
             .then(
-                if (onDark) {
+                if (onClick != null) {
                     Modifier
-                        .clip(RoundedCornerShape(FlashShapes.radius12))
-                        .background(Color.Black.copy(alpha = 0.32f))
-                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                        .heightIn(min = FlashDimensions.minTouchTarget)
+                        .flashPressScale(interaction)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            role = Role.Button,
+                            onClickLabel = "Inspect connection details",
+                            onClick = onClick,
+                        )
                 } else {
                     Modifier
                 },
             )
-            .semantics {
-                contentDescription = buildList {
-                    if (parts.isNotEmpty()) add("Call quality: " + parts.joinToString(", "))
-                    limitReason?.let { add(it) }
-                }.joinToString(". ")
+            .semantics(mergeDescendants = true) {
+                contentDescription = listOfNotNull(label, limitReason).joinToString(". ")
             },
         horizontalAlignment = if (onDark) Alignment.Start else Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        verticalArrangement = Arrangement.Center,
     ) {
-        if (parts.isNotEmpty()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(FlashSpacing.space8)
-                        .clip(CircleShape)
-                        .background(dotColor),
-                )
-                Text(
-                    text = parts.joinToString("  ·  "),
-                    style = FlashTheme.typography.metadataDefault,
-                    color = textColor,
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(FlashShapes.radius24))
+                .background(pillBg)
+                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(FlashSpacing.space8)
+                    .clip(CircleShape)
+                    .background(dotColor)
+                    .clearAndSetSemantics { },
+            )
+            FlashText(
+                text = label,
+                style = FlashTheme.typography.metadataDefault,
+                color = textColor,
+            )
+            if (onClick != null) {
+                FlashIcon(
+                    icon = FlashIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = textColor,
+                    size = 12.dp,
+                    modifier = Modifier.clearAndSetSemantics { },
                 )
             }
         }
         if (limitReason != null) {
-            Text(
+            Spacer(Modifier.height(FlashSpacing.space4))
+            FlashText(
                 text = limitReason,
                 style = FlashTheme.typography.metadataDefault,
-                color = if (onDark) Color.White.copy(alpha = 0.72f) else colors.textTertiary,
+                color = if (onDark) Color.White.copy(alpha = 0.8f) else colors.textTertiary,
             )
         }
+    }
+}
+
+/** Tap-to-inspect diagnostics sheet opened by tapping [FlashCallStatsBadge]. */
+@Composable
+private fun FlashCallStatsPanel(
+    state: FlashCallUiState,
+    session: FlashCallMedia?,
+    peerVerified: Boolean,
+    onDismiss: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val stats = rememberCallStats(session?.stats)
+    val quality = stats?.linkQuality() ?: FlashLinkQuality.UNKNOWN
+    val rows = buildCallStatsRows(stats)
+    val subtitle = buildList {
+        add(CallExtrasText.LINK_LABEL)
+        if (peerVerified) add(CallExtrasText.VERIFIED_LABEL)
+    }.joinToString(" · ")
+
+    FlashCallPanel(title = "Connection details", onDismiss = onDismiss) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(FlashShapes.radius12))
+                .background(colors.backgroundSurfaceSubtle)
+                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            val dotColor = when (quality) {
+                FlashLinkQuality.GOOD -> colors.textSuccess
+                FlashLinkQuality.FAIR -> colors.statusTransfer
+                FlashLinkQuality.POOR -> colors.textError
+                FlashLinkQuality.UNKNOWN -> colors.textTertiary
+            }
+            Box(Modifier.size(10.dp).clip(CircleShape).background(dotColor))
+            Column(modifier = Modifier.weight(1f)) {
+                FlashText(
+                    text = callSignalQualityLabel(quality),
+                    style = FlashTheme.typography.bodyEmphasis,
+                    color = colors.textPrimary,
+                )
+                FlashText(
+                    text = subtitle,
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textSecondary,
+                )
+            }
+        }
+        val limitReason = state.videoLimitReason
+        if (limitReason != null) {
+            Spacer(Modifier.height(FlashSpacing.space8))
+            FlashText(
+                text = limitReason,
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textSecondary,
+            )
+        }
+        Spacer(Modifier.height(FlashSpacing.space12))
+        if (rows.isEmpty()) {
+            FlashText(
+                text = "Connection measurements appear a few seconds into the call.",
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textSecondary,
+            )
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+                rows.forEach { (metric, value) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FlashText(
+                            text = metric,
+                            style = FlashTheme.typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                        FlashText(
+                            text = value,
+                            style = FlashTheme.typography.bodyDefault,
+                            color = colors.textPrimary,
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(FlashSpacing.space8))
     }
 }
 
@@ -1052,6 +1248,9 @@ internal fun rememberCallStats(flow: StateFlow<FlashCallStats?>?): FlashCallStat
 /** kbit/s as the unit a human reads it in. */
 private fun formatBitrate(kbps: Int): String =
     if (kbps >= 1_000) "%.1f Mbps".format(kbps / 1000f) else "$kbps kbps"
+
+/** Height of the top gradient scrim that keeps video call names/timers legible on bright frames. */
+internal val CALL_TOP_SCRIM_HEIGHT = 160.dp
 
 /** Local-preview tile width; the 3:4 ratio makes it a 120x160 dp PiP. */
 internal val PIP_WIDTH = 120.dp

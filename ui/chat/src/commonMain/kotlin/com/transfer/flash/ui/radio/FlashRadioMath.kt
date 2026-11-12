@@ -145,8 +145,8 @@ public object FlashRadioMath {
         currentMode: RadioGatewayMode,
         availableModes: Set<RadioGatewayMode>,
     ): String = when {
-        mode == currentMode -> FlashRadioCopy.BADGE_ACTIVE
         mode !in availableModes -> FlashRadioCopy.BADGE_COMING_LATER
+        mode == currentMode -> FlashRadioCopy.BADGE_ACTIVE
         else -> ""
     }
 

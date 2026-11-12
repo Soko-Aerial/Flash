@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.messaging.model.FlashChatListItemUi
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashChatSearchResultsUi
 import com.transfer.flash.core.messaging.util.sampleFlashChatListState
@@ -64,9 +65,14 @@ fun FlashChatListScreen(
     /** Space the hanging shell bar occupies; rows scroll under it (UI-046). */
     bottomInset: Dp = 0.dp,
     onLanClick: (() -> Unit)? = null,
+    onNewChatClick: (() -> Unit)? = null,
     onConversationLongClick: (String) -> Unit = {},
     onArchiveConversation: (String) -> Unit = {},
     onUnarchiveConversation: (String) -> Unit = {},
+    onPinConversation: ((id: String, pinned: Boolean) -> Unit)? = null,
+    onMuteConversation: ((id: String, muted: Boolean) -> Unit)? = null,
+    onMarkConversationRead: ((id: String) -> Unit)? = null,
+    onDeleteConversation: ((id: String) -> Unit)? = null,
     onToggleSelection: (String) -> Unit = {},
     // UI-013 selection-mode bulk actions (contextual action bar replaces the top bar)
     onCloseSelection: () -> Unit = {},
@@ -139,6 +145,8 @@ fun FlashChatListScreen(
     val statusSwap = motion.statusCrossfade()
 
     var viewingArchived by rememberSaveable { mutableStateOf(false) }
+    var showBulkDeleteConfirm by remember { mutableStateOf(false) }
+    var pendingSingleDeleteItem by remember { mutableStateOf<FlashChatListItemUi?>(null) }
 
     FlashBackHandler(enabled = viewingArchived) {
         // This handler is composed after the host's search handler and so wins: close an open search first, otherwise Back
@@ -147,6 +155,11 @@ fun FlashChatListScreen(
     }
 
     val activeItems = if (viewingArchived) state.archivedItems else state.items
+    val selectedItems = remember(activeItems, state.selectedIds) {
+        activeItems.filter { it.id in state.selectedIds }
+    }
+    val isAllSelectedPinned = selectedItems.isNotEmpty() && selectedItems.all { it.isPinned }
+    val isAllSelectedMuted = selectedItems.isNotEmpty() && selectedItems.all { it.isMuted }
     val displayItems = remember(activeItems, searchQuery, messageBodyMatches, colleagueMatchIds) {
         FlashChatListSearchMath.filterChats(activeItems, searchQuery, messageBodyMatches, colleagueMatchIds)
     }
@@ -189,9 +202,11 @@ fun FlashChatListScreen(
                     onMute = onMuteSelected,
                     onMarkRead = onMarkSelectedRead,
                     onArchive = onArchiveSelected,
-                    onDelete = onDeleteSelected,
+                    onDelete = { showBulkDeleteConfirm = true },
                     isArchivedView = viewingArchived,
                     onUnarchive = onUnarchiveSelected,
+                    isAllPinned = isAllSelectedPinned,
+                    isAllMuted = isAllSelectedMuted,
                 )
             } else if (isSearching) {
                 FlashChatListSearchBar(
@@ -210,6 +225,7 @@ fun FlashChatListScreen(
                 FlashChatListTopBar(
                     onSearchClick = onSearchClick,
                     onLanClick = onLanClick,
+                    onNewChatClick = onNewChatClick,
                     onNewGroupClick = onNewGroupClick,
                     onJoinWithLinkClick = onJoinWithLinkClick,
                     onBrowseOrgGroupsClick = onBrowseOrgGroupsClick,
@@ -322,7 +338,29 @@ fun FlashChatListScreen(
                                     )
                                     is FlashSearchListEntry.Chat -> FlashChatListRow(
                                         item = entry.item,
-                                        onClick = { onConversationClick(entry.item.id) },
+                                        onClick = {
+                                            if (state.selectionMode) {
+                                                onToggleSelection(entry.item.id)
+                                            } else {
+                                                onConversationClick(entry.item.id)
+                                            }
+                                        },
+                                        onLongClick = {
+                                            if (state.selectionMode) {
+                                                onToggleSelection(entry.item.id)
+                                            } else {
+                                                onConversationLongClick(entry.item.id)
+                                            }
+                                        },
+                                        onArchive = if (viewingArchived) onUnarchiveConversation else onArchiveConversation,
+                                        swipeActionLabel = if (viewingArchived) "Unarchive" else "Archive",
+                                        onPinToggle = onPinConversation?.let { cb -> { cb(entry.item.id, !entry.item.isPinned) } },
+                                        onMuteToggle = onMuteConversation?.let { cb -> { cb(entry.item.id, !entry.item.isMuted) } },
+                                        onMarkRead = onMarkConversationRead?.let { cb -> { cb(entry.item.id) } },
+                                        onDelete = onDeleteConversation?.let { { pendingSingleDeleteItem = entry.item } },
+                                        isSelected = entry.item.id in state.selectedIds ||
+                                            (!state.selectionMode && activeConversationId != null && entry.item.id == activeConversationId),
+                                        selectionMode = state.selectionMode,
                                         showDivider = true,
                                         modifier = flashAnimateItem(motion),
                                     )
@@ -348,6 +386,14 @@ fun FlashChatListScreen(
                                 }
                             }
                         } else {
+                            if (isSearching && !searchActive && !showRecents && displayItems.isEmpty()) {
+                                item(key = "flash-search-prompt") {
+                                    FlashSearchNoResults(
+                                        query = "",
+                                        scopeLabel = FlashSearchScope.All.label,
+                                    )
+                                }
+                            }
                             if (!viewingArchived && state.archivedItems.isNotEmpty() && !isSearching) {
                                 item(key = "flash-archived-chats-row") {
                                     val unreadArchived = remember(state.archivedItems) {
@@ -386,6 +432,10 @@ fun FlashChatListScreen(
                                     },
                                     onArchive = if (viewingArchived) onUnarchiveConversation else onArchiveConversation,
                                     swipeActionLabel = if (viewingArchived) "Unarchive" else "Archive",
+                                    onPinToggle = onPinConversation?.let { cb -> { cb(item.id, !item.isPinned) } },
+                                    onMuteToggle = onMuteConversation?.let { cb -> { cb(item.id, !item.isMuted) } },
+                                    onMarkRead = onMarkConversationRead?.let { cb -> { cb(item.id) } },
+                                    onDelete = onDeleteConversation?.let { { pendingSingleDeleteItem = item } },
                                     isSelected = item.id in state.selectedIds || (!state.selectionMode && activeConversationId != null && item.id == activeConversationId),
                                     selectionMode = state.selectionMode,
                                     showDivider = showRecents || !isLastRow,
@@ -397,6 +447,84 @@ fun FlashChatListScreen(
                 }
             }
         }
+    }
+
+    if (showBulkDeleteConfirm) {
+        val count = state.selectedIds.size
+        FlashConfirmHost(
+            onDismiss = { showBulkDeleteConfirm = false },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = if (count == 1) "Delete conversation?" else "Delete $count conversations?",
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = if (count == 1) {
+                        "This removes the conversation and its messages from this device."
+                    } else {
+                        "This removes $count conversations and their messages from this device."
+                    },
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        showBulkDeleteConfirm = false
+                        onDeleteSelected()
+                    },
+                ) {
+                    Text("Delete", color = colors.textError)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showBulkDeleteConfirm = false }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            },
+        )
+    }
+
+    pendingSingleDeleteItem?.let { item ->
+        FlashConfirmHost(
+            onDismiss = { pendingSingleDeleteItem = null },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = "Delete \"${item.title}\"?",
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = "This removes the conversation and its messages from this device.",
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        val targetId = item.id
+                        pendingSingleDeleteItem = null
+                        onDeleteConversation?.invoke(targetId)
+                    },
+                ) {
+                    Text("Delete", color = colors.textError)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { pendingSingleDeleteItem = null }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
+            },
+        )
     }
 }
 

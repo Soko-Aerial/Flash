@@ -252,7 +252,7 @@ private fun FlashChatHeaderStatusLine(
                         FlashText(
                             text = typingLabel,
                             style = typography.metadataEmphasis,
-                            color = colors.accentPrimary,
+                            color = colors.textLink,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -491,7 +491,7 @@ fun FlashColleagueTrustChip(
         FlashText(
             text = FlashOrgStrings.chipText(orgName),
             style = FlashTheme.typography.captionEmphasis,
-            color = colors.accentPrimary,
+            color = colors.textLink,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

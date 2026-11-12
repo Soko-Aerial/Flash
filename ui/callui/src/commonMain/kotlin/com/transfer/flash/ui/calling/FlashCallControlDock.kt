@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -61,6 +61,7 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
@@ -178,6 +179,19 @@ private val ICON_SIZE = 24.dp
 private const val DISABLED_ALPHA = 0.38f
 private const val PRESSED_TILT_DEGREES = 28f
 
+private data class DockControlSpec(
+    val icon: FlashIconSpec,
+    val label: String,
+    val description: String,
+    val emphasised: Boolean,
+    val rippleOutward: Boolean,
+    val gesture: DockGesture,
+    val enabled: Boolean = true,
+    val destructive: Boolean = false,
+    val hasMenu: Boolean = false,
+    val onClick: () -> Unit,
+)
+
 /**
  * Bottom control dock for DIALING / CONNECTING / ACTIVE calls (audio: 4 controls, video: 6).
  *
@@ -201,45 +215,18 @@ internal fun FlashCallControlDock(
 ) {
     val colors = FlashTheme.colors
     val shape = RoundedCornerShape(FlashShapes.radius24)
+    val largeText = LocalDensity.current.fontScale >= 1.3f
     // ADR-078: a call with no camera of ours on it (voice, or a video call joined without a camera) can add one.
     val upgrade = if (state.canUpgradeToVideo) onUpgradeToVideo else null
-    val count = (if (state.video) 5 else 3) + (if (!state.video && upgrade != null) 1 else 0) + (if (onOpenMore != null) 1 else 0)
-    // OPT-O03-18: this used to be a `BoxWithConstraints` — a `SubcomposeLayout`, which defers the buttons' composition
-    // into the measure pass and builds a second subcomposition table — purely to read `maxWidth` and divide it by the
-    // button count. The same arithmetic per slot is a constant (the row gives every control `weight(1f)`, so a slot is
-    // exactly `maxWidth / count`), so each button can size itself from its own constraints instead. The dock keeps
-    // `widthIn(max = count * DOCK_SLOT_MAX_DP)` so six controls never spread across a wide desktop window.
-    val slotInset = dockButtonInset(count)
-    // Six buttons must fit a 360 dp phone: shrink the buttons (never below 40 dp) rather than overflow.
-    Box(
-        modifier = Modifier
-            .padding(horizontal = FlashSpacing.space16)
-            .widthIn(max = (count * DOCK_SLOT_MAX_DP).dp),
-    ) {
     val active = audioRoutes.active
     val routeIconSpec = when {
         active != null -> routeIcon(active)
         state.speakerOn -> FlashIcons.Speaker
         else -> FlashIcons.Earpiece
     }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(
-                // minimalChrome: opaque, so the dock never alpha-blends over a video surface.
-                if (FlashTheme.minimalChrome) colors.backgroundSurfaceStrong
-                else colors.backgroundSurfaceStrong.copy(alpha = 0.85f),
-            )
-            .border(FlashDimensions.borderHairline, colors.borderSubtle, shape)
-            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space12),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.Top,
-        ) {
-            FlashCallDockButton(
+    val buttons = buildList {
+        add(
+            DockControlSpec(
                 icon = if (state.micMuted) FlashIcons.MicOff else FlashIcons.Microphone,
                 label = CallDockText.micLabel(state.micMuted),
                 description = CallDockText.micDescription(state.micMuted),
@@ -247,11 +234,11 @@ internal fun FlashCallControlDock(
                 rippleOutward = !state.micMuted,
                 gesture = DockGesture.Pop,
                 onClick = onToggleMute,
-                slotInset = slotInset,
-                modifier = Modifier.weight(1f),
-            )
-            if (!state.video && upgrade != null) {
-                FlashCallDockButton(
+            ),
+        )
+        if (!state.video && upgrade != null) {
+            add(
+                DockControlSpec(
                     icon = FlashIcons.Video,
                     label = CallDockText.UPGRADE_LABEL,
                     description = CallDockText.UPGRADE_DESCRIPTION,
@@ -259,14 +246,14 @@ internal fun FlashCallControlDock(
                     rippleOutward = true,
                     gesture = DockGesture.Eyelid,
                     onClick = upgrade,
-                    slotInset = slotInset,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            if (state.video) {
-                // ADR-102: while this device presents, the one video is the screen; the camera is off and cannot be switched on.
-                val camOff = state.cameraOff || state.sharing
-                FlashCallDockButton(
+                ),
+            )
+        }
+        if (state.video) {
+            // ADR-102: while this device presents, the one video is the screen; the camera is off and cannot be switched on.
+            val camOff = state.cameraOff || state.sharing
+            add(
+                DockControlSpec(
                     icon = if (camOff) FlashIcons.VideoOff else FlashIcons.Video,
                     label = CallDockText.videoLabel(camOff),
                     description = CallDockText.videoDescription(state.cameraOff, state.sharing),
@@ -276,10 +263,10 @@ internal fun FlashCallControlDock(
                     enabled = !state.sharing,
                     // A video call joined without a camera has nothing to switch on: the button adds one.
                     onClick = upgrade ?: onToggleCamera,
-                    slotInset = slotInset,
-                    modifier = Modifier.weight(1f),
-                )
-                FlashCallDockButton(
+                ),
+            )
+            add(
+                DockControlSpec(
                     icon = FlashIcons.CameraFlip,
                     label = CallDockText.FLIP_LABEL,
                     description = CallDockText.FLIP_DESCRIPTION,
@@ -289,11 +276,11 @@ internal fun FlashCallControlDock(
                     // Nothing to flip while our camera is off: dim it rather than let it vanish and shift the row.
                     enabled = !state.cameraOff && !state.sharing,
                     onClick = onSwitchCamera,
-                    slotInset = slotInset,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            FlashCallDockButton(
+                ),
+            )
+        }
+        add(
+            DockControlSpec(
                 icon = routeIconSpec,
                 label = if (active != null) CallExtrasText.routeLabel(active) else CallDockText.routeLabel(state.speakerOn),
                 description = if (audioRoutes.needsPicker && active != null) {
@@ -304,12 +291,13 @@ internal fun FlashCallControlDock(
                 emphasised = if (active != null) active == FlashCallAudioRoute.SPEAKER else state.speakerOn,
                 rippleOutward = if (active != null) active == FlashCallAudioRoute.SPEAKER else state.speakerOn,
                 gesture = DockGesture.Pop,
+                hasMenu = audioRoutes.needsPicker,
                 onClick = if (audioRoutes.needsPicker) onOpenRoutes else onToggleSpeaker,
-                slotInset = slotInset,
-                modifier = Modifier.weight(1f),
-            )
-            if (onOpenMore != null) {
-                FlashCallDockButton(
+            ),
+        )
+        if (onOpenMore != null) {
+            add(
+                DockControlSpec(
                     icon = FlashIcons.More,
                     label = CallDockText.MORE_LABEL,
                     description = CallDockText.MORE_DESCRIPTION,
@@ -317,11 +305,11 @@ internal fun FlashCallControlDock(
                     rippleOutward = true,
                     gesture = DockGesture.Pop,
                     onClick = onOpenMore,
-                    slotInset = slotInset,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            FlashCallDockButton(
+                ),
+            )
+        }
+        add(
+            DockControlSpec(
                 icon = FlashIcons.Hangup,
                 label = CallDockText.END_LABEL,
                 description = CallDockText.END_DESCRIPTION,
@@ -330,11 +318,88 @@ internal fun FlashCallControlDock(
                 gesture = DockGesture.Tilt,
                 destructive = true,
                 onClick = onHangUp,
-                slotInset = slotInset,
-                modifier = Modifier.weight(1f),
-            )
-        }
+            ),
+        )
     }
+    val count = buttons.size
+    // Outer + inner horizontal padding sums to 32 dp total so a 360 dp phone gives 328 dp to the row
+    // (54.67 dp per slot -> 48 dp circles for 6 controls). At >=1.3x font scale, wrap cleanly into 2 rows
+    // so buttons keep >=48 dp targets and labels never truncate on one line.
+    Box(
+        modifier = Modifier
+            .padding(horizontal = FlashSpacing.space8)
+            .widthIn(max = (count * DOCK_SLOT_MAX_DP).dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(
+                    // minimalChrome: opaque, so the dock never alpha-blends over a video surface.
+                    if (FlashTheme.minimalChrome) colors.backgroundSurfaceStrong
+                    else colors.backgroundSurfaceStrong.copy(alpha = 0.85f),
+                )
+                .border(FlashDimensions.borderHairline, colors.borderSubtle, shape)
+                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space12),
+        ) {
+            if (largeText && buttons.size > 3) {
+                val perRow = (buttons.size + 1) / 2
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    buttons.chunked(perRow).forEach { rowButtons ->
+                        val rowInset = dockButtonInset(rowButtons.size)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.Top,
+                        ) {
+                            rowButtons.forEach { spec ->
+                                FlashCallDockButton(
+                                    icon = spec.icon,
+                                    label = spec.label,
+                                    description = spec.description,
+                                    emphasised = spec.emphasised,
+                                    rippleOutward = spec.rippleOutward,
+                                    gesture = spec.gesture,
+                                    onClick = spec.onClick,
+                                    enabled = spec.enabled,
+                                    destructive = spec.destructive,
+                                    hasMenu = spec.hasMenu,
+                                    slotInset = rowInset,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                val slotInset = dockButtonInset(count)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    buttons.forEach { spec ->
+                        FlashCallDockButton(
+                            icon = spec.icon,
+                            label = spec.label,
+                            description = spec.description,
+                            emphasised = spec.emphasised,
+                            rippleOutward = spec.rippleOutward,
+                            gesture = spec.gesture,
+                            onClick = spec.onClick,
+                            enabled = spec.enabled,
+                            destructive = spec.destructive,
+                            hasMenu = spec.hasMenu,
+                            slotInset = slotInset,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -378,6 +443,7 @@ internal fun FlashCallDockButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     destructive: Boolean = false,
+    hasMenu: Boolean = false,
     /**
      * Space this control's slot gives back on each side (see [dockButtonInset]); the circle then fills its slot, capped
      * at [BUTTON_SIZE]. Default 0 sizes the button to [BUTTON_SIZE] wherever it is placed.
@@ -463,7 +529,8 @@ internal fun FlashCallDockButton(
             contentAlignment = Alignment.Center,
         ) {
             Box(
-                modifier = circleModifier
+                modifier = Modifier
+                    .matchParentSize()
                     .flashPressScale(interaction)
                     .graphicsLayer { alpha = if (enabled) 1f else DISABLED_ALPHA }
                     .clip(CircleShape)
@@ -517,13 +584,32 @@ internal fun FlashCallDockButton(
                         },
                 )
             }
+            if (hasMenu) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(colors.backgroundSurfaceStrong)
+                        .border(FlashDimensions.borderHairline, colors.borderSubtle, CircleShape)
+                        .clearAndSetSemantics { },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.ChevronDown,
+                        contentDescription = null,
+                        tint = colors.textPrimary,
+                        size = 12.dp,
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(FlashSpacing.space4))
-        Text(
+        FlashText(
             text = label,
             style = FlashTheme.typography.captionDefault,
             color = colors.textSecondary,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             // The button already carries the action in its description; do not read the label twice.

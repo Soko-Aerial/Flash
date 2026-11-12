@@ -170,11 +170,12 @@ public fun FlashRadioGatewayScreen(
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(colors.backgroundSurface)
+            .background(colors.backgroundApp)
             .statusBarsPadding(),
     ) {
         val wide = maxWidth >= WIDE_LAYOUT_WIDTH
         val dense = maxWidth < COMPACT_LAYOUT_WIDTH
+        val dockVisible = !wide && audioVisible
 
         Column(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
@@ -218,7 +219,10 @@ public fun FlashRadioGatewayScreen(
                         start = FlashSpacing.space16,
                         end = FlashSpacing.space16,
                         top = FlashSpacing.space4,
-                        bottom = FlashSpacing.space24,
+                        bottom = radioGatewayBottomContentPadding(
+                            bottomInset = bottomInset,
+                            dockVisible = dockVisible,
+                        ),
                     ),
                     verticalArrangement = Arrangement.spacedBy(30.dp),
                 ) {
@@ -311,7 +315,7 @@ public fun FlashRadioGatewayScreen(
                 }
             }
 
-            if (!wide && audioVisible) {
+            if (dockVisible) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -391,3 +395,6 @@ private val COMPACT_LAYOUT_WIDTH = 600.dp
 
 /** One column at every size, capped; nothing is stretched across a 1400 dp pane. */
 private val PAGE_MAX_WIDTH = 780.dp
+
+internal fun radioGatewayBottomContentPadding(bottomInset: Dp, dockVisible: Boolean): Dp =
+    FlashSpacing.space24 + if (dockVisible) 0.dp else bottomInset

@@ -48,6 +48,7 @@ object FlashIcons {
     val Download = FlashIconSpec(Res.drawable.flash_ic_download, "Download")
     val Upload = FlashIconSpec(Res.drawable.flash_ic_upload, "Upload")
     val Share = FlashIconSpec(Res.drawable.flash_ic_share, "Share")
+    val Copy = FlashIconSpec(Res.drawable.flash_ic_copy, "Copy")
     val Reply = FlashIconSpec(Res.drawable.flash_ic_reply, "Reply")
     val Forward = FlashIconSpec(Res.drawable.flash_ic_forward, "Forward")
     val React = FlashIconSpec(Res.drawable.flash_ic_react, "Add reaction")

@@ -96,7 +96,7 @@ internal fun FlashHubLetterHeader(letter: String, modifier: Modifier = Modifier)
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
-        FlashText(text = letter, style = hubCapsStyle(), color = colors.accentPrimary)
+        FlashText(text = letter, style = hubCapsStyle(), color = colors.textLink)
         Box(Modifier.weight(1f).height(1.dp).background(colors.borderSubtle))
     }
 }
@@ -130,7 +130,7 @@ internal fun FlashHubPeopleFilterRow(
 internal fun FlashHubFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
     val colors = FlashTheme.colors
     val bg by animateColorAsState(
-        if (selected) colors.accentPrimary.copy(alpha = 0.16f) else colors.backgroundSurfaceSubtle,
+        if (selected) colors.accentFill.copy(alpha = 0.14f) else colors.backgroundSurfaceSubtle,
         animationSpec = FlashTheme.motion.tweenFastSpec(),
         label = "hubFilterBg",
     )
@@ -139,7 +139,7 @@ internal fun FlashHubFilterChip(label: String, selected: Boolean, onClick: () ->
             .heightIn(min = FlashDimensions.minTouchTarget)
             .clip(HubShapes.control)
             .background(bg)
-            .border(FlashDimensions.borderHairline, if (selected) colors.accentPrimary else colors.borderSubtle, HubShapes.control)
+            .border(FlashDimensions.borderHairline, if (selected) colors.accentFill else colors.borderSubtle, HubShapes.control)
             .hubClickable(role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = FlashSpacing.space12)
             .semantics { semanticsSelected = selected },
@@ -148,7 +148,7 @@ internal fun FlashHubFilterChip(label: String, selected: Boolean, onClick: () ->
         FlashText(
             label,
             style = if (selected) FlashTheme.typography.bodyEmphasis else FlashTheme.typography.bodyDefault,
-            color = if (selected) colors.accentPrimary else colors.textPrimary,
+            color = if (selected) colors.textLink else colors.textPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

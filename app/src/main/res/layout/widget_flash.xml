@@ -43,8 +43,10 @@
 
     <ImageView
         android:id="@+id/widget_action_icon"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:padding="12dp"
+        android:scaleType="centerInside"
         android:contentDescription="@string/shortcut_send_files"
         android:src="@android:drawable/ic_menu_send"
         android:tint="#FFFFFFFF" />

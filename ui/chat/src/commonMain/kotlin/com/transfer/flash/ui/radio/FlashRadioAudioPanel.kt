@@ -38,6 +38,8 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -46,6 +48,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.ceil
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
 import com.transfer.flash.ui.hub.FlashHubChip
 import com.transfer.flash.ui.hub.FlashHubSwitch
 import com.transfer.flash.ui.hub.FlashHubTextAction
@@ -53,6 +58,7 @@ import com.transfer.flash.ui.hub.HubShapes
 import com.transfer.flash.ui.hub.hubClickable
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
@@ -76,7 +82,7 @@ public object FlashRadioVoiceCopy {
 
     /** Keying warning and licence reminder in one sentence: the two facts an operator must know before talking. */
     public const val STATION_ID_NOTE: String =
-        "Talking keys the transmitter and goes out as clear audio. Say your callsign as your licence requires."
+        "Talking keys the radio and sends live, unencrypted audio over the air. Say your callsign as your licence requires."
     public const val A11Y_LISTEN_SWITCH: String = "Listen to the radio switch"
 
     public fun phaseText(phase: RadioVoicePhase): String = when (phase) {
@@ -129,7 +135,7 @@ public fun FlashRadioAudioPanel(
         modifier = modifier
             .fillMaxWidth()
             .clip(HubShapes.card)
-            .background(colors.backgroundSurfaceStrong)
+            .background(colors.backgroundSurface)
             .padding(
                 horizontal = if (dense) FlashSpacing.space16 else FlashSpacing.space20,
                 vertical = if (dense) FlashSpacing.space12 else FlashSpacing.space16,
@@ -149,8 +155,9 @@ public fun FlashRadioAudioPanel(
             Box(
                 modifier = Modifier
                     .size(FlashDimensions.minTouchTarget)
-                    .hubClickable { onListenChange(!listening) }
+                    .hubClickable(role = Role.Switch) { onListenChange(!listening) }
                     .semantics {
+                        role = Role.Switch
                         contentDescription = FlashRadioCopy.A11Y_LISTEN
                         stateDescription = if (listening) FlashRadioCopy.VALUE_ON else FlashRadioCopy.VALUE_OFF
                     },
@@ -269,20 +276,41 @@ private fun RadioAudioStateRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        FlashText(
-            text = when {
-                talking -> FlashRadioCopy.VALUE_TALKING
-                !linkLive -> FlashRadioCopy.AUDIO_NO_LINK
-                voice.phase == RadioVoicePhase.RECEIVING -> FlashRadioCopy.VALUE_RECEIVING
-                else -> FlashRadioCopy.AUDIO_LISTENING
-            },
-            style = FlashTheme.typography.metadataDefault,
-            color = when {
-                talking -> colors.accentSecondary
-                !linkLive -> colors.textError
-                else -> colors.textSecondary
-            },
-        )
+        when {
+            talking -> Box(
+                modifier = Modifier
+                    .clip(HubShapes.chip)
+                    .background(colors.accentSecondary.copy(alpha = 0.16f))
+                    .padding(horizontal = FlashSpacing.space8, vertical = 2.dp),
+            ) {
+                FlashText(
+                    text = FlashRadioCopy.VALUE_TALKING,
+                    style = FlashTheme.typography.metadataEmphasis,
+                    color = colors.textPrimary,
+                )
+            }
+            !linkLive -> Box(
+                modifier = Modifier
+                    .clip(HubShapes.chip)
+                    .background(colors.textError.copy(alpha = 0.14f))
+                    .padding(horizontal = FlashSpacing.space8, vertical = 2.dp),
+            ) {
+                FlashText(
+                    text = FlashRadioCopy.AUDIO_NO_LINK,
+                    style = FlashTheme.typography.metadataEmphasis,
+                    color = colors.textPrimary,
+                )
+            }
+            else -> FlashText(
+                text = if (voice.phase == RadioVoicePhase.RECEIVING) {
+                    FlashRadioCopy.VALUE_RECEIVING
+                } else {
+                    FlashRadioCopy.AUDIO_LISTENING
+                },
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textSecondary,
+            )
+        }
         RadioLevelBars(level = if (linkLive) level else 0f, active = listening && linkLive)
         if (talking) {
             FlashHubChip(text = FlashRadioCopy.CHIP_ON_AIR)
@@ -291,8 +319,59 @@ private fun RadioAudioStateRow(
     }
 }
 
+internal data class RadioPttColors(
+    val background: Color,
+    val foreground: Color,
+)
+
+internal fun radioPttColors(
+    colors: FlashColors,
+    enabled: Boolean,
+    talking: Boolean,
+): RadioPttColors = when {
+    talking -> RadioPttColors(
+        background = colors.accentSecondary,
+        foreground = selectAccessibleForeground(
+            background = colors.accentSecondary,
+            preferred = colors.onAccentFill,
+            fallbacks = listOf(colors.textPrimary, colors.backgroundApp),
+        ),
+    )
+    enabled -> RadioPttColors(
+        background = colors.accentFill,
+        foreground = colors.onAccentFill,
+    )
+    else -> RadioPttColors(
+        background = colors.backgroundSurfaceSubtle,
+        foreground = colors.textSecondary,
+    )
+}
+
+private fun selectAccessibleForeground(
+    background: Color,
+    preferred: Color,
+    fallbacks: List<Color>,
+): Color {
+    if (wcagContrastRatio(preferred, background) >= 4.5f) return preferred
+    return (listOf(preferred) + fallbacks).maxBy { wcagContrastRatio(it, background) }
+}
+
+private fun wcagContrastRatio(a: Color, b: Color): Float {
+    val la = wcagLuminance(a)
+    val lb = wcagLuminance(b)
+    return (max(la, lb) + 0.05f) / (min(la, lb) + 0.05f)
+}
+
+private fun wcagLuminance(color: Color): Float =
+    0.2126f * linearizeChannel(color.red) +
+        0.7152f * linearizeChannel(color.green) +
+        0.0722f * linearizeChannel(color.blue)
+
+private fun linearizeChannel(channel: Float): Float =
+    if (channel <= 0.03928f) channel / 12.92f else ((channel + 0.055f) / 1.055f).pow(2.4f)
+
 /**
- * The push-to-talk control. Resting it is an outline, holding it fills with the accent, and a live transmission
+ * The push-to-talk control. Resting it is an accent fill, holding it activates transmission, and a live transmission
  * turns it warm with the word "Talking…" — the one control on the page whose appearance changes *while* it is
  * being used, because "did I key the transmitter?" must be answerable at a glance.
  */
@@ -317,16 +396,9 @@ private fun RadioPushToTalk(
         label = "radioPttPress",
     )
 
-    val background: Color = when {
-        talking -> colors.accentSecondary
-        enabled -> colors.accentPrimary
-        else -> colors.backgroundSurfaceSubtle
-    }
-    val foreground: Color = when {
-        talking -> colors.backgroundApp
-        enabled -> colors.textOnAccent
-        else -> colors.textTertiary
-    }
+    val pttColors = radioPttColors(colors = colors, enabled = enabled, talking = talking)
+    val background: Color = pttColors.background
+    val foreground: Color = pttColors.foreground
 
     Row(
         modifier = modifier
@@ -374,6 +446,14 @@ private fun RadioPushToTalk(
                 role = Role.Button
                 contentDescription = FlashRadioCopy.A11Y_TALK
                 stateDescription = if (talking) FlashRadioCopy.VALUE_TALKING else FlashRadioCopy.VALUE_READY
+                if (!enabled) {
+                    disabled()
+                } else {
+                    onClick(label = FlashRadioCopy.A11Y_TALK) {
+                        if (talking) up() else down()
+                        true
+                    }
+                }
             }
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
         verticalAlignment = Alignment.CenterVertically,
@@ -418,7 +498,7 @@ private fun RadioLevelBars(level: Float, active: Boolean) {
                     .width(4.dp)
                     .height(height)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(if (index < filled) colors.accentPrimary else colors.borderStrong),
+                    .background(if (index < filled) colors.accentFill else colors.borderStrong),
             )
         }
     }

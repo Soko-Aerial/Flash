@@ -20,10 +20,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -31,7 +34,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatListItemUi
 import com.transfer.flash.core.messaging.util.sampleFlashChatListState
 import com.transfer.flash.ui.icons.FlashIcon
@@ -117,13 +122,18 @@ fun FlashChatListSearchBar(
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
 
     Row(
         modifier = modifier
             .fillMaxWidth()
             .background(colors.backgroundSurface)
             .statusBarsPadding()
-            .padding(horizontal = FlashSpacing.space4),
+            .padding(horizontal = FlashSpacing.space4, vertical = FlashSpacing.space4),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Close search
@@ -139,7 +149,7 @@ fun FlashChatListSearchBar(
         }
 
         // Query field pill
-        Box(
+        Row(
             modifier = Modifier
                 .weight(1f)
                 .clip(FlashShapes.composerInput)
@@ -149,7 +159,7 @@ fun FlashChatListSearchBar(
                     color = colors.borderSubtle,
                     shape = FlashShapes.composerInput,
                 )
-                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+                .padding(start = FlashSpacing.space12, end = FlashSpacing.space4, top = FlashSpacing.space4, bottom = FlashSpacing.space4)
                 .semantics {
                     contentDescription = if (resultCount != null && resultCount > 0) {
                         "Searching ${query}, ${FlashSearchResultMath.countLabel(resultCount)}"
@@ -157,14 +167,18 @@ fun FlashChatListSearchBar(
                         "Searching $query"
                     }
                 },
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             BasicTextField(
                 value = query,
                 onValueChange = onQueryChanged,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = FlashSpacing.space4)
+                    .focusRequester(focusRequester),
                 singleLine = true,
                 textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
-                cursorBrush = SolidColor(colors.accentPrimary),
+                cursorBrush = SolidColor(colors.accentFill),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onSearchSubmit?.invoke() }),
                 decorationBox = { innerTextField ->
@@ -174,27 +188,46 @@ fun FlashChatListSearchBar(
                             style = typography.bodyDefault,
                             color = colors.textTertiary,
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     innerTextField()
                 },
             )
+            if (query.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .clickable { onQueryChanged("") }
+                        .semantics { role = Role.Button; contentDescription = "Clear search" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = null,
+                        size = FlashDimensions.iconSm,
+                        tint = colors.textSecondary,
+                    )
+                }
+            }
         }
 
-        Spacer(modifier = Modifier.size(FlashSpacing.space4))
-
         // Live result count (polite live region for TalkBack)
-        if (resultCount == null) {
-            Spacer(modifier = Modifier.width(FlashDimensions.minTouchTarget))
-        } else {
+        if (resultCount != null) {
+            Spacer(modifier = Modifier.size(FlashSpacing.space8))
             FlashText(
                 text = if (resultCount == 0) "No matches" else FlashSearchResultMath.countLabel(resultCount),
                 style = typography.metadataDefault,
                 color = if (resultCount == 0) colors.textTertiary else colors.textSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                modifier = Modifier
+                    .padding(end = FlashSpacing.space8)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
             )
+        } else {
+            Spacer(modifier = Modifier.size(FlashSpacing.space8))
         }
     }
 }
@@ -238,7 +271,7 @@ fun FlashRecentSearchChips(
                     FlashText(
                         text = "Clear",
                         style = typography.metadataEmphasis,
-                        color = colors.accentPrimary,
+                        color = colors.textLink,
                     )
                 }
             }

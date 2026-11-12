@@ -130,22 +130,66 @@ internal object DesktopHelpers {
     }
 
     /**
+     * Resolves the target file extension for saving media into the downloads gallery folder,
+     * preserving video/audio/image extensions from [mimeType] (or [sourceFileName] when MIME is
+     * generic) instead of defaulting non-images to `.jpg`.
+     */
+    internal fun resolveGalleryExtension(
+        mimeType: String,
+        sourceFileName: String? = null,
+    ): String {
+        val normalized = mimeType.substringBefore(';').trim().lowercase()
+        val fromMime = when (normalized) {
+            "video/mp4", "video/m4v" -> "mp4"
+            "video/webm" -> "webm"
+            "video/quicktime" -> "mov"
+            "video/x-matroska" -> "mkv"
+            "video/3gpp" -> "3gp"
+            "video/x-msvideo" -> "avi"
+            "audio/mp4", "audio/m4a", "audio/aac" -> "m4a"
+            "audio/mpeg", "audio/mp3" -> "mp3"
+            "audio/wav", "audio/x-wav" -> "wav"
+            "audio/ogg" -> "ogg"
+            "audio/flac" -> "flac"
+            "audio/webm" -> "weba"
+            "image/jpeg", "image/jpg" -> "jpg"
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            "image/gif" -> "gif"
+            "image/heic" -> "heic"
+            "image/heif" -> "heif"
+            "image/bmp" -> "bmp"
+            "image/avif" -> "avif"
+            else -> null
+        }
+        if (fromMime != null) return fromMime
+        val fromName = sourceFileName
+            ?.substringAfterLast('.', "")
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotEmpty() && it.all(Char::isLetterOrDigit) }
+        if (fromName != null) return fromName
+        return when {
+            normalized.startsWith("video/") -> "mp4"
+            normalized.startsWith("audio/") -> "m4a"
+            else -> "jpg"
+        }
+    }
+
+    /**
      * Desktop "save to gallery" — copies the file to `~/Downloads/Flash/` (the closest
      * equivalent to Android's MediaStore; the phase's Do-NOT explicitly blesses this).
      */
-    fun saveImageToGallery(ref: String?, mimeType: String) {
+    fun saveImageToGallery(
+        ref: String?,
+        mimeType: String,
+        targetDir: File = File(System.getProperty("user.home"), "Downloads/Flash"),
+    ) {
         val source = resolveFile(ref) ?: return
         if (!source.exists()) return
 
-        val downloadsDir = File(System.getProperty("user.home"), "Downloads/Flash")
-        downloadsDir.mkdirs()
-        val ext = when (mimeType.substringAfter("/", "jpg")) {
-            "jpeg" -> "jpg"
-            "png" -> "png"
-            "gif" -> "gif"
-            "webp" -> "webp"
-            else -> "jpg"
-        }
+        targetDir.mkdirs()
+        val ext = resolveGalleryExtension(mimeType, source.name)
         // R-20: a millisecond name with REPLACE_EXISTING let two saves in one millisecond overwrite each other. Take the
         // first free name instead (CREATE_NEW never overwrites) and say in the log when the copy fails.
         val stamp = System.currentTimeMillis()
@@ -153,7 +197,7 @@ internal object DesktopHelpers {
             var attempt = 0
             while (true) {
                 val name = if (attempt == 0) "flash_$stamp.$ext" else "flash_${stamp}_$attempt.$ext"
-                val target = File(downloadsDir, name)
+                val target = File(targetDir, name)
                 try {
                     Files.copy(source.toPath(), target.toPath())
                     return
@@ -162,7 +206,7 @@ internal object DesktopHelpers {
                 }
             }
         }.onFailure { error ->
-            FlashLog.w("STORAGE", "save image to ${downloadsDir.path} failed (${error.message ?: error::class.java.simpleName})")
+            FlashLog.w("STORAGE", "save image to ${targetDir.path} failed (${error.message ?: error::class.java.simpleName})")
         }
     }
 

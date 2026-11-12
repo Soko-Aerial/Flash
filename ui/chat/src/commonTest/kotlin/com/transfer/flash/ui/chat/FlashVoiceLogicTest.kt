@@ -115,4 +115,27 @@ class FlashVoiceLogicTest {
         assertEquals(3, voice.amplitudes.size)
         assertEquals("audio/aac", voice.mimeType)
     }
+
+    @Test
+    fun `demo elapsed advances proportionally at 1_5x and 2x speeds`() {
+        // 1.5f.toLong() used to truncate to 1L and play at 1x speed.
+        assertEquals(150L, FlashVoiceMath.advanceDemoElapsedMs(0L, 10_000L, tickMs = 100L, playbackSpeed = 1.5f))
+        assertEquals(200L, FlashVoiceMath.advanceDemoElapsedMs(0L, 10_000L, tickMs = 100L, playbackSpeed = 2.0f))
+        assertEquals(10_000L, FlashVoiceMath.advanceDemoElapsedMs(9_950L, 10_000L, tickMs = 100L, playbackSpeed = 1.5f))
+    }
+
+    @Test
+    fun `playback coordinator tracks single active key and ignores stale release`() {
+        FlashVoicePlaybackCoordinator.claim("card-a")
+        assertEquals("card-a", FlashVoicePlaybackCoordinator.activePlaybackKey)
+
+        FlashVoicePlaybackCoordinator.claim("card-b")
+        assertEquals("card-b", FlashVoicePlaybackCoordinator.activePlaybackKey)
+
+        FlashVoicePlaybackCoordinator.release("card-a")
+        assertEquals("card-b", FlashVoicePlaybackCoordinator.activePlaybackKey)
+
+        FlashVoicePlaybackCoordinator.release("card-b")
+        assertEquals(null, FlashVoicePlaybackCoordinator.activePlaybackKey)
+    }
 }

@@ -18,16 +18,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
@@ -64,6 +66,7 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
@@ -213,7 +216,7 @@ internal fun FlashCallPanel(
                     .semantics { contentDescription = title },
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
+                    FlashText(
                         text = title,
                         style = FlashTheme.typography.headingMedium,
                         color = colors.textPrimary,
@@ -238,7 +241,14 @@ internal fun FlashCallPanel(
                     }
                 }
                 Spacer(Modifier.height(FlashSpacing.space8))
-                content()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    content()
+                }
             }
         }
     }
@@ -263,6 +273,7 @@ internal fun FlashCallPanelRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .clip(RoundedCornerShape(FlashShapes.radius12))
             .flashPressScale(interaction)
             .then(
@@ -296,27 +307,27 @@ internal fun FlashCallPanelRow(
             modifier = Modifier
                 .size(44.dp)
                 .clip(CircleShape)
-                .background(if (selected == true) colors.accentPrimary else colors.backgroundSurfaceSubtle),
+                .background(if (selected == true) colors.accentFill else colors.backgroundSurfaceSubtle),
             contentAlignment = Alignment.Center,
         ) {
             FlashIcon(
                 icon = icon,
                 contentDescription = null,
-                tint = if (selected == true) colors.textOnAccent else colors.textPrimary,
+                tint = if (selected == true) colors.onAccentFill else colors.textPrimary,
                 size = FlashDimensions.iconMd,
             )
         }
         Spacer(Modifier.width(FlashSpacing.space12))
         Column(modifier = Modifier.weight(1f)) {
-            Text(
+            FlashText(
                 text = title,
                 style = FlashTheme.typography.bodyDefault,
                 color = colors.textPrimary,
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             if (subtitle != null) {
-                Text(
+                FlashText(
                     text = subtitle,
                     style = FlashTheme.typography.metadataDefault,
                     color = colors.textSecondary,
@@ -329,7 +340,7 @@ internal fun FlashCallPanelRow(
             FlashIcon(
                 icon = FlashIcons.Check,
                 contentDescription = null,
-                tint = colors.accentPrimary,
+                tint = colors.accentFill,
                 size = FlashDimensions.iconMd,
                 modifier = Modifier.clearAndSetSemantics { },
             )
@@ -410,7 +421,7 @@ internal fun FlashCallMorePanel(
                         )
                     }
                     Spacer(Modifier.height(FlashSpacing.space4))
-                    Text(
+                    FlashText(
                         text = label,
                         style = FlashTheme.typography.captionDefault,
                         color = colors.textSecondary,
@@ -480,7 +491,7 @@ internal fun FlashCallMorePanel(
 
 @Composable
 private fun reactionTint(kind: FlashCallReactionKind): Color = when (kind) {
-    FlashCallReactionKind.LIKE -> FlashTheme.colors.accentPrimary
+    FlashCallReactionKind.LIKE -> FlashTheme.colors.accentFill
     FlashCallReactionKind.LOVE -> FlashTheme.colors.textError
     FlashCallReactionKind.WOW -> FlashTheme.colors.statusTransfer
 }
@@ -510,7 +521,7 @@ internal fun FlashPeerBadges(
     ) {
         if (micMuted) Badge(FlashIcons.MicOff, background, tint)
         if (cameraOff) Badge(FlashIcons.VideoOff, background, tint)
-        if (handRaised) Badge(FlashIcons.Hand, colors.accentPrimary, colors.textOnAccent)
+        if (handRaised) Badge(FlashIcons.Hand, colors.accentFill, colors.onAccentFill)
     }
 }
 
@@ -610,7 +621,7 @@ private fun ReactionBubble(reaction: FlashCallReaction, name: String, modifier: 
             )
         }
         Spacer(Modifier.height(FlashSpacing.space4))
-        Text(
+        FlashText(
             text = name,
             style = FlashTheme.typography.captionDefault,
             color = Color.White,
@@ -636,6 +647,7 @@ internal fun FlashDataSaverPill(onTurnOff: () -> Unit, modifier: Modifier = Modi
     val interaction = remember { MutableInteractionSource() }
     Row(
         modifier = modifier
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .flashPressScale(interaction)
             .clip(RoundedCornerShape(FlashShapes.radius24))
             .background(colors.backgroundSurfaceStrong.copy(alpha = if (FlashTheme.minimalChrome) 1f else 0.9f))
@@ -651,15 +663,15 @@ internal fun FlashDataSaverPill(onTurnOff: () -> Unit, modifier: Modifier = Modi
             tint = colors.textPrimary,
             size = FlashDimensions.iconSm,
         )
-        Text(
+        FlashText(
             text = CallExtrasText.DATA_SAVER_PILL,
             style = FlashTheme.typography.metadataDefault,
             color = colors.textPrimary,
         )
-        Text(
+        FlashText(
             text = CallExtrasText.DATA_SAVER_PILL_ACTION,
             style = FlashTheme.typography.metadataDefault,
-            color = colors.accentPrimary,
+            color = colors.textLink,
         )
     }
 }
@@ -679,30 +691,61 @@ internal fun FlashCallMessagePill(
     val colors = FlashTheme.colors
     Row(
         modifier = modifier
+            .padding(horizontal = FlashSpacing.space16)
             .clip(RoundedCornerShape(FlashShapes.radius24))
             .background(colors.backgroundSurfaceStrong.copy(alpha = if (FlashTheme.minimalChrome) 1f else 0.9f))
-            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+            .padding(start = FlashSpacing.space12, end = FlashSpacing.space4, top = FlashSpacing.space4, bottom = FlashSpacing.space4)
             .semantics { liveRegion = LiveRegionMode.Polite },
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = text, style = FlashTheme.typography.metadataDefault, color = colors.textPrimary)
+        FlashText(
+            text = text,
+            style = FlashTheme.typography.metadataDefault,
+            color = colors.textPrimary,
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .padding(vertical = FlashSpacing.space8),
+        )
         if (actionLabel != null && onAction != null) {
-            Text(
-                text = actionLabel,
-                style = FlashTheme.typography.metadataDefault,
-                color = colors.accentPrimary,
-                modifier = Modifier.clickable(role = Role.Button, onClick = onAction),
+            PillTextAction(
+                label = actionLabel,
+                color = colors.textLink,
+                onClick = onAction,
             )
         }
         if (onDismiss != null) {
-            Text(
-                text = "Dismiss",
-                style = FlashTheme.typography.metadataDefault,
+            PillTextAction(
+                label = "Dismiss",
                 color = colors.textSecondary,
-                modifier = Modifier.clickable(role = Role.Button, onClick = onDismiss),
+                onClick = onDismiss,
             )
         }
+    }
+}
+
+@Composable
+private fun PillTextAction(label: String, color: Color, onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .heightIn(min = FlashDimensions.minTouchTarget)
+            .widthIn(min = FlashDimensions.minTouchTarget)
+            .clip(RoundedCornerShape(FlashShapes.radius16))
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(horizontal = FlashSpacing.space8),
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = label,
+            style = FlashTheme.typography.metadataDefault,
+            color = color,
+        )
     }
 }
 
@@ -759,12 +802,12 @@ internal fun FlashCallLinkChip(
                     size = FlashDimensions.iconSm,
                     modifier = Modifier.clearAndSetSemantics { },
                 )
-                Text(text = CallExtrasText.VERIFIED_LABEL, style = FlashTheme.typography.metadataDefault, color = text, modifier = Modifier.clearAndSetSemantics { })
+                FlashText(text = CallExtrasText.VERIFIED_LABEL, style = FlashTheme.typography.metadataDefault, color = text, modifier = Modifier.clearAndSetSemantics { })
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
             Box(Modifier.size(FlashSpacing.space8).clip(CircleShape).background(dot).clearAndSetSemantics { })
-            Text(text = CallExtrasText.LINK_LABEL, style = FlashTheme.typography.metadataDefault, color = text, modifier = Modifier.clearAndSetSemantics { })
+            FlashText(text = CallExtrasText.LINK_LABEL, style = FlashTheme.typography.metadataDefault, color = text, modifier = Modifier.clearAndSetSemantics { })
         }
     }
 }

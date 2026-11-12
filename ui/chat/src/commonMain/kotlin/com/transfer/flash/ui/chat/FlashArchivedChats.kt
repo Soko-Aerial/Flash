@@ -73,30 +73,30 @@ fun FlashArchivedChatsRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 56.dp)
+                .heightIn(min = FlashDimensions.chatListRowHeight)
                 .padding(
                     horizontal = FlashSpacing.space16,
                     vertical = FlashSpacing.space12,
                 ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Archive icon medallion
+            // Archive icon medallion aligned with FlashChatListRow's 48dp avatar
             Box(
                 modifier = Modifier
-                    .size(FlashDimensions.avatarSm)
+                    .size(FlashDimensions.avatarLg)
                     .clip(FlashShapes.avatar)
-                    .background(colors.accentSecondary.copy(alpha = 0.12f)),
+                    .background(colors.accentFill.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashIcon(
                     icon = FlashIcons.Archive,
                     contentDescription = null,
-                    tint = colors.accentPrimary,
+                    tint = colors.accentFill,
                     size = FlashDimensions.iconMd,
                 )
             }
 
-            Spacer(modifier = Modifier.width(FlashSpacing.space16))
+            Spacer(modifier = Modifier.width(FlashSpacing.space12))
 
             FlashText(
                 text = "Archived",
@@ -110,14 +110,14 @@ fun FlashArchivedChatsRow(
                     modifier = Modifier
                         .height(20.dp)
                         .clip(CircleShape)
-                        .background(colors.accentPrimary)
+                        .background(colors.accentFill)
                         .padding(horizontal = FlashSpacing.space8),
                     contentAlignment = Alignment.Center,
                 ) {
                     FlashText(
                         text = if (unreadCount > 99) "99+" else unreadCount.toString(),
                         style = typography.captionEmphasis,
-                        color = colors.textOnAccent,
+                        color = colors.onAccentFill,
                     )
                 }
                 Spacer(modifier = Modifier.width(FlashSpacing.space8))
@@ -132,8 +132,11 @@ fun FlashArchivedChatsRow(
 
         if (showDivider) {
             HorizontalDivider(
-                modifier = Modifier.padding(start = FlashSpacing.space16 + FlashDimensions.avatarSm + FlashSpacing.space16),
+                modifier = Modifier.padding(
+                    start = FlashDimensions.avatarLg + FlashSpacing.space16 + FlashSpacing.space12,
+                ),
                 color = colors.borderSubtle,
+                thickness = FlashDimensions.borderHairline,
             )
         }
     }

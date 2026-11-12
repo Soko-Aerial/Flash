@@ -207,4 +207,24 @@ class FlashShareTargetMathTest {
         kotlin.test.assertFalse(FlashShareTargetMath.hasUnforwardableAttachments(listOf(ready)))
         assertTrue(FlashShareTargetMath.hasUnforwardableAttachments(listOf(ready, notReady)))
     }
+
+    @Test
+    fun `emptyStateTitle shows query-specific no-matches copy even while scanning`() {
+        assertEquals(
+            "No matches for \"alice\"",
+            FlashShareTargetMath.emptyStateTitle(isScanning = true, searchQuery = "  alice  "),
+        )
+        assertEquals(
+            "No matches for \"bob\"",
+            FlashShareTargetMath.emptyStateTitle(isScanning = false, searchQuery = "bob"),
+        )
+        assertEquals(
+            "Searching for nearby devices…",
+            FlashShareTargetMath.emptyStateTitle(isScanning = true, searchQuery = "   "),
+        )
+        assertEquals(
+            "No devices found",
+            FlashShareTargetMath.emptyStateTitle(isScanning = false, searchQuery = ""),
+        )
+    }
 }

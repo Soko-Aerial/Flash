@@ -2001,6 +2001,11 @@ public class DesktopEngine(
             },
             emitSessionStarted = true,
             requireAcceptance = true,
+            // #20 on the desktop too: the in-memory done-set survives a peer disconnect and lets a
+            // re-offer seed its vector instead of re-downloading chunks already in the .part file.
+            resumeIndexesProvider = { start ->
+                transferImpl?.receiverDoneIndexes(start.transferId).orEmpty()
+            },
         )
 
         // ---- swarm integration (SW-8) ----
@@ -2186,6 +2191,10 @@ public class DesktopEngine(
                     // tiebreak, or a re-dial after a peer's address changes — so this accumulated
                     // steadily rather than only in a rare path.
                     sessionJobs.remove(stale)?.cancel()
+                    // Same guarantee the Android hosts get: a peer that disappears must not leave an
+                    // inbound row "Downloading" at its last byte count for ever. Durable chunks stay
+                    // on disk, so a later retry resumes instead of starting over.
+                    failInboundForPeer(stale.peerDeviceId.value, "peer disconnected")
                     FlashSessionCoordinator.onSessionDown(
                         peerDeviceId = stale.peerDeviceId.value,
                         onSignalingLost = { callsImpl?.onSignalingLost(it) },
@@ -2252,6 +2261,9 @@ public class DesktopEngine(
                         rejectedLogCache.remove(control.transferId)
                         rejectedCancelSent.add(control.transferId)
                     }
+                    RealFlashTransferRepository.ACTION_RESET_ANNOUNCEMENT -> {
+                        receivePipeline?.resetResumeAnnouncement(control.transferId)
+                    }
                     RealFlashTransferRepository.ACTION_RESUME -> {
                         val tid = control.transferId
                         if (transfer.isResumableInboundRetry(tid)) {
@@ -2271,7 +2283,7 @@ public class DesktopEngine(
         scope.launch {
             transfer.outgoingControl.collect { control ->
                 val peerId = control.peerDeviceId ?: return@collect
-                sendXfer(peerId, control.action, control.transferId)
+                sendXfer(peerId, control.action, control.transferId, control.reason)
             }
         }
 
@@ -2400,6 +2412,28 @@ public class DesktopEngine(
                         }
                     }
                 }
+            },
+        )
+    }
+
+    /**
+     * Fails every inbound transfer owned by a peer whose transport just dropped. Mirrors the
+     * Android hosts' `cleanupInbound`/`failInboundForPeer`: the pipeline session, sink handle and
+     * per-transfer maps go, the row becomes Failed with a sentence, and the durable chunk rows are
+     * deliberately kept so Retry resumes instead of restarting at zero.
+     */
+    private fun failInboundForPeer(peerDeviceId: String, reason: String) {
+        failInboundTransfersForPeer(
+            peerDeviceId = peerDeviceId,
+            incomingOwners = incomingOwners,
+            receivePipeline = receivePipeline,
+            openHandles = openHandles,
+            incomingMeta = incomingMeta,
+            receivedPaths = receivedPaths,
+            onTransferFailed = { transferId ->
+                rejectedLogCache.remove(transferId)
+                rejectedCancelSent.add(transferId)
+                transferImpl?.onIncomingFailed(transferId, reason)
             },
         )
     }
@@ -2705,3 +2739,33 @@ internal fun <S> selectStreamSession(active: Map<FlashDeviceId, S>, peerDeviceId
     } else {
         active[FlashDeviceId(peerDeviceId)]
     }
+
+/**
+ * Teardown shared by the desktop peer-disconnect path: drops every inbound transfer the peer owns.
+ *
+ * Kept as a top-level function so the map/handle cleanup is covered by a focused JVM test without
+ * booting the whole desktop engine. `onTransferFailed` publishes the row state; the chunk rows are
+ * not touched here, because they are the resume state a later retry uses.
+ *
+ * @return the transfer ids that were failed, in map iteration order.
+ */
+internal fun failInboundTransfersForPeer(
+    peerDeviceId: String,
+    incomingOwners: MutableMap<String, String>,
+    receivePipeline: ReceivePipeline?,
+    openHandles: MutableMap<String, RandomAccessSinkHandle>,
+    incomingMeta: MutableMap<String, ChunkFrame.FileStart>,
+    receivedPaths: MutableMap<String, String>,
+    onTransferFailed: (String) -> Unit,
+): List<String> {
+    val ids = incomingOwners.filterValues { it == peerDeviceId }.keys.toList()
+    for (transferId in ids) {
+        receivePipeline?.cancelSession(transferId)
+        openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
+        incomingMeta.remove(transferId)
+        receivedPaths.remove(transferId)
+        incomingOwners.remove(transferId)
+        onTransferFailed(transferId)
+    }
+    return ids
+}

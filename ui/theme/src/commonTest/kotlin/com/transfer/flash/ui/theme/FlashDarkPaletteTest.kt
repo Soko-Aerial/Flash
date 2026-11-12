@@ -121,11 +121,83 @@ class FlashDarkPaletteTest {
     private fun linearize(channel: Float): Float =
         if (channel <= 0.03928f) channel / 12.92f else ((channel + 0.055f) / 1.055f).pow(2.4f)
 
-    // Deliberate sameness, documented not tested elsewhere.
+    // --- Tertiary, timestamp, accent fill & error AA guards ------------------
+
     @Test
-    fun `tertiary text tone is intentionally shared across themes`() {
-        // graphite500 is a mid-tone that passes ~4.4:1 on both graphite50 and void.
-        assertEquals(light.textTertiary, dark.textTertiary)
-        assertEquals(light.chatTextTimestamp, dark.chatTextTimestamp)
+    fun `tertiary text diverges across themes and meets 4_5 to 1 on card and subtle surfaces`() {
+        assertNotEquals(light.textTertiary, dark.textTertiary)
+
+        listOf(
+            light.backgroundApp,
+            light.backgroundChat,
+            light.backgroundSurface,
+            light.backgroundSurfaceSubtle,
+            light.backgroundSurfaceStrong,
+        ).forEach { bg ->
+            contrastGuard(light.textTertiary, bg, 4.5f)
+        }
+
+        listOf(
+            dark.backgroundApp,
+            dark.backgroundChat,
+            dark.backgroundSurface,
+            dark.backgroundSurfaceSubtle,
+            dark.backgroundSurfaceStrong,
+            dark.chatBgAttachmentIncoming,
+        ).forEach { bg ->
+            contrastGuard(dark.textTertiary, bg, 4.5f)
+        }
+
+        // Preserve subtle hierarchy below textSecondary.
+        assertTrue(
+            contrastRatio(light.textTertiary, light.backgroundSurface) <
+                contrastRatio(light.textSecondary, light.backgroundSurface),
+        )
+        assertTrue(
+            contrastRatio(dark.textTertiary, dark.backgroundSurface) <
+                contrastRatio(dark.textSecondary, dark.backgroundSurface),
+        )
+    }
+
+    @Test
+    fun `timestamps and light avatar placeholders meet 4_5 to 1`() {
+        contrastGuard(light.chatTextTimestamp, light.chatBgIncoming, 4.5f)
+        contrastGuard(light.chatTextTimestamp, light.chatBgAttachmentIncoming, 4.5f)
+        contrastGuard(light.chatTextTimestampOutgoing, light.chatBgOutgoing, 4.5f)
+        contrastGuard(light.avatarPlaceholderText, light.avatarPlaceholderBackground, 4.5f)
+
+        contrastGuard(dark.chatTextTimestamp, dark.chatBgIncoming, 4.5f)
+        contrastGuard(dark.chatTextTimestamp, dark.chatBgAttachmentIncoming, 4.5f)
+        contrastGuard(dark.chatTextTimestampOutgoing, dark.chatBgOutgoing, 4.5f)
+        contrastGuard(dark.avatarPlaceholderText, dark.avatarPlaceholderBackground, 4.5f)
+    }
+
+    @Test
+    fun `accentFill and error text tokens meet 4_5 to 1`() {
+        contrastGuard(light.onAccentFill, light.accentFill, 4.5f)
+        contrastGuard(dark.onAccentFill, dark.accentFill, 4.5f)
+
+        listOf(
+            light.backgroundApp,
+            light.backgroundChat,
+            light.backgroundSurface,
+            light.backgroundSurfaceSubtle,
+            light.chatBgOutgoing,
+        ).forEach { bg ->
+            contrastGuard(light.textError, bg, 4.5f)
+        }
+        contrastGuard(light.textOnAccent, light.textError, 4.5f)
+
+        listOf(
+            dark.backgroundApp,
+            dark.backgroundChat,
+            dark.backgroundSurface,
+            dark.backgroundSurfaceSubtle,
+            dark.backgroundSurfaceStrong,
+        ).forEach { bg ->
+            contrastGuard(dark.textError, bg, 4.5f)
+        }
+        // In dark mode, error fill uses dark ink (textOnAccent = pulse900), never white.
+        contrastGuard(dark.textOnAccent, dark.textError, 4.5f)
     }
 }

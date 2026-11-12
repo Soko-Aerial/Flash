@@ -33,12 +33,39 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
+import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 import org.jetbrains.compose.ui.tooling.preview.Preview
+
+internal data class QuotedReplyPalette(
+    val cardBg: Color,
+    val barColor: Color,
+    val senderColor: Color,
+    val snippetColor: Color,
+)
+
+internal fun quotedReplyPalette(
+    colors: FlashColors,
+    isParentOutgoing: Boolean,
+): QuotedReplyPalette = if (isParentOutgoing) {
+    QuotedReplyPalette(
+        cardBg = colors.chatTextOutgoing.copy(alpha = 0.08f),
+        barColor = colors.chatTextOutgoing.copy(alpha = 0.65f),
+        senderColor = colors.chatTextOutgoing,
+        snippetColor = colors.chatTextTimestampOutgoing,
+    )
+} else {
+    QuotedReplyPalette(
+        cardBg = colors.backgroundSurfaceSubtle,
+        barColor = colors.accentFill,
+        senderColor = colors.textLink,
+        snippetColor = colors.textSecondary,
+    )
+}
 
 /**
  * UI-010 In-bubble quoted reply card.
@@ -55,30 +82,11 @@ fun FlashQuotedReplyCard(
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
-
-    val cardBg = if (isParentOutgoing) {
-        Color.White.copy(alpha = 0.14f)
-    } else {
-        colors.backgroundSurfaceSubtle
-    }
-
-    val barColor = if (isParentOutgoing) {
-        Color.White.copy(alpha = 0.85f)
-    } else {
-        colors.accentPrimary
-    }
-
-    val senderColor = if (isParentOutgoing) {
-        Color.White
-    } else {
-        colors.accentPrimary
-    }
-
-    val snippetColor = if (isParentOutgoing) {
-        Color.White.copy(alpha = 0.85f)
-    } else {
-        colors.textSecondary
-    }
+    val palette = quotedReplyPalette(colors, isParentOutgoing)
+    val cardBg = palette.cardBg
+    val barColor = palette.barColor
+    val senderColor = palette.senderColor
+    val snippetColor = palette.snippetColor
 
     val shape = RoundedCornerShape(FlashShapes.radius8)
     val interactionSource = remember { MutableInteractionSource() }

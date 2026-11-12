@@ -21,6 +21,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -31,7 +34,22 @@ import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.ui.theme.FlashTheme
 import java.awt.GraphicsEnvironment
+import java.awt.Rectangle
 import kotlinx.coroutines.delay
+
+/**
+ * Computes the bottom-right anchor position for the toast window inside [bounds],
+ * keeping the toast clear of taskbars and never off the top/left edge.
+ */
+internal fun toastWindowPosition(
+    bounds: Rectangle,
+    windowWidthDp: Int,
+    windowHeightDp: Int,
+    edgeMarginDp: Int = TOAST_EDGE_MARGIN_DP,
+): WindowPosition.Absolute = WindowPosition.Absolute(
+    x = (bounds.x + bounds.width - windowWidthDp - edgeMarginDp).coerceAtLeast(bounds.x).dp,
+    y = (bounds.y + bounds.height - windowHeightDp - edgeMarginDp).coerceAtLeast(bounds.y).dp,
+)
 
 /**
  * The actionable transfer toast (open-items tracker C-06): a small always-on-top, non-focus-stealing card in the
@@ -58,18 +76,19 @@ internal fun DesktopTransferToastWindow(
 
     if (cards.isEmpty()) return
 
-    val bounds = remember { GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds }
+    val initialBounds = remember { GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds }
     val height = DesktopTransferToastModel.windowHeightDp(cards.size)
     val width = DesktopTransferToastModel.WIDTH_DP
     // On Java 9+ the AWT screen bounds are in logical (scaled) units, the same unit as dp, so no density conversion.
     val state = rememberWindowState(
-        position = WindowPosition.Absolute(
-            x = (bounds.x + bounds.width).dp - width.dp - 12.dp,
-            y = (bounds.y + bounds.height).dp - height.dp - 12.dp,
-        ),
+        position = toastWindowPosition(initialBounds, width, height),
         size = DpSize(width.dp, height.dp),
     )
-    LaunchedEffect(height) { state.size = DpSize(width.dp, height.dp) }
+    LaunchedEffect(height) {
+        val currentBounds = GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+        state.size = DpSize(width.dp, height.dp)
+        state.position = toastWindowPosition(currentBounds, width, height)
+    }
 
     Window(
         onCloseRequest = {},
@@ -107,10 +126,11 @@ internal fun DesktopTransferToastWindow(
                             Box(
                                 modifier = Modifier
                                     .background(
-                                        if (primary) colors.accentPrimary else colors.backgroundSurfaceStrong,
+                                        if (primary) colors.accentFill else colors.backgroundSurfaceStrong,
                                         RoundedCornerShape(10.dp),
                                     )
-                                    .clickable {
+                                    .pointerHoverIcon(PointerIcon.Hand)
+                                    .clickable(role = Role.Button) {
                                         // Answered or dismissed: gone from the toast at once, whatever the repository does next.
                                         dismissed = dismissed + card.transferId
                                         if (action != ToastAction.Dismiss) onAction(action, card.transferId)
@@ -120,7 +140,7 @@ internal fun DesktopTransferToastWindow(
                                 Text(
                                     action.label,
                                     style = typography.bodyEmphasis,
-                                    color = if (primary) colors.textOnAccent else colors.textPrimary,
+                                    color = if (primary) colors.onAccentFill else colors.textPrimary,
                                 )
                             }
                         }
@@ -131,4 +151,5 @@ internal fun DesktopTransferToastWindow(
     }
 }
 
+private const val TOAST_EDGE_MARGIN_DP: Int = 12
 private const val FAILURE_CARD_MS: Long = 30_000L

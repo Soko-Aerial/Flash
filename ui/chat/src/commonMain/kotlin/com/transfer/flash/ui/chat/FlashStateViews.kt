@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,8 +27,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -38,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
@@ -60,6 +65,9 @@ object FlashStateMath {
     const val MAX_SKELETON_ROWS = 12
 
     fun skeletonRowCount(requested: Int): Int = requested.coerceIn(1, MAX_SKELETON_ROWS)
+
+    /** Primary CTA pill fill/foreground pair guaranteed >= 4.5:1 AA contrast in light & dark. */
+    fun ctaColors(colors: FlashColors): Pair<Color, Color> = colors.accentFill to colors.onAccentFill
 }
 
 /** Screen-specific state copy (UI-025) — never generic "Nothing here yet". */
@@ -127,14 +135,15 @@ fun FlashEmptyState(
             modifier = Modifier
                 .size(72.dp)
                 .clip(CircleShape)
-                .background(colors.accentPrimary.copy(alpha = 0.10f)),
+                .background(colors.accentFill.copy(alpha = 0.10f)),
             contentAlignment = Alignment.Center,
         ) {
             FlashIcon(
                 icon = icon,
                 contentDescription = null,
-                tint = colors.accentPrimary,
+                tint = colors.accentFill,
                 size = FlashDimensions.iconLg,
+                modifier = Modifier.clearAndSetSemantics {},
             )
         }
 
@@ -152,22 +161,26 @@ fun FlashEmptyState(
         )
 
         if (copy.actionLabel != null && onAction != null) {
+            val (ctaBg, ctaFg) = FlashStateMath.ctaColors(colors)
             Spacer(modifier = Modifier.height(FlashSpacing.space4))
             Box(
                 modifier = Modifier
+                    .heightIn(min = FlashDimensions.minTouchTarget)
                     .clip(FlashShapes.avatar)
-                    .background(colors.accentPrimary)
+                    .background(ctaBg)
+                    .pointerHoverIcon(PointerIcon.Hand)
                     .clickable(onClick = onAction)
                     .semantics {
                         role = Role.Button
                         contentDescription = copy.actionLabel
                     }
-                    .padding(horizontal = FlashSpacing.space20, vertical = FlashSpacing.space8),
+                    .padding(horizontal = FlashSpacing.space20, vertical = FlashSpacing.space12),
+                contentAlignment = Alignment.Center,
             ) {
                 FlashText(
                     text = copy.actionLabel,
                     style = typography.metadataEmphasis,
-                    color = colors.textOnAccent,
+                    color = ctaFg,
                 )
             }
         }
@@ -195,7 +208,7 @@ fun FlashErrorState(
 
     val medallionFill = when (severity) {
         FlashErrorSeverity.Failure -> colors.textError.copy(alpha = 0.10f)
-        FlashErrorSeverity.Environmental -> colors.accentPrimary.copy(alpha = 0.10f)
+        FlashErrorSeverity.Environmental -> colors.accentFill.copy(alpha = 0.10f)
     }
     val medallionTint = when (severity) {
         FlashErrorSeverity.Failure -> colors.textError
@@ -224,6 +237,7 @@ fun FlashErrorState(
                 contentDescription = null,
                 tint = medallionTint,
                 size = FlashDimensions.iconLg,
+                modifier = Modifier.clearAndSetSemantics {},
             )
         }
 
@@ -240,22 +254,26 @@ fun FlashErrorState(
             textAlign = TextAlign.Center,
         )
 
+        val (ctaBg, ctaFg) = FlashStateMath.ctaColors(colors)
         Spacer(modifier = Modifier.height(FlashSpacing.space4))
         Box(
             modifier = Modifier
+                .heightIn(min = FlashDimensions.minTouchTarget)
                 .clip(FlashShapes.avatar)
-                .background(colors.accentPrimary)
+                .background(ctaBg)
+                .pointerHoverIcon(PointerIcon.Hand)
                 .clickable(onClick = onRetry)
                 .semantics {
                     role = Role.Button
                     contentDescription = retryLabel
                 }
-                .padding(horizontal = FlashSpacing.space20, vertical = FlashSpacing.space8),
+                .padding(horizontal = FlashSpacing.space20, vertical = FlashSpacing.space12),
+            contentAlignment = Alignment.Center,
         ) {
             FlashText(
                 text = retryLabel,
                 style = typography.metadataEmphasis,
-                color = colors.textOnAccent,
+                color = ctaFg,
             )
         }
     }

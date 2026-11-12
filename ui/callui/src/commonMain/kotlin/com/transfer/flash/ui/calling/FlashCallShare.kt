@@ -19,7 +19,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +50,7 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
@@ -88,8 +88,15 @@ internal object CallShareText {
     const val SECTION_SCREENS: String = "Screens"
     const val SECTION_WINDOWS: String = "Windows"
     const val LOWER_TITLE: String = "Share at lower quality"
-    const val LOWER_SUBTITLE: String = "Smaller picture for a slow computer. Small text may be harder to read."
+    fun lowerSubtitle(isDesktop: Boolean = isDesktopCallingPlatform): String =
+        if (isDesktop) {
+            "Smaller picture for a slower desktop. Small text may be harder to read."
+        } else {
+            "Smaller picture for a slower device. Small text may be harder to read."
+        }
+    val LOWER_SUBTITLE: String get() = lowerSubtitle()
     const val SYSTEM_DIALOG_NOTE: String = "Your system will ask which screen or window to share."
+    const val SYSTEM_PICKER_ACTION: String = "Continue to system picker"
     const val NOTHING_FOUND: String = "Nothing to share was found."
     const val LOADING: String = "Looking for screens..."
     fun takeOverNote(name: String): String = "$name is presenting. If you share, their share stops."
@@ -99,7 +106,13 @@ internal object CallShareText {
         if (sourceTitle.isNullOrBlank()) "You are sharing your screen" else "You are sharing $sourceTitle"
     const val STOP_LABEL: String = "Stop"
     const val STOP_DESCRIPTION: String = "Stop sharing your screen"
-    const val LOWERED_HINT: String = "Your computer is busy, so the picture is smaller"
+    fun loweredHint(isDesktop: Boolean = isDesktopCallingPlatform): String =
+        if (isDesktop) {
+            "Your desktop is busy, so the picture is smaller"
+        } else {
+            "This device is busy, so the picture is smaller"
+        }
+    val LOWERED_HINT: String get() = loweredHint()
     fun watchersLine(watchers: Int): String = when {
         watchers <= 0 -> "Nobody is watching yet"
         watchers == 1 -> "Seen by 1 person"
@@ -188,7 +201,7 @@ internal fun FlashShareIndicator(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(colors.accentPrimary)
+            .background(colors.accentFill)
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
             .semantics(mergeDescendants = true) {
                 liveRegion = LiveRegionMode.Polite
@@ -202,23 +215,23 @@ internal fun FlashShareIndicator(
         FlashIcon(
             icon = FlashIcons.ScreenShare,
             contentDescription = null,
-            tint = colors.textOnAccent,
+            tint = colors.onAccentFill,
             size = FlashDimensions.iconMd,
             modifier = Modifier.clearAndSetSemantics { },
         )
         Column(modifier = Modifier.weight(1f)) {
-            Text(
+            FlashText(
                 text = headline,
                 style = FlashTheme.typography.bodyDefault,
-                color = colors.textOnAccent,
+                color = colors.onAccentFill,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             if (detail != null) {
-                Text(
+                FlashText(
                     text = detail,
                     style = FlashTheme.typography.metadataDefault,
-                    color = colors.textOnAccent.copy(alpha = 0.85f),
+                    color = colors.onAccentFill.copy(alpha = 0.9f),
                     maxLines = 2,
                 )
             }
@@ -228,7 +241,7 @@ internal fun FlashShareIndicator(
                 .heightIn(min = FlashDimensions.minTouchTarget)
                 .flashPressScale(interaction)
                 .clip(RoundedCornerShape(FlashShapes.radius24))
-                .background(colors.textOnAccent)
+                .background(colors.onAccentFill)
                 .clickable(interactionSource = interaction, indication = null, role = Role.Button) {
                     haptic(FlashHaptic.Tick)
                     onStop()
@@ -237,10 +250,10 @@ internal fun FlashShareIndicator(
                 .semantics { contentDescription = CallShareText.STOP_DESCRIPTION },
             contentAlignment = Alignment.Center,
         ) {
-            Text(
+            FlashText(
                 text = CallShareText.STOP_LABEL,
                 style = FlashTheme.typography.bodyDefault,
-                color = colors.accentPrimary,
+                color = colors.accentFill,
                 modifier = Modifier.clearAndSetSemantics { },
             )
         }
@@ -270,8 +283,24 @@ internal fun FlashPresenterLabel(name: String, modifier: Modifier = Modifier) {
             size = FlashDimensions.iconSm,
             modifier = Modifier.clearAndSetSemantics { },
         )
-        Text(text = text, style = FlashTheme.typography.metadataDefault, color = Color.White, maxLines = 1, modifier = Modifier.clearAndSetSemantics { })
+        FlashText(text = text, style = FlashTheme.typography.metadataDefault, color = Color.White, maxLines = 1, modifier = Modifier.clearAndSetSemantics { })
     }
+}
+
+/**
+ * Returns the single screen source when [usesSystemPicker] is true and only one screen (no windows)
+ * is present, so the sheet can offer the quality toggle and a direct primary CTA without a redundant
+ * "This device's screen" radio list.
+ */
+internal fun singleSystemPickerScreen(
+    usesSystemPicker: Boolean,
+    sources: List<ShareSource>?,
+): ShareSource? {
+    if (!usesSystemPicker) return null
+    val list = sources ?: return null
+    if (list.any { it.kind == ShareSourceKind.WINDOW }) return null
+    val single = list.singleOrNull() ?: return null
+    return single.takeIf { it.kind == ShareSourceKind.SCREEN }
 }
 
 /**
@@ -302,7 +331,7 @@ internal fun FlashSharePicker(
     val takeOver = state.presenterId != null
     FlashCallPanel(title = CallShareText.PICKER_TITLE, onDismiss = onDismiss) {
         if (presenter != null) {
-            Text(
+            FlashText(
                 text = CallShareText.takeOverNote(presenter),
                 style = FlashTheme.typography.metadataDefault,
                 color = colors.textSecondary,
@@ -320,7 +349,7 @@ internal fun FlashSharePicker(
             },
         )
         if (host.usesSystemPicker) {
-            Text(
+            FlashText(
                 text = CallShareText.SYSTEM_DIALOG_NOTE,
                 style = FlashTheme.typography.metadataDefault,
                 color = colors.textSecondary,
@@ -336,13 +365,13 @@ internal fun FlashSharePicker(
                 .verticalScroll(rememberScrollState()),
         ) {
             when {
-                sources == null -> Text(
+                sources == null -> FlashText(
                     text = CallShareText.LOADING,
                     style = FlashTheme.typography.metadataDefault,
                     color = colors.textSecondary,
                     modifier = Modifier.padding(vertical = FlashSpacing.space12),
                 )
-                sources.isEmpty() -> Text(
+                sources.isEmpty() -> FlashText(
                     text = CallShareText.NOTHING_FOUND,
                     style = FlashTheme.typography.metadataDefault,
                     color = colors.textSecondary,
@@ -355,25 +384,55 @@ internal fun FlashSharePicker(
                         host.onStart(source, if (lower) ShareQuality.LOWER else ShareQuality.STANDARD, takeOver)
                         onDismiss()
                     }
-                    if (screens.isNotEmpty() && !host.usesSystemPicker) SectionLabel(CallShareText.SECTION_SCREENS)
-                    screens.forEach { source ->
-                        FlashCallPanelRow(
-                            icon = FlashIcons.ScreenShare,
-                            title = source.title,
-                            subtitle = null,
-                            selected = null,
-                            onClick = { start(source) },
-                        )
-                    }
-                    if (windows.isNotEmpty()) SectionLabel(CallShareText.SECTION_WINDOWS)
-                    windows.forEach { source ->
-                        FlashCallPanelRow(
-                            icon = FlashIcons.Device,
-                            title = source.title,
-                            subtitle = null,
-                            selected = null,
-                            onClick = { start(source) },
-                        )
+                    val singleSystemScreen = singleSystemPickerScreen(
+                        usesSystemPicker = host.usesSystemPicker,
+                        sources = sources,
+                    )
+                    if (singleSystemScreen != null) {
+                        val actionInteraction = remember { MutableInteractionSource() }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = FlashSpacing.space4)
+                                .heightIn(min = FlashDimensions.minTouchTarget)
+                                .flashPressScale(actionInteraction)
+                                .clip(RoundedCornerShape(FlashShapes.radius24))
+                                .background(colors.accentFill)
+                                .clickable(
+                                    interactionSource = actionInteraction,
+                                    indication = null,
+                                    role = Role.Button,
+                                ) { start(singleSystemScreen) }
+                                .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashText(
+                                text = CallShareText.SYSTEM_PICKER_ACTION,
+                                style = FlashTheme.typography.bodyEmphasis,
+                                color = colors.onAccentFill,
+                            )
+                        }
+                    } else {
+                        if (screens.isNotEmpty() && !host.usesSystemPicker) SectionLabel(CallShareText.SECTION_SCREENS)
+                        screens.forEach { source ->
+                            FlashCallPanelRow(
+                                icon = FlashIcons.ScreenShare,
+                                title = source.title,
+                                subtitle = null,
+                                selected = null,
+                                onClick = { start(source) },
+                            )
+                        }
+                        if (windows.isNotEmpty()) SectionLabel(CallShareText.SECTION_WINDOWS)
+                        windows.forEach { source ->
+                            FlashCallPanelRow(
+                                icon = FlashIcons.Device,
+                                title = source.title,
+                                subtitle = null,
+                                selected = null,
+                                onClick = { start(source) },
+                            )
+                        }
                     }
                 }
             }
@@ -384,7 +443,7 @@ internal fun FlashSharePicker(
 
 @Composable
 private fun SectionLabel(text: String) {
-    Text(
+    FlashText(
         text = text,
         style = FlashTheme.typography.captionDefault,
         color = FlashTheme.colors.textSecondary,

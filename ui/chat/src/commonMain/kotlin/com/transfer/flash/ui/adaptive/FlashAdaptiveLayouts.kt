@@ -45,6 +45,9 @@ object FlashAdaptiveMath {
     const val MediumMinWidthDp = 600f
     const val ExpandedMinWidthDp = 840f
 
+    /** Width of the vertical navigation rail in dp when shown on Medium/Expanded screens. */
+    const val NavigationRailWidthDp = 68f
+
     /** List pane share of width in two-pane (expanded) mode; detail gets the remainder. */
     const val ListPaneExpandedWeight = 0.38f
     const val DetailPaneExpandedWeight = 0.62f
@@ -112,13 +115,31 @@ object FlashAdaptiveMath {
     fun listPaneWidthDp(
         totalWidthDp: Float,
         ratio: Float = ListPaneExpandedWeight,
+    ): Float = listPaneWidthDp(
+        totalWidthDp = totalWidthDp,
+        ratio = ratio,
+        allowTwoPane = isTwoPaneAllowed(windowSizeForWidth(totalWidthDp)),
+    )
+
+    /**
+     * Variant of [listPaneWidthDp] where the caller supplies [allowTwoPane] explicitly — used by
+     * hosts that subtract the navigation rail before calling [FlashAdaptiveTwoPane], keeping both
+     * panes visible across the 840–907dp window range (`772..839dp` available width).
+     */
+    fun listPaneWidthDp(
+        totalWidthDp: Float,
+        ratio: Float = ListPaneExpandedWeight,
+        allowTwoPane: Boolean,
     ): Float {
-        if (!isTwoPaneAllowed(windowSizeForWidth(totalWidthDp))) return totalWidthDp
-        val maxAvailableForList = (totalWidthDp - DetailPaneMinWidthDp).coerceAtLeast(0f)
-        val ideal = totalWidthDp * ratio
+        if (!allowTwoPane) return totalWidthDp
+        val safeWidth = totalWidthDp.coerceAtLeast(0f)
+        val maxAvailableForList = (safeWidth - DetailPaneMinWidthDp).coerceAtLeast(0f)
+        val ideal = safeWidth * ratio
         val clamped = ideal.coerceIn(ListPaneMinWidthDp, ListPaneMaxWidthDp)
         return if (maxAvailableForList < ListPaneMinWidthDp) {
-            clamped.coerceAtMost(totalWidthDp)
+            val maxToKeepDetailUsable = (safeWidth - DetailPaneUserMinWidthDp)
+                .coerceAtLeast(safeWidth * 0.5f)
+            clamped.coerceAtMost(maxToKeepDetailUsable).coerceAtMost(safeWidth)
         } else {
             clamped.coerceAtMost(maxAvailableForList)
         }
@@ -153,7 +174,9 @@ fun rememberFlashAdaptiveWindowSizeClass(): FlashWindowSizeClass {
  * Multiplatform two-pane list-detail layout for Expanded screens (>= 840dp).
  *
  * Places [listPane] and [detailPane] side by side with a clamped width for the list pane
- * and a subtle hairline divider. On Compact/Medium, renders [listPane] only.
+ * and a subtle hairline divider. On Compact/Medium (when [allowTwoPane] is false), renders
+ * [listPane] only. Hosts that subtract the navigation rail from [windowWidthDp] can pass
+ * [allowTwoPane] explicitly from the full-window size class so 840–907dp windows keep both panes.
  */
 @Composable
 fun FlashAdaptiveTwoPane(
@@ -161,11 +184,16 @@ fun FlashAdaptiveTwoPane(
     detailPane: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     windowWidthDp: Float = rememberFlashAdaptiveWindowWidthDp(),
+    allowTwoPane: Boolean = FlashAdaptiveMath.isTwoPaneAllowed(
+        FlashAdaptiveMath.windowSizeForWidth(windowWidthDp),
+    ),
 ) {
-    val sizeClass = FlashAdaptiveMath.windowSizeForWidth(windowWidthDp)
-    if (FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)) {
-        val listWidthDp = remember(windowWidthDp) {
-            FlashAdaptiveMath.listPaneWidthDp(windowWidthDp).dp
+    if (allowTwoPane) {
+        val listWidthDp = remember(windowWidthDp, allowTwoPane) {
+            FlashAdaptiveMath.listPaneWidthDp(
+                totalWidthDp = windowWidthDp,
+                allowTwoPane = allowTwoPane,
+            ).dp
         }
         Row(modifier = modifier.fillMaxSize()) {
             Box(

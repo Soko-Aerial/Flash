@@ -1,9 +1,12 @@
 package com.transfer.flash.desktop
 
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.WindowPosition
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
+import java.awt.Rectangle
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -106,5 +109,32 @@ class DesktopTransferToastModelTest {
         assertEquals(0, DesktopTransferToastModel.windowHeightDp(0))
         assertEquals(96 + 16, DesktopTransferToastModel.windowHeightDp(1))
         assertEquals(2 * 96 + 8 + 16, DesktopTransferToastModel.windowHeightDp(2))
+    }
+
+    @Test
+    fun `toast window position moves upward as height grows inside maximum bounds`() {
+        val bounds = Rectangle(0, 0, 1920, 1040)
+        val oneCardHeight = DesktopTransferToastModel.windowHeightDp(1)
+        val twoCardHeight = DesktopTransferToastModel.windowHeightDp(2)
+        val threeCardHeight = DesktopTransferToastModel.windowHeightDp(3)
+
+        assertEquals(
+            WindowPosition.Absolute(x = 1548.dp, y = (1040 - oneCardHeight - 12).dp),
+            toastWindowPosition(bounds, windowWidthDp = 360, windowHeightDp = oneCardHeight),
+        )
+        assertEquals(
+            WindowPosition.Absolute(x = 1548.dp, y = (1040 - twoCardHeight - 12).dp),
+            toastWindowPosition(bounds, windowWidthDp = 360, windowHeightDp = twoCardHeight),
+        )
+        assertEquals(
+            WindowPosition.Absolute(x = 1548.dp, y = (1040 - threeCardHeight - 12).dp),
+            toastWindowPosition(bounds, windowWidthDp = 360, windowHeightDp = threeCardHeight),
+        )
+
+        val smallMonitor = Rectangle(100, 50, 300, 180)
+        assertEquals(
+            WindowPosition.Absolute(x = 100.dp, y = 50.dp),
+            toastWindowPosition(smallMonitor, windowWidthDp = 360, windowHeightDp = twoCardHeight),
+        )
     }
 }

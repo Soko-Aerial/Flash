@@ -1,5 +1,140 @@
 # Progress Log
 
+## 2026-11-12 — Phase 7 UI/UX diff audit, bug remediation & final verification gate
+
+### Worked on
+Completed a comprehensive read-only diff audit of all changes made across Phases 1–6 against existing callers, identified and resolved 12 Must-Fix bugs and 12 Half-Baked features, verified 6 core protected files remain SHA-256 identical, ensured `ERROR-1018` and `ERROR-1019` candidates are intact, and ran the final full Gradle verification gate across all affected modules.
+
+### Changed
+- **Must-Fix Bug Remediations (12 items):**
+  1. *Notification Banner Shell Unmounting:* Wrapped `NotificationPermissionBannerHost` in an outer Column structure in `MainActivity.kt`, preventing `FlashShell` subtrees from being disposed and recreated on permission state changes.
+  2. *Two-Pane BackHandler Priority Inversion:* Reordered two-pane `BackHandler(enabled = hasTwoPaneDetail)` before search/selection in `MainActivity.kt`, ensuring search and multi-select are dismissed first before the conversation detail pane closes.
+  3. *Desktop Tab Switching Trapping Active Chat:* Cleared active chat and multi-selection on destination change, and routed `Transfers` through `openTransfers()` when `hubEnrolled == true` in `DesktopShell.kt` and `DesktopShellBehaviorTest.kt`.
+  4. *Reactions Detail Sheet Deduplication:* In `FlashReactionPickerMath.buildReactorRows` and `FlashReactionsDetailSheet`, filtered `selfDeviceId` so `"You"` is never duplicated as `peerTitle` in 1:1 or self-reacted chats.
+  5. *Pairing LingerJob Tracking & Cancellation:* Tracked and cancelled `lingerJob` on reset/begin/incoming in `FlashPairingCoordinator` and `PairingCoordinator`, keeping terminal errors visible until explicit dismiss/retry.
+  6. *AwaitingPeerConfirmation Escape Hatch:* Added an explicit `"Cancel"` button and unblocked `FlashBackHandler` in `AwaitingPeerConfirmation` in `FlashPairingFlow.kt` so users are not trapped if the peer walks away.
+  7. *Desktop Pairing Retry Target Resolution:* Guarded `retryTarget` against null and resolved targets by `peerDeviceId` first before fallback to `peerName`.
+  8. *Conversation Revoke Trust Guard:* Gated `REVOKE_TRUST` behind `FlashConfirmHost` in `FlashConversationScreen.kt` to prevent accidental unpairing.
+  9. *Shared Content Sheet Download & Label Fixes:* In `FlashSharedContentSheet.kt`, routed `Failed`/`Paused` rows to `onResumeTransfer`, labeled outgoing `AwaitingAcceptance` as `"Waiting for recipient"`, and hid the trailing download button for cancelled and outgoing awaiting transfers.
+  10. *SI Decimal Formatting Unified in Detail Panes:* Switched `FlashDetailPanes.kt` to `FlashTransfersMath.formatSize` (decimal SI) and added proper handling for `DomainState.Verifying`.
+  11. *Call Screen Share Auto-Start Removed:* In `FlashCallShare.kt`, removed accidental auto-start loop on presenter departure and restored reachable quality choice toggle on Android.
+  12. *Desktop Chat Search Result Context Menu:* Wired right-click context menu actions on chat search result rows in `FlashChatListScreen.kt`.
+
+- **Half-Baked Enhancements (12 items):**
+  1. Passed `ultraLowUi` to both `FlashTheme` roots in `DesktopMain.kt`.
+  2. Forwarded `isPeerVerified`, `onVerifyPeerTrust`, `connectionTransport`, and `localDeviceId` to `FlashConversationScreen.kt` and `FlashConnectionBanner`.
+  3. Supported colleague chat initiation and single-pane detail inspection in `FlashNearbyScreen.kt` and `FlashDetailPanes.kt`.
+  4. Handled `isVerifying` state gracefully in `FlashTransferDetailPane`.
+  5. Preserved pending share data across retry attempts during share-initiated pairing.
+  6. Wired home-screen widget `ACTION_WIDGET_SEND` to document picker in `MainActivity.kt` and enlarged widget hit target in `widget_flash.xml`.
+  7. Preserved real file extensions (`.mp4`, `.webm`, etc.) when saving media in `DesktopHelpers.kt`.
+  8. Added `"Find devices"` empty-state CTA in `FlashAddMembersSheet.kt` matching `UXPOL-11`.
+  9. Ensured `topBanners` remain top-aligned on empty message lists in `FlashMessageList.kt`.
+  10. Guarded `onCreate` intent dispatch in `MainActivity.kt` with `savedInstanceState == null`.
+  11. Gated desktop keyboard shortcuts during active calls/shares and handled `Esc` key priority.
+  12. Added MIME type fallbacks for `.heic`/`.heif` and `.3gp` in Android file picker and conversation attachments.
+
+### Verification
+- **Command:** `tools\flash-gradle.cmd :core:security:jvmTest :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :ui:callui:testAndroidHostTest :ui:platform-shims:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :desktop:compileKotlinJvm`
+- **Result:** `BUILD SUCCESSFUL in 3m 22s` (exit code `0`).
+- **Suites/tests (`*/build/test-results/`):**
+  - `:core:security:jvmTest`: 25 suites, 177 tests, 0 failures, 0 errors, 2 skipped (POSIX mode on Windows)
+  - `:ui:theme:jvmTest`: 8 suites, 68 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:chat:jvmTest`: 87 suites, 790 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:chat:testAndroidHostTest`: 81 suites, 765 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:callui:jvmTest`: 16 suites, 113 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:callui:testAndroidHostTest`: 10 suites, 90 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:platform-shims:jvmTest`: 5 suites, 42 tests, 0 failures, 0 errors, 0 skipped
+  - `:desktop:jvmTest`: 52 suites, 291 tests, 0 failures, 0 errors, 2 skipped (opt-in render tests)
+  - `:app:testDebugUnitTest`: 20 suites, 110 tests, 0 failures, 0 errors, 0 skipped
+  - **Total:** 304 suites, 2,446 tests, 0 failures, 0 errors, 4 skipped.
+  - `:desktop:compileKotlinJvm`: Clean.
+  - `:app:lintDebug`: 0 errors (0 fatal, 0 error; 156 pre-existing/advisory warnings, 2 hints).
+- **Integrity Checks:**
+  - 6 protected core files verified SHA-256 identical (`DiscoveryEngineHolder.kt`, `DesktopEngine.kt`, `Flash.kt`, `RealFlashTransferRepository.kt`, `ReceivePipeline.kt`, `MultiStreamDispatcher.kt`).
+  - `ERROR-1018` transfer retry and `ERROR-1019` voice lock/capture candidates verified 100% intact.
+  - Zero weakened test assertions.
+
+### Remaining / Next AI
+- All Phase 1–7 UI/UX polish changes and remediations remain uncommitted in the `dev` working tree alongside `ERROR-1018` / `ERROR-1019`.
+- Physical device testing owed for `UXPOL-01..11`, `XFER-RETRY-02`, and `VOICE-BTN-01..06` in `docs/testing/TEST-BACKLOG.md`.
+
+## 2026-11-12 — Phases 1–5 cross-platform UI/UX polish & Phase 6 regression/lint gate
+
+### Worked on
+Completed a five-phase UI/UX polish and consistency pass across `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`, `:app`, and `:desktop`, leaving pre-existing uncommitted ERROR-1018 transfer-retry and ERROR-1019 voice-button candidate fixes intact in the `dev` working tree (HEAD `31e1551c`).
+
+### Changed
+- **Phase 1 — Theme tokens & quick UI fixes (`ui/theme`, `ui/chat`):**
+  - Removed legacy `Purple*`/`Pink*` defaults in `Color.kt`/`Theme.kt` and mapped `LightColorScheme`/`DarkColorScheme` from `FlashColors`/`FlashPalette`. Fixed light/dark `textTertiary`/`chatTextTimestamp` (`graphite600`/`graphite400`), light `textError` (`error600`), and `FlashColors.withAccent()` contrast adaptation (`>= 4.5:1`).
+  - Made `FlashLaunchSplash` respect `reduceMotion` (`ExitTransition.None`), and updated `FlashAvatar` to `FlashText` with proportional `0.38f` diameter font sizing.
+  - Updated `FlashQuotedReplyCard` (`quotedReplyPalette`) to use `chatTextOutgoing`/`chatTextTimestampOutgoing` and `textLink`/`accentFill` for legible contrast in light and dark modes; hid `FlashVideoPlayer` play/scrubber controls on error while keeping the top `Close` bar visible and sizing `"Open in system player"` to `>= 48.dp`.
+  - Fixed Radio Gateway copy/arrows (`→`), PTT & status chip contrast (`radioPttColors`), `Role.Switch`/`disabled()` semantics, `backgroundApp`/`sheetSurface` layering, `bottomInset` scroll padding when the dock is hidden, un-authorised Profile M selection state (`isProfileMSelected`), and non-clickable preview rows; aligned `FlashHubCopy.PERSON_UNPAIRED_FOOTER` with `Settings → Enterprise & Organization`.
+- **Phase 2 — Settings & Hub (`ui/chat`, `app`, `desktop`):**
+  - Made host-specific Settings callbacks nullable (`onHapticsChanged`, `onOpenEncryption`, `onOpenTrustedPeers`, `onPickSaveLocation`, `onOpenBatterySettings`) with read-only `ValueRow` support when `onClick == null`, collapsed `Section.ADVANCED` (`"Advanced & Power"`) by default, grouped `Performance mode` chips in wrapping `FlowRow` with plain-language subtitles, gated swarm sub-toggles under the master switch, and refined search terms/empty-section gating/`48.dp` Clear button.
+  - Wired Android (`MainActivity.kt`, `TranssionGuideDialog.kt`) and Desktop (`DesktopShell.kt`) Settings (`FlashEncryptionSheet`, `NearbyDevices` trusted-peers route, read-only `App storage / FlashReceived` on Android vs `JFileChooser` on Desktop, hidden Android-only rows on Desktop, shared `FlashDisplayNameDialog`, `FlashTheme`-scoped `TranssionGuideDialog`) and passed `bottomInset` directly to `FlashHubRoute`.
+  - Updated Hub news/people/workspace (`FlashHubWorkspace`, `FlashHubNews`, `FlashHubPeople`, `FlashHubOrg`, `FlashHubSearch`) with visual overflow detection for `"Read more"`, `searchPeopleLoading` guard preventing `allPeople` flash, unified search Back behavior, and `FlashTheme` token alignment.
+- **Phase 3 — Adaptive shell, Android entry & Desktop shell (`ui/chat`, `app`, `desktop`):**
+  - Enabled two-pane mode across `840–907 dp` windows (`allowTwoPane` in `FlashAdaptiveTwoPane`), added destination-specific `FlashPlaceholderDetailPane` headers/CTAs, full-width `Settings`/`Hub` destinations, `FlashNavigationRail` tooltips/`selectableGroup`/`Role.Tab`/`48.dp` profile target, high-contrast `FlashBottomNav` badges, and `FlashDetailPanes` plain-language labels with non-colliding `"Saved To"` ellipsis.
+  - Updated `AndroidManifest.xml` (`singleTop`) and `MainActivity.kt` (`onNewIntent` deduplication, `LaunchEntryPolicy.shouldSkipLaunchSplash`, deferred `NotificationPermissionBanner` after splash + `Open Settings` fallback on permanent denial, `ShareUriFeedback` toast for rejected URIs, `TranssionTargetFeedback`, Medium-rail `ChatList` navigation, tab-gated `BackHandler`, live `selectedNearbyPeerId` actions, `PendingOutgoingCall` permission flow); simplified `FlashTileService` to 2-state `Active (Discoverable)` ↔ `Off` (`GHOST` reported active); unified notification icons on `R.drawable.ic_notification_flash`; wired `FlashAppWidgetProvider` send action (`ACTION_WIDGET_SEND`).
+  - Updated `DesktopMain.kt`, `DesktopShell.kt`, `DesktopSideBar.kt`, `DesktopDetailPanes.kt`, `DesktopTransferToastWindow.kt`, and `DesktopNotificationManager.kt` with off-screen DnD auto-send guard and empty-folder message, direct share-to-group routing, `Esc` priority and `Ctrl+1..5`/`Ctrl+T` shortcuts, `TooltipArea` and `48.dp` sidebar profile target, upward-stacking `maximumWindowBounds`-clamped transfer toasts, and foreground-active OS notification suppression.
+- **Phase 4 — Nearby, Pairing, Transfers, Calling UI & Android PTT (`ui/chat`, `ui/callui`, `app`, `desktop`):**
+  - Updated `FlashPairingFlow` and `PairingUiMapper` (`Failed` phase + `failureReason` + `"Try again"`, `AwaitingPeerNonce`/`AwaitingPeerReveal` mapped to `Idle` so `"000 000"` never appears, non-dismissible active consent phases); surfaced `localAddressLabel` IPv4/port, labeled `"Connect by IP"`, persistent dismissible scan caption, immediate quiet-network hint, `"Open Wi-Fi Settings"`, and `FlashConfirmHost`-gated `"Unpair device"` in `FlashNearbyScreen` / `FlashPeerDetailsSheet` (`"Connects when you send"` for `Reachable`), plus error-retaining `FlashManualConnectDialog` and personalized `FlashConnectionBanner`.
+  - Updated `FlashTransfersScreen`, `FlashCancelCopy`, and `TransfersUiMapper` (`DomainState.Verifying` → `"Verifying file…"` excluded from `aggregateSpeed` with zeroed speed/ETA, active receive-cancel confirmation, separate `onClearCancelled` and `onClearFailed`, distinct `Decline`/`Cancel`/`Dismiss` icons, decimal SI `MB`/`MB/s`, `Queued`/`Verifying` pause-button suppression, two-pane `onItemClick`, `FlashErrorState`).
+  - Updated `FlashCallScreen`, `FlashGroupVideoGrid`, `FlashCallControlDock`, `FlashCallExtras`, `FlashCallShare`, `PttSessionOverlay`, and `PttSessionOverlayContent` (immediate local `ENDED` dismissal, `FlashShareIndicator` docked above video canvas, `160.dp` top gradient scrim + PiP-clearing header padding, tap-to-inspect signal-quality pill opening scrollable `CallPanel.STATS` without fabricated `"<1 ms"`, `360 dp` / `1.3x+` 2-row control dock with audio route chevron, platform-aware screen share copy and Android direct system-picker start, and Android PTT touch-blocking scrim + `BackHandler` + `>= 48.dp` `Stop`/`Leave` + `Good`/`Fair`/`Weak signal` labels).
+- **Phase 5 — Chat list, Composer, Voice, Reactions, Media & Groups (`ui/theme`, `ui/chat`, `ui/platform-shims`, `app`, `desktop`):**
+  - Added `FlashIcons.Copy` (`flash_ic_copy.xml`), decluttered `FlashChatListTopBar`, prevented group avatar `FlashPresenceDot` overlap, added desktop right-click row menu and `FlashImageTile` primary-click guard, aligned `FlashArchivedChats`, and made `FlashChatListSelectionBar` fit `<408 dp` with confirmed deletes; fixed blank search state and 360 dp 2-row `FlashChatSearchBar` + drawer toggle.
+  - Bounded group member sheets (`<= 280 dp`), added `"Find devices"` empty-peer CTA, scrolled all `eligibleSuccessors` in `FlashLeaveGroupDialog`, moved `FlashGroupMembersSheet` actions to `More` overflow with Promote/Demote confirmation, updated `FlashGroupSettingsSheet` plain-language labels and symmetric `48.dp` steppers (`2 ↔ 5 ↔ 10 ↔ 15 ↔ 20`), and deduplicated invite/conversation menu icons.
+  - Gated `CLEAR_CONVERSATION`, multi-select `Delete`, and context `Delete`/`Delete for everyone` behind `FlashConfirmHost`; wired `"More reactions"` (`FlashExtendedEmojiPickerSheet`) and `+N`/long-press (`FlashReactionsDetailSheet`); hid `"Copy Text"` on blank messages; routed single-message Forward via multi-forward; made `FlashMessageFocusOverlay` scrollable; added voice `"↑ Slide up to lock"` pill, `"Hold to record"` short-tap hint, desktop click-to-lock and `Enter`-send gating, hidden duplicate in-bar Send, and `FlashVoicePlaybackCoordinator` across chat and `SharedAudioRow`.
+  - Switched Android file picker to `OpenMultipleDocuments()`, staged up to 10 thumbnails with `48.dp` remove targets, displayed captions and labeled `Save`/`Share`/`Forward` + desktop arrow/Esc navigation in `FlashMediaViewer`, made `FlashSharedContentSheet` tabs scrollable with undownloaded file download triggers, moved `FlashGroupHistoryCard`/`FlashHubNotice` into `topBanners` at the top of `LazyColumn(reverseLayout = true)`, widened bubble/retry/encryption touch targets (`48.dp`), renamed swarm labels to `"Transfer details"`/`"On peers"`, and enabled inward swipe-to-reply on incoming bubbles.
+
+### Verification
+- **Command:** `tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :ui:callui:testAndroidHostTest :ui:platform-shims:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :desktop:compileKotlinJvm`
+- **Result:** `BUILD SUCCESSFUL in 6m 34s` (exit code `0`, `453 actionable tasks: 81 executed, 372 up-to-date`).
+- **Suites/tests (`*/build/test-results/`):**
+  - `:ui:theme:jvmTest`: 8 suites, 68 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:chat:jvmTest`: 87 suites, 785 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:chat:testAndroidHostTest`: 81 suites, 760 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:callui:jvmTest`: 16 suites, 113 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:callui:testAndroidHostTest`: 10 suites, 90 tests, 0 failures, 0 errors, 0 skipped
+  - `:ui:platform-shims:jvmTest`: 5 suites, 42 tests, 0 failures, 0 errors, 0 skipped
+  - `:desktop:jvmTest`: 52 suites, 284 tests, 0 failures, 0 errors, 2 opt-in render skips (`FlashHubWorkspaceRenderTest`, `FlashWorkspaceTabsRenderTest`)
+  - `:app:testDebugUnitTest`: 20 suites, 107 tests, 0 failures, 0 errors, 0 skipped
+  - **Total:** 279 suites, 2,249 tests, 0 failures, 0 errors, 2 opt-in render skips; `:desktop:compileKotlinJvm` clean.
+- **Lint (`:app:lintDebug`, `app/build/reports/lint-results-debug.xml`):** exit code `0`, 0 errors, 0 fatal issues (156 pre-existing/advisory warnings, 2 hints).
+
+### Remaining / Next AI
+- Changes remain uncommitted in the `dev` working tree alongside the pre-existing `ERROR-1018` / `ERROR-1019` local candidates.
+- Physical Android and Windows verification is owed for `UXPOL-01..11` (and `XFER-RETRY-02`, `VOICE-BTN-01..06`) in `docs/testing/TEST-BACKLOG.md`.
+
+## 2026-11-09 — OpenCode retry and voice-button candidates pass host checks
+
+- Transfer follow-up re-announces an unchanged saved chunk set after a retry boundary and rejects
+  out-of-range ACK indexes before releasing a parked offer. A host integration test reproduced
+  replay of all eight saved chunks with announcements disabled; with a delayed announcement it
+  replayed two before the ACK and skipped the remaining six. Final affected XML: 894 cases,
+  no failures/errors and two documented Windows skips. Android and desktop compilation passed.
+- The chat port left the mic active after a locked recording and allowed refused starts to enter
+  the lock gesture. The locked trailing button now sends the current take and refused capture
+  cannot open a recording panel. Chat JVM and Android-host XML: 1,455 cases, zero failures;
+  Android compilation passed. Playback behavior was not changed.
+- Both candidates remain local and uncommitted. XFER-RETRY-02 and VOICE-BTN-01..06 are owed;
+  confirm the reported voice click matches the locked-control defect on hardware.
+
+## 2026-11-09 — Transfer Retry investigation and voice-button follow-up
+
+- OpenCode reproduced causes of the reported stale receive row and retry replay: sender failure
+  had no receiver notification, a sender without a transfer store lacked an ACK mirror, and
+  non-contiguous confirmed chunks could trip the sender digest guard. The first local candidate
+  also addresses retry after consent and desktop receive cleanup on session loss.
+- Verified the first candidate's XML: 890 cases across transfer JVM/Android host, desktop, engine
+  Android host and app; no failures or errors, two existing Windows POSIX skips. A receiver that
+  has saved no new chunks since its previous retry may suppress a needed resume announcement.
+  OpenCode is checking that repeated retry and the arrival timing of the durable-chunk ACKs.
+- The candidate is uncommitted and has not shipped; XFER-RETRY-02 still needs two devices. A separate
+  OpenCode instance is investigating the chat voice-button report (composer recording and bubble
+  playback) without touching the retry files.
+
 ## 2026-11-09 — Add Linux x86-64 downloads to Flash 2.2.0
 
 - Published the owner-supplied `.deb` and portable `.tar.gz` on the existing `v2.2.0` GitHub

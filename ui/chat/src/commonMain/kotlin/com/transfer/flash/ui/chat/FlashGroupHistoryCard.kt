@@ -185,7 +185,7 @@ public fun FlashGroupHistoryCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
         ) {
-            FlashIcon(icon = FlashIcons.Clock, contentDescription = null, tint = colors.accentPrimary, size = 20.dp)
+            FlashIcon(icon = FlashIcons.Clock, contentDescription = null, tint = colors.accentFill, size = 20.dp)
             FlashText(
                 text = title,
                 style = typography.headingSmall,
@@ -278,18 +278,18 @@ private fun FlashChoiceChip(
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val fill by animateColorAsState(
-        targetValue = if (selected) colors.accentPrimary.copy(alpha = 0.14f) else colors.backgroundSurface,
+        targetValue = if (selected) colors.accentFill.copy(alpha = 0.14f) else colors.backgroundSurface,
         animationSpec = motion.tweenFastSpec(),
         label = "historyChipFill",
     )
     val borderColor = when {
-        selected -> colors.accentPrimary
+        selected -> colors.accentFill
         else -> colors.borderDefault
     }
     val borderWidth = if (selected) 2.dp else FlashDimensions.borderHairline
     val contentColor = when {
         !enabled -> colors.textTertiary
-        selected -> colors.accentPrimary
+        selected -> colors.accentFill
         else -> colors.textPrimary
     }
     Row(
@@ -322,7 +322,7 @@ internal fun HistoryButton(text: String, filled: Boolean, onClick: () -> Unit, m
         modifier = modifier
             .defaultMinSize(minHeight = 48.dp)
             .clip(FlashShapes.button)
-            .then(if (filled) Modifier.background(colors.accentPrimary) else Modifier)
+            .then(if (filled) Modifier.background(colors.accentFill) else Modifier)
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
         contentAlignment = Alignment.Center,
@@ -330,7 +330,7 @@ internal fun HistoryButton(text: String, filled: Boolean, onClick: () -> Unit, m
         FlashText(
             text = text,
             style = FlashTheme.typography.bodyEmphasis,
-            color = if (filled) colors.textOnAccent else colors.textSecondary,
+            color = if (filled) colors.onAccentFill else colors.textSecondary,
         )
     }
 }

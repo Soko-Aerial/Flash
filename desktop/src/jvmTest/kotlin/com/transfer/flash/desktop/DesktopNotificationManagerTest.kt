@@ -402,4 +402,119 @@ class DesktopNotificationManagerTest {
         assertTrue(notifications[0].message.contains("notes.pdf"))
         assertTrue(backgroundAttachmentFired)
     }
+
+    @Test
+    fun transferNotificationsSuppressedWhileWindowForegroundAndActive() {
+        val stateDir = tempFolder.newFolder("desktop_state")
+        val engine = testDesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        var windowVisible = true
+        var windowMinimized = false
+        var windowFocused = true
+
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { windowVisible },
+            activeConversationId = { null },
+            isNotificationsEnabled = { true },
+            isWindowMinimized = { windowMinimized },
+            isWindowFocused = { windowFocused },
+        )
+
+        val offered = FlashTransfer(
+            id = FlashTransferId("tx-offer"),
+            peerName = "Phone",
+            direction = FlashTransferDirection.Receiving,
+            fileName = "photo.jpg",
+            bytesTotal = 100L,
+            bytesDone = 0L,
+            state = FlashTransferState.Offered,
+        )
+        val running = offered.copy(
+            id = FlashTransferId("tx-complete"),
+            fileName = "archive.zip",
+            state = FlashTransferState.Transferring,
+        )
+        val runningFail = offered.copy(
+            id = FlashTransferId("tx-fail"),
+            fileName = "broken.bin",
+            state = FlashTransferState.Transferring,
+        )
+
+        manager.handleTransfersUpdate(listOf(offered, running, runningFail))
+        manager.handleTransfersUpdate(
+            listOf(
+                offered,
+                running.copy(state = FlashTransferState.Completed, bytesDone = 100L),
+                runningFail.copy(state = FlashTransferState.Failed, errorMessage = "Reset"),
+            ),
+        )
+        assertEquals(0, notifications.size)
+
+        // State tracking must keep advancing while suppressed so losing focus later notifies cleanly on the next event.
+        windowFocused = false
+        val nextTransfer = offered.copy(
+            id = FlashTransferId("tx-next"),
+            fileName = "video.mp4",
+            state = FlashTransferState.Transferring,
+        )
+        manager.handleTransfersUpdate(listOf(nextTransfer))
+        manager.handleTransfersUpdate(listOf(nextTransfer.copy(state = FlashTransferState.Completed, bytesDone = 100L)))
+
+        assertEquals(1, notifications.size)
+        assertEquals("Transfer Complete", notifications[0].title)
+        assertTrue(notifications[0].message.contains("video.mp4"))
+    }
+
+    @Test
+    fun callAndPairingNotificationsSuppressedWhileWindowForegroundAndActive() {
+        val stateDir = tempFolder.newFolder("desktop_state")
+        val engine = testDesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        var windowMinimized = false
+
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { true },
+            activeConversationId = { null },
+            isNotificationsEnabled = { true },
+            isWindowMinimized = { windowMinimized },
+            isWindowFocused = { true },
+        )
+
+        val ringingCall = FlashCallUiState(
+            callId = "call-1",
+            peerId = "peer-1",
+            peerName = "Alice",
+            direction = FlashCallDirection.INCOMING,
+            video = false,
+            state = FlashCallState.RINGING,
+        )
+        val pairingUi = FlashPairingCoordinator.PairingUi(
+            peerName = "Pixel 8",
+            phase = PairingPhase.RequestReceived,
+            secondsLeft = 60,
+            numericCode = "123456",
+        )
+
+        manager.handleCallUpdate(ringingCall)
+        manager.handlePairingUpdate(pairingUi)
+        assertEquals(0, notifications.size)
+
+        // Reset phases, minimize the window, and ensure subsequent alerts fire normally.
+        manager.handleCallUpdate(null)
+        manager.handlePairingUpdate(null)
+        windowMinimized = true
+
+        manager.handleCallUpdate(ringingCall.copy(callId = "call-2"))
+        manager.handlePairingUpdate(pairingUi)
+
+        assertEquals(2, notifications.size)
+        assertEquals("Incoming Voice Call", notifications[0].title)
+        assertEquals("Pairing Request", notifications[1].title)
+    }
 }

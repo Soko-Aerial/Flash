@@ -36,7 +36,8 @@ class PttSessionOverlayRenderTest {
 
     private val width = 720
     private val height = 480
-    private val accent = FlashColors.dark().accentPrimary.toArgb()
+    private val accent = FlashColors.dark().accentFill.toArgb()
+    private val lightAccent = FlashColors.light().accentFill.toArgb()
 
     @Test
     fun `talking draws the card and its button stops the session`() {
@@ -93,6 +94,28 @@ class PttSessionOverlayRenderTest {
         }
     }
 
+    @Test
+    fun `light theme draws Stop button with accentFill and responds to taps`() {
+        val ptt = StubPtt()
+        val state = PttFloorState.Talking(sessionId = "s", startedAtMs = 0L, holderId = "me")
+        val scene = ImageComposeScene(width = width, height = height, density = Density(1f)) {
+            FlashTheme(darkTheme = false) {
+                PttSessionOverlayContent(engine = ptt, state = state, animateLevels = false)
+            }
+        }
+        try {
+            val bitmap = scene.renderBitmap()
+            val button = accentCentroid(bitmap, lightAccent)
+            assertTrue(button != null, "no light accentFill Stop button was drawn")
+            scene.sendPointerEvent(PointerEventType.Press, button)
+            scene.sendPointerEvent(PointerEventType.Release, button)
+            scene.renderBitmap()
+            assertEquals(1, ptt.stops.get())
+        } finally {
+            scene.close()
+        }
+    }
+
     private fun scene(ptt: FlashPtt, state: PttFloorState): ImageComposeScene =
         ImageComposeScene(width = width, height = height, density = Density(1f)) {
             FlashTheme(darkTheme = true) {
@@ -106,13 +129,13 @@ class PttSessionOverlayRenderTest {
     }
 
     /** Centre of the pixels whose colour is exactly the theme accent, i.e. the Stop/Leave chip (no meter). */
-    private fun accentCentroid(bitmap: Bitmap): Offset? {
+    private fun accentCentroid(bitmap: Bitmap, targetColor: Int = accent): Offset? {
         var sx = 0L
         var sy = 0L
         var n = 0L
         for (y in 0 until height) {
             for (x in 0 until width) {
-                if (bitmap.getColor(x, y) == accent) {
+                if (bitmap.getColor(x, y) == targetColor) {
                     sx += x
                     sy += y
                     n++

@@ -112,6 +112,7 @@ object FlashNetworkStatusMath {
     fun healthLabel(
         health: FlashConnectionHealth,
         transport: FlashNetworkTransport = FlashNetworkTransport.Unknown,
+        peerName: String? = null,
     ): String = when (health) {
         FlashConnectionHealth.Connected -> when (transport) {
             FlashNetworkTransport.Lan -> "Connected · LAN"
@@ -127,7 +128,10 @@ object FlashNetworkStatusMath {
         } else {
             "Online · connects when you send"
         }
-        FlashConnectionHealth.Offline -> "Searching for devices…"
+        FlashConnectionHealth.Offline -> {
+            val trimmed = peerName?.trim()?.takeIf { it.isNotEmpty() }
+            if (trimmed != null) "$trimmed is offline · searching…" else "Searching for devices…"
+        }
     }
 
     /** Only Offline blocks sending; Degraded/Connecting stay non-blocking per research. */
@@ -165,6 +169,8 @@ fun FlashConnectionBanner(
     health: FlashConnectionHealth,
     modifier: Modifier = Modifier,
     onRetry: () -> Unit = {},
+    transport: FlashNetworkTransport = FlashNetworkTransport.Unknown,
+    peerName: String? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -182,7 +188,7 @@ fun FlashConnectionBanner(
         FlashNetworkBannerSeverity.Calm -> FlashIcons.Connection
         FlashNetworkBannerSeverity.Attention -> FlashIcons.Device
     }
-    val label = FlashNetworkStatusMath.healthLabel(health)
+    val label = FlashNetworkStatusMath.healthLabel(health, transport = transport, peerName = peerName)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -213,20 +219,23 @@ fun FlashConnectionBanner(
             Box(
                 modifier = Modifier
                     .clip(FlashShapes.chip)
-                    .background(colors.accentPrimary)
-                    .defaultMinSize(minHeight = 32.dp)
+                    .background(colors.accentFill)
+                    .defaultMinSize(
+                        minWidth = FlashDimensions.minTouchTarget,
+                        minHeight = FlashDimensions.minTouchTarget,
+                    )
                     .clickable(onClick = onRetry)
                     .semantics(mergeDescendants = true) {
                         role = Role.Button
                         contentDescription = "Retry connection"
                     }
-                    .padding(horizontal = FlashSpacing.space12),
+                    .padding(horizontal = FlashSpacing.space16),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashText(
                     text = "Retry",
                     style = typography.metadataEmphasis,
-                    color = colors.textOnAccent,
+                    color = colors.onAccentFill,
                 )
             }
         }
@@ -306,6 +315,7 @@ private fun FlashConnectionBannerRelayedPreview() {
                     FlashPeerPresence.Online,
                     peerCount = 1,
                 ),
+                transport = FlashNetworkTransport.Relay,
             )
         }
     }

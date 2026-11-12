@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
@@ -147,23 +149,27 @@ fun FlashVideoPlayer(
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
+                            .heightIn(min = FlashDimensions.minTouchTarget)
+                            .clip(CircleShape)
+                            .background(colors.accentFill)
                             .clickable(role = Role.Button, onClick = onOpenExternally)
-                            .background(colors.accentPrimary, CircleShape)
                             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                     ) {
                         FlashText(
                             text = "Open in system player",
                             style = FlashTheme.typography.bodyEmphasis,
-                            color = Color.White,
+                            color = colors.onAccentFill,
                         )
                     }
                 }
             }
         }
 
+        val showPlaybackControls = FlashVideoPlayerMath.showPlaybackControls(errorMessage)
+
         // Center play / pause / replay affordance
         AnimatedVisibility(
-            visible = controlsVisible || !isPlaying,
+            visible = showPlaybackControls && (controlsVisible || !isPlaying),
             enter = fadeIn(motion.tweenNormalSpec()),
             exit = fadeOut(motion.tweenFastSpec()),
             modifier = Modifier.align(Alignment.Center),
@@ -196,7 +202,7 @@ fun FlashVideoPlayer(
 
         // Controls overlay: Top bar (Close) and Bottom bar (Scrubber + Times)
         AnimatedVisibility(
-            visible = controlsVisible || !isPlaying,
+            visible = FlashVideoPlayerMath.showTopBar(errorMessage, controlsVisible, isPlaying),
             enter = fadeIn(motion.tweenNormalSpec()),
             exit = fadeOut(motion.tweenFastSpec()),
             modifier = Modifier.fillMaxSize(),
@@ -231,89 +237,91 @@ fun FlashVideoPlayer(
                     }
                 }
 
-                // Bottom gradient bar with timeline controls
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color.Transparent, Color(0xCC000000)),
-                            ),
-                        )
-                        .navigationBarsPadding()
-                        .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
-                ) {
-                    val currentPos = if (isDraggingSlider) sliderDragPosition.toLong() else positionMs
-                    val totalDur = durationMs.coerceAtLeast(0L)
-
-                    // Scrubber slider
-                    Slider(
-                        value = if (totalDur > 0L) currentPos.toFloat().coerceIn(0f, totalDur.toFloat()) else 0f,
-                        onValueChange = { target ->
-                            isDraggingSlider = true
-                            sliderDragPosition = target
-                        },
-                        onValueChangeFinished = {
-                            isDraggingSlider = false
-                            val targetMs = sliderDragPosition.toLong()
-                            positionMs = targetMs
-                            seekToTarget = targetMs
-                            if (isCompleted) {
-                                isCompleted = false
-                                isPlaying = true
-                            }
-                        },
-                        valueRange = 0f..maxOf(1f, totalDur.toFloat()),
-                        colors = SliderDefaults.colors(
-                            thumbColor = colors.accentPrimary,
-                            activeTrackColor = colors.accentPrimary,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.25f),
-                        ),
+                if (showPlaybackControls) {
+                    // Bottom gradient bar with timeline controls
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(28.dp),
-                    )
-
-                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+                            .align(Alignment.BottomCenter)
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.Transparent, Color(0xCC000000)),
+                                ),
+                            )
+                            .navigationBarsPadding()
+                            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                     ) {
+                        val currentPos = if (isDraggingSlider) sliderDragPosition.toLong() else positionMs
+                        val totalDur = durationMs.coerceAtLeast(0L)
+
+                        // Scrubber slider
+                        Slider(
+                            value = if (totalDur > 0L) currentPos.toFloat().coerceIn(0f, totalDur.toFloat()) else 0f,
+                            onValueChange = { target ->
+                                isDraggingSlider = true
+                                sliderDragPosition = target
+                            },
+                            onValueChangeFinished = {
+                                isDraggingSlider = false
+                                val targetMs = sliderDragPosition.toLong()
+                                positionMs = targetMs
+                                seekToTarget = targetMs
+                                if (isCompleted) {
+                                    isCompleted = false
+                                    isPlaying = true
+                                }
+                            },
+                            valueRange = 0f..maxOf(1f, totalDur.toFloat()),
+                            colors = SliderDefaults.colors(
+                                thumbColor = colors.accentPrimary,
+                                activeTrackColor = colors.accentPrimary,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(28.dp),
+                        )
+
+                        Spacer(modifier = Modifier.height(FlashSpacing.space4))
+
                         Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                         ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clickable(
-                                        role = Role.Button,
-                                        onClick = {
-                                            val res = FlashVideoPlayerMath.onPlayClick(isCompleted, isPlaying)
-                                            isCompleted = res.isCompleted
-                                            if (res.seekToTarget != null) {
-                                                seekToTarget = res.seekToTarget
-                                            }
-                                            isPlaying = res.isPlaying
-                                        },
-                                    ),
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                             ) {
-                                FlashIcon(
-                                    icon = if (isCompleted || !isPlaying) FlashIcons.Play else FlashIcons.Pause,
-                                    tint = Color.White,
-                                    size = FlashDimensions.iconSm,
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clickable(
+                                            role = Role.Button,
+                                            onClick = {
+                                                val res = FlashVideoPlayerMath.onPlayClick(isCompleted, isPlaying)
+                                                isCompleted = res.isCompleted
+                                                if (res.seekToTarget != null) {
+                                                    seekToTarget = res.seekToTarget
+                                                }
+                                                isPlaying = res.isPlaying
+                                            },
+                                        ),
+                                ) {
+                                    FlashIcon(
+                                        icon = if (isCompleted || !isPlaying) FlashIcons.Play else FlashIcons.Pause,
+                                        tint = Color.White,
+                                        size = FlashDimensions.iconSm,
+                                    )
+                                }
+
+                                FlashText(
+                                    text = "${formatVideoDuration(currentPos)} / ${formatVideoDuration(totalDur)}",
+                                    style = FlashTheme.typography.metadataDefault,
+                                    color = Color.White.copy(alpha = 0.85f),
                                 )
                             }
-
-                            FlashText(
-                                text = "${formatVideoDuration(currentPos)} / ${formatVideoDuration(totalDur)}",
-                                style = FlashTheme.typography.metadataDefault,
-                                color = Color.White.copy(alpha = 0.85f),
-                            )
                         }
                     }
                 }
@@ -355,4 +363,14 @@ public object FlashVideoPlayerMath {
      * clicks (which also target 0L) trigger a state transition and re-execute LaunchedEffect(seekToMs).
      */
     public fun onSeekHandled(): Long? = null
+
+    /** Playback controls (center Play/Pause and bottom scrubber) are hidden whenever playback errors. */
+    public fun showPlaybackControls(errorMessage: String?): Boolean = errorMessage == null
+
+    /** Top bar remains visible on error so the user can always dismiss the viewer. */
+    public fun showTopBar(
+        errorMessage: String?,
+        controlsVisible: Boolean,
+        isPlaying: Boolean,
+    ): Boolean = errorMessage != null || controlsVisible || !isPlaying
 }

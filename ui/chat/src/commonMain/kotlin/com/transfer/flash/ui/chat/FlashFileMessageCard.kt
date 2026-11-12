@@ -255,107 +255,26 @@ fun FlashFileMessageCard(
                 Text(
                     text = statusSubtitle,
                     style = typography.captionEmphasis.copy(fontSize = 11.sp),
-                    color = if (attachment.canGoOffline) colors.accentPrimary else secondaryTextColor,
+                    color = if (attachment.canGoOffline) colors.accentFill else secondaryTextColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
 
-            // Trailing action controls for in-flight / failed / paused transfers
-            if (attachment.transferStatus == FlashFileTransferStatus.Transferring) {
+            // Trailing Cancel control for in-flight / paused / awaiting / failed transfers.
+            // Pause/Resume/Retry live on the 48dp leading badge (no duplicate trailing icons).
+            if (attachment.transferStatus == FlashFileTransferStatus.Transferring ||
+                attachment.transferStatus == FlashFileTransferStatus.Paused ||
+                attachment.transferStatus == FlashFileTransferStatus.Failed ||
+                (isAwaiting && isParentOutgoing)
+            ) {
                 Spacer(modifier = Modifier.width(FlashSpacing.space4))
-                IconButton(
-                    onClick = {
-                        haptics(FlashHaptic.Tick)
-                        onPause()
-                    },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Pause,
-                        contentDescription = "Pause transfer",
-                        size = 16.dp,
-                        tint = secondaryTextColor,
-                    )
-                }
                 IconButton(
                     onClick = {
                         haptics(FlashHaptic.Tick)
                         onCancel()
                     },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Close,
-                        contentDescription = "Cancel transfer",
-                        size = 16.dp,
-                        tint = colors.textError,
-                    )
-                }
-            } else if (attachment.transferStatus == FlashFileTransferStatus.Paused) {
-                Spacer(modifier = Modifier.width(FlashSpacing.space4))
-                IconButton(
-                    onClick = {
-                        haptics(FlashHaptic.Tick)
-                        onResume()
-                    },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Play,
-                        contentDescription = "Resume transfer",
-                        size = 16.dp,
-                        tint = colors.accentPrimary,
-                    )
-                }
-                IconButton(
-                    onClick = {
-                        haptics(FlashHaptic.Tick)
-                        onCancel()
-                    },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Close,
-                        contentDescription = "Cancel transfer",
-                        size = 16.dp,
-                        tint = colors.textError,
-                    )
-                }
-            } else if (isAwaiting && isParentOutgoing) {
-                IconButton(
-                    onClick = onCancel,
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Close,
-                        contentDescription = "Cancel transfer",
-                        size = 16.dp,
-                        tint = colors.textError,
-                    )
-                }
-            } else if (attachment.transferStatus == FlashFileTransferStatus.Failed) {
-                Spacer(modifier = Modifier.width(FlashSpacing.space4))
-                IconButton(
-                    onClick = {
-                        haptics(FlashHaptic.Tick)
-                        onResume()
-                    },
-                    modifier = Modifier.size(28.dp),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Retry,
-                        contentDescription = "Retry transfer",
-                        size = 16.dp,
-                        tint = colors.accentPrimary,
-                    )
-                }
-                IconButton(
-                    onClick = {
-                        haptics(FlashHaptic.Tick)
-                        onCancel()
-                    },
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
                 ) {
                     FlashIcon(
                         icon = FlashIcons.Close,
@@ -367,7 +286,7 @@ fun FlashFileMessageCard(
             }
         }
 
-        // Task 3.6: Swarm piece availability grid map
+        // Transfer piece availability grid map
         if (attachment.pieceBlocks.isNotEmpty() && attachment.transferStatus != FlashFileTransferStatus.Downloaded) {
             var pieceMapExpanded by remember { mutableStateOf(false) }
 
@@ -385,15 +304,15 @@ fun FlashFileMessageCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     FlashText(
-                        text = if (pieceMapExpanded) "Hide piece map" else "Show piece map",
+                        text = if (pieceMapExpanded) "Hide transfer details" else "Transfer details",
                         style = typography.captionEmphasis.copy(fontSize = 11.sp),
-                        color = colors.accentPrimary,
+                        color = colors.accentFill,
                     )
                     FlashIcon(
                         icon = if (pieceMapExpanded) FlashIcons.ChevronDown else FlashIcons.Forward,
                         contentDescription = null,
                         size = 12.dp,
-                        tint = colors.accentPrimary,
+                        tint = colors.accentFill,
                     )
                 }
 
@@ -432,13 +351,13 @@ fun FlashFileMessageCard(
                         text = (if (recipientsExpanded) "Hide members" else "Who has it") +
                             " · $haveAll of ${maxOf(attachment.recipientsTotal, attachment.recipients.size)}",
                         style = typography.captionEmphasis.copy(fontSize = 11.sp),
-                        color = colors.accentPrimary,
+                        color = colors.accentFill,
                     )
                     FlashIcon(
                         icon = if (recipientsExpanded) FlashIcons.ChevronDown else FlashIcons.Forward,
                         contentDescription = null,
                         size = 12.dp,
-                        tint = colors.accentPrimary,
+                        tint = colors.accentFill,
                     )
                 }
                 if (recipientsExpanded) {
@@ -530,8 +449,8 @@ private fun FlashFileOfferActions(
             modifier = Modifier.weight(1f),
             shape = FlashShapes.attachment,
             colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
-                containerColor = colors.accentPrimary.copy(alpha = 0.15f),
-                contentColor = colors.accentPrimary,
+                containerColor = colors.accentFill.copy(alpha = 0.15f),
+                contentColor = colors.accentFill,
             ),
         ) {
             FlashIcon(
@@ -543,7 +462,7 @@ private fun FlashFileOfferActions(
             Text(
                 text = "Accept",
                 style = typography.bodyDefault.copy(fontWeight = FontWeight.Medium),
-                color = colors.accentPrimary,
+                color = colors.accentFill,
             )
         }
 

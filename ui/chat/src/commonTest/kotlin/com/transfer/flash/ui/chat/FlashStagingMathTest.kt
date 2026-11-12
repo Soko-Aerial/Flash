@@ -58,4 +58,25 @@ class FlashStagingMathTest {
         assertEquals(item2.id, remaining[0].id)
         assertEquals(item3.id, remaining[1].id)
     }
+
+    @Test
+    fun `appendUpToLimit enforces MAX_STAGED_ATTACHMENTS cap`() {
+        var staged = emptyList<FlashShareItemUi>()
+        repeat(FlashStagingMath.MAX_STAGED_ATTACHMENTS) { idx ->
+            val (next, accepted) = FlashStagingMath.appendUpToLimit(
+                staged,
+                FlashShareItemUi(uri = "file:///$idx.png", name = "$idx.png", sizeBytes = 10L),
+            )
+            assertTrue(accepted)
+            staged = next
+        }
+        assertEquals(FlashStagingMath.MAX_STAGED_ATTACHMENTS, staged.size)
+
+        val (capped, acceptedOverflow) = FlashStagingMath.appendUpToLimit(
+            staged,
+            FlashShareItemUi(uri = "file:///extra.png", name = "extra.png", sizeBytes = 10L),
+        )
+        assertFalse(acceptedOverflow)
+        assertEquals(FlashStagingMath.MAX_STAGED_ATTACHMENTS, capped.size)
+    }
 }

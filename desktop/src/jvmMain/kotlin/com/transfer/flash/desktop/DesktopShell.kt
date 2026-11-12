@@ -3,13 +3,20 @@
 package com.transfer.flash.desktop
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -35,7 +42,11 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
@@ -67,6 +78,7 @@ import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDi
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
 import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
+import com.transfer.flash.ui.adaptive.FlashWindowSizeClass
 import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.ui.calling.FlashCallScreen
 import com.transfer.flash.ui.calling.FlashCallShareHost
@@ -85,7 +97,10 @@ import com.transfer.flash.ui.chat.FlashShareItemUi
 import com.transfer.flash.ui.chat.FlashShareRecipientUi
 import com.transfer.flash.ui.chat.FlashShareTargetSheet
 import com.transfer.flash.ui.chat.FlashShareTargetMath
+import com.transfer.flash.ui.chat.FlashEncryptionBadgeState
+import com.transfer.flash.ui.chat.FlashEncryptionSheet
 import com.transfer.flash.ui.chat.FlashPairingDialog
+import com.transfer.flash.ui.chat.FlashSheetHost
 import com.transfer.flash.ui.nearby.FlashManualConnectDialog
 import com.transfer.flash.ui.settings.FlashThemeMode
 import com.transfer.flash.ui.settings.FlashDisplayNameDialog
@@ -112,20 +127,28 @@ import com.transfer.flash.ui.settings.FlashSettingsScreen
 import com.transfer.flash.ui.shell.FlashBottomNav
 import com.transfer.flash.ui.shell.FlashShellTabs
 import com.transfer.flash.ui.shell.FlashBottomNavItem
+import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashShapes
+import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.transfers.FlashTransferDirection
 import com.transfer.flash.ui.transfers.FlashTransferItemUi
 import com.transfer.flash.ui.transfers.FlashTransferState
 import com.transfer.flash.ui.transfers.FlashTransfersScreen
 import com.transfer.flash.ui.transfers.TransfersUiState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.launch
 
 /**
  * Thin desktop shell (Phase 21 21-3 + Phase 22 22-5) — Option B per the phase file's Step 6
@@ -155,6 +178,7 @@ public fun DesktopShell(
     onThemeModeSelected: (FlashThemeMode) -> Unit,
     window: java.awt.Window? = null,
     nav: FlashNavigationState = rememberFlashNavigationState(),
+    trayNavTick: Int = 0,
     externalShareFiles: List<java.io.File> = emptyList(),
     onClearExternalShareFiles: () -> Unit = {},
     /** UI-058 H9: a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`) to open, set at launch or by a notification. */
@@ -180,10 +204,12 @@ public fun DesktopShell(
 
     // ── Phase 22: window size + selection state for the two-pane layout ──
     val sizeClass = rememberFlashDesktopWindowSize(window)
+    val useNavRail = sizeClass != FlashWindowSizeClass.Compact
     val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
-    var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
-    var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
+    var selectedTransferId by remember { mutableStateOf<String?>(null) }
+    var selectedNearbyPeerId by remember { mutableStateOf<String?>(null) }
     var selectedChatConversationId by remember { mutableStateOf<String?>(null) }
+    var showRadioGateway by remember { mutableStateOf(false) }
 
     LaunchedEffect(nav.current.conversationId) {
         val cid = nav.current.conversationId
@@ -192,8 +218,30 @@ public fun DesktopShell(
         }
     }
     LaunchedEffect(nav.current.destination) {
+        if (nav.current.destination != FlashDestination.ChatList &&
+            nav.current.destination != FlashDestination.Conversation
+        ) {
+            selectedChatConversationId = null
+        }
+        if (nav.current.destination != FlashDestination.Transfers) {
+            selectedTransferId = null
+        }
+        if (nav.current.destination != FlashDestination.NearbyDevices) {
+            selectedNearbyPeerId = null
+        }
+        if (nav.current.destination != FlashDestination.Settings) {
+            showRadioGateway = false
+        }
         if (nav.current.destination == FlashDestination.Hub) {
             engine.requestOrgSync("hub_tab_opened")
+        }
+    }
+    LaunchedEffect(trayNavTick) {
+        if (trayNavTick > 0) {
+            selectedChatConversationId = null
+            selectedTransferId = null
+            selectedNearbyPeerId = null
+            showRadioGateway = false
         }
     }
 
@@ -202,6 +250,18 @@ public fun DesktopShell(
     // to the durable repository during `assemble()`, and a `remember(engine)` alone would
     // pin whichever one was current at first composition — the empty one — forever.
     val chatRepository = remember(engine, ready) { engine.chats }
+    val openConversationEntry = when {
+        nav.current.destination == FlashDestination.Conversation -> nav.current.conversationId
+        twoPane && nav.current.destination == FlashDestination.ChatList -> selectedChatConversationId
+        else -> null
+    }
+    var lastOpenConversationEntry by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(openConversationEntry) {
+        if (openConversationEntry == null && lastOpenConversationEntry != null) {
+            chatRepository.closeConversation()
+        }
+        lastOpenConversationEntry = openConversationEntry
+    }
     val chatListState by chatRepository.chatListState.collectAsState()
     val totalUnreadCount = remember(chatListState.items) {
         chatListState.items.sumOf { it.unreadCount }
@@ -249,6 +309,20 @@ public fun DesktopShell(
     val activeCall by remember(calls) {
         calls?.activeCall ?: MutableStateFlow(null)
     }.collectAsState()
+    var dismissedEndedCallId by remember { mutableStateOf<String?>(null) }
+    val currentCall = activeCall
+    LaunchedEffect(currentCall?.callId, currentCall?.state) {
+        if (currentCall == null ||
+            currentCall.callId != dismissedEndedCallId ||
+            currentCall.state != com.transfer.flash.core.calling.model.FlashCallState.ENDED
+        ) {
+            dismissedEndedCallId = null
+        }
+    }
+    val ringingCall = currentCall?.takeUnless {
+        it.state == com.transfer.flash.core.calling.model.FlashCallState.ENDED &&
+            it.callId == dismissedEndedCallId
+    }
     // ── Push-to-talk (UI-051 addendum A, ADR-058) ──
     // `engine.ptt` is null until assemble builds it, so it is keyed on `ready` like `calls`. The state
     // flow is read here only for "is a session live"; the card reads it again for role and name.
@@ -294,6 +368,12 @@ public fun DesktopShell(
             )
         }
     }
+    val selectedTransferItem = resolveSelectedTransferItem(selectedTransferId, transfersUi)
+    LaunchedEffect(transfersUi.isLoading, selectedTransferId, selectedTransferItem) {
+        if (!transfersUi.isLoading && selectedTransferId != null && selectedTransferItem == null) {
+            selectedTransferId = null
+        }
+    }
 
     // ── Nearby: discovery endpoints + trust store + the Phase 26-3 pairing dialog ──
     // Never touch a synchronized lazy from composition before boot has warmed it.
@@ -301,26 +381,24 @@ public fun DesktopShell(
     val pairingUi by remember(pairing) {
         pairing?.pairing ?: MutableStateFlow<FlashPairingCoordinator.PairingUi?>(null)
     }.collectAsState()
-    // Pairing status — "Connecting to X…", "Paired with X.", "Pairing ended (…)".
-    //
-    // These went to `println` only, because "the desktop tier has no toast surface yet". That made
-    // every pairing outcome invisible unless the user happened to be watching a terminal: a declined
-    // or failed pairing looked exactly like nothing having happened at all. They now reach a
-    // snackbar as well, which is where the same strings land on Android (via Toast).
-    //
-    // The log line is kept rather than replaced — `~/.flash/desktop.log` is the artifact a bug report
-    // carries, and a message that only ever appeared on screen would be gone by the time anyone
-    // looked.
+    var lastPairingPeer by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var lastPairingFailureMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(pairing, snackbarHostState) {
-        // `collectLatest`, NOT `collect`. `showSnackbar` SUSPENDS for the snackbar's whole lifetime,
-        // so a plain `collect` processes one message per ~4 s while the rest pile up behind it —
-        // and every queued message re-runs `dismiss()` then `showSnackbar()`, which is a cancelling
-        // and re-showing loop for as long as messages keep arriving. `collectLatest` cancels the
-        // in-flight `showSnackbar` when a newer message lands, which is the "newest wins" behaviour
-        // these strings have as Toasts on Android, with no backlog and no churn.
         pairing?.messages?.collectLatest { message ->
             FlashLog.i(TAG_PAIRING, message)
+            if (message.startsWith("The other device is running") ||
+                message.startsWith("Pairing stopped:") ||
+                message.startsWith("Too many pairing attempts")
+            ) {
+                lastPairingFailureMessage = message
+            }
             snackbarHostState.showSnackbar(message = message, duration = SnackbarDuration.Short)
+        }
+    }
+    LaunchedEffect(pairingUi?.phase) {
+        val mapped = pairingPhaseOf(pairingUi?.phase)
+        if (mapped != FlashPairingPhase.Failed) {
+            lastPairingFailureMessage = null
         }
     }
     LaunchedEffect(engine, snackbarHostState) {
@@ -393,6 +471,24 @@ public fun DesktopShell(
     // that structural rather than remembered — there is no enclosing `val` left to capture. The body
     // lives in `nearbyUiStateOf` below; being pure, its invariant is unit-tested
     // (DesktopNearbyStateTest) instead of being checked by eye in a live run.
+    var localLanAddresses by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(ready, discoveredEndpoints.size, activeSessions.size, sweepState, nav.current.destination) {
+        while (true) {
+            val addrs = withContext(Dispatchers.IO) {
+                com.transfer.flash.core.network.sweep.JvmLocalSubnets.lanSubnets()
+                    .map { it.address }
+                    .distinct()
+            }
+            localLanAddresses = addrs
+            if (nav.current.destination != FlashDestination.NearbyDevices) break
+            delay(4_000L)
+        }
+    }
+    val radiosAvailable = !ready ||
+        localLanAddresses.isNotEmpty() ||
+        discoveredEndpoints.isNotEmpty() ||
+        activeSessions.isNotEmpty()
+
     val nearby by remember(engine, engine.discovery, activeSessions) {
         derivedStateOf {
             nearbyUiStateOf(
@@ -407,6 +503,9 @@ public fun DesktopShell(
                 scan = sweepState.toNearbyScan(),
                 isOrgPeer = { peerId -> engine.hasAuthenticatedOrgSession(peerId) },
                 orgName = engine.enterpriseTrustStore.getCredentials()?.hubName,
+                localAddressLabel = localLanAddresses.firstOrNull(),
+                radiosAvailable = radiosAvailable,
+                failureReason = lastPairingFailureMessage,
             )
         }
     }
@@ -469,6 +568,13 @@ public fun DesktopShell(
                     items = (existing + shareItems).distinctBy { it.uri },
                     text = null,
                 )
+            } else {
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = EMPTY_FOLDER_SHARE_MESSAGE,
+                        duration = SnackbarDuration.Short,
+                    )
+                }
             }
             onClearExternalShareFiles()
         }
@@ -538,17 +644,21 @@ public fun DesktopShell(
     // actions stay hidden.
     // Trust is a plain lookup against the list the Nearby rows use, so the two screens cannot
     // disagree about whether a peer is paired.
-    val conversationIdIsTrusted = trustedPeersByCoordinator.any { it.id == nav.current.conversationId }
+    val activeConversationId = nav.current.conversationId
+        ?: if (twoPane && nav.current.destination == FlashDestination.ChatList) selectedChatConversationId else null
+    val trustedConversationPeer = trustedPeersByCoordinator.firstOrNull { it.id == activeConversationId }
+    val conversationIdIsTrusted = trustedConversationPeer != null
+    val conversationIdIsVerified = trustedConversationPeer?.verified == true
 
     val conversationState = remember(
         repositoryConversation,
-        nav.current.conversationId,
+        activeConversationId,
         trustedPeersByCoordinator,
         discoveredEndpoints,
         ongoingGroupCalls,
         activeSessions,
     ) {
-        val convId = nav.current.conversationId
+        val convId = activeConversationId
         val base = repositoryConversation
         if (convId == null) {
             base
@@ -627,9 +737,13 @@ public fun DesktopShell(
         }
     }
 
-    fun placeVoiceCall(peerId: String, peerName: String) {
+    fun placeVoiceCall(
+        peerId: String,
+        peerName: String,
+        isGroup: Boolean = conversationState.header.isGroup,
+    ) {
         scope.launch {
-            val ok = if (conversationState.header.isGroup) {
+            val ok = if (isGroup) {
                 val memberIds = if (conversationState.members.isNotEmpty()) {
                     conversationState.members.map { it.id }
                 } else {
@@ -653,9 +767,13 @@ public fun DesktopShell(
         }
     }
 
-    fun placeVideoCall(peerId: String, peerName: String) {
+    fun placeVideoCall(
+        peerId: String,
+        peerName: String,
+        isGroup: Boolean = conversationState.header.isGroup,
+    ) {
         scope.launch {
-            val ok = if (conversationState.header.isGroup) {
+            val ok = if (isGroup) {
                 val memberIds = if (conversationState.members.isNotEmpty()) {
                     conversationState.members.map { it.id }
                 } else {
@@ -824,6 +942,14 @@ public fun DesktopShell(
         }
     }
 
+    fun clearPendingDesktopSharePairing() {
+        if (isPairingForDesktopShare || pendingDesktopShareRecipient != null) {
+            pendingDesktopShareRecipient = null
+            isPairingForDesktopShare = false
+            pendingDesktopShare = null
+        }
+    }
+
     LaunchedEffect(nearby.pairingPhase, trustedPeersByCoordinator) {
         val target = pendingDesktopShareRecipient ?: return@LaunchedEffect
         val (targetDeviceId, targetDeviceName) = target
@@ -857,21 +983,14 @@ public fun DesktopShell(
                     )
                 }
             }
-        } else if (nearby.pairingPhase == FlashPairingPhase.Declined || nearby.pairingPhase == FlashPairingPhase.Expired) {
-            pendingDesktopShareRecipient = null
-            isPairingForDesktopShare = false
-            pendingDesktopShare = null
-            scope.launch {
-                snackbarHostState.showSnackbar(
-                    message = "Pairing was cancelled or timed out. Files not sent.",
-                    duration = SnackbarDuration.Short,
-                )
-            }
         }
+        // Preserve pendingDesktopShare and pendingDesktopShareRecipient across Declined/Expired/Failed
+        // so tapping "Try again" in FlashPairingDialog delivers the share if retry succeeds. They are
+        // cleared only when pairing succeeds or the user explicitly closes/declines the pairing dialog.
     }
 
     val generalFilePicker = rememberFlashFilePickerLauncher { picked ->
-        val peerId = nav.current.conversationId
+        val peerId = activeConversationId
         if (peerId != null) {
             sendFileToPeer(
                 peerId = peerId,
@@ -884,8 +1003,27 @@ public fun DesktopShell(
         }
     }
 
-    // Drag-and-drop: dropping files or folders onto the window sends them to the active peer in
-    // Conversation; outside of a conversation it prompts the user to select or open a conversation.
+    var nearbySendFileTarget by remember { mutableStateOf<NearbyPeerUi?>(null) }
+    val nearbyFilePicker = rememberFlashFilePickerLauncher { picked ->
+        val target = nearbySendFileTarget ?: return@rememberFlashFilePickerLauncher
+        sendFileToPeer(
+            peerId = target.id,
+            peerName = target.name,
+            isGroup = false,
+            uri = picked.uri,
+            displayName = picked.name,
+            size = picked.size,
+        )
+        scope.launch {
+            snackbarHostState.showSnackbar(
+                message = "Sending ${picked.name} to ${target.name}",
+                duration = SnackbarDuration.Short,
+            )
+        }
+    }
+
+    // Drag-and-drop: dropping files or folders onto the window sends them to the active peer only
+    // when that conversation pane is actually visible; otherwise it opens FlashShareTargetSheet.
     // OPT-O19-01: Key DropTarget registration strictly on window lifecycle, decoupling dynamic nav and
     // header state via rememberUpdatedState to avoid recursive teardown/re-registration on every tab switch or typing tick.
     val currentNav by rememberUpdatedState(nav.current)
@@ -933,7 +1071,12 @@ public fun DesktopShell(
                         val files = transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
                         val fileList = files?.filterIsInstance<File>() ?: emptyList()
                         if (fileList.isNotEmpty()) {
-                            val activePeerId = currentNav.conversationId ?: (if (currentTwoPane) currentSelectedChatId else null)
+                            val activePeerId = visibleChatTargetForDrop(
+                                destination = currentNav.destination,
+                                navConversationId = currentNav.conversationId,
+                                selectedChatConversationId = currentSelectedChatId,
+                                twoPane = currentTwoPane,
+                            )
                             val allFiles = fileList.flatMap { file ->
                                 if (file.isDirectory) {
                                     file.walkTopDown().filter { it.isFile }.map { subFile ->
@@ -944,7 +1087,17 @@ public fun DesktopShell(
                                     listOf(Pair(file, file.name))
                                 }
                             }
-                            if ((currentNav.destination == FlashDestination.Conversation || currentTwoPane) && activePeerId != null) {
+                            if (allFiles.isEmpty()) {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message = EMPTY_FOLDER_SHARE_MESSAGE,
+                                        duration = SnackbarDuration.Short,
+                                    )
+                                }
+                                dtde.dropComplete(true)
+                                return
+                            }
+                            if (activePeerId != null) {
                                 allFiles.forEach { (file, relPath) ->
                                     currentDropSender(
                                         activePeerId,
@@ -958,9 +1111,12 @@ public fun DesktopShell(
                                         emptyList(),
                                     )
                                 }
+                                val targetName = currentConversationHeader.title.takeIf { it.isNotBlank() }
                                 scope.launch {
+                                    val fileLabel = if (allFiles.size == 1) allFiles[0].first.name else "${allFiles.size} files"
+                                    val msg = if (targetName != null) "Sending $fileLabel to $targetName" else "Sending $fileLabel"
                                     snackbarHostState.showSnackbar(
-                                        message = if (allFiles.size == 1) "Sending ${allFiles[0].first.name}" else "Sending ${allFiles.size} files",
+                                        message = msg,
                                         duration = SnackbarDuration.Short,
                                     )
                                 }
@@ -975,9 +1131,9 @@ public fun DesktopShell(
                                         mimeType = DesktopHelpers.guessMimeType(file.name),
                                     )
                                 }
-                                pendingDesktopShare = FlashSharePayloadUi(
-                                    items = shareItems,
-                                    text = null,
+                                pendingDesktopShare = mergeDesktopSharePayload(
+                                    existing = pendingDesktopShare,
+                                    incomingItems = shareItems,
                                 )
                                 dtde.dropComplete(true)
                                 return
@@ -1036,6 +1192,7 @@ public fun DesktopShell(
     // honest initial value (the scan has not run yet) and resolves to a real 0 on an empty folder.
     val desktopSettings by engine.settings.collectAsState()
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showEncryptionSheet by remember { mutableStateOf(false) }
     val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
     // The organisation hub (ADR-120): live status for the hub destination.
     val hubObject = remember(ready) { engine.enterpriseHub }
@@ -1055,7 +1212,8 @@ public fun DesktopShell(
     LaunchedEffect(ready, enterpriseCredentials != null) {
         if (ready) nav.updateHubEnrolled(enterpriseCredentials != null)
     }
-    val tabBottomInset = if (twoPane) 0.dp else FLASH_BOTTOM_NAV_INSET
+    val showBar = FlashNavigationMath.showsBottomBar(nav.current.destination, nav.hubEnrolled, railMode = useNavRail)
+    val tabBottomInset = if (useNavRail) 0.dp else FLASH_BOTTOM_NAV_INSET
 
     // UI-058 H9: a route waits until enrolment is known (engine ready), opens the Hub when enrolled, else lands on Chats
     // with a one-line notice. The Hub reports it consumed.
@@ -1111,6 +1269,18 @@ public fun DesktopShell(
             targetMessageId = messageId,
         )
     }
+    val closeDeletedConversationIfActive: (Set<String>) -> Unit = { deletedIds ->
+        if (nav.current.conversationId in deletedIds || selectedChatConversationId in deletedIds) {
+            val backToHub = nav.conversationOpenedFromHub
+            selectedChatConversationId = null
+            chatRepository.closeConversation()
+            if (twoPane) {
+                nav.selectTab(if (backToHub) FlashDestination.Hub else FlashDestination.ChatList)
+            } else if (nav.current.destination == FlashDestination.Conversation) {
+                nav.back()
+            }
+        }
+    }
     // Chat list content shared by listPaneContent in both single-pane and two-pane modes.
     val chatListPaneContent: @Composable () -> Unit = {
         FlashChatListScreen(
@@ -1125,6 +1295,7 @@ public fun DesktopShell(
             onSearchClick = { isSearching = true },
             onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
             onLanClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+            onNewChatClick = { nav.selectTab(FlashDestination.NearbyDevices) },
             isSearching = isSearching,
             searchQuery = searchQuery,
             onSearchQueryChanged = { searchQuery = it },
@@ -1156,12 +1327,31 @@ public fun DesktopShell(
             onToggleSelection = chatRepository::toggleListSelection,
             onArchiveConversation = chatRepository::archiveConversation,
             onUnarchiveConversation = chatRepository::unarchiveConversation,
+            onPinConversation = { id, pinned ->
+                chatRepository.setConversationsPinned(setOf(id), pinned)
+            },
+            onMuteConversation = { id, muted ->
+                chatRepository.setConversationsMuted(setOf(id), muted)
+            },
+            onMarkConversationRead = { id ->
+                chatRepository.markConversationsRead(setOf(id))
+            },
+            onDeleteConversation = { id ->
+                chatRepository.deleteConversations(setOf(id))
+                closeDeletedConversationIfActive(setOf(id))
+            },
             onCloseSelection = chatRepository::clearListSelection,
             onPinSelected = {
-                chatRepository.setConversationsPinned(chatListState.selectedIds, true)
+                val selectedItems = (chatListState.items + chatListState.archivedItems)
+                    .filter { it.id in chatListState.selectedIds }
+                val nextPinned = selectedItems.isEmpty() || !selectedItems.all { it.isPinned }
+                chatRepository.setConversationsPinned(chatListState.selectedIds, nextPinned)
             },
             onMuteSelected = {
-                chatRepository.setConversationsMuted(chatListState.selectedIds, true)
+                val selectedItems = (chatListState.items + chatListState.archivedItems)
+                    .filter { it.id in chatListState.selectedIds }
+                val nextMuted = selectedItems.isEmpty() || !selectedItems.all { it.isMuted }
+                chatRepository.setConversationsMuted(chatListState.selectedIds, nextMuted)
             },
             onMarkSelectedRead = {
                 chatRepository.markConversationsRead(chatListState.selectedIds)
@@ -1173,7 +1363,9 @@ public fun DesktopShell(
                 chatRepository.unarchiveConversations(chatListState.selectedIds)
             },
             onDeleteSelected = {
-                chatRepository.deleteConversations(chatListState.selectedIds)
+                val deletedIds = chatListState.selectedIds
+                chatRepository.deleteConversations(deletedIds)
+                closeDeletedConversationIfActive(deletedIds)
             },
             isLoading = (!ready || !chatListState.hasLoaded) && startError == null,
             errorMessage = startError?.let { error ->
@@ -1201,14 +1393,93 @@ public fun DesktopShell(
         )
     }
 
-    // Active conversation content. In two-pane mode, onBack/leave/clear returns to ChatList without popping the tab.
+    // Active conversation content. In two-pane mode, onBack/leave/clear returns to Hub or ChatList without pushing duplicates.
     // Bumped when the Hub tab is tapped while it is already showing; the Hub scrolls to the top (or jumps to News).
     var hubReselectTick by remember { mutableStateOf(0) }
+
+    fun closeActiveConversation() {
+        val backToHub = nav.conversationOpenedFromHub
+        selectedChatConversationId = null
+        chatRepository.closeConversation()
+        if (twoPane) {
+            nav.selectTab(if (backToHub) FlashDestination.Hub else FlashDestination.ChatList)
+        } else {
+            nav.back()
+        }
+    }
+
+    fun selectDesktopShellTab(destination: FlashDestination) {
+        selectDesktopShellTab(
+            destination = destination,
+            nav = nav,
+            twoPane = twoPane,
+            selectedChatConversationId = selectedChatConversationId,
+            onOpenConversation = { id -> chatRepository.openConversation(id) },
+            onCloseConversation = { chatRepository.closeConversation() },
+            onClearSelections = {
+                selectedChatConversationId = null
+                selectedTransferId = null
+                selectedNearbyPeerId = null
+                showRadioGateway = false
+            },
+            onHubReselect = { hubReselectTick++ },
+        )
+    }
+
+    fun startPeerPairing(peerId: String, peerName: String) {
+        lastPairingPeer = peerId to peerName
+        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+        val net = engine.network
+        if (endpoint != null && net != null) {
+            scope.launch {
+                net.connectManual(endpoint.hostAddress, endpoint.port)
+                engine.pairing.beginPair(peerId, peerName)
+            }
+        } else {
+            engine.pairing.beginPair(peerId, peerName)
+        }
+    }
+
+    fun retryPairingWithTarget(target: Pair<String, String>) {
+        val (peerId, peerName) = target
+        scope.launch {
+            engine.pairing.declineLocal()
+            withTimeoutOrNull(500L) {
+                (pairing?.pairing ?: MutableStateFlow(null)).firstOrNull { it == null }
+            }
+            startPeerPairing(peerId, peerName)
+        }
+    }
+
+    fun openPeerChat(peerId: String, isColleague: Boolean, isTrusted: Boolean) {
+        if (isColleague && !isTrusted) {
+            scope.launch {
+                val outcome = chatRepository.startColleagueConversation(peerId)
+                when (outcome) {
+                    is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                        selectedChatConversationId = peerId
+                        chatRepository.openConversation(peerId)
+                        nav.navigate(FlashDestination.Conversation, conversationId = peerId)
+                    }
+                    is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                        val msg = (outcome.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                            ?: com.transfer.flash.ui.chat.FlashOrgStrings.ORG_START_NOT_MEMBER
+                        snackbarHostState.showSnackbar(msg)
+                    }
+                }
+            }
+        } else {
+            selectedChatConversationId = peerId
+            chatRepository.openConversation(peerId)
+            nav.navigate(FlashDestination.Conversation, conversationId = peerId)
+        }
+    }
 
     val conversationPaneBody: @Composable () -> Unit = {
         // The chat this composition belongs to: its draft is saved under this id when the screen leaves, after Back has
         // already closed the repository's active conversation (or the next chat was opened).
-        val draftOwnerId = nav.current.conversationId ?: selectedChatConversationId
+        val convId = activeConversationId
+        val draftOwnerId = convId
         FlashConversationScreen(
             state = conversationState,
             chatWallpaper = desktopSettings.chatWallpaper,
@@ -1219,15 +1490,7 @@ public fun DesktopShell(
             onSetChatWallpaperCustom = { hex ->
                 engine.updateSettings { it.copy(chatWallpaperCustom = hex) }
             },
-            onBack = {
-                selectedChatConversationId = null
-                chatRepository.closeConversation()
-                if (twoPane) {
-                    nav.navigate(FlashDestination.ChatList)
-                } else {
-                    nav.back()
-                }
-            },
+            onBack = { closeActiveConversation() },
             onRetryConnection = { engine.reconnectNow() },
             // Task 3.1: the in-app Forward sheet. Without these the conversation screen had no
             // recipients and Forward did nothing on desktop.
@@ -1240,7 +1503,7 @@ public fun DesktopShell(
             isPeerTrusted = conversationIdIsTrusted,
             onRevokePeerTrust = if (conversationIdIsTrusted) {
                 {
-                    nav.current.conversationId?.let { id ->
+                    convId?.let { id ->
                         scope.launch {
                             engine.trust.revokeTrust(
                                 com.transfer.flash.core.common.model.FlashDeviceId(id),
@@ -1252,12 +1515,12 @@ public fun DesktopShell(
                 null
             },
             onVerifySecurityCodes = {
-                nav.current.conversationId?.let { id ->
-                    engine.pairing.beginPair(id, conversationState.header.title)
+                convId?.let { id ->
+                    startPeerPairing(id, conversationState.header.title)
                 }
             },
             localFingerprint = pairing?.localFingerprintHex,
-            peerFingerprint = nav.current.conversationId?.let { id ->
+            peerFingerprint = convId?.let { id ->
                 pairing?.getPeerFingerprint(id)
             },
             onSendText = { chatRepository.sendText(it) },
@@ -1270,15 +1533,15 @@ public fun DesktopShell(
                 chatRepository.toggleReaction(messageId, emoji)
             },
             onTypingChanged = chatRepository::setTyping,
-            onSetRadioPolicy = { policy -> nav.current.conversationId?.let { chatRepository.setRadioPolicy(it, policy) } },
+            onSetRadioPolicy = { policy -> convId?.let { chatRepository.setRadioPolicy(it, policy) } },
             // Voice & video calls from the conversation header (Phase 33a/33c).
             onStartCall = {
-                nav.current.conversationId?.let { id ->
+                convId?.let { id ->
                     placeVoiceCall(id, conversationState.header.title)
                 }
             },
             onStartVideoCall = {
-                nav.current.conversationId?.let { id ->
+                convId?.let { id ->
                     placeVideoCall(id, conversationState.header.title)
                 }
             },
@@ -1371,7 +1634,7 @@ public fun DesktopShell(
                 generalFilePicker.launch(listOf("*/*"))
             },
             onSendFile = { uri, displayName, size ->
-                val peerId = nav.current.conversationId
+                val peerId = convId
                 if (peerId != null) {
                     sendFileToPeer(
                         peerId = peerId,
@@ -1396,7 +1659,7 @@ public fun DesktopShell(
             },
             onVoiceRecordingStopped = { _ -> },
             onSendVoiceMessage = { localPath, durationMs, amplitudes ->
-                val peerId = nav.current.conversationId
+                val peerId = convId
                 if (peerId != null && engine.transfers != null) {
                     val fileName = "Voice message.wav"
                     val peerName = conversationState.header.title
@@ -1423,7 +1686,7 @@ public fun DesktopShell(
                     }
                 }
             },
-            conversationId = nav.current.conversationId,
+            conversationId = convId,
             // UI-024 upgrade: open at the message a global search result pointed to.
             targetMessageId = nav.current.targetMessageId,
             targetNonce = nav.current.targetNonce,
@@ -1449,12 +1712,7 @@ public fun DesktopShell(
                 scope.launch {
                     val left = chatRepository.leaveGroup(groupId)
                     if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
-                        chatRepository.closeConversation()
-                        if (twoPane) {
-                            nav.navigate(FlashDestination.ChatList)
-                        } else {
-                            nav.back()
-                        }
+                        closeActiveConversation()
                     } else {
                         snackbarHostState.showSnackbar(
                             message = "Couldn't leave the group — try again",
@@ -1467,12 +1725,7 @@ public fun DesktopShell(
                 scope.launch {
                     val left = chatRepository.leaveGroup(groupId, successorId)
                     if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
-                        chatRepository.closeConversation()
-                        if (twoPane) {
-                            nav.navigate(FlashDestination.ChatList)
-                        } else {
-                            nav.back()
-                        }
+                        closeActiveConversation()
                     } else {
                         snackbarHostState.showSnackbar(
                             message = "Couldn't leave the group — try again",
@@ -1486,6 +1739,7 @@ public fun DesktopShell(
                     val result = chatRepository.continueInNewGroup(groupId)
                     when (result) {
                         is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                            selectedChatConversationId = result.value
                             chatRepository.openConversation(result.value)
                             nav.navigate(FlashDestination.Conversation, conversationId = result.value)
                         }
@@ -1553,16 +1807,11 @@ public fun DesktopShell(
             observeMessageInfo = chatRepository::observeMessageInfo,
             onClearConversation = { id ->
                 chatRepository.deleteConversations(setOf(id))
-                chatRepository.closeConversation()
-                if (twoPane) {
-                    nav.navigate(FlashDestination.ChatList)
-                } else {
-                    nav.back()
-                }
+                closeActiveConversation()
             },
             onMarkUnread = chatRepository::markConversationUnread,
             onJoinGroupCall = { callId, video ->
-                val peerId = nav.current.conversationId
+                val peerId = convId
                 if (peerId != null) {
                     scope.launch(Dispatchers.IO) {
                         val memberIds = if (conversationState.members.isNotEmpty()) {
@@ -1673,9 +1922,9 @@ public fun DesktopShell(
                 showJoinGroupDialog = true
             },
             isEnterpriseEnrolled = enterpriseCredentials != null,
-            isLinkedToHub = nav.current.conversationId?.let { chatRepository.isGroupLinkedToHub(it) } ?: false,
+            isLinkedToHub = convId?.let { chatRepository.isGroupLinkedToHub(it) } ?: false,
             onToggleLinkToHub = { link ->
-                nav.current.conversationId?.let { gid ->
+                convId?.let { gid ->
                     scope.launch {
                         if (link) {
                             chatRepository.linkGroupToHub(gid)
@@ -1685,12 +1934,19 @@ public fun DesktopShell(
                     }
                 }
             },
+            isPeerVerified = conversationIdIsVerified,
+            onVerifyPeerTrust = convId?.let { id ->
+                { startPeerPairing(id, conversationState.header.title) }
+            },
+            connectionTransport = conversationState.header.transport,
+            onFindDevicesClick = { selectDesktopShellTab(FlashDestination.NearbyDevices) },
+            localDeviceId = engine.localDeviceId,
         )
     }
 
     // One screen instance per conversation (see MainActivity.conversationScreenContent): no state may leak between chats.
     val conversationPaneContent: @Composable () -> Unit = {
-        key(nav.current.conversationId ?: selectedChatConversationId) { conversationPaneBody() }
+        key(activeConversationId) { conversationPaneBody() }
     }
 
     // The tab content, shared by both window layouts. In two-pane mode the transfers/nearby
@@ -1759,76 +2015,131 @@ public fun DesktopShell(
                                 repository = chatRepository,
                                 link = hubStatus?.state ?: com.transfer.flash.core.enterprise.HubLinkState.NOT_ENROLLED,
                                 host = hubHost,
-                                modifier = Modifier.padding(bottom = tabBottomInset),
+                                modifier = Modifier.fillMaxSize(),
                                 reselectSignal = hubReselectTick,
+                                bottomInset = tabBottomInset,
                             )
                         }
                         FlashDestination.Conversation -> conversationPaneContent()
-                        FlashDestination.Transfers -> FlashTransfersScreen(
-                        state = transfersUi,
-                        onPauseResumeClick = { item ->
-                            engine.transfers?.let { repo ->
-                                val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
-                                scope.launch {
-                                    if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
-                                    else repo.pauseTransfer(id)
+                        FlashDestination.Transfers -> Column(Modifier.fillMaxSize()) {
+                            if (nav.hubEnrolled && nav.stackSize > 1) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .heightIn(min = FlashDimensions.minTouchTarget)
+                                            .clip(RoundedCornerShape(FlashShapes.radius8))
+                                            .pointerHoverIcon(PointerIcon.Hand)
+                                            .clickable(role = Role.Button, onClickLabel = "Back") {
+                                                selectedTransferId = null
+                                                nav.back()
+                                            }
+                                            .padding(horizontal = FlashSpacing.space8),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        FlashIcon(
+                                            icon = FlashIcons.Back,
+                                            contentDescription = null,
+                                            tint = FlashTheme.colors.accentFill,
+                                            size = FlashDimensions.iconSm,
+                                        )
+                                        Spacer(Modifier.width(FlashSpacing.space4))
+                                        FlashText(
+                                            text = "Back",
+                                            style = FlashTheme.typography.bodyEmphasis,
+                                            color = FlashTheme.colors.accentFill,
+                                        )
+                                    }
                                 }
                             }
-                        },
-                        onCancelClick = { item ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
-                                }
-                            }
-                        },
-                        onRetryClick = { item ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
-                                }
-                            }
-                        },
-                        onAcceptOffer = { item ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    repo.acceptIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
-                                }
-                            }
-                        },
-                        onDeclineOffer = { item ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    repo.declineIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
-                                }
-                            }
-                        },
-                        onHistoryOpen = { item ->
-                            // Two-pane: also show the details alongside. Single-pane: open it.
-                            selectedTransferItem = item
-                            if (!twoPane) {
-                                DesktopHelpers.openAttachment(item.localPath, DesktopHelpers.guessMimeType(item.fileName))
-                            }
-                        },
-                        onHistoryShare = { item -> DesktopHelpers.shareTransferredFile(item) },
-                        // Plan 1.2: the screen only draws "Clear history" when a host passes this.
-                        onClearHistory = {
-                            selectedTransferItem = null
-                            engine.transfers?.clearFinishedHistory()
-                        },
-                        // C-10: a Failed or Cancelled row can be dismissed one by one or all at once.
-                        onDismissItem = { item ->
-                            if (selectedTransferItem?.id == item.id) selectedTransferItem = null
-                            engine.transfers?.dismissTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
-                        },
-                        onClearFailed = {
-                            selectedTransferItem = null
-                            engine.transfers?.clearFailedHistory()
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                        listState = transfersScroll,
-                        bottomInset = tabBottomInset,
-                    )
+                            FlashTransfersScreen(
+                                state = transfersUi,
+                                onPauseResumeClick = { item ->
+                                    engine.transfers?.let { repo ->
+                                        val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
+                                        scope.launch {
+                                            if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
+                                            else repo.pauseTransfer(id)
+                                        }
+                                    }
+                                },
+                                onCancelClick = { item ->
+                                    engine.transfers?.let { repo ->
+                                        scope.launch {
+                                            repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
+                                        }
+                                    }
+                                },
+                                onRetryClick = { item ->
+                                    engine.transfers?.let { repo ->
+                                        scope.launch {
+                                            repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
+                                        }
+                                    }
+                                },
+                                onAcceptOffer = { item ->
+                                    engine.transfers?.let { repo ->
+                                        scope.launch {
+                                            repo.acceptIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
+                                        }
+                                    }
+                                },
+                                onDeclineOffer = { item ->
+                                    engine.transfers?.let { repo ->
+                                        scope.launch {
+                                            repo.declineIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
+                                        }
+                                    }
+                                },
+                                onHistoryOpen = { item ->
+                                    // Two-pane: show details alongside. Single-pane: open the completed file.
+                                    if (twoPane) {
+                                        selectedTransferId = item.id
+                                    } else {
+                                        DesktopHelpers.openAttachment(item.localPath, DesktopHelpers.guessMimeType(item.fileName))
+                                    }
+                                },
+                                onHistoryShare = { item -> DesktopHelpers.shareTransferredFile(item) },
+                                onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                // Plan 1.2: the screen only draws "Clear history" when a host passes this.
+                                onClearHistory = {
+                                    selectedTransferId = null
+                                    engine.transfers?.clearFinishedHistory()
+                                },
+                                // C-10: a Failed or Cancelled row can be dismissed one by one or all at once.
+                                onDismissItem = { item ->
+                                    if (selectedTransferId == item.id) selectedTransferId = null
+                                    engine.transfers?.dismissTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
+                                },
+                                onClearFailed = {
+                                    val failedIds = transfersUi.failed.filter { it.retryable }.map { it.id }
+                                    if (selectedTransferId in failedIds) selectedTransferId = null
+                                    engine.transfers?.let { repo ->
+                                        failedIds.forEach { id ->
+                                            repo.dismissTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(id))
+                                        }
+                                    }
+                                },
+                                onClearCancelled = {
+                                    val cancelledIds = transfersUi.failed.filterNot { it.retryable }.map { it.id }
+                                    if (selectedTransferId in cancelledIds) selectedTransferId = null
+                                    engine.transfers?.let { repo ->
+                                        cancelledIds.forEach { id ->
+                                            repo.dismissTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(id))
+                                        }
+                                    }
+                                },
+                                onItemClick = { item -> selectedTransferId = item.id },
+                                onRetryLoad = { engine.start() },
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                listState = transfersScroll,
+                                bottomInset = tabBottomInset,
+                            )
+                        }
                     FlashDestination.NearbyDevices -> {
                     // PC5: ECO dials unpaired peers only while this screen is shown, so they can be paired.
                     DisposableEffect(engine) {
@@ -1862,83 +2173,67 @@ public fun DesktopShell(
                                 "trusted=$trustedForLog peers=$peersForLog",
                         )
                     }
+                    val activeNearbyRetryTarget = nearby.pairingRequest?.let { req ->
+                        resolveDesktopPairingRetryTarget(
+                            peerDeviceId = req.peerDeviceId ?: pairingUi?.peerDeviceId,
+                            peerName = req.peerName,
+                            lastPairingPeer = lastPairingPeer,
+                            discoveredEndpoints = discoveredEndpoints,
+                            trustedPeers = trustedPeersByCoordinator,
+                        )
+                    }
                     FlashNearbyScreen(
                         state = nearby,
                         onPairClick = { peer ->
-                            // Ensure a session exists (dial is idempotent/coalesced), then start
-                            // the handshake — the desktop twin of the app's flow (Phase 26-3).
-                            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
-                            val net = engine.network
-                            if (endpoint != null && net != null) {
-                                scope.launch {
-                                    net.connectManual(endpoint.hostAddress, endpoint.port)
-                                    engine.pairing.beginPair(peer.id, peer.name)
-                                }
-                            } else {
-                                engine.pairing.beginPair(peer.id, peer.name)
-                            }
-                            // Two-pane: show what we know about the peer while it connects.
-                            if (twoPane) selectedNearbyPeer = peer
+                            startPeerPairing(peer.id, peer.name)
+                            // Two-pane: show live details for this peer while pairing progresses.
+                            if (twoPane) selectedNearbyPeerId = peer.id
                         },
                         onAcceptPairing = { engine.pairing.acceptLocal() },
-                        onDeclinePairing = { engine.pairing.declineLocal() },
+                        onDeclinePairing = {
+                            clearPendingDesktopSharePairing()
+                            engine.pairing.declineLocal()
+                        },
                         onChatClick = { peer ->
-                            if (peer.isColleague && !peer.isTrusted) {
-                                scope.launch {
-                                    val outcome = chatRepository.startColleagueConversation(peer.id)
-                                    when (outcome) {
-                                        is com.transfer.flash.core.common.result.FlashResult.Success -> {
-                                            selectedChatConversationId = peer.id
-                                            chatRepository.openConversation(peer.id)
-                                            nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
-                                        }
-                                        is com.transfer.flash.core.common.result.FlashResult.Failure -> {
-                                            val msg = (outcome.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                                                ?: com.transfer.flash.ui.chat.FlashOrgStrings.ORG_START_NOT_MEMBER
-                                            snackbarHostState.showSnackbar(msg)
-                                        }
-                                    }
-                                }
-                            } else {
-                                selectedChatConversationId = peer.id
-                                chatRepository.openConversation(peer.id)
-                                nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
-                            }
+                            openPeerChat(peer.id, isColleague = peer.isColleague, isTrusted = peer.isTrusted)
                         },
                         onRevokeClick = { trusted ->
-                            scope.launch { engine.trust.revokeTrust(com.transfer.flash.core.common.model.FlashDeviceId(trusted.id)) }
+                            if (selectedNearbyPeerId == trusted.id && nearby.peers.none { it.id == trusted.id }) {
+                                selectedNearbyPeerId = null
+                            }
+                            engine.pairing.revoke(trusted.id)
                         },
                         onChatTrustedClick = { trusted ->
-                            chatRepository.openConversation(trusted.id)
-                            nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
+                            openPeerChat(trusted.id, isColleague = false, isTrusted = true)
                         },
                         // ADR-042: re-run pairing (v2) with a peer paired under the forceable v1 code.
                         onVerifyTrustedClick = { trusted ->
-                            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == trusted.id }
-                            val net = engine.network
-                            scope.launch {
-                                if (endpoint != null && net != null) net.connectManual(endpoint.hostAddress, endpoint.port)
-                                engine.pairing.beginPair(trusted.id, trusted.name)
-                            }
+                            startPeerPairing(trusted.id, trusted.name)
+                            if (twoPane) selectedNearbyPeerId = trusted.id
                         },
-                        onManualConnect = { host, port ->
-                            scope.launch {
-                                val net = engine.network
-                                if (net != null) {
-                                    val result = net.connectManual(host, port)
-                                    if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
-                                        val peerDevice = result.value.peer
-                                        engine.pairing.beginPair(peerDevice.id.value, peerDevice.friendlyName)
-                                    } else {
-                                        snackbarHostState.showSnackbar(
-                                            message = "Couldn't connect to $host:$port",
-                                            duration = SnackbarDuration.Short,
-                                        )
-                                    }
+                        onManualConnectSuspend = { host, port ->
+                            val net = engine.network
+                            if (net == null) {
+                                "Flash is still starting up. Try again in a moment."
+                            } else {
+                                val result = net.connectManual(host, port)
+                                if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                    val peerDevice = result.value.peer
+                                    lastPairingPeer = peerDevice.id.value to peerDevice.friendlyName
+                                    engine.pairing.beginPair(peerDevice.id.value, peerDevice.friendlyName)
+                                    if (twoPane) selectedNearbyPeerId = peerDevice.id.value
+                                    null
+                                } else {
+                                    "Couldn't connect to $host:$port. Check that Flash is open on the same network."
                                 }
                             }
                         },
                         onScanNetwork = { engine.scanNetwork() },
+                        onRetryPairing = activeNearbyRetryTarget?.let { target ->
+                            { _ -> retryPairingWithTarget(target) }
+                        },
+                        onPeerClick = { peer -> selectedNearbyPeerId = peer.id },
+                        onTrustedPeerClick = { trusted -> selectedNearbyPeerId = trusted.id },
                         modifier = Modifier.fillMaxSize(),
                         listState = nearbyScroll,
                         bottomInset = tabBottomInset,
@@ -1955,68 +2250,128 @@ public fun DesktopShell(
                         desktopSettings = desktopSettings,
                         hubStatus = hubStatus,
                         onEditDisplayName = { showRenameDialog = true },
+                        onOpenEncryption = { showEncryptionSheet = true },
+                        onOpenTrustedPeers = { nav.selectTab(FlashDestination.NearbyDevices) },
                         snackbarHostState = snackbarHostState,
                         scope = scope,
                         settingsScroll = settingsScroll,
                         tabBottomInset = tabBottomInset,
                         window = window,
                         radioGatewayController = radioGatewayController,
+                        showRadioGateway = showRadioGateway,
+                        onOpenRadioGateway = { showRadioGateway = true },
+                        onCloseRadioGateway = { showRadioGateway = false },
                     )
+                    }
                 }
             }
         }
     }
-}
+
+    val selectedNearbyPeer = remember(selectedNearbyPeerId, nearby, discoveredEndpoints, enterpriseCredentials) {
+        resolveSelectedNearbyPeer(
+            peerId = selectedNearbyPeerId,
+            nearby = nearby,
+            discovered = discoveredEndpoints,
+            orgName = enterpriseCredentials?.hubName,
+            isOrgPeer = { peerId -> engine.hasAuthenticatedOrgSession(peerId) },
+        )
+    }
+
+    val renderTransferDetail: @Composable (FlashTransferItemUi) -> Unit = { item ->
+        TransferDetailPane(
+            item = item,
+            onClose = { selectedTransferId = null },
+            onPauseResume = {
+                engine.transfers?.let { repo ->
+                    val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
+                    scope.launch {
+                        if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
+                        else if (item.state == FlashTransferState.Active) repo.pauseTransfer(id)
+                    }
+                }
+            },
+            onCancel = {
+                engine.transfers?.let { repo ->
+                    val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
+                    scope.launch { repo.cancelTransfer(id) }
+                }
+            },
+            onRetry = {
+                engine.transfers?.let { repo ->
+                    val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
+                    scope.launch { repo.resumeTransfer(id) }
+                }
+            },
+            onOpen = {
+                DesktopHelpers.openAttachment(item.localPath, DesktopHelpers.guessMimeType(item.fileName))
+            },
+            onReveal = {
+                DesktopHelpers.shareTransferredFile(item)
+            },
+        )
+    }
+
+    val renderNearbyDetail: @Composable (NearbyPeerUi, Boolean) -> Unit = { peer, closeSheetOnAction ->
+        NearbyDetailPane(
+            peer = peer,
+            onClose = { selectedNearbyPeerId = null },
+            onPair = if (!peer.isTrusted) {
+                {
+                    if (closeSheetOnAction) selectedNearbyPeerId = null
+                    startPeerPairing(peer.id, peer.name)
+                }
+            } else null,
+            onChat = if (peer.isTrusted || peer.isColleague) {
+                {
+                    if (closeSheetOnAction) selectedNearbyPeerId = null
+                    openPeerChat(peer.id, isColleague = peer.isColleague, isTrusted = peer.isTrusted)
+                }
+            } else null,
+            onVoiceCall = if (peer.isTrusted && calls != null) {
+                {
+                    if (closeSheetOnAction) selectedNearbyPeerId = null
+                    placeVoiceCall(peer.id, peer.name, isGroup = false)
+                }
+            } else null,
+            onVideoCall = if (peer.isTrusted && calls != null) {
+                {
+                    if (closeSheetOnAction) selectedNearbyPeerId = null
+                    placeVideoCall(peer.id, peer.name, isGroup = false)
+                }
+            } else null,
+            onSendFile = if (peer.isTrusted && engine.transfers != null) {
+                {
+                    if (closeSheetOnAction) selectedNearbyPeerId = null
+                    nearbySendFileTarget = peer
+                    try {
+                        nearbyFilePicker.launch(listOf("*/*"))
+                    } finally {
+                        nearbySendFileTarget = null
+                    }
+                }
+            } else null,
+        )
+    }
 
     // The detail pane for two-pane mode: active conversation, transfer info, peer info, or placeholder.
     val detailPaneContent: @Composable () -> Unit = {
-        val activeConvId = nav.current.conversationId ?: selectedChatConversationId
+        val detailConvId = activeConversationId
         when {
-            (nav.current.destination == FlashDestination.Conversation || (twoPane && nav.current.destination == FlashDestination.ChatList && activeConvId != null)) && activeConvId != null -> {
+            (nav.current.destination == FlashDestination.Conversation || (twoPane && nav.current.destination == FlashDestination.ChatList && detailConvId != null)) && detailConvId != null -> {
                 conversationPaneContent()
             }
             nav.current.destination == FlashDestination.Transfers && selectedTransferItem != null -> {
-                val item = selectedTransferItem!!
-                TransferDetailPane(
-                    item = item,
-                    onClose = { selectedTransferItem = null },
-                    onPauseResume = {
-                        engine.transfers?.let { repo ->
-                            val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
-                            scope.launch {
-                                if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
-                                else if (item.state == FlashTransferState.Active) repo.pauseTransfer(id)
-                            }
-                        }
-                    },
-                    onCancel = {
-                        engine.transfers?.let { repo ->
-                            val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
-                            scope.launch { repo.cancelTransfer(id) }
-                        }
-                    },
-                    onRetry = {
-                        engine.transfers?.let { repo ->
-                            val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
-                            scope.launch { repo.resumeTransfer(id) }
-                        }
-                    },
-                    onOpen = {
-                        DesktopHelpers.openAttachment(item.localPath, DesktopHelpers.guessMimeType(item.fileName))
-                    },
-                    onReveal = {
-                        DesktopHelpers.shareTransferredFile(item)
-                    },
-                )
+                renderTransferDetail(selectedTransferItem)
             }
             nav.current.destination == FlashDestination.NearbyDevices && selectedNearbyPeer != null -> {
-                NearbyDetailPane(
-                    peer = selectedNearbyPeer!!,
-                    onClose = { selectedNearbyPeer = null },
-                )
+                renderNearbyDetail(selectedNearbyPeer, false)
             }
             else -> PlaceholderDetailPane(
-                onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                onFindDevices = if (nav.current.destination != FlashDestination.NearbyDevices) {
+                    { nav.selectTab(FlashDestination.NearbyDevices) }
+                } else null,
+                destination = nav.current.destination,
             )
         }
     }
@@ -2029,86 +2384,91 @@ public fun DesktopShell(
                 if (event.type == KeyEventType.KeyDown) {
                     val isModifierPressed = event.isCtrlPressed || event.isMetaPressed
                     if (event.key == Key.Escape) {
-                        when {
-                            // The PTT card is modal: Esc is its Stop/Leave, before any pane-closing below.
-                            pttActive -> {
+                        when (
+                            resolveDesktopEscapeAction(
+                                pttActive = pttActive,
+                                isSearching = isSearching,
+                                destination = nav.current.destination,
+                                hubEnrolled = nav.hubEnrolled,
+                                stackSize = nav.stackSize,
+                                twoPane = twoPane,
+                                selectedChatConversationId = selectedChatConversationId,
+                                hasSelectedTransferItem = selectedTransferItem != null,
+                                hasSelectedNearbyPeer = selectedNearbyPeer != null,
+                                hasEndedCallOverlay = ringingCall?.state == com.transfer.flash.core.calling.model.FlashCallState.ENDED,
+                                hasActiveCallOverlay = ringingCall != null && ringingCall.state != com.transfer.flash.core.calling.model.FlashCallState.ENDED,
+                                showRadioGateway = showRadioGateway,
+                            )
+                        ) {
+                            DesktopEscapeAction.DismissEndedCall -> {
+                                ringingCall?.let { dismissedEndedCallId = it.callId }
+                                true
+                            }
+                            DesktopEscapeAction.ConsumeInCall -> true
+                            DesktopEscapeAction.CloseRadioGateway -> {
+                                showRadioGateway = false
+                                true
+                            }
+                            DesktopEscapeAction.StopPtt -> {
                                 ptt?.stopLocal()
                                 true
                             }
-                            isSearching -> {
+                            DesktopEscapeAction.CloseSearch -> {
                                 isSearching = false
                                 searchQuery = ""
+                                searchScope = FlashSearchScope.All
                                 true
                             }
-                            // UI-058: Transfers is pushed (not a tab) on an enrolled device, so Esc closes its
-                            // detail pane first and then goes back; the sidebar has no Transfers entry to leave by.
-                            nav.hubEnrolled && nav.current.destination == FlashDestination.Transfers && nav.stackSize > 1 -> {
-                                if (selectedTransferItem != null) selectedTransferItem = null else nav.back()
+                            DesktopEscapeAction.ClearTransferDetail -> {
+                                selectedTransferId = null
                                 true
                             }
-                            nav.current.destination == FlashDestination.Conversation || selectedChatConversationId != null -> {
-                                val backToHub = nav.conversationOpenedFromHub
-                                selectedChatConversationId = null
-                                chatRepository.closeConversation()
-                                if (twoPane && backToHub) {
-                                    nav.selectTab(FlashDestination.Hub)
-                                } else if (twoPane) {
-                                    nav.navigate(FlashDestination.ChatList)
-                                } else {
-                                    nav.back()
-                                }
+                            DesktopEscapeAction.PopTransfersBack -> {
+                                selectedTransferId = null
+                                nav.back()
                                 true
                             }
-                            selectedTransferItem != null -> {
-                                selectedTransferItem = null
+                            DesktopEscapeAction.ClearNearbyDetail -> {
+                                selectedNearbyPeerId = null
                                 true
                             }
-                            selectedNearbyPeer != null -> {
-                                selectedNearbyPeer = null
+                            DesktopEscapeAction.CloseConversation -> {
+                                closeActiveConversation()
                                 true
                             }
-                            else -> false
+                            DesktopEscapeAction.None -> false
                         }
                     } else if (isModifierPressed) {
-                        when (event.key) {
-                            Key.F -> {
+                        val action = resolveDesktopShortcut(
+                            key = event.key,
+                            shiftPressed = event.isShiftPressed,
+                            hubEnrolled = nav.hubEnrolled,
+                            hasActiveCall = ringingCall != null,
+                            hasPendingShare = pendingDesktopShare != null,
+                        )
+                        when (action) {
+                            DesktopShortcutAction.OpenSearch -> {
+                                if (nav.current.destination != FlashDestination.ChatList &&
+                                    nav.current.destination != FlashDestination.Conversation
+                                ) {
+                                    nav.selectChatsTab(if (twoPane) selectedChatConversationId else null)
+                                }
                                 isSearching = true
                                 true
                             }
-                            Key.One, Key.NumPad1 -> {
-                                if (selectedChatConversationId != null) {
-                                    chatRepository.openConversation(selectedChatConversationId!!)
-                                    nav.navigate(FlashDestination.Conversation, conversationId = selectedChatConversationId)
-                                } else {
-                                    nav.selectTab(FlashDestination.ChatList)
-                                }
+                            is DesktopShortcutAction.SelectTab -> {
+                                selectDesktopShellTab(action.destination)
                                 true
                             }
-                            Key.Two, Key.NumPad2 -> {
-                                // Same shortcut as ever; for an enrolled device it pushes Transfers (UI-058).
+                            DesktopShortcutAction.OpenTransfers -> {
                                 nav.openTransfers()
                                 true
                             }
-                            Key.Three, Key.NumPad3 -> {
-                                nav.selectTab(FlashDestination.NearbyDevices)
-                                true
-                            }
-                            Key.Four, Key.NumPad4 -> {
-                                nav.selectTab(FlashDestination.Settings)
-                                true
-                            }
-                            Key.Comma -> {
-                                nav.selectTab(FlashDestination.Settings)
-                                true
-                            }
-                            // In-window only; there is deliberately no global hotkey (UI-051 addendum A).
-                            Key.T -> if (event.isShiftPressed) {
+                            DesktopShortcutAction.TogglePtt -> {
                                 onPttToggle()
                                 true
-                            } else {
-                                false
                             }
-                            else -> false
+                            null -> false
                         }
                     } else {
                         false
@@ -2132,17 +2492,36 @@ public fun DesktopShell(
                 },
             )
         }
+        if (showEncryptionSheet) {
+            FlashEncryptionSheet(
+                state = if (trustedPeersByCoordinator.any { it.verified }) {
+                    FlashEncryptionBadgeState.EncryptedTrusted
+                } else {
+                    FlashEncryptionBadgeState.EncryptedUnverified
+                },
+                onDismiss = { showEncryptionSheet = false },
+                onVerifySecurityCodes = {
+                    showEncryptionSheet = false
+                    nav.selectTab(FlashDestination.NearbyDevices)
+                },
+            )
+        }
         if (showCreateGroup) {
             FlashCreateGroupSheet(
                 peers = trustedPeerRoster,
                 onDismiss = { showCreateGroup = false },
                 isEnterpriseEnrolled = enterpriseCredentials != null,
+                onFindDevicesClick = {
+                    showCreateGroup = false
+                    nav.selectTab(FlashDestination.NearbyDevices)
+                },
                 onCreate = { title, memberIds ->
                     scope.launch {
                         val result = chatRepository.createGroup(title, memberIds)
                         val groupId = result.getOrNull()
                         if (groupId != null) {
                             showCreateGroup = false
+                            selectedChatConversationId = groupId
                             chatRepository.openConversation(groupId)
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
@@ -2165,6 +2544,7 @@ public fun DesktopShell(
                                 chatRepository.linkGroupToHub(groupId)
                             }
                             showCreateGroup = false
+                            selectedChatConversationId = groupId
                             chatRepository.openConversation(groupId)
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
@@ -2188,6 +2568,7 @@ public fun DesktopShell(
                 onJoinGroup = { group -> chatRepository.joinEnterpriseGroup(group.groupId, group.name) },
                 onJoined = { group ->
                     showBrowseOrgGroups = false
+                    selectedChatConversationId = group.groupId
                     chatRepository.openConversation(group.groupId)
                     nav.navigate(FlashDestination.Conversation, conversationId = group.groupId)
                 },
@@ -2244,8 +2625,8 @@ public fun DesktopShell(
                 recentChats = desktopRecentChatRecipients,
                 isScanning = nearby.isScanning,
                 onSelectRecipient = { recipient ->
-                    val isTrusted = trustedPeersByCoordinator.any { it.id == recipient.id }
-                    if (isTrusted) {
+                    val trustedIds = trustedPeersByCoordinator.mapTo(HashSet()) { it.id }
+                    if (canDeliverDesktopShareDirectly(recipient, trustedIds)) {
                         pendingDesktopShare = null
                         selectedChatConversationId = recipient.id
                         chatRepository.openConversation(recipient.id)
@@ -2258,18 +2639,24 @@ public fun DesktopShell(
                                 uri = item.uri,
                                 displayName = item.name,
                                 size = item.sizeBytes,
-                                mimeType = item.mimeType,
+                                mimeType = item.mimeType.takeIf { it.isNotBlank() && it != "*/*" }
+                                    ?: DesktopHelpers.guessMimeType(item.name),
                             )
                         }
+                        currentDesktopShare.text?.takeIf { it.isNotBlank() }?.let {
+                            chatRepository.sendTextTo(recipient.id, it)
+                        }
+                        val summary = FlashShareTargetMath.formatItemSummary(currentDesktopShare)
                         scope.launch {
                             snackbarHostState.showSnackbar(
-                                message = if (currentDesktopShare.items.size == 1) "Sending ${currentDesktopShare.items[0].name} to ${recipient.name}" else "Sending ${currentDesktopShare.items.size} files to ${recipient.name}",
+                                message = "Sending $summary to ${recipient.name}",
                                 duration = SnackbarDuration.Short,
                             )
                         }
                     } else {
                         isPairingForDesktopShare = true
                         pendingDesktopShareRecipient = Pair(recipient.id, recipient.name)
+                        lastPairingPeer = recipient.id to recipient.name
                         val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == recipient.id }
                         val net = engine.network
                         if (endpoint != null && net != null) {
@@ -2290,6 +2677,8 @@ public fun DesktopShell(
                 },
                 onDismiss = {
                     pendingDesktopShare = null
+                    pendingDesktopShareRecipient = null
+                    isPairingForDesktopShare = false
                 },
                 onManualConnect = {
                     showDesktopShareManualConnect = true
@@ -2297,101 +2686,121 @@ public fun DesktopShell(
             )
         }
 
+        var shareManualConnecting by remember { mutableStateOf(false) }
+        var shareManualError by remember { mutableStateOf<String?>(null) }
         if (showDesktopShareManualConnect) {
             FlashManualConnectDialog(
-                onDismiss = { showDesktopShareManualConnect = false },
+                onDismiss = {
+                    if (!shareManualConnecting) {
+                        shareManualError = null
+                        showDesktopShareManualConnect = false
+                    }
+                },
                 onConnect = { host, port ->
-                    showDesktopShareManualConnect = false
+                    shareManualConnecting = true
+                    shareManualError = null
                     scope.launch {
                         val net = engine.network
-                        if (net != null) {
-                            val result = net.connectManual(host, port)
-                            if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
-                                val peerDevice = result.value.peer
-                                val peerId = peerDevice.id.value
-                                val peerName = peerDevice.friendlyName
-                                val isTrusted = trustedPeersByCoordinator.any { it.id == peerId }
-                                if (isTrusted) {
-                                    val share = pendingDesktopShare
-                                    pendingDesktopShare = null
-                                    selectedChatConversationId = peerId
-                                    chatRepository.openConversation(peerId)
-                                    nav.navigate(FlashDestination.Conversation, conversationId = peerId)
-                                    share?.items?.forEach { item ->
-                                        sendFileToPeer(
-                                            peerId = peerId,
-                                            peerName = peerName,
-                                            isGroup = false,
-                                            uri = item.uri,
-                                            displayName = item.name,
-                                            size = item.sizeBytes,
-                                            mimeType = item.mimeType,
-                                        )
-                                    }
-                                } else {
-                                    isPairingForDesktopShare = true
-                                    pendingDesktopShareRecipient = Pair(peerId, peerName)
-                                    engine.pairing.beginPair(peerId, peerName)
-                                    snackbarHostState.showSnackbar(
-                                        message = "Connected to $host:$port. Initiating pairing with $peerName...",
-                                        duration = SnackbarDuration.Short,
+                        if (net == null) {
+                            shareManualConnecting = false
+                            shareManualError = "Flash is still starting up. Try again in a moment."
+                            return@launch
+                        }
+                        val result = net.connectManual(host, port)
+                        shareManualConnecting = false
+                        if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                            showDesktopShareManualConnect = false
+                            val peerDevice = result.value.peer
+                            val peerId = peerDevice.id.value
+                            val peerName = peerDevice.friendlyName
+                            val isTrusted = trustedPeersByCoordinator.any { it.id == peerId }
+                            if (isTrusted) {
+                                val share = pendingDesktopShare
+                                pendingDesktopShare = null
+                                selectedChatConversationId = peerId
+                                chatRepository.openConversation(peerId)
+                                nav.navigate(FlashDestination.Conversation, conversationId = peerId)
+                                share?.items?.forEach { item ->
+                                    sendFileToPeer(
+                                        peerId = peerId,
+                                        peerName = peerName,
+                                        isGroup = false,
+                                        uri = item.uri,
+                                        displayName = item.name,
+                                        size = item.sizeBytes,
+                                        mimeType = item.mimeType,
                                     )
                                 }
                             } else {
+                                isPairingForDesktopShare = true
+                                pendingDesktopShareRecipient = Pair(peerId, peerName)
+                                lastPairingPeer = peerId to peerName
+                                engine.pairing.beginPair(peerId, peerName)
                                 snackbarHostState.showSnackbar(
-                                    message = "Couldn't connect to $host:$port",
+                                    message = "Connected to $host:$port. Initiating pairing with $peerName...",
                                     duration = SnackbarDuration.Short,
                                 )
                             }
+                        } else {
+                            shareManualError = "Couldn't connect to $host:$port. Check that Flash is open on the same network."
                         }
                     }
                 },
+                isConnecting = shareManualConnecting,
+                errorMessage = shareManualError,
+                onClearError = { shareManualError = null },
             )
         }
 
-        if (twoPane) {
-            // Expanded: sidebar on the left edge, list+detail in the remainder.
+        if (useNavRail) {
+            // Medium (600..839dp) & Expanded (>= 840dp): sidebar on the left edge, matching Android.
             Row(Modifier.fillMaxSize()) {
                 DesktopSideBar(
                     tabs = desktopSideTabs(nav.hubEnrolled),
                     hubBadge = hubUnread,
                     selectedTab = nav.shellTab,
-                    onTabSelected = { destination ->
-                        if (destination == FlashDestination.ChatList) {
-                            // Replace the stack: a push from the Hub tab would keep the Hub as the list pane.
-                            selectedChatConversationId?.let { chatRepository.openConversation(it) }
-                            nav.selectChatsTab(selectedChatConversationId)
-                        } else {
-                            nav.selectTab(destination)
-                        }
-                    },
+                    onTabSelected = ::selectDesktopShellTab,
                     unreadCount = totalUnreadCount,
                     localDisplayName = localFriendlyName,
                     onProfileClick = {
+                        selectedChatConversationId = null
+                        selectedTransferId = null
+                        selectedNearbyPeerId = null
+                        showRadioGateway = false
                         nav.selectTab(FlashDestination.Settings)
                     },
                     footer = { DesktopPttButton(active = pttActive, onClick = onPttToggle) },
                 )
                 val paneLayoutPrefs = remember { DesktopPaneLayoutPrefs() }
-                DesktopTwoPane(
-                    listPane = listPaneContent,
-                    detailPane = detailPaneContent,
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    window = window,
-                    sizeClass = sizeClass,
-                    prefs = paneLayoutPrefs,
-                )
+                if (twoPane && !isFullWidthDesktopDestination(nav.current.destination)) {
+                    DesktopTwoPane(
+                        listPane = listPaneContent,
+                        detailPane = detailPaneContent,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        window = window,
+                        sizeClass = sizeClass,
+                        prefs = paneLayoutPrefs,
+                    )
+                } else {
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        listPaneContent()
+                    }
+                }
             }
         } else {
-            // Compact/Medium: the Phase 21 single-pane layout with the hanging bottom nav.
+            // Compact (< 600dp): single-pane layout with the hanging bottom nav.
             listPaneContent()
-            if (FlashNavigationMath.isTabRoot(nav.current.destination, nav.hubEnrolled)) {
+            if (showBar) {
                 Box(Modifier.align(Alignment.BottomCenter)) {
                     FlashBottomNav(
                         items = desktopBottomTabs(nav.hubEnrolled, hubUnread),
                         selectedTab = nav.shellTab,
-                        onTabSelected = nav::selectTab,
+                        onTabSelected = ::selectDesktopShellTab,
                         onTabReselected = { destination ->
+                            if (!FlashNavigationMath.isTabRoot(nav.current.destination, nav.hubEnrolled)) {
+                                nav.selectTab(destination)
+                                return@FlashBottomNav
+                            }
                             if (destination == FlashDestination.Hub) {
                                 hubReselectTick++
                                 return@FlashBottomNav
@@ -2410,7 +2819,7 @@ public fun DesktopShell(
                     )
                 }
                 // No rail in this layout, so the push-to-talk button floats above the hanging nav on the
-                // tab roots (the only screens that have one).
+                // tab roots (and pushed Transfers for enrolled devices).
                 DesktopPttButton(
                     active = pttActive,
                     onClick = onPttToggle,
@@ -2440,7 +2849,6 @@ public fun DesktopShell(
         // default output stands). Camera toggles pass through; the screen gates them on the
         // call's video flag, and 33a only ever places audio calls. Dismiss minimizes — the
         // call continues, the coordinator keeps state (the screen's own contract).
-        val ringingCall = activeCall
         if (ringingCall != null) {
             FlashCallScreen(
                 state = ringingCall,
@@ -2455,7 +2863,11 @@ public fun DesktopShell(
                 },
                 onToggleCamera = { calls?.toggleCamera() },
                 onSwitchCamera = { scope.launch { calls?.switchCamera() } },
-                onDismiss = { },
+                onDismiss = {
+                    if (ringingCall.state == com.transfer.flash.core.calling.model.FlashCallState.ENDED) {
+                        dismissedEndedCallId = ringingCall.callId
+                    }
+                },
                 onVideoFocus = { peerId -> calls?.setVideoFocus(peerId) },
                 onShowFewerVideos = { on -> calls?.setShowFewerVideos(on) },
                 onSendSmallerVideo = {
@@ -2483,6 +2895,24 @@ public fun DesktopShell(
             )
         }
 
+        // Single-pane (!twoPane) modal inspection for Transfers and Nearby Devices.
+        if (!twoPane && nav.current.destination == FlashDestination.Transfers && selectedTransferItem != null) {
+            FlashSheetHost(
+                onDismiss = { selectedTransferId = null },
+                containerColor = FlashTheme.colors.backgroundSurface,
+            ) {
+                renderTransferDetail(selectedTransferItem)
+            }
+        }
+        if (!twoPane && nav.current.destination == FlashDestination.NearbyDevices && selectedNearbyPeer != null) {
+            FlashSheetHost(
+                onDismiss = { selectedNearbyPeerId = null },
+                containerColor = FlashTheme.colors.backgroundSurface,
+            ) {
+                renderNearbyDetail(selectedNearbyPeer, true)
+            }
+        }
+
         // RVW22 (owner report, desktop): these two used to be emitted BEFORE the layout, and Compose paints siblings in
         // emission order, so an error message and the "verify this device" pairing card were painted behind the sidebar
         // and the chat panes, out of reach (the pairing card is not shown on the Nearby tab, where it is part of the
@@ -2490,13 +2920,29 @@ public fun DesktopShell(
         // The pairing card sits below the snackbar so a message can still be read while it is open.
         if (nav.current.destination != FlashDestination.NearbyDevices) {
             nearby.pairingRequest?.let { request ->
+                val retryTarget = resolveDesktopPairingRetryTarget(
+                    peerDeviceId = request.peerDeviceId ?: pairingUi?.peerDeviceId,
+                    peerName = request.peerName,
+                    lastPairingPeer = lastPairingPeer,
+                    discoveredEndpoints = discoveredEndpoints,
+                    trustedPeers = trustedPeersByCoordinator,
+                )
                 FlashPairingDialog(
                     request = request,
                     phase = nearby.pairingPhase,
                     secondsLeft = nearby.pairingSecondsLeft,
                     onAccept = { engine.pairing.acceptLocal() },
-                    onDecline = { engine.pairing.declineLocal() },
-                    onDismiss = { engine.pairing.declineLocal() },
+                    onDecline = {
+                        clearPendingDesktopSharePairing()
+                        engine.pairing.declineLocal()
+                    },
+                    onDismiss = {
+                        clearPendingDesktopSharePairing()
+                        engine.pairing.declineLocal()
+                    },
+                    onRetry = retryTarget?.let { target ->
+                        { retryPairingWithTarget(target) }
+                    },
                 )
             }
         }
@@ -2540,8 +2986,8 @@ private fun FlashTransfer.toDesktopTransferItemUi(): FlashTransferItemUi = Flash
         DomainState.Completed -> FlashTransferState.Completed
         DomainState.Failed, DomainState.Cancelled -> FlashTransferState.Failed
     },
-    speedBytesPerSec = speedBytesPerSec,
-    etaSeconds = etaSeconds.takeIf { it > 0L },
+    speedBytesPerSec = if (state == DomainState.Verifying) 0L else speedBytesPerSec,
+    etaSeconds = if (state == DomainState.Verifying) null else etaSeconds.takeIf { it > 0L },
     errorMessage = com.transfer.flash.core.transfer.TransferFailureText.displayReason(errorMessage)
         ?: if (state == DomainState.Cancelled) "Cancelled" else null,
     verified = state == DomainState.Completed,
@@ -2554,6 +3000,7 @@ private fun FlashTransfer.toDesktopTransferItemUi(): FlashTransferItemUi = Flash
     holdersOnline = holdersOnline,
     pieceBlocks = pieceBlocks,
     isGroupFile = groupOrigin,
+    isVerifying = state == DomainState.Verifying,
 )
 
 /** Desktop twin of `:app`'s `TransfersUiState.fromDomain` (mandatory boot flags, ERROR-034). */
@@ -2598,24 +3045,16 @@ private fun <T> Flow<T>.throttleLatestDesktop(windowMs: Long): Flow<T> = flow {
 
 /**
  * Engine pairing phase → the shared UI's phase (the app's `PairingUiMapper`, restated here because
- * `:app` is not a dependency of `:desktop`): the engine's two in-flight responder sub-states collapse
- * into the actionable consent card, and a protocol Failure reads as a decline — the dialog has no
- * failure card.
- *
- * A function rather than a `val` computed in the composable body, because its result is consumed
- * INSIDE a remembered `derivedStateOf`: a value passed in from outside that lambda is a constant from
- * the derived state's point of view, frozen at the composition that created it. That is exactly how
- * the desktop came to hand the dialog a fresh request and a permanently `Idle` phase.
+ * `:app` is not a dependency of `:desktop`).
  */
-private fun pairingPhaseOf(
+internal fun pairingPhaseOf(
     phase: com.transfer.flash.core.security.pairing.PairingPhase?,
 ): FlashPairingPhase = when (phase) {
     null, com.transfer.flash.core.security.pairing.PairingPhase.Idle -> FlashPairingPhase.Idle
-    // v2 (ADR-042), same mapping as the app's PairingUiMapper: no code exists yet on the responder
-    // (milliseconds until the reveal), while the initiator is waiting for the other device.
-    com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerReveal -> FlashPairingPhase.Idle
-    com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerNonce ->
-        FlashPairingPhase.AwaitingPeerConfirmation
+    // v2 (ADR-042), same mapping as the app's PairingUiMapper: neither side has a code before
+    // both nonces are known, so AwaitingPeerReveal and AwaitingPeerNonce stay Idle (never fake 000 000).
+    com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerReveal,
+    com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerNonce -> FlashPairingPhase.Idle
     com.transfer.flash.core.security.pairing.PairingPhase.RequestReceived,
     com.transfer.flash.core.security.pairing.PairingPhase.AwaitingLocalDecision ->
         FlashPairingPhase.RequestReceived
@@ -2624,7 +3063,7 @@ private fun pairingPhaseOf(
     com.transfer.flash.core.security.pairing.PairingPhase.Confirmed -> FlashPairingPhase.Paired
     com.transfer.flash.core.security.pairing.PairingPhase.DeclinedByPeer -> FlashPairingPhase.Declined
     com.transfer.flash.core.security.pairing.PairingPhase.Expired -> FlashPairingPhase.Expired
-    com.transfer.flash.core.security.pairing.PairingPhase.Failed -> FlashPairingPhase.Declined
+    com.transfer.flash.core.security.pairing.PairingPhase.Failed -> FlashPairingPhase.Failed
 }
 
 /**
@@ -2709,6 +3148,9 @@ internal fun nearbyUiStateOf(
     scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
     isOrgPeer: (String) -> Boolean = { false },
     orgName: String? = null,
+    localAddressLabel: String? = null,
+    radiosAvailable: Boolean = true,
+    failureReason: String? = null,
 ): NearbyUiState {
     val trustedIds = trusted.mapTo(HashSet()) { it.id }
     // Every discovered peer as a row, BEFORE the trusted filter — the join in `withDeviceKinds`
@@ -2731,8 +3173,10 @@ internal fun nearbyUiStateOf(
             displayName = localFriendlyName,
             deviceIdShort = localDeviceId.take(8).ifBlank { "00000000" },
             port = discoveryState.advertisedPort,
+            localAddressLabel = localAddressLabel,
         ),
         isScanning = discoveryState.isDiscovering,
+        radiosAvailable = radiosAvailable,
         isLoading = !ready,
         peers = discoveredRows.filter { it.id !in trustedIds },
         trustedPeers = FlashNearbyMath.withDeviceKinds(
@@ -2740,6 +3184,11 @@ internal fun nearbyUiStateOf(
             discovered = discoveredRows,
         ),
         pairingRequest = ui?.let { u ->
+            val resolvedTransport = (
+                u.peerDeviceId?.let { pid -> discoveredRows.firstOrNull { it.id == pid } }
+                    ?: discoveredRows.firstOrNull { it.name == u.peerName }
+                )?.transport
+                ?: FlashNetworkTransport.Unknown
             FlashPairingRequestUi(
                 peerName = u.peerName,
                 peerInitials = u.peerName.trim().split(" ")
@@ -2748,8 +3197,10 @@ internal fun nearbyUiStateOf(
                     .joinToString("") { it.first().uppercase() }
                     .ifBlank { "?" },
                 numericCode = u.numericCode,
-                transport = FlashNetworkTransport.Lan,
+                transport = resolvedTransport,
                 expiresInSeconds = u.secondsLeft,
+                failureReason = failureReason,
+                peerDeviceId = u.peerDeviceId,
             )
         },
         pairingPhase = pairingPhaseOf(ui?.phase),
@@ -2786,6 +3237,208 @@ internal fun SweepState.toNearbyScan(): NearbyNetworkScan = when (this) {
     )
 }
 
+internal const val EMPTY_FOLDER_SHARE_MESSAGE = "That folder doesn't contain any files to send."
+
+internal fun visibleChatTargetForDrop(
+    destination: FlashDestination,
+    navConversationId: String?,
+    selectedChatConversationId: String?,
+    twoPane: Boolean,
+): String? = when (destination) {
+    FlashDestination.Conversation -> navConversationId?.takeIf { it.isNotBlank() }
+    FlashDestination.ChatList -> if (twoPane) selectedChatConversationId?.takeIf { it.isNotBlank() } else null
+    else -> null
+}
+
+internal fun canDeliverDesktopShareDirectly(
+    recipient: FlashShareRecipientUi,
+    trustedPeerIds: Set<String>,
+): Boolean = recipient.isGroup || recipient.id in trustedPeerIds
+
+internal fun resolveSelectedNearbyPeer(
+    peerId: String?,
+    nearby: NearbyUiState,
+    discovered: List<FlashDiscoveredEndpoint>,
+    orgName: String? = null,
+    isOrgPeer: (String) -> Boolean = { false },
+): NearbyPeerUi? {
+    val targetId = peerId?.takeIf { it.isNotBlank() } ?: return null
+    nearby.peers.firstOrNull { it.id == targetId }?.let { return it }
+    val trusted = nearby.trustedPeers.firstOrNull { it.id == targetId } ?: return null
+    val endpoint = discovered.firstOrNull { it.deviceId.value == targetId }
+    val isColleague = isOrgPeer(targetId)
+    return NearbyPeerUi(
+        id = trusted.id,
+        name = trusted.name,
+        transport = endpoint?.transportType?.toDesktopTransport() ?: FlashNetworkTransport.Lan,
+        isTrusted = true,
+        deviceKind = endpoint?.deviceKind ?: trusted.deviceKind,
+        isColleague = isColleague,
+        orgName = if (isColleague) orgName else null,
+    )
+}
+
+internal fun resolveSelectedTransferItem(
+    transferId: String?,
+    transfersUi: TransfersUiState,
+): FlashTransferItemUi? {
+    val id = transferId?.takeIf { it.isNotBlank() } ?: return null
+    return transfersUi.offers.firstOrNull { it.id == id }
+        ?: transfersUi.active.firstOrNull { it.id == id }
+        ?: transfersUi.failed.firstOrNull { it.id == id }
+        ?: transfersUi.history.firstOrNull { it.id == id }
+}
+
+internal fun resolveDesktopPairingRetryTarget(
+    peerDeviceId: String?,
+    peerName: String,
+    lastPairingPeer: Pair<String, String>?,
+    discoveredEndpoints: List<FlashDiscoveredEndpoint>,
+    trustedPeers: List<FlashTrustedPeer>,
+): Pair<String, String>? {
+    val cleanId = peerDeviceId?.takeIf { it.isNotBlank() }
+    if (cleanId != null) {
+        val resolvedName = lastPairingPeer?.takeIf { it.first == cleanId }?.second
+            ?: discoveredEndpoints.firstOrNull { it.deviceId.value == cleanId }?.friendlyName
+            ?: trustedPeers.firstOrNull { it.id == cleanId }?.name
+            ?: peerName
+        return cleanId to resolvedName
+    }
+    return lastPairingPeer?.takeIf { it.second == peerName }
+        ?: discoveredEndpoints.firstOrNull { it.friendlyName == peerName }
+            ?.let { it.deviceId.value to it.friendlyName }
+        ?: trustedPeers.firstOrNull { it.name == peerName }
+            ?.let { it.id to it.name }
+}
+
+internal fun mergeDesktopSharePayload(
+    existing: FlashSharePayloadUi?,
+    incomingItems: List<FlashShareItemUi>,
+): FlashSharePayloadUi = FlashSharePayloadUi(
+    items = ((existing?.items ?: emptyList()) + incomingItems).distinctBy { it.uri },
+    text = existing?.text,
+)
+
+internal fun selectDesktopShellTab(
+    destination: FlashDestination,
+    nav: FlashNavigationState,
+    twoPane: Boolean,
+    selectedChatConversationId: String?,
+    onOpenConversation: (String) -> Unit,
+    onCloseConversation: () -> Unit,
+    onClearSelections: () -> Unit,
+    onHubReselect: () -> Unit = {},
+) {
+    if (destination == FlashDestination.ChatList) {
+        if (twoPane && nav.conversationOpenedFromHub && selectedChatConversationId != null) {
+            onOpenConversation(selectedChatConversationId)
+            nav.selectChatsTab(selectedChatConversationId)
+        } else if (nav.current.destination == FlashDestination.Conversation) {
+            onCloseConversation()
+            onClearSelections()
+            nav.selectTab(FlashDestination.ChatList)
+        } else {
+            onClearSelections()
+            nav.selectTab(FlashDestination.ChatList)
+        }
+    } else {
+        if (destination == FlashDestination.Hub && nav.current.destination == FlashDestination.Hub) {
+            onHubReselect()
+        } else {
+            onClearSelections()
+        }
+        if (destination == FlashDestination.Transfers) {
+            nav.openTransfers()
+        } else {
+            nav.selectTab(destination)
+        }
+    }
+}
+
+internal enum class DesktopEscapeAction {
+    DismissEndedCall,
+    ConsumeInCall,
+    CloseRadioGateway,
+    StopPtt,
+    CloseSearch,
+    ClearTransferDetail,
+    PopTransfersBack,
+    ClearNearbyDetail,
+    CloseConversation,
+    None,
+}
+
+internal fun resolveDesktopEscapeAction(
+    pttActive: Boolean,
+    isSearching: Boolean,
+    destination: FlashDestination,
+    hubEnrolled: Boolean,
+    stackSize: Int,
+    twoPane: Boolean,
+    selectedChatConversationId: String?,
+    hasSelectedTransferItem: Boolean,
+    hasSelectedNearbyPeer: Boolean,
+    hasEndedCallOverlay: Boolean = false,
+    hasActiveCallOverlay: Boolean = false,
+    showRadioGateway: Boolean = false,
+): DesktopEscapeAction = when {
+    hasEndedCallOverlay -> DesktopEscapeAction.DismissEndedCall
+    hasActiveCallOverlay -> DesktopEscapeAction.ConsumeInCall
+    pttActive -> DesktopEscapeAction.StopPtt
+    isSearching -> DesktopEscapeAction.CloseSearch
+    destination == FlashDestination.Settings && showRadioGateway ->
+        DesktopEscapeAction.CloseRadioGateway
+    destination == FlashDestination.Transfers && hasSelectedTransferItem ->
+        DesktopEscapeAction.ClearTransferDetail
+    destination == FlashDestination.Transfers && hubEnrolled && stackSize > 1 ->
+        DesktopEscapeAction.PopTransfersBack
+    destination == FlashDestination.NearbyDevices && hasSelectedNearbyPeer ->
+        DesktopEscapeAction.ClearNearbyDetail
+    destination == FlashDestination.Conversation ||
+        (twoPane && destination == FlashDestination.ChatList && !selectedChatConversationId.isNullOrBlank()) ->
+        DesktopEscapeAction.CloseConversation
+    else -> DesktopEscapeAction.None
+}
+
+internal sealed interface DesktopShortcutAction {
+    data object OpenSearch : DesktopShortcutAction
+    data class SelectTab(val destination: FlashDestination) : DesktopShortcutAction
+    data object OpenTransfers : DesktopShortcutAction
+    data object TogglePtt : DesktopShortcutAction
+}
+
+internal fun resolveDesktopShortcut(
+    key: Key,
+    shiftPressed: Boolean,
+    hubEnrolled: Boolean,
+    hasActiveCall: Boolean = false,
+    hasPendingShare: Boolean = false,
+): DesktopShortcutAction? {
+    if (hasActiveCall || hasPendingShare) return null
+    val tabs = FlashShellTabs.of(hubEnrolled)
+    return when {
+        key == Key.F && !shiftPressed -> DesktopShortcutAction.OpenSearch
+        key == Key.T && shiftPressed -> DesktopShortcutAction.TogglePtt
+        key == Key.T && !shiftPressed -> DesktopShortcutAction.OpenTransfers
+        (key == Key.One || key == Key.NumPad1) && !shiftPressed ->
+            tabs.getOrNull(0)?.let { DesktopShortcutAction.SelectTab(it.destination) }
+        (key == Key.Two || key == Key.NumPad2) && !shiftPressed ->
+            tabs.getOrNull(1)?.let { DesktopShortcutAction.SelectTab(it.destination) }
+        (key == Key.Three || key == Key.NumPad3) && !shiftPressed ->
+            tabs.getOrNull(2)?.let { DesktopShortcutAction.SelectTab(it.destination) }
+        (key == Key.Four || key == Key.NumPad4) && !shiftPressed ->
+            tabs.getOrNull(3)?.let { DesktopShortcutAction.SelectTab(it.destination) }
+        (key == Key.Five || key == Key.NumPad5) && !shiftPressed ->
+            DesktopShortcutAction.OpenTransfers
+        key == Key.Comma && !shiftPressed ->
+            DesktopShortcutAction.SelectTab(FlashDestination.Settings)
+        else -> null
+    }
+}
+
+internal fun isFullWidthDesktopDestination(destination: FlashDestination): Boolean =
+    destination == FlashDestination.Settings || destination == FlashDestination.Hub
+
 // OPT-O03-10: Dedicated settings destination isolating high-frequency background/telemetry flows
 // (radioUiState at 1-5 Hz, hubDropped, hubSealingKeyState, orgLease, storage usage scan) from
 // root DesktopShell so chats, navigation, and window resizing do not recompose when background flows tick.
@@ -2801,13 +3454,26 @@ private fun DesktopSettingsDestination(
     desktopSettings: DesktopSettings,
     hubStatus: com.transfer.flash.core.enterprise.HubStatus?,
     onEditDisplayName: () -> Unit,
+    onOpenEncryption: () -> Unit,
+    onOpenTrustedPeers: () -> Unit,
     snackbarHostState: SnackbarHostState,
     scope: kotlinx.coroutines.CoroutineScope,
     settingsScroll: androidx.compose.foundation.lazy.LazyListState,
     tabBottomInset: androidx.compose.ui.unit.Dp,
     window: java.awt.Window?,
     radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController,
+    showRadioGateway: Boolean,
+    onOpenRadioGateway: () -> Unit,
+    onCloseRadioGateway: () -> Unit,
 ) {
+    if (showRadioGateway) {
+        com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
+            controller = radioGatewayController,
+            onBack = onCloseRadioGateway,
+            bottomInset = tabBottomInset,
+        )
+        return
+    }
     var receivedBytes by remember { mutableStateOf<Long?>(null) }
     // The organisation hub (ADR-120): live status, previously linked groups and the content opt-in.
     val hubObject = remember(ready) { engine.enterpriseHub }
@@ -2928,6 +3594,12 @@ private fun DesktopSettingsDestination(
     FlashSettingsScreen(
         model = settings,
         onEditDisplayName = onEditDisplayName,
+        onOpenEncryption = onOpenEncryption,
+        onOpenTrustedPeers = onOpenTrustedPeers,
+        onHapticsChanged = null,
+        showHapticsToggle = false,
+        onOpenBatterySettings = null,
+        showBatteryOptimization = false,
         onThemeModeSelected = onThemeModeSelected,
         onDiscoveryModeChanged = { modeStr ->
             val mode = runCatching { FlashDiscoveryMode.valueOf(modeStr) }
@@ -3043,6 +3715,7 @@ private fun DesktopSettingsDestination(
         onForgetHubGroups = { scope.launch { engine.enterpriseHub?.forgetPreviousGroups() } },
         isEnrollingDevice = isEnrollingDevice,
         enrollDeviceError = enrollDeviceError,
+        onOpenRadioGateway = onOpenRadioGateway,
         radioGatewayController = radioGatewayController,
         modifier = Modifier.fillMaxSize(),
         listState = settingsScroll,

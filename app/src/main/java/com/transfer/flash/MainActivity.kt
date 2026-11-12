@@ -4,15 +4,23 @@ package com.transfer.flash
 
 import android.annotation.SuppressLint
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -20,21 +28,41 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.ActivityCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashShapes
+import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
 import com.transfer.flash.ui.adaptive.FlashAdaptiveTwoPane
 import com.transfer.flash.ui.adaptive.FlashNavigationRail
@@ -50,8 +78,12 @@ import com.transfer.flash.ui.chat.FlashShareItemUi
 import com.transfer.flash.ui.chat.FlashShareRecipientUi
 import com.transfer.flash.ui.chat.FlashShareTargetSheet
 import com.transfer.flash.ui.chat.FlashShareTargetMath
+import com.transfer.flash.ui.chat.FlashConfirmHost
+import com.transfer.flash.ui.chat.FlashEncryptionBadgeState
+import com.transfer.flash.ui.chat.FlashEncryptionSheet
 import com.transfer.flash.ui.chat.FlashPairingDialog
 import com.transfer.flash.ui.chat.FlashSearchScope
+import com.transfer.flash.ui.chat.FlashSheetHost
 import com.transfer.flash.ui.nearby.FlashManualConnectDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -63,6 +95,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -123,6 +156,7 @@ import com.transfer.flash.ptt.PttSessionOverlay
 import com.transfer.flash.pairing.PairingUiModel
 import com.transfer.flash.ui.calling.FlashCallScreen
 import com.transfer.flash.ui.calling.FlashCallShareHost
+import com.transfer.flash.ui.settings.FlashDisplayNameDialog
 import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.settings.FlashSettingsScreen
@@ -160,6 +194,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -183,11 +218,28 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var appEngine: AppEngine
 
-    // #13: POST_NOTIFICATIONS is a runtime permission on Android 13+ (TIRAMISU). Without it the
-    // foreground-transfer / message notifications are silently suppressed. Registered here (not
-    // deep in Compose) so the launcher survives config changes and only fires once per launch.
+    // #13: POST_NOTIFICATIONS is a runtime permission on Android 13+ (TIRAMISU). Deferred until
+    // after the launch splash settles and paired with an inline rationale / Settings fallback.
+    private val hasNotificationPermission = MutableStateFlow(true)
+    private val notificationPromptedBefore = MutableStateFlow(false)
+    private val notificationBannerDismissed = MutableStateFlow(false)
+    private val shouldShowNotificationRationale = MutableStateFlow(false)
+
     private val notificationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best-effort; no-op on denial */ }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            getSharedPreferences(PERMISSION_PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_NOTIFICATIONS_PROMPTED, true)
+                .apply()
+            notificationPromptedBefore.value = true
+            hasNotificationPermission.value = granted
+            shouldShowNotificationRationale.value = !granted &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ActivityCompat.shouldShowRequestPermissionRationale(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                )
+        }
 
     /**
      * ADR-102 (UI-050g): the system's screen-capture consent dialog. A field-level launcher so it survives configuration
@@ -232,6 +284,21 @@ class MainActivity : ComponentActivity() {
     private val transsionGuideVisible = MutableStateFlow(false)
 
     private val pendingShare = MutableStateFlow<FlashSharePayloadUi?>(null)
+    private val pendingWidgetSendPicker = MutableStateFlow(false)
+    private val widgetSendPickerLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNotEmpty()) {
+                uris.forEach { uri ->
+                    runCatching {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                        )
+                    }
+                }
+                resolvePendingShare(uris, null)
+            }
+        }
     private val pendingShortcutTab = MutableStateFlow<FlashDestination?>(null)
     private val pendingJoinLink = MutableStateFlow<String?>(null)
     private val pendingEnrollLink = MutableStateFlow<String?>(null)
@@ -297,7 +364,7 @@ class MainActivity : ComponentActivity() {
         //    boot, with no fixed minimum, and release on a start failure so it never traps the user.
         val splashScreen = installSplashScreen()
         val launchSplash = FlashLaunchSplashProcess.gate
-        if (FlashLaunchSplashProcess.isTimeCriticalLaunch(intent)) launchSplash.skip()
+        if (shouldSkipLaunchSplashForIntent(intent)) launchSplash.skip()
         splashScreen.setKeepOnScreenCondition {
             when (launchSplash.phase) {
                 FlashLaunchSplashGate.Phase.Pending -> true
@@ -330,33 +397,19 @@ class MainActivity : ComponentActivity() {
             }
         }
         enableEdgeToEdge()
-        maybeRequestNotificationPermission()
+        loadNotificationPermissionPrefs()
+        refreshNotificationPermissionState()
         installScreenCaptureSupport()
         // OPT-O01-02: initialize notification channels off the main thread to avoid blocking Binder IPCs on launch.
         lifecycleScope.launch(Dispatchers.Default) {
             FlashNotificationManager.initChannels(this@MainActivity)
         }
         // Bug 7: a notification tap can cold-start the activity (no onNewIntent on cold
-        // start) — consume the launch intent here too.
-        pendingNotificationConversation.value =
-            intent?.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
-        intent?.getStringExtra(EXTRA_HUB_ROUTE)?.let { pendingHubRoute.value = it }
-        if (intent?.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false) == true) {
-            pendingCallAnswer.value = true
+        // start) — consume the launch intent here too, only on initial create so config-change
+        // recreation (uiMode / fontScale / locale) never replays an already-handled intent.
+        if (savedInstanceState == null) {
+            dispatchIncomingIntent(intent)
         }
-        if (intent?.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false) == true) {
-            pendingPttPress.value = true
-        }
-        if (intent?.action == Intent.ACTION_VIEW && intent?.data != null) {
-            val data = intent.data
-            if (data?.scheme == "flash") {
-                when (data.host) {
-                    "g" -> pendingJoinLink.value = data.toString()
-                    "enroll" -> pendingEnrollLink.value = data.toString()
-                }
-            }
-        }
-        handleIncomingIntent(intent)
         // Boot the real WS mesh stack once, idempotently. The holder de-dupes against the Dev
         // Console / background service, so this never spins up a second server. Failures are
         // captured into appEngine.startError (permission gating lands in Phase 4).
@@ -368,27 +421,37 @@ class MainActivity : ComponentActivity() {
                 pendingCallAnswer = pendingCallAnswer,
                 pendingPttPress = pendingPttPress,
                 pendingShare = pendingShare,
+                pendingWidgetSendPicker = pendingWidgetSendPicker,
+                onLaunchWidgetSendPicker = { widgetSendPickerLauncher.launch(arrayOf("*/*")) },
                 pendingShortcutTab = pendingShortcutTab,
                 pendingJoinLink = pendingJoinLink,
                 pendingEnrollLink = pendingEnrollLink,
                 pendingHubRoute = pendingHubRoute,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
+                transsionGuideVisible = transsionGuideVisible,
+                onOpenTranssionTarget = { target ->
+                    if (!OemBatteryOptimizationHelper.openTarget(this, target)) {
+                        Toast.makeText(
+                            this,
+                            TranssionTargetFeedback.failureMessage(target),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                },
                 receivedStorageState = receivedStorageState,
                 onRefreshStorageUsage = ::refreshReceivedStorageUsage,
                 onClearReceivedFiles = ::clearReceivedFiles,
                 onRestartApp = ::restartApp,
                 onExportLogs = ::exportLogs,
+                hasNotificationPermission = hasNotificationPermission,
+                notificationPromptedBefore = notificationPromptedBefore,
+                notificationBannerDismissed = notificationBannerDismissed,
+                shouldShowNotificationRationale = shouldShowNotificationRationale,
+                onRequestNotificationPermission = ::requestNotificationPermissionFromBanner,
+                onOpenNotificationSettings = ::openAppNotificationSettings,
+                onDismissNotificationBanner = ::dismissNotificationBanner,
             )
-            val guideVisible by transsionGuideVisible.collectAsState()
-            val exempt by ignoringBatteryOptimizations.collectAsState()
-            if (guideVisible) {
-                TranssionGuideDialog(
-                    ignoringBatteryOptimizations = exempt,
-                    onOpen = { target -> OemBatteryOptimizationHelper.openTarget(this, target) },
-                    onDismiss = { transsionGuideVisible.value = false },
-                )
-            }
         }
         // OPT-O01-02: Defer recursive scanReceivedFilesBytes() to on-demand navigation in Settings
     }
@@ -399,6 +462,7 @@ class MainActivity : ComponentActivity() {
         // OEM battery screen), so re-read it here — this is what makes the Settings row reflect
         // reality instead of whatever was true at launch.
         refreshBatteryOptimizationState()
+        refreshNotificationPermissionState()
         FlashBackgroundService.reevaluateKeepAlive()
     }
 
@@ -441,29 +505,47 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Bug 7: notification tap while the activity was alive (CLEAR_TOP|SINGLE_TOP resume).
-        pendingNotificationConversation.value =
-            intent.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
-        intent.getStringExtra(EXTRA_HUB_ROUTE)?.let { pendingHubRoute.value = it }
+        setIntent(intent)
+        if (shouldSkipLaunchSplashForIntent(intent)) {
+            FlashLaunchSplashProcess.gate.skip()
+            FlashLaunchSplashProcess.gate.finish()
+        }
+        dispatchIncomingIntent(intent)
+    }
+
+    private fun shouldSkipLaunchSplashForIntent(intent: Intent?): Boolean =
+        FlashLaunchSplashProcess.isTimeCriticalLaunch(intent) ||
+            LaunchEntryPolicy.shouldSkipLaunchSplash(
+                action = intent?.action,
+                dataScheme = intent?.data?.scheme,
+                hasAnswerCallExtra = intent?.getBooleanExtra(
+                    com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL,
+                    false,
+                ) == true,
+                hasPttPressExtra = intent?.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false) == true,
+                hasConversationExtra = !intent?.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID).isNullOrBlank(),
+                hasHubRouteExtra = !intent?.getStringExtra(EXTRA_HUB_ROUTE).isNullOrBlank(),
+            )
+
+    private fun dispatchIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        // Bug 7: notification tap on cold start or singleTop resume.
+        intent.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { pendingNotificationConversation.value = it }
+        intent.getStringExtra(EXTRA_HUB_ROUTE)
+            ?.takeIf { it.isNotBlank() }
+            ?.let { pendingHubRoute.value = it }
         if (intent.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false)) {
             pendingCallAnswer.value = true
         }
         if (intent.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false)) {
             pendingPttPress.value = true
         }
-        if (intent.action == Intent.ACTION_VIEW && intent.data != null) {
-            val data = intent.data
-            if (data?.scheme == "flash") {
-                when (data.host) {
-                    "g" -> pendingJoinLink.value = data.toString()
-                    "enroll" -> pendingEnrollLink.value = data.toString()
-                }
-            }
-        }
         handleIncomingIntent(intent)
     }
 
-    private fun extractUrisFromIntent(intent: Intent): List<Uri> {
+    private fun extractUrisFromIntent(intent: Intent): ShareUriPartition {
         val result = linkedSetOf<Uri>()
         // 1. ClipData (preferred in modern Android)
         intent.clipData?.let { clipData ->
@@ -494,7 +576,8 @@ class MainActivity : ComponentActivity() {
         // R-05: this activity is an exported share target, so every URI below was chosen by the calling app. Only plain
         // content: URIs of OTHER apps are opened; file: URIs and Flash's own providers would make Flash read its own
         // private storage on a stranger's behalf. `intent.data` is deliberately NOT folded in (it is not a share payload).
-        return result.filter { ShareUriPolicy.accepts(it.scheme, it.authority, packageName) }
+        val (accepted, rejected) = result.partition { ShareUriPolicy.accepts(it.scheme, it.authority, packageName) }
+        return ShareUriPartition(accepted = accepted, rejected = rejected)
     }
 
     private fun resolvePendingShare(uris: List<Uri>, text: String?) {
@@ -528,21 +611,25 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            Intent.ACTION_SEND -> {
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-                val uris = extractUrisFromIntent(intent)
-                if (uris.isNotEmpty() || !text.isNullOrBlank()) {
-                    resolvePendingShare(uris, text)
+                val partition = extractUrisFromIntent(intent)
+                if (partition.rejected.isNotEmpty()) {
+                    val hasFileUri = partition.rejected.any { it.scheme.equals("file", ignoreCase = true) }
+                    val message = ShareUriFeedback.rejectedMessage(
+                        hasFileUri = hasFileUri,
+                        acceptedCount = partition.accepted.size,
+                        hasTextFallback = !text.isNullOrBlank(),
+                    )
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
+                if (partition.accepted.isNotEmpty() || !text.isNullOrBlank()) {
+                    resolvePendingShare(partition.accepted, text)
                 }
             }
-            Intent.ACTION_SEND_MULTIPLE -> {
-                val uris = extractUrisFromIntent(intent)
-                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-                if (uris.isNotEmpty() || !text.isNullOrBlank()) {
-                    resolvePendingShare(uris, text)
-                }
+            "com.transfer.flash.action.SHORTCUT_SEND" -> {
+                pendingWidgetSendPicker.value = true
             }
-            "com.transfer.flash.action.SHORTCUT_SEND",
             "com.transfer.flash.action.SHORTCUT_NEARBY",
             "android.service.quicksettings.action.QS_TILE_PREFERENCES",
             FlashNotificationManager.ACTION_VIEW_NEARBY -> {
@@ -753,15 +840,59 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Requests POST_NOTIFICATIONS on Android 13+ when not yet granted. Below API 33 the
-     *  permission is install-time, so nothing to do. */
-    private fun maybeRequestNotificationPermission() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    private fun loadNotificationPermissionPrefs() {
+        val prefs = getSharedPreferences(PERMISSION_PREFS_NAME, Context.MODE_PRIVATE)
+        notificationPromptedBefore.value = prefs.getBoolean(KEY_NOTIFICATIONS_PROMPTED, false)
+        notificationBannerDismissed.value = prefs.getBoolean(KEY_NOTIFICATIONS_BANNER_DISMISSED, false)
+    }
+
+    private fun refreshNotificationPermissionState() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            hasNotificationPermission.value = true
+            shouldShowNotificationRationale.value = false
+            return
+        }
         val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
-        if (!granted) notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        hasNotificationPermission.value = granted
+        shouldShowNotificationRationale.value = !granted &&
+            ActivityCompat.shouldShowRequestPermissionRationale(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+    }
+
+    private fun requestNotificationPermissionFromBanner() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun openAppNotificationSettings() {
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            }
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+        }
+        val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+        if (runCatching { startActivity(intent) }.isFailure) {
+            runCatching { startActivity(fallback) }
+        }
+    }
+
+    private fun dismissNotificationBanner() {
+        notificationBannerDismissed.value = true
+        getSharedPreferences(PERMISSION_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_NOTIFICATIONS_BANNER_DISMISSED, true)
+            .apply()
     }
 }
+
+private const val PERMISSION_PREFS_NAME = "flash_permission_prefs"
+private const val KEY_NOTIFICATIONS_PROMPTED = "notifications_prompted"
+private const val KEY_NOTIFICATIONS_BANNER_DISMISSED = "notifications_banner_dismissed"
 
 /** UI-056: how long the system splash takes to fade into the Ink splash. */
 /** Intent extra with a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`); validated before use (UI-058 H9). */
@@ -807,6 +938,8 @@ fun FlashApp(
     pendingPttPress: MutableStateFlow<Boolean> = MutableStateFlow(false),
     /** Pending shared files/text from Android ACTION_SEND / ACTION_SEND_MULTIPLE. */
     pendingShare: MutableStateFlow<PendingSharePayload?> = MutableStateFlow(null),
+    pendingWidgetSendPicker: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    onLaunchWidgetSendPicker: () -> Unit = {},
     /** Pending static app shortcut navigation target. */
     pendingShortcutTab: MutableStateFlow<FlashDestination?> = MutableStateFlow(null),
     pendingJoinLink: MutableStateFlow<String?> = MutableStateFlow(null),
@@ -816,6 +949,9 @@ fun FlashApp(
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
     ignoringBatteryOptimizations: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    /** HIB-03: Transsion setup guide visibility; rendered inside FlashTheme so it inherits palette/accent. */
+    transsionGuideVisible: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    onOpenTranssionTarget: (TranssionSetupGuide.Target) -> Unit = {},
     receivedStorageState: MutableStateFlow<FlashReceivedStorageState>,
     onRefreshStorageUsage: () -> Unit = {},
     onClearReceivedFiles: () -> Unit = {},
@@ -823,6 +959,13 @@ fun FlashApp(
     onExportLogs: (() -> Unit)? = null,
     /** UI-056: the process-wide launch splash gate; MainActivity decides it before the first frame. */
     launchSplash: FlashLaunchSplashGate = FlashLaunchSplashProcess.gate,
+    hasNotificationPermission: MutableStateFlow<Boolean> = MutableStateFlow(true),
+    notificationPromptedBefore: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    notificationBannerDismissed: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    shouldShowNotificationRationale: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    onRequestNotificationPermission: () -> Unit = {},
+    onOpenNotificationSettings: () -> Unit = {},
+    onDismissNotificationBanner: () -> Unit = {},
 ) {
     // #14 / UI-049 wiring: Appearance/Haptics are only real if the host applies them, so the settings
     // model lives above the theme. ONE theme scope owns the whole shell — a nested
@@ -964,6 +1107,8 @@ fun FlashApp(
         performanceMode = pinnedPerformanceMode,
         detectedPerformanceMode = engine.detectedPerformance.mode,
         trustedPeerCount = trustedPeers.size,
+        // ADR-356: Android writes completed receives into the app-owned FlashReceived root.
+        saveLocationLabel = "App storage / FlashReceived",
         appVersion = engine.appVersionName,
         // ifBlank is a real guard, not the normal path: a UUID always survives take(8), but a
         // prefs entry that somehow holds "" would not be caught by the store's null check.
@@ -1070,6 +1215,8 @@ fun FlashApp(
             // engine is ready or has failed — or at the 6 s ceiling (ERROR-034), so a stalled boot
             // never traps the user. The old looping bolt splash it replaces is gone.
             val startError by engine.startError.collectAsState()
+            val splashSettled = launchSplash.phase == FlashLaunchSplashGate.Phase.Skipped ||
+                launchSplash.phase == FlashLaunchSplashGate.Phase.Finished
             Box(modifier = Modifier.fillMaxSize()) {
                 FlashShell(
                     engine = engine,
@@ -1082,6 +1229,8 @@ fun FlashApp(
                     pendingNotificationConversation = pendingNotificationConversation,
                     pendingCallAnswer = pendingCallAnswer,
                     pendingShare = pendingShare,
+                    pendingWidgetSendPicker = pendingWidgetSendPicker,
+                    onLaunchWidgetSendPicker = onLaunchWidgetSendPicker,
                     pendingShortcutTab = pendingShortcutTab,
                     pendingJoinLink = pendingJoinLink,
                     pendingEnrollLink = pendingEnrollLink,
@@ -1092,6 +1241,14 @@ fun FlashApp(
                     onRestartApp = onRestartApp,
                     onExportLogs = onExportLogs,
                     radioGatewayController = radioGatewayController,
+                    splashSettled = splashSettled,
+                    hasNotificationPermission = hasNotificationPermission,
+                    notificationPromptedBefore = notificationPromptedBefore,
+                    notificationBannerDismissed = notificationBannerDismissed,
+                    shouldShowNotificationRationale = shouldShowNotificationRationale,
+                    onRequestNotificationPermission = onRequestNotificationPermission,
+                    onOpenNotificationSettings = onOpenNotificationSettings,
+                    onDismissNotificationBanner = onDismissNotificationBanner,
                 )
                 // Phase 3: PTT session overlay above every tab (below the boot splash).
                 // State-driven, not nav-driven: back-navigation underneath never kills a
@@ -1110,6 +1267,14 @@ fun FlashApp(
                         Toast.makeText(pttToastContext, message, Toast.LENGTH_SHORT).show()
                     },
                 )
+                val guideVisible by transsionGuideVisible.collectAsState()
+                if (guideVisible) {
+                    TranssionGuideDialog(
+                        ignoringBatteryOptimizations = batteryExempt,
+                        onOpen = onOpenTranssionTarget,
+                        onDismiss = { transsionGuideVisible.value = false },
+                    )
+                }
                 FlashLaunchSplashOverlay(
                     gate = launchSplash,
                     engineSettled = ready || startError != null,
@@ -1131,6 +1296,8 @@ private fun FlashShell(
     pendingNotificationConversation: MutableStateFlow<String?>,
     pendingCallAnswer: MutableStateFlow<Boolean>,
     pendingShare: MutableStateFlow<PendingSharePayload?>,
+    pendingWidgetSendPicker: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    onLaunchWidgetSendPicker: () -> Unit = {},
     pendingShortcutTab: MutableStateFlow<FlashDestination?>,
     pendingJoinLink: MutableStateFlow<String?>,
     pendingEnrollLink: MutableStateFlow<String?>,
@@ -1141,6 +1308,14 @@ private fun FlashShell(
     onRestartApp: (() -> Unit)?,
     onExportLogs: (() -> Unit)?,
     radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController? = null,
+    splashSettled: Boolean = true,
+    hasNotificationPermission: MutableStateFlow<Boolean> = MutableStateFlow(true),
+    notificationPromptedBefore: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    notificationBannerDismissed: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    shouldShowNotificationRationale: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    onRequestNotificationPermission: () -> Unit = {},
+    onOpenNotificationSettings: () -> Unit = {},
+    onDismissNotificationBanner: () -> Unit = {},
 ) {
     val nav = rememberFlashNavigationState()
     // Phase 3.1: Chats bind to the real Room-backed repository once the engine has booted.
@@ -1263,9 +1438,18 @@ private fun FlashShell(
         if (!ready || pendingConversation == null) return@LaunchedEffect
         val conversationId = pendingConversation
         if (conversationId != null) {
+            selectedChatConversationId = conversationId
             chatRepository.openConversation(conversationId)
             nav.navigate(FlashDestination.Conversation, conversationId = conversationId)
             pendingNotificationConversation.value = null
+        }
+    }
+
+    val widgetSendRequested by pendingWidgetSendPicker.collectAsState()
+    LaunchedEffect(widgetSendRequested, splashSettled) {
+        if (widgetSendRequested && splashSettled) {
+            pendingWidgetSendPicker.value = false
+            onLaunchWidgetSendPicker()
         }
     }
 
@@ -1366,6 +1550,7 @@ private fun FlashShell(
     // #14: display-name edit sheet. The identity row's tap now opens a rename dialog whose result is
     // persisted through onSettingsChange (DataStore) instead of being a no-op.
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showEncryptionSheet by remember { mutableStateOf(false) }
 
     // UI-024: chat-list global search state. Hoisted at the shell so it survives the tab's
     // AnimatedContent disposal (a state remembered inside the page would reset on every switch).
@@ -1434,6 +1619,9 @@ private fun FlashShell(
     var pendingCallAccept by remember { mutableStateOf(false) }
     // ADR-078: "Turn on camera" waiting on the CAMERA grant; the grant callback adds the camera to the live call.
     var pendingCameraUpgrade by remember { mutableStateOf(false) }
+    var pendingOutgoingCall by remember { mutableStateOf<PendingOutgoingCall?>(null) }
+    var pendingNearbySendPeerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingNearbySendPeerName by rememberSaveable { mutableStateOf<String?>(null) }
     // C7: platform audio mode/focus/routing for the duration of a call. Declared here — ahead of
     // the permission launchers — because a permission-resumed accept has to set the mode before
     // media starts, same as the direct accept path. Survives recomposition so the same instance
@@ -1441,6 +1629,42 @@ private fun FlashShell(
     val audioRouter = remember(callCtx) { FlashCallAudioRouter(callCtx) }
     DisposableEffect(audioRouter) {
         onDispose { audioRouter.detach() }
+    }
+    val executePendingOutgoingCall: (PendingOutgoingCall) -> Unit = { call ->
+        scope.launch(Dispatchers.IO) {
+            when (call) {
+                is PendingOutgoingCall.Direct -> {
+                    engine.calls?.startCall(call.peerId, call.peerName, video = call.video)
+                }
+                is PendingOutgoingCall.StartGroup -> {
+                    val started = engine.calls?.startGroupCall(
+                        groupId = call.groupId,
+                        groupName = call.groupName,
+                        memberIds = call.memberIds,
+                        video = call.video,
+                    )
+                    if (started == false) {
+                        // ERROR-095: surface refused group calls instead of acting like a dead button.
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(callCtx, GROUP_CALL_NOT_STARTED, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+                is PendingOutgoingCall.JoinGroup -> {
+                    val joined = engine.calls?.joinGroupCall(
+                        groupId = call.groupId,
+                        callId = call.callId,
+                        memberIds = call.memberIds,
+                        video = call.video,
+                    )
+                    if (joined == false) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(callCtx, GROUP_CALL_NOT_STARTED, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        }
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -1451,6 +1675,19 @@ private fun FlashShell(
                 scope.launch { engine.calls?.upgradeToVideo() }
             } else {
                 Toast.makeText(callCtx, "Camera permission is needed to turn on video", Toast.LENGTH_SHORT).show()
+            }
+            return@rememberLauncherForActivityResult
+        }
+        val queuedOutgoing = pendingOutgoingCall
+        if (queuedOutgoing != null) {
+            pendingOutgoingCall = null
+            if (granted) {
+                executePendingOutgoingCall(queuedOutgoing)
+            } else if (queuedOutgoing is PendingOutgoingCall.JoinGroup) {
+                Toast.makeText(callCtx, "Joining without camera", Toast.LENGTH_SHORT).show()
+                executePendingOutgoingCall(queuedOutgoing.copy(video = false))
+            } else {
+                Toast.makeText(callCtx, "Camera permission is required for video calls", Toast.LENGTH_SHORT).show()
             }
             return@rememberLauncherForActivityResult
         }
@@ -1477,20 +1714,57 @@ private fun FlashShell(
     ) { granted ->
         if (!granted) {
             pendingCallAccept = false
+            pendingOutgoingCall = null
             Toast.makeText(callCtx, "Microphone permission is required for calls", Toast.LENGTH_SHORT).show()
             return@rememberLauncherForActivityResult
         }
-        if (!pendingCallAccept) return@rememberLauncherForActivityResult
-        // A video call needs the camera too before accept can succeed — chain the prompts.
-        val needsCamera = engine.calls?.activeCall?.value?.video == true &&
+        if (pendingCallAccept) {
+            // A video call needs the camera too before accept can succeed — chain the prompts.
+            val needsCamera = engine.calls?.activeCall?.value?.video == true &&
+                ContextCompat.checkSelfPermission(callCtx, Manifest.permission.CAMERA) !=
+                PackageManager.PERMISSION_GRANTED
+            if (needsCamera) {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            } else {
+                pendingCallAccept = false
+                audioRouter.attach(engine.calls?.activeCall?.value?.speakerOn == true)
+                scope.launch { engine.calls?.accept() }
+            }
+            return@rememberLauncherForActivityResult
+        }
+        val queuedOutgoing = pendingOutgoingCall ?: return@rememberLauncherForActivityResult
+        val needsCamera = queuedOutgoing.video &&
             ContextCompat.checkSelfPermission(callCtx, Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
         if (needsCamera) {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         } else {
-            pendingCallAccept = false
-            audioRouter.attach(engine.calls?.activeCall?.value?.speakerOn == true)
-            scope.launch { engine.calls?.accept() }
+            pendingOutgoingCall = null
+            executePendingOutgoingCall(queuedOutgoing)
+        }
+    }
+    val launchOrQueueOutgoingCall: (PendingOutgoingCall) -> Unit = { call ->
+        val hasAudio = ContextCompat.checkSelfPermission(
+            callCtx,
+            Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasCamera = !call.video || ContextCompat.checkSelfPermission(
+            callCtx,
+            Manifest.permission.CAMERA,
+        ) == PackageManager.PERMISSION_GRANTED
+        when (CallPermissionActionPlan.decide(hasAudio = hasAudio, hasCamera = hasCamera)) {
+            CallPermissionAction.EXECUTE_NOW -> {
+                pendingOutgoingCall = null
+                executePendingOutgoingCall(call)
+            }
+            CallPermissionAction.REQUEST_AUDIO -> {
+                pendingOutgoingCall = call
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+            CallPermissionAction.REQUEST_CAMERA -> {
+                pendingOutgoingCall = call
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
         }
     }
 
@@ -1616,6 +1890,9 @@ private fun FlashShell(
             initials = initials,
         )
     }
+    var lastPairingPeer by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var lastPairingFailureMessage by remember { mutableStateOf<String?>(null) }
+
     // Surface the coordinator's transient status lines (e.g. "Connecting…", "Couldn't reach …") as
     // toasts so tapping Pair always gives feedback instead of silently doing nothing. Keyed on the
     // coordinator instance so collection (re)starts once the engine boots.
@@ -1625,6 +1902,12 @@ private fun FlashShell(
             "shell.coordinator bound=${engine.pairing != null}",
         )
         engine.pairing?.messages?.collect { message ->
+            if (message.startsWith("The other device is running") ||
+                message.startsWith("Pairing stopped:") ||
+                message.startsWith("Too many pairing attempts")
+            ) {
+                lastPairingFailureMessage = message
+            }
             Toast.makeText(toastContext, message, Toast.LENGTH_SHORT).show()
         }
     }
@@ -1633,12 +1916,62 @@ private fun FlashShell(
     // whether the shell's consent-card model is null while the coordinator still holds an active
     // request (drawing/binding problem) or null together (protocol problem).
     LaunchedEffect(pairingModel?.phase) {
+        if (pairingModel?.phase != FlashPairingPhase.Failed) {
+            lastPairingFailureMessage = null
+        }
         android.util.Log.i(
             "FLASH_PAIRING",
             "shell.model phase=${pairingModel?.phase?.name ?: "null"} " +
                 "peer=${pairingModel?.request?.peerName ?: "-"}",
         )
     }
+
+    var localLanAddresses by remember { mutableStateOf<List<String>>(emptyList()) }
+    var wifiEnabled by remember { mutableStateOf(true) }
+    var networkRefreshTick by remember { mutableStateOf(0) }
+    DisposableEffect(toastContext) {
+        val cm = toastContext.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { networkRefreshTick++ }
+            override fun onLost(network: Network) { networkRefreshTick++ }
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { networkRefreshTick++ }
+        }
+        val req = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+            .build()
+        runCatching { cm?.registerNetworkCallback(req, callback) }
+        val wifiReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                networkRefreshTick++
+            }
+        }
+        runCatching {
+            toastContext.registerReceiver(wifiReceiver, IntentFilter(WifiManager.WIFI_STATE_CHANGED_ACTION))
+        }
+        onDispose {
+            runCatching { cm?.unregisterNetworkCallback(callback) }
+            runCatching { toastContext.unregisterReceiver(wifiReceiver) }
+        }
+    }
+    LaunchedEffect(toastContext, ready, networkRefreshTick, discoveryState.advertisedPort) {
+        val (ips, wifiOn) = withContext(Dispatchers.IO) {
+            val addrs = runCatching {
+                com.transfer.flash.core.network.util.LocalNetworkAddresses(toastContext).ipv4Addresses()
+            }.getOrDefault(emptyList())
+            val wm = toastContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            @Suppress("DEPRECATION")
+            val isWifiOn = wm?.isWifiEnabled ?: true
+            addrs to isWifiOn
+        }
+        localLanAddresses = ips
+        wifiEnabled = wifiOn
+    }
+    val radiosAvailable = !ready ||
+        wifiEnabled ||
+        localLanAddresses.isNotEmpty() ||
+        discoveredEndpoints.isNotEmpty() ||
+        activeSessions.isNotEmpty()
 
     var pendingShareRecipient by remember { mutableStateOf<Pair<String, String>?>(null) }
     var isPairingForShare by remember { mutableStateOf(false) }
@@ -1695,6 +2028,7 @@ private fun FlashShell(
                     if (endpoint != null && net != null) {
                         net.connectManual(endpoint.hostAddress, endpoint.port)
                     }
+                    lastPairingPeer = targetDeviceId to targetDeviceName
                     engine.pairing?.beginPair(targetDeviceId, targetDeviceName)
                 }
                 Toast.makeText(toastContext, "Initiating pairing with $targetDeviceName...", Toast.LENGTH_SHORT).show()
@@ -1902,11 +2236,22 @@ private fun FlashShell(
                 val summary = FlashShareTargetMath.formatItemSummary(share)
                 Toast.makeText(toastContext, "Paired! Sharing $summary with $targetDeviceName", Toast.LENGTH_SHORT).show()
             }
-        } else if (pairingModel?.phase == FlashPairingPhase.Declined || pairingModel?.phase == FlashPairingPhase.Expired) {
-            pendingShareRecipient = null
-            isPairingForShare = false
-            pendingShare.value = null
-            Toast.makeText(toastContext, "Pairing was cancelled or timed out. Files not sent.", Toast.LENGTH_SHORT).show()
+        } else if (
+            pairingModel?.phase == FlashPairingPhase.Declined ||
+            pairingModel?.phase == FlashPairingPhase.Expired ||
+            pairingModel?.phase == FlashPairingPhase.Failed
+        ) {
+            // Preserve pendingShare and pendingShareRecipient across Retry until pairing succeeds
+            // or the user explicitly dismisses/declines the pairing dialog.
+            Toast.makeText(
+                toastContext,
+                if (pairingModel?.phase == FlashPairingPhase.Failed) {
+                    "Pairing failed. Files not sent."
+                } else {
+                    "Pairing was cancelled or timed out. Files not sent."
+                },
+                Toast.LENGTH_SHORT,
+            ).show()
         }
     }
 
@@ -1946,8 +2291,10 @@ private fun FlashShell(
                     displayName = engine.localFriendlyName,
                     deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
                     port = discoveryState.advertisedPort,
+                    localAddressLabel = localLanAddresses.firstOrNull(),
                 ),
                 isScanning = discoveryState.isDiscovering,
+                radiosAvailable = radiosAvailable,
                 // ERROR-034: the Nearby page has had a Loading branch all along and nothing reached it,
                 // so for the whole boot the tab rendered the first-run "no devices" panel under the
                 // header line "Scan paused" — attributing to the user a pause of a scan that had not
@@ -2037,21 +2384,6 @@ private fun FlashShell(
 
     var showShareManualConnect by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = nav.canGoBack) { nav.back() }
-    // UI-024: while chat-list search is open, Back closes search first (registered last so it
-    // takes priority over the stack pop when both are eligible).
-    BackHandler(enabled = isSearching) {
-        isSearching = false
-        searchQuery = ""
-    }
-    // UI-013: while chat-list selection mode is active, Back exits selection first (registered
-    // last so it wins over the search-close and stack-pop handlers when several are eligible).
-    // Reads the derived Boolean, not `chatListState` — see its declaration for why (EXP-012).
-    BackHandler(enabled = chatListSelectionMode) {
-        chatRepository.clearListSelection()
-    }
-
-    // UI-034 / AD-6: Adaptive layout for large displays (tablets, foldables unfolded, landscape, DeX).
     // UI-034 / AD-6: Adaptive layout for large displays (tablets, foldables unfolded, landscape, DeX).
     // When width >= 600dp (Medium & Expanded), transforms into a slim navigation rail on the left
     // (no stretched bottom navigation bar). When width >= 840dp, transforms into dual-pane layout
@@ -2061,8 +2393,164 @@ private fun FlashShell(
     val useNavRail = sizeClass != FlashWindowSizeClass.Compact
     val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
 
-    var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
-    var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
+    var selectedTransferId by remember { mutableStateOf<String?>(null) }
+    var selectedNearbyPeerId by remember { mutableStateOf<String?>(null) }
+
+    val selectedTransferItem = selectedTransferId?.let { id ->
+        transfersUi.offers.firstOrNull { it.id == id }
+            ?: transfersUi.active.firstOrNull { it.id == id }
+            ?: transfersUi.failed.firstOrNull { it.id == id }
+            ?: transfersUi.history.firstOrNull { it.id == id }
+    }
+    val selectedNearbyPeer = selectedNearbyPeerId?.let { id ->
+        nearby.peers.firstOrNull { it.id == id }
+            ?: nearby.trustedPeers.firstOrNull { it.id == id }?.let { trusted ->
+                val isColleague = engine.hasAuthenticatedOrgSession(trusted.id)
+                NearbyPeerUi(
+                    id = trusted.id,
+                    name = trusted.name,
+                    transport = FlashNetworkTransport.Lan,
+                    isTrusted = true,
+                    deviceKind = trusted.deviceKind,
+                    isColleague = isColleague,
+                    orgName = if (isColleague) engine.enterpriseTrustStore?.getCredentials()?.hubName else null,
+                )
+            }
+    }
+
+    LaunchedEffect(nav.current.destination) {
+        if (nav.current.destination != FlashDestination.ChatList &&
+            nav.current.destination != FlashDestination.Conversation
+        ) {
+            selectedChatConversationId = null
+        }
+        if (nav.current.destination != FlashDestination.Transfers) {
+            selectedTransferId = null
+        }
+        if (nav.current.destination != FlashDestination.NearbyDevices) {
+            selectedNearbyPeerId = null
+        }
+    }
+
+    val closeActiveConversation: () -> Unit = {
+        val backToHub = nav.conversationOpenedFromHub
+        chatRepository.closeConversation()
+        selectedChatConversationId = null
+        if (twoPane) {
+            if (backToHub) nav.selectTab(FlashDestination.Hub) else nav.selectTab(FlashDestination.ChatList)
+        } else if (nav.current.destination == FlashDestination.Conversation) {
+            nav.back()
+        }
+    }
+
+    // In two-pane mode, back clears active detail selection on the visible tab without popping the app.
+    // Registered BEFORE search and selection BackHandlers so inner overlays win when active.
+    val hasTwoPaneDetail = twoPane && when (nav.current.destination) {
+        FlashDestination.Transfers -> selectedTransferItem != null
+        FlashDestination.NearbyDevices -> selectedNearbyPeer != null
+        FlashDestination.Conversation -> true
+        FlashDestination.ChatList -> selectedChatConversationId != null
+        else -> false
+    }
+    BackHandler(enabled = nav.canGoBack) { nav.back() }
+    BackHandler(enabled = hasTwoPaneDetail) {
+        when (nav.current.destination) {
+            FlashDestination.Transfers -> selectedTransferId = null
+            FlashDestination.NearbyDevices -> selectedNearbyPeerId = null
+            FlashDestination.Conversation, FlashDestination.ChatList -> closeActiveConversation()
+            else -> Unit
+        }
+    }
+    // UI-024: while chat-list search is open, Back closes search first (registered after
+    // stack-pop and two-pane detail so it wins when search is active).
+    BackHandler(enabled = isSearching) {
+        isSearching = false
+        searchQuery = ""
+        searchScope = FlashSearchScope.All
+    }
+    // UI-013: while chat-list selection mode is active, Back exits selection first (registered
+    // last so it wins over search-close, two-pane detail, and stack-pop handlers).
+    // Reads the derived Boolean, not `chatListState` — see its declaration for why (EXP-012).
+    BackHandler(enabled = chatListSelectionMode) {
+        chatRepository.clearListSelection()
+    }
+
+    val nearbyFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        val peerId = pendingNearbySendPeerId
+        val peerName = pendingNearbySendPeerName
+        pendingNearbySendPeerId = null
+        pendingNearbySendPeerName = null
+        if (uris.isEmpty() || peerId == null || peerName == null) return@rememberLauncherForActivityResult
+        val transfers = engine.transfers ?: return@rememberLauncherForActivityResult
+        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+        val targetDevice = FlashDevice(
+            id = FlashDeviceId(peerId),
+            friendlyName = peerName,
+            transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+        )
+        selectedChatConversationId = peerId
+        chatRepository.openConversation(peerId)
+        nav.navigate(FlashDestination.Conversation, conversationId = peerId)
+        scope.launch(Dispatchers.IO) {
+            var lastSentName: String? = null
+            uris.forEach { uri ->
+                runCatching {
+                    toastContext.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                val (name, size) = resolveContentUriNameAndSize(toastContext, uri)
+                val mime = guessMimeType(name, uri.toString(), toastContext)
+                val transferId = transfers.sendFile(targetDevice, uri.toString(), name, size).getOrNull()
+                if (transferId != null) {
+                    chatRepository.sendAttachment(
+                        conversationId = peerId,
+                        transferId = transferId.value,
+                        fileName = name,
+                        mimeType = mime,
+                        sizeBytes = size,
+                        localPath = uri.toString(),
+                    )
+                }
+                lastSentName = name
+            }
+            val summary = if (uris.size == 1) lastSentName ?: "1 file" else "${uris.size} files"
+            withContext(Dispatchers.Main) {
+                Toast.makeText(toastContext, "Sending $summary to $peerName", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val openPeerChat: (NearbyPeerUi) -> Unit = { peer ->
+        if (peer.isColleague && !peer.isTrusted) {
+            scope.launch {
+                val outcome = chatRepository.startColleagueConversation(peer.id)
+                when (outcome) {
+                    is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                        selectedChatConversationId = peer.id
+                        chatRepository.openConversation(peer.id)
+                        nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                    }
+                    is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                        val msg = (outcome.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                            ?: com.transfer.flash.ui.chat.FlashOrgStrings.ORG_START_NOT_MEMBER
+                        Toast.makeText(
+                            toastContext,
+                            msg,
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            }
+        } else {
+            selectedChatConversationId = peer.id
+            chatRepository.openConversation(peer.id)
+            nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+        }
+    }
 
     val totalUnreadCount = remember(chatListState.items) {
         chatListState.items.sumOf { it.unreadCount }
@@ -2079,21 +2567,6 @@ private fun FlashShell(
     }
     val navigationRailTabs = remember(shellTabs) {
         shellTabs.map { FlashNavigationRailTab(it.destination, it.icon, it.label, it.badgeCount ?: 0) }
-    }
-
-    // In two-pane mode, back clears active detail selection without popping the tab or exiting the app
-    BackHandler(enabled = twoPane && (nav.current.destination == FlashDestination.Conversation || selectedTransferItem != null || selectedNearbyPeer != null)) {
-        if (selectedTransferItem != null) {
-            selectedTransferItem = null
-        } else if (selectedNearbyPeer != null) {
-            selectedNearbyPeer = null
-        } else if (nav.current.destination == FlashDestination.Conversation) {
-            // H-16: a chat opened from the Hub goes back to the Hub, not to the chat list.
-            val backToHub = nav.conversationOpenedFromHub
-            chatRepository.closeConversation()
-            selectedChatConversationId = null
-            if (backToHub) nav.selectTab(FlashDestination.Hub) else nav.navigate(FlashDestination.ChatList)
-        }
     }
 
     // UI-046 v2: the shell bar HANGS over the page instead of docking under it. Tab roots
@@ -2115,14 +2588,7 @@ private fun FlashShell(
             chatWallpaperCustom = chatWallpaperCustom,
             onSetChatWallpaper = onSetChatWallpaper,
             onSetChatWallpaperCustom = onSetChatWallpaperCustom,
-            onBack = {
-                chatRepository.closeConversation()
-                if (twoPane) {
-                    nav.navigate(FlashDestination.ChatList)
-                } else {
-                    nav.back()
-                }
-            },
+            onBack = closeActiveConversation,
             // UI-032: tapping the header avatar opens the in-screen peer-details sheet.
             // Feed it the peer's live trust status + a revoke action keyed by the
             // conversationId (== peer device id, the pairing/trust key).
@@ -2324,81 +2790,60 @@ private fun FlashShell(
             onStartCall = {
                 val peerId = conversationId
                 if (peerId != null) {
-                    val hasAudio = ContextCompat.checkSelfPermission(
-                        callCtx,
-                        Manifest.permission.RECORD_AUDIO,
-                    ) == PackageManager.PERMISSION_GRANTED
-                    if (hasAudio) {
-                        scope.launch(Dispatchers.IO) {
-                            if (conversationState.header.isGroup) {
-                                val memberIds = if (conversationState.members.isNotEmpty()) {
-                                    conversationState.members.map { it.id }
-                                } else {
-                                    chatRepository.groupMembers(peerId).map { it.id }
-                                }
-                                val started = engine.calls?.startGroupCall(
+                    if (conversationState.header.isGroup) {
+                        scope.launch {
+                            val memberIds = if (conversationState.members.isNotEmpty()) {
+                                conversationState.members.map { it.id }
+                            } else {
+                                withContext(Dispatchers.IO) { chatRepository.groupMembers(peerId).map { it.id } }
+                            }
+                            launchOrQueueOutgoingCall(
+                                PendingOutgoingCall.StartGroup(
                                     groupId = peerId,
                                     groupName = conversationState.header.title,
                                     memberIds = memberIds,
                                     video = false,
-                                )
-                                if (started == false) {
-                                    // ERROR-095: the result used to be dropped, so a call that could not be placed
-                                    // (no member this device may call, or a call already live) looked like a dead button.
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(callCtx, GROUP_CALL_NOT_STARTED, Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            } else {
-                                engine.calls?.startCall(peerId, conversationState.header.title, video = false)
-                            }
+                                ),
+                            )
                         }
                     } else {
-                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        launchOrQueueOutgoingCall(
+                            PendingOutgoingCall.Direct(
+                                peerId = peerId,
+                                peerName = conversationState.header.title,
+                                video = false,
+                            ),
+                        )
                     }
                 }
             },
             onStartVideoCall = {
                 val peerId = conversationId
                 if (peerId != null) {
-                    val hasAudio = ContextCompat.checkSelfPermission(
-                        callCtx,
-                        Manifest.permission.RECORD_AUDIO,
-                    ) == PackageManager.PERMISSION_GRANTED
-                    val hasCamera = ContextCompat.checkSelfPermission(
-                        callCtx,
-                        Manifest.permission.CAMERA,
-                    ) == PackageManager.PERMISSION_GRANTED
-                    if (hasAudio && hasCamera) {
-                        scope.launch(Dispatchers.IO) {
-                            if (conversationState.header.isGroup) {
-                                val memberIds = if (conversationState.members.isNotEmpty()) {
-                                    conversationState.members.map { it.id }
-                                } else {
-                                    chatRepository.groupMembers(peerId).map { it.id }
-                                }
-                                val started = engine.calls?.startGroupCall(
+                    if (conversationState.header.isGroup) {
+                        scope.launch {
+                            val memberIds = if (conversationState.members.isNotEmpty()) {
+                                conversationState.members.map { it.id }
+                            } else {
+                                withContext(Dispatchers.IO) { chatRepository.groupMembers(peerId).map { it.id } }
+                            }
+                            launchOrQueueOutgoingCall(
+                                PendingOutgoingCall.StartGroup(
                                     groupId = peerId,
                                     groupName = conversationState.header.title,
                                     memberIds = memberIds,
                                     video = true,
-                                )
-                                if (started == false) {
-                                    // ERROR-095: the result used to be dropped, so a call that could not be placed
-                                    // (no member this device may call, or a call already live) looked like a dead button.
-                                    withContext(Dispatchers.Main) {
-                                        Toast.makeText(callCtx, GROUP_CALL_NOT_STARTED, Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                            } else {
-                                engine.calls?.startCall(peerId, conversationState.header.title, video = true)
-                            }
+                                ),
+                            )
                         }
                     } else {
-                        // Request whichever is missing. The user taps the video button
-                        // again once permissions are granted.
-                        if (!hasAudio) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        launchOrQueueOutgoingCall(
+                            PendingOutgoingCall.Direct(
+                                peerId = peerId,
+                                peerName = conversationState.header.title,
+                                video = true,
+                            ),
+                        )
                     }
                 }
             },
@@ -2438,12 +2883,7 @@ private fun FlashShell(
                 scope.launch {
                     val left = chatRepository.leaveGroup(groupId)
                     if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
-                        chatRepository.closeConversation()
-                        if (twoPane) {
-                            nav.navigate(FlashDestination.ChatList)
-                        } else {
-                            nav.back()
-                        }
+                        closeActiveConversation()
                     } else {
                         Toast.makeText(
                             toastContext,
@@ -2457,12 +2897,7 @@ private fun FlashShell(
                 scope.launch {
                     val left = chatRepository.leaveGroup(groupId, successorId)
                     if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
-                        chatRepository.closeConversation()
-                        if (twoPane) {
-                            nav.navigate(FlashDestination.ChatList)
-                        } else {
-                            nav.back()
-                        }
+                        closeActiveConversation()
                     } else {
                         Toast.makeText(
                             toastContext,
@@ -2545,34 +2980,26 @@ private fun FlashShell(
             observeMessageInfo = chatRepository::observeMessageInfo,
             onClearConversation = { id ->
                 chatRepository.deleteConversations(setOf(id))
-                chatRepository.closeConversation()
-                if (twoPane) {
-                    nav.navigate(FlashDestination.ChatList)
-                } else {
-                    nav.back()
-                }
+                closeActiveConversation()
             },
             onMarkUnread = chatRepository::markConversationUnread,
             onJoinGroupCall = { callId, video ->
                 val peerId = conversationId
                 if (peerId != null) {
-                    scope.launch(Dispatchers.IO) {
+                    scope.launch {
                         val memberIds = if (conversationState.members.isNotEmpty()) {
                             conversationState.members.map { it.id }
                         } else {
-                            chatRepository.groupMembers(peerId).map { it.id }
+                            withContext(Dispatchers.IO) { chatRepository.groupMembers(peerId).map { it.id } }
                         }
-                        val hasAudio = ContextCompat.checkSelfPermission(
-                            callCtx, Manifest.permission.RECORD_AUDIO,
-                        ) == PackageManager.PERMISSION_GRANTED
-                        if (hasAudio) {
-                            engine.calls?.joinGroupCall(
+                        launchOrQueueOutgoingCall(
+                            PendingOutgoingCall.JoinGroup(
                                 groupId = peerId,
                                 callId = callId,
                                 memberIds = memberIds,
                                 video = video,
-                            )
-                        }
+                            ),
+                        )
                     }
                 }
             },
@@ -2692,6 +3119,17 @@ private fun FlashShell(
                     }
                 }
             },
+            isPeerVerified = conversationId?.let { pid ->
+                trustedPeers.firstOrNull { it.id == pid }?.verified
+            } ?: false,
+            onVerifyPeerTrust = conversationId?.let { pid ->
+                { scope.launch { engine.pairing?.beginPair(pid, conversationState.header.title) }; Unit }
+            },
+            connectionTransport = conversationId?.let { pid ->
+                discoveredEndpoints.firstOrNull { it.deviceId.value == pid }?.transportType?.toUiTransport()
+            } ?: conversationState.header.transport,
+            onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+            localDeviceId = engine.localDeviceId.takeIf { it.isNotBlank() },
         )
     }
 
@@ -2737,28 +3175,42 @@ private fun FlashShell(
                     scope.launch { repo.declineIncoming(FlashTransferId(item.id)) }
                 }
             },
+            onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
             onHistoryOpen = { item ->
-                selectedTransferItem = item
-                if (!twoPane) {
+                if (twoPane) {
+                    selectedTransferId = item.id
+                } else {
                     openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
                 }
             },
             onHistoryShare = { item -> shareTransferredFile(toastContext, item) },
             // Plan 1.2: the screen only draws "Clear history" when a host passes this.
             onClearHistory = {
-                selectedTransferItem = null
+                selectedTransferId = null
                 engine.transfers?.clearFinishedHistory()
                 FlashNotificationManager.clearAllTransfers(toastContext)
             },
             // C-10: a Failed or Cancelled row can be dismissed one by one or all at once.
             onDismissItem = { item ->
-                if (selectedTransferItem?.id == item.id) selectedTransferItem = null
+                if (selectedTransferId == item.id) selectedTransferId = null
                 engine.transfers?.dismissTransfer(FlashTransferId(item.id))
             },
             onClearFailed = {
-                selectedTransferItem = null
-                engine.transfers?.clearFailedHistory()
+                val failedIds = transfersUi.failed.filter { it.retryable }.map { it.id }
+                if (selectedTransferId in failedIds) selectedTransferId = null
+                engine.transfers?.let { repo ->
+                    failedIds.forEach { id -> repo.dismissTransfer(FlashTransferId(id)) }
+                }
             },
+            onClearCancelled = {
+                val cancelledIds = transfersUi.failed.filterNot { it.retryable }.map { it.id }
+                if (selectedTransferId in cancelledIds) selectedTransferId = null
+                engine.transfers?.let { repo ->
+                    cancelledIds.forEach { id -> repo.dismissTransfer(FlashTransferId(id)) }
+                }
+            },
+            onItemClick = { item -> selectedTransferId = item.id },
+            onRetryLoad = { engine.start() },
             modifier = Modifier.fillMaxSize(),
             listState = transfersScroll,
             bottomInset = tabBottomInset,
@@ -2774,56 +3226,41 @@ private fun FlashShell(
         FlashNearbyScreen(
             state = nearby,
             onPairClick = { peer ->
+                if (twoPane) selectedNearbyPeerId = peer.id
                 if (pendingShare.value != null) {
                     sendSharedPayloadToPeer(peer.id, peer.name)
-                }
-                // Ensure a session exists (dial is idempotent/coalesced), then start the
-                // handshake. onSessionUp exchanges fingerprints so beginPair can derive
-                // the shared 6-digit code; the responder sees the Accept/Decline dialog.
-                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
-                scope.launch {
-                    val net = engine.network
-                    if (endpoint != null && net != null) {
-                        net.connectManual(endpoint.hostAddress, endpoint.port)
+                } else {
+                    // Ensure a session exists (dial is idempotent/coalesced), then start the
+                    // handshake. onSessionUp exchanges fingerprints so beginPair can derive
+                    // the shared 6-digit code; the responder sees the Accept/Decline dialog.
+                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
+                    lastPairingPeer = peer.id to peer.name
+                    scope.launch {
+                        val net = engine.network
+                        if (endpoint != null && net != null) {
+                            net.connectManual(endpoint.hostAddress, endpoint.port)
+                        }
+                        engine.pairing?.beginPair(peer.id, peer.name)
                     }
-                    engine.pairing?.beginPair(peer.id, peer.name)
                 }
-                if (twoPane) selectedNearbyPeer = peer
             },
             onChatClick = { peer ->
                 if (pendingShare.value != null) {
                     sendSharedPayloadToPeer(peer.id, peer.name)
                 }
-                if (peer.isColleague && !peer.isTrusted) {
-                    scope.launch {
-                        val outcome = chatRepository.startColleagueConversation(peer.id)
-                        when (outcome) {
-                            is com.transfer.flash.core.common.result.FlashResult.Success -> {
-                                selectedChatConversationId = peer.id
-                                chatRepository.openConversation(peer.id)
-                                nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
-                            }
-                            is com.transfer.flash.core.common.result.FlashResult.Failure -> {
-                                val msg = (outcome.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                                    ?: com.transfer.flash.ui.chat.FlashOrgStrings.ORG_START_NOT_MEMBER
-                                android.widget.Toast.makeText(
-                                    toastContext,
-                                    msg,
-                                    android.widget.Toast.LENGTH_SHORT,
-                                ).show()
-                            }
-                        }
-                    }
-                } else {
-                    selectedChatConversationId = peer.id
-                    chatRepository.openConversation(peer.id)
-                    nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
-                }
+                openPeerChat(peer)
             },
-            onRevokeClick = { trusted -> engine.pairing?.revoke(trusted.id) },
+            onRevokeClick = { trusted ->
+                if (selectedNearbyPeerId == trusted.id && nearby.peers.none { it.id == trusted.id }) {
+                    selectedNearbyPeerId = null
+                }
+                engine.pairing?.revoke(trusted.id)
+            },
             // ADR-042: re-run pairing (v2) with a peer paired under the forceable v1 code.
             onVerifyTrustedClick = { trusted ->
+                if (twoPane) selectedNearbyPeerId = trusted.id
                 val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == trusted.id }
+                lastPairingPeer = trusted.id to trusted.name
                 scope.launch {
                     val net = engine.network
                     if (endpoint != null && net != null) net.connectManual(endpoint.hostAddress, endpoint.port)
@@ -2838,25 +3275,33 @@ private fun FlashShell(
                 chatRepository.openConversation(trusted.id)
                 nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
             },
-            onManualConnect = { host, port ->
-                scope.launch {
-                    val net = engine.network
-                    if (net != null) {
-                        val result = net.connectManual(host, port)
-                        if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
-                            val peerDevice = result.value.peer
-                            engine.pairing?.beginPair(peerDevice.id.value, peerDevice.friendlyName)
-                        } else {
-                            android.widget.Toast.makeText(
-                                toastContext,
-                                "Couldn't connect to $host:$port",
-                                android.widget.Toast.LENGTH_SHORT,
-                            ).show()
-                        }
+            onManualConnectSuspend = { host, port ->
+                val net = engine.network
+                if (net == null) {
+                    "Flash is still starting up. Try again in a moment."
+                } else {
+                    val result = net.connectManual(host, port)
+                    if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        val peerDevice = result.value.peer
+                        lastPairingPeer = peerDevice.id.value to peerDevice.friendlyName
+                        if (twoPane) selectedNearbyPeerId = peerDevice.id.value
+                        engine.pairing?.beginPair(peerDevice.id.value, peerDevice.friendlyName)
+                        null
+                    } else {
+                        "Couldn't connect to $host:$port. Check that Flash is open on the same network."
                     }
                 }
             },
             onScanNetwork = { DiscoveryEngineHolder.scanNetwork() },
+            onPeerClick = { peer -> selectedNearbyPeerId = peer.id },
+            onTrustedPeerClick = { trusted -> selectedNearbyPeerId = trusted.id },
+            onOpenWifiSettings = {
+                runCatching {
+                    toastContext.startActivity(
+                        Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            },
             modifier = Modifier.fillMaxSize(),
             listState = nearbyScroll,
             bottomInset = tabBottomInset,
@@ -2909,6 +3354,10 @@ private fun FlashShell(
                 onSettingsChange(settings.copy(discoveryMode = mode))
             },
             onEditDisplayName = { showRenameDialog = true },
+            onOpenEncryption = { showEncryptionSheet = true },
+            onOpenTrustedPeers = { nav.selectTab(FlashDestination.NearbyDevices) },
+            // ADR-356: Android writes received files into the app-owned FlashReceived directory.
+            onPickSaveLocation = null,
             // ERROR-031 / D7: same system prompt the Background-transfers toggle fires,
             // reachable on its own so a user who already flipped that toggle (or who
             // revoked the exemption later) can still get to it.
@@ -2977,12 +3426,7 @@ private fun FlashShell(
         if (ready && !settings.isEnterpriseEnrolled) hubPrefs.clearDrafts()
     }
     val hubCall: (String, String) -> Unit = { id, name ->
-        val hasAudio = ContextCompat.checkSelfPermission(hubHostContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        if (hasAudio) {
-            scope.launch(Dispatchers.IO) { engine.calls?.startCall(id, name, video = false) }
-        } else {
-            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
+        launchOrQueueOutgoingCall(PendingOutgoingCall.Direct(peerId = id, peerName = name, video = false))
     }
     // Bumped when the Hub tab is tapped while it is already showing; the Hub scrolls to the top (or jumps to News).
     var hubReselectTick by remember { mutableStateOf(0) }
@@ -3040,8 +3484,9 @@ private fun FlashShell(
             repository = chatRepository,
             link = settings.hubStatus?.state ?: com.transfer.flash.core.enterprise.HubLinkState.NOT_ENROLLED,
             host = hubHost,
-            modifier = Modifier.padding(bottom = tabBottomInset),
+            modifier = Modifier.fillMaxSize(),
             reselectSignal = hubReselectTick,
+            bottomInset = tabBottomInset,
         )
     }
     // UI-024 upgrade: a structured hit opens the conversation AT that message. Search is closed
@@ -3075,6 +3520,7 @@ private fun FlashShell(
             // Nearby tab (the P2P next action) instead of being inert.
             onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
             onLanClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+            onNewChatClick = { nav.selectTab(FlashDestination.NearbyDevices) },
             isSearching = isSearching,
             searchQuery = searchQuery,
             onSearchQueryChanged = { searchQuery = it },
@@ -3108,10 +3554,16 @@ private fun FlashShell(
             onUnarchiveConversation = chatRepository::unarchiveConversation,
             onCloseSelection = chatRepository::clearListSelection,
             onPinSelected = {
-                chatRepository.setConversationsPinned(chatListState.selectedIds, true)
+                val selectedItems = (chatListState.items + chatListState.archivedItems)
+                    .filter { it.id in chatListState.selectedIds }
+                val nextPinned = selectedItems.isEmpty() || !selectedItems.all { it.isPinned }
+                chatRepository.setConversationsPinned(chatListState.selectedIds, nextPinned)
             },
             onMuteSelected = {
-                chatRepository.setConversationsMuted(chatListState.selectedIds, true)
+                val selectedItems = (chatListState.items + chatListState.archivedItems)
+                    .filter { it.id in chatListState.selectedIds }
+                val nextMuted = selectedItems.isEmpty() || !selectedItems.all { it.isMuted }
+                chatRepository.setConversationsMuted(chatListState.selectedIds, nextMuted)
             },
             onMarkSelectedRead = {
                 chatRepository.markConversationsRead(chatListState.selectedIds)
@@ -3123,7 +3575,11 @@ private fun FlashShell(
                 chatRepository.unarchiveConversations(chatListState.selectedIds)
             },
             onDeleteSelected = {
-                chatRepository.deleteConversations(chatListState.selectedIds)
+                val deletedIds = chatListState.selectedIds
+                chatRepository.deleteConversations(deletedIds)
+                if (nav.current.conversationId in deletedIds || selectedChatConversationId in deletedIds) {
+                    closeActiveConversation()
+                }
             },
             // ERROR-034: the tab's real boot state, replacing the fabricated-content
             // fallback. Skeleton while the transport stack comes up, error state (with a
@@ -3163,10 +3619,100 @@ private fun FlashShell(
         )
     }
 
-    Box(
-        Modifier
+    val callStateFlow = engine.calls?.activeCall ?: remember { MutableStateFlow(null) }
+
+    val transferDetailPaneContent: @Composable (FlashTransferItemUi, Modifier) -> Unit = { item, paneModifier ->
+        FlashTransferDetailPane(
+            item = item,
+            onClose = { selectedTransferId = null },
+            modifier = paneModifier,
+            onPauseResume = {
+                engine.transfers?.let { repo ->
+                    val id = FlashTransferId(item.id)
+                    scope.launch {
+                        if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
+                        else repo.pauseTransfer(id)
+                    }
+                }
+            },
+            onCancel = {
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.cancelTransfer(FlashTransferId(item.id)) }
+                }
+            },
+            onRetry = {
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.resumeTransfer(FlashTransferId(item.id)) }
+                }
+            },
+            onOpen = {
+                if (!twoPane) selectedTransferId = null
+                openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
+            },
+            onReveal = {
+                if (!twoPane) selectedTransferId = null
+                shareTransferredFile(toastContext, item)
+            },
+        )
+    }
+
+    val nearbyDetailPaneContent: @Composable (NearbyPeerUi, Modifier) -> Unit = { peer, paneModifier ->
+        FlashNearbyDetailPane(
+            peer = peer,
+            onClose = { selectedNearbyPeerId = null },
+            modifier = paneModifier,
+            onPair = {
+                if (!twoPane) selectedNearbyPeerId = null
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
+                lastPairingPeer = peer.id to peer.name
+                scope.launch {
+                    val net = engine.network
+                    if (endpoint != null && net != null) {
+                        net.connectManual(endpoint.hostAddress, endpoint.port)
+                    }
+                    engine.pairing?.beginPair(peer.id, peer.name)
+                }
+            },
+            onChat = {
+                if (!twoPane) selectedNearbyPeerId = null
+                openPeerChat(peer)
+            },
+            onVoiceCall = {
+                if (!twoPane) selectedNearbyPeerId = null
+                launchOrQueueOutgoingCall(
+                    PendingOutgoingCall.Direct(peer.id, peer.name, video = false),
+                )
+            },
+            onVideoCall = {
+                if (!twoPane) selectedNearbyPeerId = null
+                launchOrQueueOutgoingCall(
+                    PendingOutgoingCall.Direct(peer.id, peer.name, video = true),
+                )
+            },
+            onSendFile = {
+                if (!twoPane) selectedNearbyPeerId = null
+                pendingNearbySendPeerId = peer.id
+                pendingNearbySendPeerName = peer.name
+                nearbyFilePickerLauncher.launch(arrayOf("*/*"))
+            },
+        )
+    }
+
+    NotificationPermissionBannerHost(
+        modifier = Modifier
             .fillMaxSize()
             .background(FlashTheme.colors.backgroundApp),
+        splashSettled = splashSettled,
+        destination = nav.current.destination,
+        hasNotificationPermissionFlow = hasNotificationPermission,
+        notificationPromptedBeforeFlow = notificationPromptedBefore,
+        notificationBannerDismissedFlow = notificationBannerDismissed,
+        shouldShowNotificationRationaleFlow = shouldShowNotificationRationale,
+        pendingShareFlow = pendingShare,
+        callStateFlow = callStateFlow,
+        onRequestPermission = onRequestNotificationPermission,
+        onOpenSettings = onOpenNotificationSettings,
+        onDismiss = onDismissNotificationBanner,
     ) {
         if (useNavRail) {
             Row(Modifier.fillMaxSize()) {
@@ -3175,23 +3721,26 @@ private fun FlashShell(
                     selectedTab = nav.shellTab,
                     onTabSelected = { destination ->
                         if (destination == FlashDestination.ChatList) {
-                            if (selectedChatConversationId != null && twoPane) {
+                            if (twoPane && nav.conversationOpenedFromHub && selectedChatConversationId != null) {
                                 chatRepository.openConversation(selectedChatConversationId!!)
                                 // Replace the stack: a push from the Hub tab would keep the Hub as the list pane.
                                 nav.selectChatsTab(selectedChatConversationId)
                             } else if (nav.current.destination == FlashDestination.Conversation) {
                                 chatRepository.closeConversation()
                                 selectedChatConversationId = null
-                                nav.navigate(FlashDestination.ChatList)
+                                nav.selectTab(FlashDestination.ChatList)
                             } else {
+                                if (!twoPane) selectedChatConversationId = null
                                 nav.selectTab(FlashDestination.ChatList)
                             }
                         } else {
+                            selectedChatConversationId = null
                             nav.selectTab(destination)
                         }
                     },
                     localDisplayName = settings.displayName,
                     onProfileClick = {
+                        selectedChatConversationId = null
                         nav.selectTab(FlashDestination.Settings)
                     },
                 )
@@ -3210,10 +3759,12 @@ private fun FlashShell(
                                         } else {
                                             FlashPlaceholderDetailPane(
                                                 onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                                destination = FlashDestination.ChatList,
                                             )
                                         }
                                     },
                                     windowWidthDp = availableWidthDp,
+                                    allowTwoPane = twoPane,
                                 )
                             }
                             FlashDestination.Transfers -> {
@@ -3222,42 +3773,16 @@ private fun FlashShell(
                                     detailPane = {
                                         val item = selectedTransferItem
                                         if (item != null) {
-                                            FlashTransferDetailPane(
-                                                item = item,
-                                                onClose = { selectedTransferItem = null },
-                                                onPauseResume = {
-                                                    engine.transfers?.let { repo ->
-                                                        val id = FlashTransferId(item.id)
-                                                        scope.launch {
-                                                            if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
-                                                            else repo.pauseTransfer(id)
-                                                        }
-                                                    }
-                                                },
-                                                onCancel = {
-                                                    engine.transfers?.let { repo ->
-                                                        scope.launch { repo.cancelTransfer(FlashTransferId(item.id)) }
-                                                    }
-                                                },
-                                                onRetry = {
-                                                    engine.transfers?.let { repo ->
-                                                        scope.launch { repo.resumeTransfer(FlashTransferId(item.id)) }
-                                                    }
-                                                },
-                                                onOpen = {
-                                                    openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
-                                                },
-                                                onReveal = {
-                                                    shareTransferredFile(toastContext, item)
-                                                },
-                                            )
+                                            transferDetailPaneContent(item, Modifier)
                                         } else {
                                             FlashPlaceholderDetailPane(
                                                 onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                                destination = FlashDestination.Transfers,
                                             )
                                         }
                                     },
                                     windowWidthDp = availableWidthDp,
+                                    allowTwoPane = twoPane,
                                 )
                             }
                             FlashDestination.NearbyDevices -> {
@@ -3266,45 +3791,20 @@ private fun FlashShell(
                                     detailPane = {
                                         val peer = selectedNearbyPeer
                                         if (peer != null) {
-                                            FlashNearbyDetailPane(
-                                                peer = peer,
-                                                onClose = { selectedNearbyPeer = null },
-                                                onPair = {
-                                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
-                                                    scope.launch {
-                                                        val net = engine.network
-                                                        if (endpoint != null && net != null) {
-                                                            net.connectManual(endpoint.hostAddress, endpoint.port)
-                                                        }
-                                                        engine.pairing?.beginPair(peer.id, peer.name)
-                                                    }
-                                                },
-                                                onChat = {
-                                                    selectedChatConversationId = peer.id
-                                                    chatRepository.openConversation(peer.id)
-                                                    nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
-                                                },
-                                            )
+                                            nearbyDetailPaneContent(peer, Modifier)
                                         } else {
                                             FlashPlaceholderDetailPane(
                                                 onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                                destination = FlashDestination.NearbyDevices,
                                             )
                                         }
                                     },
                                     windowWidthDp = availableWidthDp,
+                                    allowTwoPane = twoPane,
                                 )
                             }
-                            FlashDestination.Settings -> {
-                                FlashAdaptiveTwoPane(
-                                    listPane = settingsScreenContent,
-                                    detailPane = {
-                                        FlashPlaceholderDetailPane(
-                                            onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
-                                        )
-                                    },
-                                    windowWidthDp = availableWidthDp,
-                                )
-                            }
+                            // Expanded Settings uses full width rather than squeezing beside "Select a chat".
+                            FlashDestination.Settings -> settingsScreenContent()
                             // UI-058: shell-only Hub (H3) uses the full width; list + detail panes arrive with H7.
                             FlashDestination.Hub -> hubScreenContent()
                         }
@@ -3341,6 +3841,30 @@ private fun FlashShell(
             }
         }
 
+        if (!twoPane && nav.current.destination == FlashDestination.Transfers && selectedTransferItem != null) {
+            FlashSheetHost(
+                onDismiss = { selectedTransferId = null },
+                containerColor = FlashTheme.colors.backgroundApp,
+            ) {
+                transferDetailPaneContent(
+                    selectedTransferItem,
+                    Modifier.fillMaxWidth().fillMaxHeight(0.85f),
+                )
+            }
+        }
+
+        if (!twoPane && nav.current.destination == FlashDestination.NearbyDevices && selectedNearbyPeer != null) {
+            FlashSheetHost(
+                onDismiss = { selectedNearbyPeerId = null },
+                containerColor = FlashTheme.colors.backgroundApp,
+            ) {
+                nearbyDetailPaneContent(
+                    selectedNearbyPeer,
+                    Modifier.fillMaxWidth().fillMaxHeight(0.85f),
+                )
+            }
+        }
+
         // Group Phase 1A: trusted-only creation. On success the new group opens like any
         // other conversation; a failure is surfaced as a toast rather than silently dropped.
         if (showCreateGroup) {
@@ -3348,12 +3872,17 @@ private fun FlashShell(
                 peers = trustedPeerRoster,
                 onDismiss = { showCreateGroup = false },
                 isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
+                onFindDevicesClick = {
+                    showCreateGroup = false
+                    nav.selectTab(FlashDestination.NearbyDevices)
+                },
                 onCreate = { title, memberIds ->
                     scope.launch {
                         val result = chatRepository.createGroup(title, memberIds)
                         val groupId = result.getOrNull()
                         if (groupId != null) {
                             showCreateGroup = false
+                            selectedChatConversationId = groupId
                             chatRepository.openConversation(groupId)
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
@@ -3377,6 +3906,7 @@ private fun FlashShell(
                                 chatRepository.linkGroupToHub(groupId)
                             }
                             showCreateGroup = false
+                            selectedChatConversationId = groupId
                             chatRepository.openConversation(groupId)
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
@@ -3402,6 +3932,7 @@ private fun FlashShell(
                 onJoinGroup = { group -> chatRepository.joinEnterpriseGroup(group.groupId, group.name) },
                 onJoined = { group ->
                     showBrowseOrgGroups = false
+                    selectedChatConversationId = group.groupId
                     chatRepository.openConversation(group.groupId)
                     nav.navigate(FlashDestination.Conversation, conversationId = group.groupId)
                 },
@@ -3470,12 +4001,16 @@ private fun FlashShell(
                     FlashBottomNav(
                         items = liveBottomNavTabs,
                         selectedTab = nav.shellTab,
-                        onTabSelected = nav::selectTab,
+                        onTabSelected = { destination ->
+                            selectedChatConversationId = null
+                            nav.selectTab(destination)
+                        },
                         visible = autoNavVisible,
                         // Telegram behaviour: tapping the tab you are already on returns it to the top.
                         onTabReselected = { destination ->
                             // A pushed Transfers (enrolled device) keeps the bar; the highlighted tab under it is a way back, not a scroll.
                             if (!com.transfer.flash.ui.navigation.FlashNavigationMath.isTabRoot(nav.current.destination, nav.hubEnrolled)) {
+                                selectedChatConversationId = null
                                 nav.selectTab(destination)
                                 return@FlashBottomNav
                             }
@@ -3502,12 +4037,27 @@ private fun FlashShell(
         }
 
         if (showRenameDialog) {
-            DisplayNameDialog(
+            FlashDisplayNameDialog(
                 initial = settings.displayName,
                 onDismiss = { showRenameDialog = false },
                 onConfirm = { newName ->
                     onSettingsChange(settings.copy(displayName = newName))
                     showRenameDialog = false
+                },
+            )
+        }
+
+        if (showEncryptionSheet) {
+            FlashEncryptionSheet(
+                state = if (trustedPeers.any { it.verified }) {
+                    FlashEncryptionBadgeState.EncryptedTrusted
+                } else {
+                    FlashEncryptionBadgeState.EncryptedUnverified
+                },
+                onDismiss = { showEncryptionSheet = false },
+                onVerifySecurityCodes = {
+                    showEncryptionSheet = false
+                    nav.selectTab(FlashDestination.NearbyDevices)
                 },
             )
         }
@@ -3536,58 +4086,140 @@ private fun FlashShell(
             )
         }
 
+        var shareManualConnecting by remember { mutableStateOf(false) }
+        var shareManualError by remember { mutableStateOf<String?>(null) }
         if (showShareManualConnect) {
             FlashManualConnectDialog(
-                onDismiss = { showShareManualConnect = false },
+                onDismiss = {
+                    if (!shareManualConnecting) {
+                        shareManualError = null
+                        showShareManualConnect = false
+                    }
+                },
                 onConnect = { host, port ->
-                    showShareManualConnect = false
+                    shareManualConnecting = true
+                    shareManualError = null
                     scope.launch {
                         val net = engine.network
-                        if (net != null) {
-                            val result = net.connectManual(host, port)
-                            if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
-                                val peerDevice = result.value.peer
-                                val peerId = peerDevice.id.value
-                                val peerName = peerDevice.friendlyName
-                                val isTrusted = trustedPeers.any { it.id == peerId }
-                                if (isTrusted) {
-                                    sendSharedPayloadToPeer(peerId, peerName)
-                                } else {
-                                    isPairingForShare = true
-                                    pendingShareRecipient = Pair(peerId, peerName)
-                                    engine.pairing?.beginPair(peerId, peerName)
-                                    Toast.makeText(toastContext, "Connected to $host:$port. Initiating pairing with $peerName...", Toast.LENGTH_SHORT).show()
-                                }
+                        if (net == null) {
+                            shareManualConnecting = false
+                            shareManualError = "Flash is still starting up. Try again in a moment."
+                            return@launch
+                        }
+                        val result = net.connectManual(host, port)
+                        shareManualConnecting = false
+                        if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                            showShareManualConnect = false
+                            val peerDevice = result.value.peer
+                            val peerId = peerDevice.id.value
+                            val peerName = peerDevice.friendlyName
+                            val isTrusted = trustedPeers.any { it.id == peerId }
+                            if (isTrusted) {
+                                sendSharedPayloadToPeer(peerId, peerName)
                             } else {
-                                Toast.makeText(toastContext, "Couldn't connect to $host:$port", Toast.LENGTH_SHORT).show()
+                                isPairingForShare = true
+                                pendingShareRecipient = Pair(peerId, peerName)
+                                lastPairingPeer = peerId to peerName
+                                engine.pairing?.beginPair(peerId, peerName)
+                                Toast.makeText(toastContext, "Connected to $host:$port. Initiating pairing with $peerName...", Toast.LENGTH_SHORT).show()
                             }
+                        } else {
+                            shareManualError = "Couldn't connect to $host:$port. Check that Flash is open on the same network."
+                        }
+                    }
+                },
+                isConnecting = shareManualConnecting,
+                errorMessage = shareManualError,
+                onClearError = { shareManualError = null },
+            )
+        }
+
+        // ERROR-1010: one shell-level card serves every tab, including Nearby. It reads the live
+        // coordinator directly so a tab transition cannot hide or duplicate an active request.
+        pairingModel?.let { model ->
+            val request = model.request
+            val peerIdHint = model.peerDeviceId ?: request.peerDeviceId
+            val resolvedTransport = (
+                peerIdHint?.let { pid -> discoveredEndpoints.firstOrNull { it.deviceId.value == pid } }
+                    ?: discoveredEndpoints.firstOrNull { it.friendlyName == request.peerName }
+                )?.transportType
+                ?.toUiTransport()
+                ?: FlashNetworkTransport.Unknown
+            val retryTarget = peerIdHint?.let { pid ->
+                val resolvedName = discoveredEndpoints.firstOrNull { it.deviceId.value == pid }?.friendlyName
+                    ?: trustedPeers.firstOrNull { it.id == pid }?.name
+                    ?: lastPairingPeer?.takeIf { it.first == pid }?.second
+                    ?: request.peerName
+                pid to resolvedName
+            }
+                ?: lastPairingPeer?.takeIf { it.second == request.peerName }
+                ?: discoveredEndpoints.firstOrNull { it.friendlyName == request.peerName }
+                    ?.let { it.deviceId.value to it.friendlyName }
+                ?: trustedPeers.firstOrNull { it.name == request.peerName }
+                    ?.let { it.id to it.name }
+            val dismissPairing: () -> Unit = {
+                if (isPairingForShare) {
+                    isPairingForShare = false
+                    pendingShareRecipient = null
+                    pendingShare.value = null
+                }
+                engine.pairing?.declineLocal()
+            }
+            FlashPairingDialog(
+                request = request.copy(
+                    transport = resolvedTransport,
+                    failureReason = lastPairingFailureMessage,
+                ),
+                phase = model.phase,
+                secondsLeft = model.secondsLeft,
+                onAccept = { engine.pairing?.acceptLocal() },
+                onDecline = dismissPairing,
+                onDismiss = dismissPairing,
+                onRetry = retryTarget?.let { (peerId, peerName) ->
+                    {
+                        scope.launch {
+                            engine.pairing?.declineLocal()
+                            withTimeoutOrNull(500L) {
+                                (engine.pairing?.pairing ?: fallbackPairing).firstOrNull { it == null }
+                            }
+                            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+                            if (endpoint != null) {
+                                engine.network?.connectManual(endpoint.hostAddress, endpoint.port)
+                            }
+                            lastPairingPeer = peerId to peerName
+                            engine.pairing?.beginPair(peerId, peerName)
                         }
                     }
                 },
             )
         }
 
-        // ERROR-1010: one shell-level card serves every tab, including Nearby. It reads the live
-        // coordinator directly so a tab transition cannot hide or duplicate an active request.
-        pairingModel?.request?.let { request ->
-            FlashPairingDialog(
-                request = request,
-                phase = pairingModel?.phase ?: FlashPairingPhase.Idle,
-                secondsLeft = pairingModel?.secondsLeft ?: 0,
-                onAccept = { engine.pairing?.acceptLocal() },
-                onDecline = { engine.pairing?.declineLocal() },
-                onDismiss = { engine.pairing?.declineLocal() },
-            )
-        }
-
         // C7 (calling): full-screen call overlay. Topmost sibling so it renders above
         // everything (nav bar, console, rename dialog). Driven by the engine's FlashCalling.
-        // v1 has no minimize — the overlay stays until the coordinator clears the call
-        // (ENDED shows for 2s, then _activeCall nulls and this overlay disappears).
-        val callStateFlow = engine.calls?.activeCall ?: remember { MutableStateFlow(null) }
+        // Dismissing ENDED hides the overlay immediately; live-call Back enters PiP when
+        // available or prompts before hanging up.
         val callState by callStateFlow.collectAsState()
         val callMedia = engine.calls?.media
         val activeCall = callState
+        var dismissedEndedCallId by remember { mutableStateOf<String?>(null) }
+        var showEndCallConfirm by remember { mutableStateOf(false) }
+        LaunchedEffect(activeCall?.callId, activeCall?.state) {
+            if (activeCall == null ||
+                activeCall.callId != dismissedEndedCallId ||
+                activeCall.state != FlashCallState.ENDED
+            ) {
+                dismissedEndedCallId = null
+            }
+            if (activeCall == null ||
+                activeCall.state == FlashCallState.ENDED ||
+                activeCall.state == FlashCallState.RINGING
+            ) {
+                showEndCallConfirm = false
+            }
+        }
+        val visibleCall = activeCall?.takeUnless {
+            it.state == FlashCallState.ENDED && it.callId == dismissedEndedCallId
+        }
         val callContext = LocalContext.current
         val audioRoutes by audioRouter.routes.collectAsState()
 
@@ -3667,9 +4299,9 @@ private fun FlashShell(
                 )
             }
         }
-        if (activeCall != null) {
+        if (visibleCall != null) {
             FlashCallScreen(
-                state = activeCall,
+                state = visibleCall,
                 session = callMedia,
                 onAccept = {
                     val hasAudio = ContextCompat.checkSelfPermission(
@@ -3680,7 +4312,7 @@ private fun FlashShell(
                         audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         return@FlashCallScreen
                     }
-                    if (activeCall.video) {
+                    if (visibleCall.video) {
                         val hasCamera = ContextCompat.checkSelfPermission(
                             callCtx, Manifest.permission.CAMERA,
                         ) == PackageManager.PERMISSION_GRANTED
@@ -3692,20 +4324,32 @@ private fun FlashShell(
                     }
                     // Mode before media: accept() starts capture/playout, and a HAL that opened
                     // the mic outside MODE_IN_COMMUNICATION never engages the platform AEC.
-                    audioRouter.attach(activeCall.speakerOn)
+                    audioRouter.attach(visibleCall.speakerOn)
                     scope.launch { engine.calls?.accept() }
                 },
                 onDecline = { scope.launch { engine.calls?.decline() } },
                 onHangUp = { scope.launch { engine.calls?.hangUp() } },
                 onToggleMute = { engine.calls?.toggleMute() },
                 onToggleSpeaker = {
-                    val next = !activeCall.speakerOn
+                    val next = !visibleCall.speakerOn
                     engine.calls?.setSpeaker(next)
                     audioRouter.setSpeaker(next)
                 },
                 onToggleCamera = { engine.calls?.toggleCamera() },
                 onSwitchCamera = { scope.launch { engine.calls?.switchCamera() } },
-                onDismiss = { /* v1: no minimize — call always ends before dismiss. */ },
+                onDismiss = {
+                    when {
+                        visibleCall.state == FlashCallState.ENDED -> {
+                            dismissedEndedCallId = visibleCall.callId
+                        }
+                        pipSupported && callLive && visibleCall.video && !visibleCall.isGroup && callActivity != null -> {
+                            FlashCallPictureInPicture.enter(callActivity)
+                        }
+                        else -> {
+                            showEndCallConfirm = true
+                        }
+                    }
+                },
                 onVideoFocus = { peerId -> engine.calls?.setVideoFocus(peerId) },
                 onShowFewerVideos = { on -> engine.calls?.setShowFewerVideos(on) },
                 onSendSmallerVideo = { scope.launch { engine.settingsStore.setSmallerVideoForMany(true) } },
@@ -3715,7 +4359,7 @@ private fun FlashShell(
                     audioRouter.setRoute(route)
                     engine.calls?.setSpeaker(route == FlashCallAudioRoute.SPEAKER)
                 },
-                peerVerified = !activeCall.isGroup && trustedPeers.any { it.id == activeCall.peerId },
+                peerVerified = !visibleCall.isGroup && trustedPeers.any { it.id == visibleCall.peerId },
                 inPictureInPicture = inPictureInPicture,
                 onEnterPictureInPicture = if (pipSupported && callActivity != null) {
                     { FlashCallPictureInPicture.enter(callActivity) }
@@ -3740,40 +4384,65 @@ private fun FlashShell(
                 share = shareHost,
             )
         }
-    }
-}
-
-/** #14: minimal display-name editor. Trims and ignores blanks so identity never persists empty. */
-@Composable
-private fun DisplayNameDialog(
-    initial: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
-) {
-    var text by remember { mutableStateOf(initial) }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { androidx.compose.material3.Text("Display name") },
-        text = {
-            androidx.compose.material3.OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                singleLine = true,
-                label = { androidx.compose.material3.Text("Visible to nearby devices") },
+        if (showEndCallConfirm) {
+            val colors = FlashTheme.colors
+            FlashConfirmHost(
+                onDismiss = { showEndCallConfirm = false },
+                containerColor = colors.backgroundSurface,
+                title = {
+                    FlashText(
+                        text = "End call?",
+                        style = FlashTheme.typography.headingMedium,
+                        color = colors.textPrimary,
+                    )
+                },
+                text = {
+                    FlashText(
+                        text = "You'll leave the current call.",
+                        style = FlashTheme.typography.bodyDefault,
+                        color = colors.textSecondary,
+                    )
+                },
+                confirmButton = {
+                    Box(
+                        modifier = Modifier
+                            .heightIn(min = FlashDimensions.minTouchTarget)
+                            .clip(FlashShapes.bubbleGrouped)
+                            .clickable {
+                                showEndCallConfirm = false
+                                scope.launch { engine.calls?.hangUp() }
+                            }
+                            .semantics { role = Role.Button }
+                            .padding(horizontal = FlashSpacing.space12),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashText(
+                            text = "End call",
+                            style = FlashTheme.typography.captionEmphasis,
+                            color = colors.textError,
+                        )
+                    }
+                },
+                dismissButton = {
+                    Box(
+                        modifier = Modifier
+                            .heightIn(min = FlashDimensions.minTouchTarget)
+                            .clip(FlashShapes.bubbleGrouped)
+                            .clickable { showEndCallConfirm = false }
+                            .semantics { role = Role.Button }
+                            .padding(horizontal = FlashSpacing.space12),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashText(
+                            text = "Stay",
+                            style = FlashTheme.typography.captionEmphasis,
+                            color = colors.textSecondary,
+                        )
+                    }
+                },
             )
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(
-                enabled = text.isNotBlank(),
-                onClick = { onConfirm(text.trim()) },
-            ) { androidx.compose.material3.Text("Save") }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                androidx.compose.material3.Text("Cancel")
-            }
-        },
-    )
+        }
+    }
 }
 
 private fun FlashTransportType.toUiTransport(): FlashNetworkTransport = when (this) {
@@ -4172,4 +4841,278 @@ private fun SweepState.toNearbyScan(): NearbyNetworkScan = when (this) {
             SweepRefusal.RATE_LIMITED -> NearbyScanBlock.TOO_SOON
         },
     )
+}
+
+internal object LaunchEntryPolicy {
+    private val DIRECT_ENTRY_ACTIONS = setOf(
+        Intent.ACTION_SEND,
+        Intent.ACTION_SEND_MULTIPLE,
+        "com.transfer.flash.action.SHORTCUT_SEND",
+        "com.transfer.flash.action.SHORTCUT_NEARBY",
+        "com.transfer.flash.action.SHORTCUT_CHATS",
+        "android.service.quicksettings.action.QS_TILE_PREFERENCES",
+        FlashNotificationManager.ACTION_VIEW_NEARBY,
+        FlashNotificationManager.ACTION_VIEW_TRANSFERS,
+        FlashNotificationManager.ACTION_OPEN_FILE,
+    )
+
+    fun shouldSkipLaunchSplash(
+        action: String?,
+        dataScheme: String?,
+        hasAnswerCallExtra: Boolean,
+        hasPttPressExtra: Boolean,
+        hasConversationExtra: Boolean,
+        hasHubRouteExtra: Boolean,
+    ): Boolean {
+        if (hasAnswerCallExtra || hasPttPressExtra) return true
+        if (hasConversationExtra || hasHubRouteExtra) return true
+        if (action in DIRECT_ENTRY_ACTIONS) return true
+        if (action == Intent.ACTION_VIEW && dataScheme.equals("flash", ignoreCase = true)) return true
+        return false
+    }
+}
+
+internal data class ShareUriPartition(
+    val accepted: List<Uri>,
+    val rejected: List<Uri>,
+)
+
+internal object ShareUriFeedback {
+    fun rejectedMessage(
+        hasFileUri: Boolean,
+        acceptedCount: Int,
+        hasTextFallback: Boolean,
+    ): String = when {
+        acceptedCount > 0 ->
+            "Some items couldn't be shared directly and were skipped."
+        hasTextFallback && hasFileUri ->
+            "Attached file links couldn't be read directly. Sharing text only."
+        hasFileUri ->
+            "This app shared a file link Flash can't read. Try sharing from Files or Gallery."
+        else ->
+            "Flash couldn't read the shared item. Try sharing it from Files or Gallery."
+    }
+}
+
+internal object TranssionTargetFeedback {
+    fun failureMessage(target: TranssionSetupGuide.Target): String = when (target) {
+        TranssionSetupGuide.Target.WIDGET_PIN ->
+            "Your home screen didn't add the widget automatically. Long-press your home screen to add Flash."
+        else ->
+            "Couldn't open that setting on this phone. Open Phone settings manually."
+    }
+}
+
+internal enum class CallPermissionAction {
+    EXECUTE_NOW,
+    REQUEST_AUDIO,
+    REQUEST_CAMERA,
+}
+
+internal object CallPermissionActionPlan {
+    fun decide(hasAudio: Boolean, hasCamera: Boolean): CallPermissionAction = when {
+        !hasAudio -> CallPermissionAction.REQUEST_AUDIO
+        !hasCamera -> CallPermissionAction.REQUEST_CAMERA
+        else -> CallPermissionAction.EXECUTE_NOW
+    }
+}
+
+private sealed interface PendingOutgoingCall {
+    val video: Boolean
+
+    data class Direct(
+        val peerId: String,
+        val peerName: String,
+        override val video: Boolean,
+    ) : PendingOutgoingCall
+
+    data class StartGroup(
+        val groupId: String,
+        val groupName: String,
+        val memberIds: List<String>,
+        override val video: Boolean,
+    ) : PendingOutgoingCall
+
+    data class JoinGroup(
+        val groupId: String,
+        val callId: String,
+        val memberIds: List<String>,
+        override val video: Boolean,
+    ) : PendingOutgoingCall
+}
+
+internal enum class NotificationPermissionUiState {
+    Hidden,
+    Rationale,
+    PermanentlyDenied,
+}
+
+internal object NotificationPermissionPolicy {
+    fun resolveUiState(
+        sdkInt: Int,
+        hasPermission: Boolean,
+        splashSettled: Boolean,
+        dismissed: Boolean,
+        hasPromptedBefore: Boolean,
+        shouldShowRationale: Boolean,
+        hasActiveCall: Boolean,
+        hasActiveShare: Boolean,
+        inConversation: Boolean,
+    ): NotificationPermissionUiState {
+        if (sdkInt < Build.VERSION_CODES.TIRAMISU || hasPermission || !splashSettled || dismissed) {
+            return NotificationPermissionUiState.Hidden
+        }
+        if (hasActiveCall || hasActiveShare || inConversation) {
+            return NotificationPermissionUiState.Hidden
+        }
+        return if (hasPromptedBefore && !shouldShowRationale) {
+            NotificationPermissionUiState.PermanentlyDenied
+        } else {
+            NotificationPermissionUiState.Rationale
+        }
+    }
+}
+
+@Composable
+private fun NotificationPermissionBannerHost(
+    modifier: Modifier,
+    splashSettled: Boolean,
+    destination: FlashDestination,
+    hasNotificationPermissionFlow: MutableStateFlow<Boolean>,
+    notificationPromptedBeforeFlow: MutableStateFlow<Boolean>,
+    notificationBannerDismissedFlow: MutableStateFlow<Boolean>,
+    shouldShowNotificationRationaleFlow: MutableStateFlow<Boolean>,
+    pendingShareFlow: MutableStateFlow<PendingSharePayload?>,
+    callStateFlow: kotlinx.coroutines.flow.StateFlow<FlashCallUiState?>,
+    onRequestPermission: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit,
+    content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit,
+) {
+    val hasPermission by hasNotificationPermissionFlow.collectAsState()
+    val promptedBefore by notificationPromptedBeforeFlow.collectAsState()
+    val dismissed by notificationBannerDismissedFlow.collectAsState()
+    val showRationale by shouldShowNotificationRationaleFlow.collectAsState()
+    val activeShare by pendingShareFlow.collectAsState()
+    val activeCall by callStateFlow.collectAsState()
+
+    val uiState = NotificationPermissionPolicy.resolveUiState(
+        sdkInt = Build.VERSION.SDK_INT,
+        hasPermission = hasPermission,
+        splashSettled = splashSettled,
+        dismissed = dismissed,
+        hasPromptedBefore = promptedBefore,
+        shouldShowRationale = showRationale,
+        hasActiveCall = activeCall != null,
+        hasActiveShare = activeShare != null,
+        inConversation = destination == FlashDestination.Conversation,
+    )
+
+    val showBanner = uiState != NotificationPermissionUiState.Hidden
+    Column(modifier = modifier) {
+        if (showBanner) {
+            NotificationPermissionBanner(
+                uiState = uiState,
+                onPrimaryAction = {
+                    if (uiState == NotificationPermissionUiState.PermanentlyDenied) {
+                        onOpenSettings()
+                    } else {
+                        onRequestPermission()
+                    }
+                },
+                onDismiss = onDismiss,
+            )
+        }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .then(if (showBanner) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun NotificationPermissionBanner(
+    uiState: NotificationPermissionUiState,
+    onPrimaryAction: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val isSettingsFallback = uiState == NotificationPermissionUiState.PermanentlyDenied
+    val title = if (isSettingsFallback) {
+        "Notifications are turned off"
+    } else {
+        "Allow notifications"
+    }
+    val body = if (isSettingsFallback) {
+        "Open system settings so Flash can alert you for incoming calls, messages, and transfers."
+    } else {
+        "Get alerts when someone messages, calls, or sends you a file."
+    }
+    val primaryLabel = if (isSettingsFallback) "Open Settings" else "Allow"
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.backgroundSurfaceSubtle)
+            .statusBarsPadding()
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
+            .clip(FlashShapes.attachment)
+            .background(colors.backgroundSurface)
+            .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.attachment)
+            .padding(FlashSpacing.space12),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
+        FlashText(
+            text = title,
+            style = typography.bodyEmphasis,
+            color = colors.textPrimary,
+        )
+        FlashText(
+            text = body,
+            style = typography.captionDefault,
+            color = colors.textSecondary,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .heightIn(min = FlashDimensions.minTouchTarget)
+                    .clip(FlashShapes.button)
+                    .clickable(onClick = onDismiss)
+                    .padding(horizontal = FlashSpacing.space12)
+                    .semantics { role = Role.Button },
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    text = "Not now",
+                    style = typography.captionEmphasis,
+                    color = colors.textSecondary,
+                )
+            }
+            Spacer(Modifier.width(FlashSpacing.space8))
+            Box(
+                modifier = Modifier
+                    .heightIn(min = FlashDimensions.minTouchTarget)
+                    .clip(FlashShapes.button)
+                    .background(colors.accentFill)
+                    .clickable(onClick = onPrimaryAction)
+                    .padding(horizontal = FlashSpacing.space16)
+                    .semantics { role = Role.Button },
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    text = primaryLabel,
+                    style = typography.captionEmphasis,
+                    color = colors.onAccentFill,
+                )
+            }
+        }
+    }
 }

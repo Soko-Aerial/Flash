@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -81,16 +82,17 @@ public fun FlashInlineInviteCard(
 
             Box(
                 modifier = Modifier
+                    .defaultMinSize(minHeight = FlashDimensions.minTouchTarget)
                     .clip(FlashShapes.chip)
-                    .background(colors.accentPrimary)
+                    .background(colors.accentFill)
                     .clickable { onJoinInvite(inviteUrl) }
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                    .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashText(
                     text = "Join",
                     style = FlashTheme.typography.metadataEmphasis,
-                    color = colors.textOnAccent,
+                    color = colors.onAccentFill,
                 )
             }
         }

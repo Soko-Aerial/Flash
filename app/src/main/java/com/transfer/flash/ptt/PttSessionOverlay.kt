@@ -1,9 +1,12 @@
 package com.transfer.flash.ptt
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.FlashPtt
@@ -68,9 +71,20 @@ public fun PttSessionOverlay(
         pttPressOutcomeMessage(engine.onPttButton())?.let(showToast)
     }
 
+    val activePtt = sessionState is PttFloorState.Talking || sessionState is PttFloorState.Listening
+    BackHandler(enabled = activePtt) {
+        engine.stopLocal()
+    }
     PttSessionOverlayContent(
         engine = engine,
         state = sessionState,
         animateLevels = animateLevels,
+        scrimModifier = Modifier.pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    awaitPointerEvent().changes.forEach { it.consume() }
+                }
+            }
+        },
     )
 }

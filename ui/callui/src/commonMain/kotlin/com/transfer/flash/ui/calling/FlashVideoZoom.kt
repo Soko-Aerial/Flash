@@ -20,7 +20,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,6 +40,7 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
@@ -210,7 +210,7 @@ private fun FlashFitToScreenChip(onClick: () -> Unit, modifier: Modifier = Modif
             size = FlashDimensions.iconSm,
             modifier = Modifier.clearAndSetSemantics { },
         )
-        Text(
+        FlashText(
             text = CallZoomText.FIT_TO_SCREEN,
             style = FlashTheme.typography.metadataDefault,
             color = Color.White,

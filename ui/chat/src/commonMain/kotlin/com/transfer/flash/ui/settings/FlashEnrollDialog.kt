@@ -8,15 +8,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,10 +21,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.Role
 import com.transfer.flash.ui.chat.FlashConfirmHost
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
@@ -78,8 +74,21 @@ public fun FlashEnrollDialog(
                 OutlinedTextField(
                     value = inputLink,
                     onValueChange = { inputLink = it },
+                    textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
+                    shape = FlashShapes.attachment,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = colors.textPrimary,
+                        unfocusedTextColor = colors.textPrimary,
+                        cursorColor = colors.accentFill,
+                        focusedBorderColor = colors.accentFill,
+                        unfocusedBorderColor = colors.borderDefault,
+                        focusedPlaceholderColor = colors.textTertiary,
+                        unfocusedPlaceholderColor = colors.textTertiary,
+                        focusedContainerColor = colors.composerInputBackground,
+                        unfocusedContainerColor = colors.composerInputBackground,
+                    ),
                     placeholder = {
-                        Text(
+                        FlashText(
                             text = "flash://enroll?server=...&token=...",
                             style = FlashTheme.typography.metadataDefault,
                             color = colors.textTertiary,
@@ -89,12 +98,13 @@ public fun FlashEnrollDialog(
                     maxLines = 3,
                 )
 
-                // Paste from clipboard button
+                // Paste from clipboard button (>= 48.dp touch target)
                 Row(
                     modifier = Modifier
+                        .heightIn(min = FlashDimensions.minTouchTarget)
                         .clip(FlashShapes.chip)
                         .background(colors.backgroundSurfaceSubtle)
-                        .clickable {
+                        .clickable(role = Role.Button) {
                             clipboardManager.getText()?.text?.let { pasted ->
                                 inputLink = pasted.trim()
                             }
@@ -105,13 +115,14 @@ public fun FlashEnrollDialog(
                 ) {
                     FlashIcon(
                         icon = FlashIcons.Attach,
-                        contentDescription = "Paste",
-                        tint = colors.accentPrimary,
+                        contentDescription = null,
+                        tint = colors.textLink,
+                        size = FlashDimensions.iconSm,
                     )
                     FlashText(
                         text = "Paste from clipboard",
                         style = FlashTheme.typography.metadataEmphasis,
-                        color = colors.accentPrimary,
+                        color = colors.textLink,
                     )
                 }
 
@@ -119,16 +130,27 @@ public fun FlashEnrollDialog(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(FlashShapes.chip)
                             .background(colors.backgroundSurfaceSubtle)
                             .padding(FlashSpacing.space12),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
                     ) {
-                        FlashText(
-                            text = "✓ Valid Organization Invite",
-                            style = FlashTheme.typography.metadataEmphasis,
-                            color = colors.accentPrimary,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                        ) {
+                            FlashIcon(
+                                icon = FlashIcons.Verified,
+                                contentDescription = null,
+                                tint = colors.textLink,
+                                size = FlashDimensions.iconSm,
+                            )
+                            FlashText(
+                                text = "Valid Organization Invite",
+                                style = FlashTheme.typography.metadataEmphasis,
+                                color = colors.textLink,
+                            )
+                        }
                         FlashText(
                             text = "Hub Server: ${parsed.serverUrl}",
                             style = FlashTheme.typography.metadataDefault,
@@ -160,17 +182,26 @@ public fun FlashEnrollDialog(
                 }
 
                 if (enrollError != null) {
-                    Column(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(FlashShapes.chip)
                             .background(colors.backgroundSurfaceSubtle)
                             .padding(FlashSpacing.space12),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                     ) {
+                        FlashIcon(
+                            icon = FlashIcons.Failed,
+                            contentDescription = null,
+                            tint = colors.textError,
+                            size = FlashDimensions.iconSm,
+                        )
                         FlashText(
-                            text = "⚠ $enrollError",
+                            text = enrollError,
                             style = FlashTheme.typography.metadataEmphasis,
                             color = colors.textError,
+                            modifier = Modifier.weight(1f),
                         )
                     }
                 }
@@ -178,31 +209,32 @@ public fun FlashEnrollDialog(
         },
         confirmButton = {
             if (parsed != null) {
-                TextButton(
-                    enabled = !isEnrolling && parsed.rootFingerprint.isNotBlank(),
+                val canEnroll = !isEnrolling && parsed.rootFingerprint.isNotBlank()
+                FlashSettingsTextButton(
+                    label = if (isEnrolling) "Enrolling..." else "Confirm & Enrol",
+                    color = if (canEnroll) colors.textLink else colors.textTertiary,
+                    enabled = canEnroll,
                     onClick = { onEnroll(inputLink.trim()) },
-                ) {
-                    if (isEnrolling) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp,
-                            color = colors.accentPrimary,
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Enrolling...", color = colors.accentPrimary)
+                    leading = if (isEnrolling) {
+                        {
+                            FlashSettingsSpinner(
+                                size = FlashDimensions.iconSm,
+                                tint = colors.textLink,
+                            )
+                        }
                     } else {
-                        Text("Confirm & Enrol", color = colors.accentPrimary)
-                    }
-                }
+                        null
+                    },
+                )
             }
         },
         dismissButton = {
-            TextButton(
+            FlashSettingsTextButton(
+                label = "Cancel",
+                color = if (!isEnrolling) colors.textSecondary else colors.textTertiary,
                 enabled = !isEnrolling,
                 onClick = onDismiss,
-            ) {
-                Text("Cancel", color = colors.textSecondary)
-            }
+            )
         },
     )
 }

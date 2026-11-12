@@ -2,6 +2,7 @@ package com.transfer.flash.ui.theme
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.fillMaxSize
@@ -170,7 +171,8 @@ class FlashLaunchSplashGate(private val nowMillis: () -> Long) {
  * - [FlashLaunchSplashGate.Phase.Pending]: only the splash ground, so nothing of the app shows while
  *   the setting is read.
  * - Playing: the Ink splash, which swallows pointer input so a tap cannot reach the hidden app.
- *   It finishes at [FlashInkSplashTimeline.finishAtMillis] and fades out over 250 ms.
+ *   It finishes at [FlashInkSplashTimeline.finishAtMillis] and fades out over 250 ms (or hides
+ *   immediately when `FlashTheme.motion.reduceMotion` is true).
  * - Skipped / Finished: nothing.
  *
  * @param engineSettled true once the engine is ready or has failed to start.
@@ -206,7 +208,7 @@ fun FlashLaunchSplashOverlay(
             AnimatedVisibility(
                 visible = phase == FlashLaunchSplashGate.Phase.Playing && !overdue,
                 enter = EnterTransition.None,
-                exit = fadeOut(animationSpec = tween(FADE_OUT_MILLIS)),
+                exit = splashExitTransition(reduceMotion),
             ) {
                 FlashInkSplash(modifier = modifier.fillMaxSize(), startElapsedMillis = startElapsed)
             }
@@ -214,5 +216,11 @@ fun FlashLaunchSplashOverlay(
         FlashLaunchSplashGate.Phase.Skipped -> Unit
     }
 }
+
+internal fun splashFadeOutMillis(reduceMotion: Boolean): Int =
+    if (reduceMotion) 0 else FADE_OUT_MILLIS
+
+internal fun splashExitTransition(reduceMotion: Boolean): ExitTransition =
+    if (reduceMotion) ExitTransition.None else fadeOut(animationSpec = tween(splashFadeOutMillis(false)))
 
 private const val FADE_OUT_MILLIS = 250

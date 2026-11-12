@@ -70,6 +70,7 @@ fun FlashMessageList(
     inSelectionMode: Boolean = false,
     onSelectToggle: (String) -> Unit = {},
     onToggleReaction: (messageId: String, emoji: String) -> Unit = { _, _ -> },
+    onOpenReactionDetails: (FlashMessageUi, com.transfer.flash.core.messaging.model.FlashReaction?) -> Unit = { _, _ -> },
     onReplySwipe: (FlashMessageUi) -> Unit = {},
     onJumpToMessage: (String) -> Unit = {},
     onImageClick: (message: FlashMessageUi, index: Int) -> Unit = { _, _ -> },
@@ -105,6 +106,8 @@ fun FlashMessageList(
     wallpaper: FlashChatWallpaper = FlashChatWallpaper.Default,
     /** ADR-355: the "Yours" ground, only read when [wallpaper] is Custom. */
     wallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
+    /** Scrollable top-of-conversation banners (e.g. group history card, hub notice) rendered inside the LazyColumn. */
+    topBanners: (@Composable () -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -180,6 +183,7 @@ fun FlashMessageList(
     val currentOnOpenMessageActions by rememberUpdatedState(onOpenMessageActions)
     val currentOnSelectToggle by rememberUpdatedState(onSelectToggle)
     val currentOnToggleReaction by rememberUpdatedState(onToggleReaction)
+    val currentOnOpenReactionDetails by rememberUpdatedState(onOpenReactionDetails)
     val currentOnReplySwipe by rememberUpdatedState(onReplySwipe)
     val currentOnImageClick by rememberUpdatedState(onImageClick)
     val currentOnFileClick by rememberUpdatedState(onFileClick)
@@ -195,6 +199,7 @@ fun FlashMessageList(
     val messageInfoOffered = onOpenMessageInfo != null
 
     val ordered = messages.asReversed()
+    val useReverseLayout = FlashChatScrollMath.shouldUseReverseLayout(ordered.size)
 
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
@@ -204,8 +209,20 @@ fun FlashMessageList(
                 .padding(horizontal = FlashSpacing.space12),
             state = listState,
             contentPadding = contentPadding,
-            reverseLayout = true,
+            reverseLayout = useReverseLayout,
         ) {
+        if (!useReverseLayout && topBanners != null) {
+            item(key = "flash_top_banners", contentType = "topBanners") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = FlashSpacing.space12),
+                ) {
+                    topBanners()
+                }
+            }
+        }
+
         val typingName = peerTypingName
         if (FlashChatScrollMath.hasTypingBubble(typingName) && typingName != null) {
             item(key = "flash_typing_bubble", contentType = "typingBubble") {
@@ -260,6 +277,7 @@ fun FlashMessageList(
                 val onOpenActions = remember(message.id) { { currentOnOpenMessageActions(currentMessage) } }
                 val onSelectToggleLambda = remember(message.id) { { currentOnSelectToggle(message.id) } }
                 val onToggleReactionLambda = remember(message.id) { { emoji: String -> currentOnToggleReaction(message.id, emoji) } }
+                val onOpenReactionDetailsLambda = remember(message.id) { { reaction: com.transfer.flash.core.messaging.model.FlashReaction? -> currentOnOpenReactionDetails(currentMessage, reaction) } }
                 val onReplySwipeLambda = remember(message.id) { { currentOnReplySwipe(currentMessage) } }
                 val onImageClickLambda = remember(message.id) { { index: Int, _: Any -> currentOnImageClick(currentMessage, index) } }
                 val onFileClickLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnFileClick(currentMessage, file) } }
@@ -279,6 +297,7 @@ fun FlashMessageList(
                     inSelectionMode = inSelectionMode,
                     onSelectToggle = onSelectToggleLambda,
                     onToggleReaction = onToggleReactionLambda,
+                    onOpenReactionDetails = onOpenReactionDetailsLambda,
                     onReplySwipe = onReplySwipeLambda,
                     onJumpToMessage = onJumpToMessage,
                     onImageClick = onImageClickLambda,
@@ -321,6 +340,18 @@ fun FlashMessageList(
                             },
                         ),
                 )
+            }
+        }
+
+        if (useReverseLayout && topBanners != null) {
+            item(key = "flash_top_banners", contentType = "topBanners") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = FlashSpacing.space12),
+                ) {
+                    topBanners()
+                }
             }
         }
     }
@@ -468,6 +499,9 @@ object FlashChatScrollMath {
 
     /** Whether the typing indicator bubble is prepended to the reversed messages list. */
     fun hasTypingBubble(peerTypingName: String?): Boolean = peerTypingName != null
+
+    /** Reverse layout anchors newest messages at the bottom, while empty threads align top banners at the top. */
+    fun shouldUseReverseLayout(messageCount: Int): Boolean = messageCount > 0
 
     /** Offset added to message indices in LazyColumn to account for extra prepended items (such as the typing bubble). */
     fun messageListIndexOffset(hasTypingBubble: Boolean): Int = if (hasTypingBubble) 1 else 0

@@ -74,9 +74,34 @@ class FlashTransfersLogicTest {
     @Test
     fun `speed formats human readable`() {
         assertEquals("", FlashTransfersMath.formatSpeed(0))
-        assertEquals("512 KB/s", FlashTransfersMath.formatSpeed(512 * 1024))
-        assertTrue(FlashTransfersMath.formatSpeed(3_500_000).startsWith("3."))
-        assertTrue(FlashTransfersMath.formatSpeed(3_500_000).endsWith("MB/s"))
+        assertEquals("500 B/s", FlashTransfersMath.formatSpeed(500))
+        assertEquals("500 KB/s", FlashTransfersMath.formatSpeed(500_000))
+        assertEquals("1.0 MB/s", FlashTransfersMath.formatSpeed(1_000_000))
+        assertEquals("3.5 MB/s", FlashTransfersMath.formatSpeed(3_500_000))
+    }
+
+    @Test
+    fun `size and progress summary use decimal MB matching TransferFailureText`() {
+        assertEquals("500 B", FlashTransfersMath.formatSize(500))
+        assertEquals("500 KB", FlashTransfersMath.formatSize(500_000))
+        assertEquals("50.0 MB", FlashTransfersMath.formatSize(50_000_000))
+        assertEquals("1.4 GB", FlashTransfersMath.formatSize(1_400_000_000))
+        val active = item(FlashTransferState.Active, bytesDone = 21_000_000L, bytesTotal = 50_000_000L)
+        assertEquals("21.0 MB / 50.0 MB · 42%", FlashTransfersMath.progressSummary(active))
+        val completed = item(FlashTransferState.Completed, bytesDone = 50_000_000L, bytesTotal = 50_000_000L)
+        assertEquals("50.0 MB", FlashTransfersMath.progressSummary(completed))
+    }
+
+    @Test
+    fun `verifying state renders Verifying file and excludes stale speed`() {
+        val verifying = item(
+            FlashTransferState.Active,
+            bytesDone = 50_000_000L,
+            bytesTotal = 50_000_000L,
+            speed = 2_500_000L,
+        ).copy(isVerifying = true)
+        assertEquals("Verifying file…", FlashTransfersMath.statusLine(verifying))
+        assertEquals(0L, FlashTransfersMath.aggregateSpeed(listOf(verifying)))
     }
 
     @Test
@@ -192,5 +217,13 @@ class FlashTransfersLogicTest {
 
         // LAN / Wi-Fi direct saturation (50+ MB/s)
         assertEquals(600, FlashTransfersMath.shimmerDurationMillis(60 * 1024 * 1024L))
+    }
+
+    @Test
+    fun `cancel copy confirms inbound receive distinctly from send`() {
+        assertEquals("Stop receiving this file?", FlashCancelCopy.title(FlashTransferDirection.Receive, group = false))
+        assertEquals("Stop receiving", FlashCancelCopy.confirm(FlashTransferDirection.Receive, group = false))
+        assertEquals("Cancel and tell the other device?", FlashCancelCopy.title(FlashTransferDirection.Send, group = false))
+        assertEquals("Cancel for everyone?", FlashCancelCopy.title(FlashTransferDirection.Send, group = true))
     }
 }

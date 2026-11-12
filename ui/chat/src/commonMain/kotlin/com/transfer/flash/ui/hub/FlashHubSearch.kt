@@ -30,10 +30,15 @@ internal fun LazyListScope.hubSearchItems(
     onSeeAllPeople: () -> Unit,
     onGroup: (HubGroupUi) -> Unit,
     joiningGroupId: String?,
+    searchLoading: Boolean = false,
 ) {
     if (people.isEmpty() && departments.isEmpty() && news.isEmpty() && groups.isEmpty()) {
         item(key = "search-empty", contentType = "empty") {
-            FlashHubEmptyState(icon = FlashIcons.Search, headline = FlashHubCopy.searchNothing(query))
+            if (searchLoading) {
+                FlashHubEmptyState(icon = FlashIcons.Search, headline = FlashHubCopy.SEARCHING)
+            } else {
+                FlashHubEmptyState(icon = FlashIcons.Search, headline = FlashHubCopy.searchNothing(query))
+            }
         }
         return
     }

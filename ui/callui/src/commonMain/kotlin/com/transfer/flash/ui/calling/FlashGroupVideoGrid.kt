@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.key
@@ -25,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -33,6 +33,7 @@ import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import com.shepeliev.webrtckmp.VideoStreamTrack
@@ -47,6 +48,7 @@ import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -74,6 +76,8 @@ internal fun FlashGroupVideoSurfaces(
     modifier: Modifier = Modifier,
     /** UI-050h: the magnification of the presentation, shared by the stage and the compact main tile. */
     presentationZoom: FlashVideoZoomState? = null,
+    topInset: Boolean = true,
+    onInspectStats: (() -> Unit)? = null,
 ) {
     val remoteTracks = rememberRemoteVideoTracks(session?.remoteVideoTracks)
     val localTrack = rememberVideoStreamTrack(session?.localVideoStreamTrack)
@@ -144,13 +148,30 @@ internal fun FlashGroupVideoSurfaces(
             }
         }
 
+        // Subtle top gradient scrim so white peer names and timers remain legible over bright video/slides.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .height(CALL_TOP_SCRIM_HEIGHT)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Black.copy(alpha = 0.65f),
+                            Color.Black.copy(alpha = 0.28f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
+        )
+
         FlashCallVideoSurface(
             track = localTrack,
             fit = CallVideoFit.Fit,
             zOrderMediaOverlay = true,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .statusBarsPadding()
+                .then(if (topInset) Modifier.statusBarsPadding() else Modifier)
                 .padding(FlashSpacing.space16)
                 .width(PIP_WIDTH)
                 .aspectRatio(3f / 4f)
@@ -161,16 +182,29 @@ internal fun FlashGroupVideoSurfaces(
         Column(
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(FlashSpacing.space16),
+                .fillMaxWidth()
+                .then(if (topInset) Modifier.statusBarsPadding() else Modifier)
+                .padding(
+                    start = FlashSpacing.space16,
+                    top = FlashSpacing.space16,
+                    bottom = FlashSpacing.space16,
+                    end = PIP_WIDTH + FlashSpacing.space16 * 2,
+                ),
         ) {
-            Text(
+            FlashText(
                 text = state.peerName,
                 style = FlashTheme.typography.headingMedium,
                 color = Color.White,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
-            FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.8f))
-            FlashCallStatsBadge(session = session, state = state, onDark = true)
+            FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.85f))
+            FlashCallStatsBadge(
+                session = session,
+                state = state,
+                onDark = true,
+                onClick = onInspectStats,
+            )
         }
     }
 }
@@ -294,11 +328,12 @@ private fun FlashGroupVideoTile(
                     )
                     Box(Modifier.size(FlashSpacing.space4))
                 }
-                Text(
+                FlashText(
                     text = if (presenting) CallShareText.presenterLabel(participant.name) else participant.name,
                     style = FlashTheme.typography.metadataDefault,
                     color = Color.White,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 FlashPeerBadges(
@@ -310,11 +345,12 @@ private fun FlashGroupVideoTile(
                 )
             }
             if (status != null) {
-                Text(
+                FlashText(
                     text = status,
                     style = FlashTheme.typography.metadataDefault,
                     color = Color.White.copy(alpha = 0.8f),
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

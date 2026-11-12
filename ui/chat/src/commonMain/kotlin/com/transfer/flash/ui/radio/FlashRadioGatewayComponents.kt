@@ -32,12 +32,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -48,7 +52,6 @@ import com.transfer.flash.core.radio.connect.RadioCallsign
 import com.transfer.flash.ui.chat.FlashConfirmHost
 import com.transfer.flash.ui.chat.FlashSheetHost
 import com.transfer.flash.ui.hub.FlashHubButton
-import com.transfer.flash.ui.hub.FlashHubChip
 import com.transfer.flash.ui.hub.FlashHubIconButton
 import com.transfer.flash.ui.hub.FlashHubSwitch
 import com.transfer.flash.ui.hub.FlashHubTextAction
@@ -114,11 +117,31 @@ internal fun radioStatusTone(status: RadioConnectionStatus, reason: RadioFailure
     }
 }
 
+/** High-contrast icon/dot tint for a radio status tone across light and dark palettes. */
+@Composable
+internal fun radioStatusTint(tone: HubTone): Color {
+    val colors = FlashTheme.colors
+    return when (tone) {
+        HubTone.WARNING -> if (FlashTheme.isDark) {
+            colors.accentSecondary
+        } else {
+            lerp(colors.accentSecondary, colors.textPrimary, 0.35f)
+        }
+        HubTone.ACCENT -> colors.accentFill
+        else -> tone.color()
+    }
+}
+
 /** The short profile name used in the link facts ("M · Encrypted"). */
 internal fun shortProfileName(profile: RadioSecurityProfile): String = when (profile) {
     RadioSecurityProfile.PROFILE_M -> FlashRadioCopy.PROFILE_M_SHORT
     RadioSecurityProfile.PROFILE_A -> FlashRadioCopy.PROFILE_A_SHORT
 }
+
+internal fun isProfileMSelected(
+    selectedProfile: RadioSecurityProfile,
+    isAuthorisedForEncryption: Boolean,
+): Boolean = selectedProfile == RadioSecurityProfile.PROFILE_M && isAuthorisedForEncryption
 
 /** A section label: sentence case, 13 sp, just above its rows. No caps, no rule, no box. */
 @Composable
@@ -156,8 +179,9 @@ internal fun RadioSwitch(on: Boolean, a11yLabel: String, onToggle: (Boolean) -> 
     Box(
         modifier = Modifier
             .size(FlashDimensions.minTouchTarget)
-            .hubClickable { onToggle(!on) }
+            .hubClickable(role = Role.Switch) { onToggle(!on) }
             .semantics {
+                role = Role.Switch
                 contentDescription = a11yLabel
                 stateDescription = if (on) FlashRadioCopy.VALUE_ON else FlashRadioCopy.VALUE_OFF
             },
@@ -168,7 +192,7 @@ internal fun RadioSwitch(on: Boolean, a11yLabel: String, onToggle: (Boolean) -> 
                 .clip(HubShapes.capsule)
                 .border(
                     width = FlashDimensions.borderHairline,
-                    color = if (on) colors.accentPrimary else colors.textTertiary,
+                    color = if (on) colors.accentFill else colors.textTertiary,
                     shape = HubShapes.capsule,
                 )
                 .padding(2.dp),
@@ -216,6 +240,48 @@ internal fun RadioFactRow(
     }
 }
 
+internal enum class RadioBadgeTone { ACCENT, WARNING, NEUTRAL, PREVIEW }
+
+@Composable
+private fun RadioBadgeChip(text: String, tone: RadioBadgeTone) {
+    val colors = FlashTheme.colors
+    val background = when (tone) {
+        RadioBadgeTone.ACCENT -> colors.accentFill.copy(alpha = 0.14f)
+        RadioBadgeTone.WARNING -> colors.accentSecondary.copy(alpha = 0.16f)
+        RadioBadgeTone.NEUTRAL, RadioBadgeTone.PREVIEW -> colors.backgroundSurfaceStrong
+    }
+    val borderColor = when (tone) {
+        RadioBadgeTone.ACCENT -> colors.accentFill.copy(alpha = 0.45f)
+        RadioBadgeTone.WARNING -> colors.accentSecondary.copy(alpha = 0.45f)
+        RadioBadgeTone.PREVIEW -> colors.borderSubtle
+        RadioBadgeTone.NEUTRAL -> null
+    }
+    val foreground = when (tone) {
+        RadioBadgeTone.ACCENT, RadioBadgeTone.WARNING -> colors.textPrimary
+        RadioBadgeTone.NEUTRAL, RadioBadgeTone.PREVIEW -> colors.textSecondary
+    }
+    Box(
+        modifier = Modifier
+            .clip(HubShapes.chip)
+            .background(background)
+            .then(
+                if (borderColor != null) {
+                    Modifier.border(FlashDimensions.borderHairline, borderColor, HubShapes.chip)
+                } else {
+                    Modifier
+                },
+            )
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space2),
+    ) {
+        FlashText(
+            text = text,
+            style = FlashTheme.typography.metadataEmphasis,
+            color = foreground,
+            maxLines = 1,
+        )
+    }
+}
+
 /** The selection mark of a choice row: a ring, filled when chosen. */
 @Composable
 private fun RadioRing(selected: Boolean) {
@@ -226,20 +292,20 @@ private fun RadioRing(selected: Boolean) {
             .clip(CircleShape)
             .border(
                 width = if (selected) 1.5.dp else FlashDimensions.borderHairline,
-                color = if (selected) colors.accentPrimary else colors.textTertiary,
+                color = if (selected) colors.accentFill else colors.textTertiary,
                 shape = CircleShape,
             ),
         contentAlignment = Alignment.Center,
     ) {
         if (selected) {
-            Box(Modifier.size(10.dp).clip(CircleShape).background(colors.accentPrimary))
+            Box(Modifier.size(10.dp).clip(CircleShape).background(colors.accentFill))
         }
     }
 }
 
 /**
- * A settings choice row (security profile, operational mode): ring, title, optional chip, subtitle. Rows, not
- * cards: the selected state is the ring and the title colour.
+ * A settings choice row (security profile, operational mode): ring (or preview clock when upcoming),
+ * title, optional chip, subtitle. Rows, not cards: the selected state is the ring and the title colour.
  */
 @Composable
 internal fun RadioChoiceRow(
@@ -251,28 +317,58 @@ internal fun RadioChoiceRow(
     onClick: () -> Unit,
     enabled: Boolean = true,
     badgeEmphasised: Boolean = false,
+    badgeTone: RadioBadgeTone = if (badgeEmphasised) RadioBadgeTone.ACCENT else RadioBadgeTone.NEUTRAL,
+    role: Role = Role.RadioButton,
+    previewIcon: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     val titleColor = when {
-        !enabled -> colors.textTertiary
-        selected -> colors.accentPrimary
+        !enabled -> colors.textSecondary
+        selected -> colors.textLink
         else -> colors.textPrimary
     }
-    val badgeText = if (selected) FlashRadioCopy.BADGE_ACTIVE else ""
+    val badgeText = when {
+        selected && enabled -> FlashRadioCopy.BADGE_ACTIVE
+        !badge.isNullOrBlank() -> badge
+        else -> FlashRadioCopy.VALUE_OFF
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 64.dp)
-            .hubClickable(enabled = enabled, role = Role.RadioButton, onClick = onClick)
+            .then(
+                if (enabled) {
+                    Modifier.hubClickable(role = role, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            )
             .semantics {
                 contentDescription = a11yLabel
                 stateDescription = badgeText
+                if (!enabled) {
+                    disabled()
+                }
             }
             .padding(vertical = FlashSpacing.space12),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        RadioRing(selected = selected && enabled)
+        if (enabled) {
+            RadioRing(selected = selected)
+        } else {
+            Box(
+                modifier = Modifier.size(20.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashIcon(
+                    icon = if (previewIcon) FlashIcons.Clock else FlashIcons.Failed,
+                    contentDescription = null,
+                    tint = colors.textSecondary,
+                    size = FlashDimensions.iconSm,
+                )
+            }
+        }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -287,13 +383,13 @@ internal fun RadioChoiceRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (badge != null && badge.isNotBlank()) {
-                    FlashHubChip(text = badge, emphasised = badgeEmphasised)
+                    RadioBadgeChip(text = badge, tone = badgeTone)
                 }
             }
             FlashText(
                 text = subtitle,
                 style = FlashTheme.typography.metadataDefault.copy(fontSize = 13.sp, lineHeight = 18.sp),
-                color = if (enabled) colors.textSecondary else colors.textTertiary,
+                color = colors.textSecondary,
             )
         }
     }
@@ -314,7 +410,7 @@ public fun FlashRadioStationBlock(
 ) {
     val colors = FlashTheme.colors
     val tone = radioStatusTone(state.connectionStatus, state.failureReason)
-    val tint = tone.color()
+    val tint = radioStatusTint(tone)
     val hasRadio = state.rememberedRadioName != null || state.candidateRadio != null
     val sentence = FlashRadioMath.statusSentence(
         state.connectionStatus,
@@ -442,12 +538,13 @@ public fun FlashRadioPermissionBanner(
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
-    val tint = colors.accentSecondary
+    val washTint = colors.accentSecondary
+    val iconTint = radioStatusTint(HubTone.WARNING)
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RadioCardShape)
-            .background(tint.copy(alpha = 0.10f))
+            .background(washTint.copy(alpha = 0.10f))
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
             .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
         verticalAlignment = Alignment.CenterVertically,
@@ -456,7 +553,7 @@ public fun FlashRadioPermissionBanner(
         FlashIcon(
             icon = FlashIcons.Bluetooth,
             contentDescription = null,
-            tint = tint,
+            tint = iconTint,
             size = FlashDimensions.iconSm,
         )
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
@@ -491,7 +588,7 @@ public fun FlashRadioCandidateBanner(
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
-    val tint = colors.accentPrimary
+    val tint = colors.accentFill
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -512,7 +609,7 @@ public fun FlashRadioCandidateBanner(
             FlashText(
                 text = FlashRadioCopy.CANDIDATE_TITLE,
                 style = FlashTheme.typography.bodyEmphasis,
-                color = tint,
+                color = colors.textPrimary,
             )
         }
         Spacer(modifier = Modifier.height(FlashSpacing.space8))
@@ -625,8 +722,8 @@ public fun FlashRadioRadiosSection(
 @Composable
 private fun RadioPairButton(primary: Boolean, fillWidth: Boolean, onClick: () -> Unit) {
     val colors = FlashTheme.colors
-    val background = if (primary) colors.accentPrimary else colors.backgroundSurfaceStrong
-    val foreground = if (primary) colors.textOnAccent else colors.textPrimary
+    val background = if (primary) colors.accentFill else colors.backgroundSurfaceStrong
+    val foreground = if (primary) colors.onAccentFill else colors.textPrimary
     Row(
         modifier = Modifier
             .then(if (fillWidth) Modifier.fillMaxWidth() else Modifier.widthIn(min = 232.dp))
@@ -658,16 +755,28 @@ private fun RadioPairButton(primary: Boolean, fillWidth: Boolean, onClick: () ->
 @Composable
 private fun RadioRowChip(text: String, tone: HubTone) {
     val colors = FlashTheme.colors
-    val background = if (tone == HubTone.WARNING) {
-        colors.accentSecondary.copy(alpha = 0.14f)
+    val isWarning = tone == HubTone.WARNING
+    val background = if (isWarning) {
+        colors.accentSecondary.copy(alpha = 0.16f)
     } else {
         colors.backgroundSurfaceStrong
     }
-    val foreground = if (tone == HubTone.WARNING) colors.accentSecondary else colors.textPrimary
+    val foreground = colors.textPrimary
     Box(
         modifier = Modifier
             .clip(HubShapes.chip)
             .background(background)
+            .then(
+                if (isWarning) {
+                    Modifier.border(
+                        FlashDimensions.borderHairline,
+                        colors.accentSecondary.copy(alpha = 0.45f),
+                        HubShapes.chip,
+                    )
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = FlashSpacing.space8, vertical = 1.dp),
     ) {
         FlashText(
@@ -802,7 +911,7 @@ private fun FlashRadioChecklistStep(number: String, text: String) {
             text = number,
             modifier = Modifier.widthIn(min = 14.dp),
             style = FlashTheme.typography.captionDefault,
-            color = colors.accentPrimary,
+            color = colors.textLink,
         )
         FlashText(
             text = text,
@@ -826,10 +935,14 @@ public fun FlashRadioLinkFactsSection(
         RadioFactRow(
             label = FlashRadioCopy.FACT_PROFILE,
             value = shortProfileName(state.selectedProfile),
-            trailing = if (state.isAuthorisedForEncryption) {
-                { FlashHubChip(text = FlashRadioCopy.BADGE_AUTHORISED) }
-            } else {
-                null
+            trailing = when {
+                state.isAuthorisedForEncryption -> {
+                    { RadioBadgeChip(text = FlashRadioCopy.BADGE_AUTHORISED, tone = RadioBadgeTone.ACCENT) }
+                }
+                state.selectedProfile == RadioSecurityProfile.PROFILE_M -> {
+                    { RadioRowChip(text = FlashRadioCopy.PROFILE_M_NEEDS_AUTH_BADGE, tone = HubTone.WARNING) }
+                }
+                else -> null
             },
         )
         RadioFactRow(
@@ -871,7 +984,7 @@ public fun FlashRadioPairSheet(
             onStopScan()
             onDismiss()
         },
-        containerColor = colors.backgroundSurface,
+        containerColor = colors.sheetSurface,
         dragHandle = { RadioSheetHandle() },
         modifier = modifier,
     ) {
@@ -909,7 +1022,7 @@ public fun FlashRadioPairSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
             ) {
-                HubLiveDot(color = colors.accentPrimary, live = state.isScanning, size = 7.dp)
+                HubLiveDot(color = colors.accentFill, live = state.isScanning, size = 7.dp)
                 FlashText(
                     text = FlashRadioMath.scanStatusText(state.isScanning),
                     modifier = Modifier.weight(1f),
@@ -1009,7 +1122,10 @@ private fun RadioDiscoveredRow(device: DiscoveredRadioDevice, onPair: () -> Unit
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             ) {
-                FlashHubChip(text = FlashRadioMath.categoryBadgeText(device.category), emphasised = emphasised)
+                RadioBadgeChip(
+                    text = FlashRadioMath.categoryBadgeText(device.category),
+                    tone = if (emphasised) RadioBadgeTone.ACCENT else RadioBadgeTone.NEUTRAL,
+                )
                 device.rssi?.let { rssi ->
                     FlashText(
                         text = FlashRadioCopy.signalHint(rssi),
@@ -1067,7 +1183,7 @@ public fun FlashRadioSettingsSheet(
 
     FlashSheetHost(
         onDismiss = onDismiss,
-        containerColor = colors.backgroundSurface,
+        containerColor = colors.sheetSurface,
         dragHandle = { RadioSheetHandle() },
         modifier = modifier,
     ) {
@@ -1103,6 +1219,10 @@ public fun FlashRadioSettingsSheet(
                     color = colors.textError,
                 )
             }
+            val profileMSelected = isProfileMSelected(
+                selectedProfile = state.selectedProfile,
+                isAuthorisedForEncryption = state.isAuthorisedForEncryption,
+            )
             Column(modifier = Modifier.selectableGroup()) {
                 RadioChoiceRow(
                     title = FlashRadioCopy.PROFILE_M_TITLE,
@@ -1112,9 +1232,14 @@ public fun FlashRadioSettingsSheet(
                     } else {
                         FlashRadioCopy.PROFILE_M_NEEDS_AUTH_BADGE
                     },
-                    badgeEmphasised = state.isAuthorisedForEncryption,
-                    selected = state.selectedProfile == RadioSecurityProfile.PROFILE_M,
+                    badgeTone = if (state.isAuthorisedForEncryption) {
+                        RadioBadgeTone.ACCENT
+                    } else {
+                        RadioBadgeTone.WARNING
+                    },
+                    selected = profileMSelected,
                     a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_M,
+                    role = if (canSelectM) Role.RadioButton else Role.Button,
                     onClick = {
                         if (canSelectM) {
                             onSelectProfile(RadioSecurityProfile.PROFILE_M)
@@ -1127,8 +1252,9 @@ public fun FlashRadioSettingsSheet(
                     title = FlashRadioCopy.PROFILE_A_TITLE,
                     subtitle = FlashRadioCopy.PROFILE_A_SUBTITLE,
                     badge = FlashRadioCopy.PROFILE_A_UNSUPPORTED_BADGE,
-                    selected = state.selectedProfile == RadioSecurityProfile.PROFILE_A,
-                    a11yLabel = FlashRadioCopy.A11Y_SELECT_PROFILE_A + ", not supported",
+                    badgeTone = RadioBadgeTone.NEUTRAL,
+                    selected = false,
+                    a11yLabel = FlashRadioCopy.A11Y_PROFILE_A_UNSUPPORTED,
                     // Flash chat cannot verify signed frames yet; offering this row made a
                     // non-working mode look selectable and left messages retrying.
                     enabled = false,
@@ -1141,15 +1267,21 @@ public fun FlashRadioSettingsSheet(
             Column(modifier = Modifier.selectableGroup()) {
                 modes.forEach { mode ->
                     val selectable = FlashRadioMath.isModeSelectable(mode, state.availableModes)
+                    val isSelected = selectable && mode == state.selectedMode
                     RadioChoiceRow(
                         title = FlashRadioMath.modeTitle(mode),
                         subtitle = FlashRadioMath.modeSubtitle(mode),
                         badge = FlashRadioMath.modeBadgeText(mode, state.selectedMode, state.availableModes),
-                        badgeEmphasised = mode == state.selectedMode,
-                        selected = mode == state.selectedMode,
+                        badgeTone = when {
+                            isSelected -> RadioBadgeTone.ACCENT
+                            !selectable -> RadioBadgeTone.PREVIEW
+                            else -> RadioBadgeTone.NEUTRAL
+                        },
+                        selected = isSelected,
                         a11yLabel = FlashRadioCopy.a11ySelectMode(FlashRadioMath.modeTitle(mode)),
                         onClick = { onSelectMode(mode) },
                         enabled = selectable,
+                        previewIcon = !selectable,
                     )
                 }
             }
@@ -1176,7 +1308,7 @@ public fun FlashRadioSettingsSheet(
                     FlashText(
                         text = FlashRadioCopy.ACTION_SEND_TEST_MESSAGE,
                         style = FlashTheme.typography.bodyEmphasis,
-                        color = if (canSendTestMessage) colors.textPrimary else colors.textTertiary,
+                        color = if (canSendTestMessage) colors.textPrimary else colors.textSecondary,
                     )
                     val detail = when {
                         state.isSendingTestMessage -> FlashRadioCopy.TEST_MESSAGE_SENDING
@@ -1298,7 +1430,11 @@ public fun FlashRadioAuthorisationDialog(
                         .fillMaxWidth()
                         .clip(RadioControlShape)
                         .background(colors.backgroundSurfaceSubtle)
-                        .hubClickable { acknowledged = !acknowledged }
+                        .hubClickable(role = Role.Switch) { acknowledged = !acknowledged }
+                        .semantics {
+                            role = Role.Switch
+                            stateDescription = if (acknowledged) FlashRadioCopy.VALUE_ON else FlashRadioCopy.VALUE_OFF
+                        }
                         .padding(FlashSpacing.space12),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
@@ -1333,25 +1469,29 @@ public fun FlashRadioTestMessageWarningDialog(
     onDismiss: () -> Unit,
 ) {
     val colors = FlashTheme.colors
-    val tint = colors.accentSecondary
+    val iconTint = radioStatusTint(HubTone.WARNING)
     FlashConfirmHost(
         onDismiss = onDismiss,
         containerColor = colors.sheetSurface,
         title = {
             Row(
+                modifier = Modifier
+                    .clip(RadioControlShape)
+                    .background(colors.accentSecondary.copy(alpha = 0.14f))
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             ) {
                 FlashIcon(
                     icon = FlashIcons.Bolt,
                     contentDescription = null,
-                    tint = tint,
+                    tint = iconTint,
                     size = FlashDimensions.iconSm,
                 )
                 FlashText(
                     text = FlashRadioCopy.TRANSMIT_WARNING_TITLE,
                     style = FlashTheme.typography.headingSmall,
-                    color = tint,
+                    color = colors.textPrimary,
                 )
             }
         },
@@ -1406,7 +1546,7 @@ private fun RadioCallsignField(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
                 textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
-                cursorBrush = SolidColor(colors.accentPrimary),
+                cursorBrush = SolidColor(colors.accentFill),
                 modifier = Modifier
                     .fillMaxWidth()
                     .semantics { contentDescription = FlashRadioCopy.CALLSIGN_LABEL },
@@ -1426,7 +1566,7 @@ private fun RadioCallsignField(
         FlashText(
             text = supporting,
             style = FlashTheme.typography.metadataDefault,
-            color = if (isError) colors.textError else colors.textTertiary,
+            color = if (isError) colors.textError else colors.textSecondary,
         )
     }
 }

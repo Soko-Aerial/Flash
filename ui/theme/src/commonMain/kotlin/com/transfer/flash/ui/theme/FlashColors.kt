@@ -2,6 +2,10 @@ package com.transfer.flash.ui.theme
 
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
+import kotlin.math.max
+import kotlin.math.min
 
 @Immutable
 data class FlashColors(
@@ -11,8 +15,8 @@ data class FlashColors(
      * The fill for a control that carries text or a glyph (send key, a primary button), and the
      * colour that sits on it. One step darker than [accentPrimary] in light (5.21:1 with white) and
      * `pulse400`/`pulse900` in dark (5.85:1), because `white on pulse500` is 3.74:1 and fails AA for
-     * a 16sp label. Deliberately NOT re-tinted by [withAccent]: a dynamic accent of unknown
-     * luminance must not be able to break the label contrast.
+     * a 16sp label. [withAccent] adapts both [accentFill] and [onAccentFill] from the dynamic
+     * accent while enforcing at least 4.5:1 WCAG AA contrast.
      */
     val accentFill: Color,
     val onAccentFill: Color,
@@ -59,15 +63,91 @@ data class FlashColors(
     val statusTransfer: Color,
 ) {
     /**
-     * UI-036: re-tints only accent tokens from the dynamic scheme; every other slot stays
-     * Flash-owned per ADR-005. [secondary] defaults to [accent] so single-color callers
-     * keep working (accentSecondary follows the primary hue).
+     * UI-036: re-tints accent tokens from the dynamic scheme while keeping neutral/surface slots
+     * Flash-owned per ADR-005. [secondary] defaults to [accent] so single-color callers keep
+     * working (accentSecondary follows the primary hue).
+     *
+     * [accentFill], [onAccentFill], and [textLink] are derived from [accent] and adjusted in
+     * luminance if needed so button fills and link text maintain at least 4.5:1 WCAG AA contrast
+     * against their foregrounds and theme surfaces.
      */
-    fun withAccent(accent: Color, secondary: Color = accent): FlashColors = copy(
-        accentPrimary = accent,
-        accentSecondary = secondary,
-        textLink = accent,
-    )
+    fun withAccent(accent: Color, secondary: Color = accent): FlashColors {
+        val opaqueAccent = accent.copy(alpha = 1f)
+        val isDark = backgroundApp.luminance() < 0.5f
+        val adaptedFill: Color
+        val adaptedOnFill: Color
+        val adaptedLink: Color
+        if (isDark) {
+            val darkInk = FlashPalette.graphite900
+            val darkSurfaces = listOf(
+                backgroundApp,
+                backgroundChat,
+                backgroundSurface,
+                backgroundSurfaceSubtle,
+                backgroundSurfaceStrong,
+            )
+            adaptedFill = adjustColorToward(
+                base = opaqueAccent,
+                target = FlashPalette.white,
+                meetsMin = { candidate ->
+                    flashContrastRatio(darkInk, candidate) >= MIN_AA_CONTRAST &&
+                        flashContrastRatio(candidate, backgroundSurfaceStrong) >= MIN_AA_CONTRAST
+                },
+                meetsTarget = { candidate ->
+                    flashContrastRatio(darkInk, candidate) >= TARGET_AA_CONTRAST &&
+                        flashContrastRatio(candidate, backgroundSurfaceStrong) >= TARGET_AA_CONTRAST
+                },
+            )
+            adaptedOnFill = darkInk
+            adaptedLink = adjustColorToward(
+                base = opaqueAccent,
+                target = FlashPalette.white,
+                meetsMin = { candidate ->
+                    darkSurfaces.all { bg -> flashContrastRatio(candidate, bg) >= MIN_AA_CONTRAST }
+                },
+                meetsTarget = { candidate ->
+                    darkSurfaces.all { bg -> flashContrastRatio(candidate, bg) >= TARGET_AA_CONTRAST }
+                },
+            )
+        } else {
+            val lightInk = FlashPalette.white
+            val lightSurfaces = listOf(
+                backgroundApp,
+                backgroundChat,
+                backgroundSurface,
+                backgroundSurfaceSubtle,
+            )
+            adaptedFill = adjustColorToward(
+                base = opaqueAccent,
+                target = FlashPalette.black,
+                meetsMin = { candidate ->
+                    flashContrastRatio(lightInk, candidate) >= MIN_AA_CONTRAST
+                },
+                meetsTarget = { candidate ->
+                    flashContrastRatio(lightInk, candidate) >= TARGET_AA_CONTRAST
+                },
+            )
+            adaptedOnFill = lightInk
+            adaptedLink = adjustColorToward(
+                base = opaqueAccent,
+                target = FlashPalette.black,
+                meetsMin = { candidate ->
+                    lightSurfaces.all { bg -> flashContrastRatio(candidate, bg) >= MIN_AA_CONTRAST }
+                },
+                meetsTarget = { candidate ->
+                    lightSurfaces.all { bg -> flashContrastRatio(candidate, bg) >= TARGET_AA_CONTRAST }
+                },
+            )
+        }
+        return copy(
+            accentPrimary = opaqueAccent,
+            accentSecondary = secondary,
+            accentFill = adaptedFill,
+            onAccentFill = adaptedOnFill,
+            textOnAccent = adaptedOnFill,
+            textLink = adaptedLink,
+        )
+    }
 
     companion object {
         fun light(): FlashColors = FlashColors(
@@ -77,10 +157,10 @@ data class FlashColors(
             onAccentFill = FlashPalette.white,
             textPrimary = FlashPalette.graphite900,
             textSecondary = FlashPalette.graphite700,
-            textTertiary = FlashPalette.graphite500,
+            textTertiary = FlashPalette.graphite600,
             textOnAccent = FlashPalette.white,
             textLink = FlashPalette.pulse600,
-            textError = FlashPalette.error500,
+            textError = FlashPalette.error600,
             textSuccess = FlashPalette.success500,
             backgroundApp = FlashPalette.graphite50,
             backgroundChat = FlashPalette.graphite100,
@@ -97,7 +177,7 @@ data class FlashColors(
             chatBorderIncoming = FlashPalette.graphite150,
             chatTextIncoming = FlashPalette.graphite900,
             chatTextOutgoing = FlashPalette.pulse900,
-            chatTextTimestamp = FlashPalette.graphite500,
+            chatTextTimestamp = FlashPalette.graphite600,
             chatTextTimestampOutgoing = FlashPalette.pulse700,
             chatTextUsername = FlashPalette.graphite700,
             chatTextSystem = FlashPalette.graphite700,
@@ -108,7 +188,7 @@ data class FlashColors(
             mediaViewerBackdrop = FlashPalette.mediaBackdropLight,
             mediaViewerChromeText = FlashPalette.white,
             avatarPlaceholderBackground = FlashPalette.graphite150,
-            avatarPlaceholderText = FlashPalette.graphite500,
+            avatarPlaceholderText = FlashPalette.graphite600,
             avatarPaletteBackgrounds = listOf(
                 FlashPalette.pulse150,
                 FlashPalette.cyan150,
@@ -135,7 +215,7 @@ data class FlashColors(
             onAccentFill = FlashPalette.pulse900,
             textPrimary = FlashPalette.graphite50,
             textSecondary = FlashPalette.graphite300,
-            textTertiary = FlashPalette.graphite500,
+            textTertiary = FlashPalette.graphite400,
             // UI-035 audit fix: was white — only 2.5:1 on pulse400; pulse900 is ~5.9:1.
             textOnAccent = FlashPalette.pulse900,
             textLink = FlashPalette.pulse300,
@@ -156,7 +236,7 @@ data class FlashColors(
             chatBorderIncoming = FlashPalette.surface3,
             chatTextIncoming = FlashPalette.graphite50,
             chatTextOutgoing = FlashPalette.pulse100,
-            chatTextTimestamp = FlashPalette.graphite500,
+            chatTextTimestamp = FlashPalette.graphite400,
             chatTextTimestampOutgoing = FlashPalette.pulse300,
             chatTextUsername = FlashPalette.graphite300,
             chatTextSystem = FlashPalette.graphite300,
@@ -233,12 +313,18 @@ internal object FlashPalette {
 
     val error400 = Color(0xFFF87171)
     val error500 = Color(0xFFD64545)
+    val error600 = Color(0xFFB32626)
+    val errorContainerLight = Color(0xFFFEE2E2)
+    val errorContainerDark = Color(0xFF5C1919)
+    val onErrorContainerDark = Color(0xFFFEE2E2)
 
     val graphite50 = Color(0xFFF5F6F8)
     val graphite100 = Color(0xFFEBEDF2)
     val graphite150 = Color(0xFFD8DCE4)
     val graphite300 = Color(0xFFA8B0C0)
+    val graphite400 = Color(0xFF929BAE)
     val graphite500 = Color(0xFF6E778A)
+    val graphite600 = Color(0xFF586173)
     val graphite700 = Color(0xFF454C5C)
     val graphite900 = Color(0xFF171A22)
 
@@ -251,4 +337,32 @@ internal object FlashPalette {
     val scrimDark = Color(0x99000000)
     val mediaBackdropLight = Color(0xFF0A0C0E)
     val mediaBackdropDark = Color(0xFF050607)
+}
+
+private const val MIN_AA_CONTRAST = 4.5f
+// Slight margin above 4.5:1 prevents 8-bit colour rounding from dipping below WCAG AA.
+private const val TARGET_AA_CONTRAST = 4.55f
+
+internal fun flashContrastRatio(foreground: Color, background: Color): Float {
+    val lf = foreground.luminance()
+    val lb = background.luminance()
+    return (max(lf, lb) + 0.05f) / (min(lf, lb) + 0.05f)
+}
+
+private fun adjustColorToward(
+    base: Color,
+    target: Color,
+    meetsMin: (Color) -> Boolean,
+    meetsTarget: (Color) -> Boolean,
+): Color {
+    if (meetsMin(base)) return base
+    var lo = 0f
+    var hi = 1f
+    repeat(24) {
+        val mid = (lo + hi) * 0.5f
+        val candidate = lerp(base, target, mid)
+        if (meetsTarget(candidate)) hi = mid else lo = mid
+    }
+    val adjusted = lerp(base, target, hi)
+    return if (meetsMin(adjusted)) adjusted else target
 }

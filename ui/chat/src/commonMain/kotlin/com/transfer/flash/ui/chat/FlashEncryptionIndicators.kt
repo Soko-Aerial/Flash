@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -166,7 +167,7 @@ fun FlashEncryptionBadge(
     // Subtle positive cue for verified; neutral for unverified. Never red —
     // unverified is a condition, not a fault (error-states.md).
     val iconTint = if (state == FlashEncryptionBadgeState.EncryptedTrusted) {
-        colors.accentPrimary
+        colors.accentFill
     } else {
         colors.textSecondary
     }
@@ -175,7 +176,10 @@ fun FlashEncryptionBadge(
     if (compact) {
         Box(
             modifier = modifier
-                .size(24.dp)
+                .defaultMinSize(
+                    minWidth = FlashDimensions.minTouchTarget,
+                    minHeight = FlashDimensions.minTouchTarget,
+                )
                 .clip(CircleShape)
                 .clickable(onClick = onClick)
                 .semantics(mergeDescendants = true) {
@@ -199,10 +203,11 @@ fun FlashEncryptionBadge(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
         modifier = modifier
+            .defaultMinSize(minHeight = FlashDimensions.minTouchTarget)
             .clip(FlashShapes.chip)
             .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.chip)
             .clickable(onClick = onClick)
-            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
             .semantics(mergeDescendants = true) {
                 role = Role.Button
                 contentDescription = description
@@ -371,7 +376,7 @@ private fun FlashVerificationActionRow(
         FlashIcon(
             icon = if (isCodesEntry && isVerified) FlashIcons.Verified else entry.icon,
             contentDescription = null,
-            tint = if (isCodesEntry && isVerified) colors.accentPrimary else colors.textPrimary,
+            tint = if (isCodesEntry && isVerified) colors.accentFill else colors.textPrimary,
             size = FlashDimensions.iconMd,
             modifier = Modifier.clearAndSetSemantics {},
         )
@@ -392,13 +397,13 @@ private fun FlashVerificationActionRow(
             Box(
                 modifier = Modifier
                     .clip(FlashShapes.chip)
-                    .background(colors.accentPrimary.copy(alpha = 0.15f))
+                    .background(colors.accentFill.copy(alpha = 0.15f))
                     .padding(horizontal = FlashSpacing.space8, vertical = 2.dp),
             ) {
                 FlashText(
                     text = "Verified",
                     style = typography.captionDefault,
-                    color = colors.accentPrimary,
+                    color = colors.accentFill,
                 )
             }
         } else {
@@ -660,7 +665,7 @@ private fun FlashFingerprintCard(
                     FlashText(
                         text = "Copy",
                         style = typography.captionDefault,
-                        color = colors.accentPrimary,
+                        color = colors.accentFill,
                     )
                 }
             }

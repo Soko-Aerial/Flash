@@ -17396,3 +17396,33 @@ RESOLVED 2026-11-08 — proven cause, fix and focused regressions in the working
 - **Symptom:** The first Gradle attempt received HTTP 429 from JitPack while the tag build was still running.
 - **Verification / status:** RESOLVED. JitPack reported `ok` and listed 57 modules. Retried with one
   worker after publication; both Android and JVM compiles passed against the public tag (REL22-04).
+
+## ERROR-1018 — Sender Retry replays durable chunks and leaves a stale receiver row
+
+- **Date / area:** 2026-11-09, LAN file-transfer recovery in 2.2.0 (XFER-RETRY-02).
+- **Symptoms:** Sender reports Failed; receiver remains in progress at its last byte count. After
+  Retry the sender appears to start over and the receiver only advances once it passes that point.
+- **Cause isolated in source and host checks:** Sender attempt failures did not signal the receiver.
+  A sender without a local ACK store had no durable chunk set on retry, and skipping holes in the
+  sender's done set could leave those bytes out of its whole-file digest.
+- **Candidate:** Preserve partial data, signal a retryable interruption, and re-announce durable
+  chunks on identical re-offer. The first host gate was green (890 cases, two documented skips).
+  The coordinator identified a repeat-attempt gap: suppressing announcements when the receive
+  count has not changed can also suppress the next attempt's first announcement.
+- **Follow-up:** Reset announcement deduplication at retry boundaries and reject out-of-range ACKs.
+  The final host gate passed. In the delayed-ACK fixture, replay fell from eight saved chunks to
+  two; actual replay depends on when acknowledgments arrive. Older silent senders and control
+  messages that arrive after the re-offer may still miss the announcement.
+- **Status:** OPEN for native interoperability and final SHA-256 verification (XFER-RETRY-02).
+
+## ERROR-1019 — Chat composer can start a second capture after locking a voice note
+
+- **Date / area:** 2026-11-09, shared Android/desktop chat composer.
+- **Cause:** The chat port left the trailing mic enabled after release of the lock gesture.
+  Pressing it again could be refused as a false PTT conflict on Android or replace the existing
+  take on desktop. A refused start could also enter the locked panel with no active capture.
+- **Candidate and verification:** Show Send in the trailing slot after release in lock; gate slides
+  on a successful capture and surface recorder start failures. Chat JVM and Android-host tests
+  passed (1,455 cases); Android compilation passed. Playback was inspected and left unchanged.
+- **Status:** OPEN pending VOICE-BTN-01..06 and confirmation that the locked control is the one
+  from the user's report. Short taps on the idle mic still follow the approved hold-to-record design.

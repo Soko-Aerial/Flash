@@ -6,8 +6,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -16,9 +14,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.enterprise.EnterpriseApproval
 import com.transfer.flash.ui.chat.FlashConfirmHost
+import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import kotlinx.coroutines.delay
@@ -77,7 +75,7 @@ internal fun FlashApprovalsDialog(
         containerColor = colors.backgroundSurface,
         title = { FlashText(text = "Approve admin requests", style = FlashTheme.typography.headingMedium, color = colors.textPrimary) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12)) {
                 FlashText(
                     text = "Only approve a request you started yourself, and only when the six digits are the same as on the admin console.",
                     style = FlashTheme.typography.bodyDefault,
@@ -89,12 +87,18 @@ internal fun FlashApprovalsDialog(
                     list == null -> FlashText("Looking for requests...", style = FlashTheme.typography.bodyDefault, color = colors.textSecondary)
                     list.isEmpty() -> FlashText("Nothing is waiting for you.", style = FlashTheme.typography.bodyDefault, color = colors.textPrimary)
                     else -> list.forEach { approval ->
-                        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val approveEnabled = busy == null
+                        Column(
+                            Modifier.fillMaxWidth().padding(vertical = FlashSpacing.space4),
+                            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+                        ) {
                             FlashText(FlashApprovalText.actionSentence(approval.action), style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary)
                             FlashText(FlashApprovalText.detail(approval), style = FlashTheme.typography.captionDefault, color = colors.textSecondary)
-                            FlashText(FlashApprovalText.groupedCode(approval.code), style = FlashTheme.typography.headingLarge, color = colors.accentPrimary)
-                            TextButton(
-                                enabled = busy == null,
+                            FlashText(FlashApprovalText.groupedCode(approval.code), style = FlashTheme.typography.headingLarge, color = colors.textLink)
+                            FlashSettingsTextButton(
+                                label = "Approve",
+                                color = if (approveEnabled) colors.textLink else colors.textTertiary,
+                                enabled = approveEnabled,
                                 onClick = {
                                     busy = approval.challengeId
                                     scope.launch {
@@ -104,14 +108,20 @@ internal fun FlashApprovalsDialog(
                                         if (ok) items = items?.filterNot { it.challengeId == approval.challengeId }
                                     }
                                 },
-                            ) { Text("Approve", color = colors.accentPrimary) }
+                            )
                         }
                     }
                 }
                 notice?.let { FlashText(it, style = FlashTheme.typography.captionDefault, color = colors.textSecondary) }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close", color = colors.accentPrimary) } },
+        confirmButton = {
+            FlashSettingsTextButton(
+                label = "Close",
+                color = colors.textLink,
+                onClick = onDismiss,
+            )
+        },
     )
 }
 

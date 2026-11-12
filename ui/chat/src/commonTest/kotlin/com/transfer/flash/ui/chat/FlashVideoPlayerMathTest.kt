@@ -75,4 +75,34 @@ class FlashVideoPlayerMathTest {
         // Bug evidence: target did not change (0L == 0L), skipping seek on subsequent replay
         assertEquals(previousTarget, seekTarget)
     }
+
+    @Test
+    fun `error state hides playback controls while keeping top close bar visible`() {
+        assertEquals(false, FlashVideoPlayerMath.showPlaybackControls("Video playback isn't available yet"))
+        assertEquals(true, FlashVideoPlayerMath.showPlaybackControls(null))
+        assertEquals(
+            true,
+            FlashVideoPlayerMath.showTopBar(
+                errorMessage = "Video playback isn't available yet",
+                controlsVisible = false,
+                isPlaying = false,
+            ),
+        )
+        assertEquals(
+            false,
+            FlashVideoPlayerMath.showTopBar(
+                errorMessage = null,
+                controlsVisible = false,
+                isPlaying = true,
+            ),
+        )
+        assertEquals(
+            true,
+            FlashVideoPlayerMath.showTopBar(
+                errorMessage = null,
+                controlsVisible = true,
+                isPlaying = true,
+            ),
+        )
+    }
 }

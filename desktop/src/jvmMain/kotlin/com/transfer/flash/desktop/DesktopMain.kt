@@ -103,13 +103,22 @@ public fun main(args: Array<String> = emptyArray()) {
             )
         }
 
+        var pendingFilesToShare by remember {
+            mutableStateOf(SingleInstanceController.consumeInitialShareFiles())
+        }
+
         // UI-056 / ADR-080: the launch animation plays once per process, at start-up. The gate lives
         // here, above `if (isWindowVisible)`, because hiding to the tray disposes the window's
-        // composition and reopening it must not replay the splash. The settings file is read
-        // synchronously when the engine is built, so the decision is made before the first frame.
+        // composition and reopening it must not replay the splash. Skip when launched directly into
+        // a file share (e.g. "Send with Flash" from Explorer) so the target sheet appears immediately.
         val launchSplash = remember {
             FlashLaunchSplashGate(nowMillis = { System.nanoTime() / 1_000_000L }).apply {
-                decide(enabled = engine.settings.value.launchAnimation)
+                decide(
+                    enabled = shouldPlayDesktopLaunchSplash(
+                        launchAnimationEnabled = engine.settings.value.launchAnimation,
+                        hasInitialShareFiles = pendingFilesToShare.isNotEmpty(),
+                    ),
+                )
             }
         }
 
@@ -120,22 +129,43 @@ public fun main(args: Array<String> = emptyArray()) {
 
     val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
 
+    fun bringWindowToFront() {
+        isWindowVisible = true
+        windowState.isMinimized = false
+        currentComposeWindow?.let { win ->
+            win.isVisible = true
+            if (win is java.awt.Frame) {
+                val state = win.extendedState
+                if ((state and java.awt.Frame.ICONIFIED) != 0) {
+                    win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
+                }
+            }
+            win.toFront()
+            win.requestFocus()
+        }
+        backgroundUnreadCount = 0
+        DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+    }
+
     // OPT-O19-07: Downscale discovery to ECO when window is hidden in tray or minimized (guarded by active workloads).
     LaunchedEffect(isWindowVisible, windowState.isMinimized) {
         engine.setWindowActive(isWindowVisible && !windowState.isMinimized)
     }
 
     val trayState = rememberTrayState()
+    val ready by engine.ready.collectAsState()
+    val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
     val desktopSettings by engine.settings.collectAsState()
     val osReduceMotion by DesktopOsReduceMotion.preferences.collectAsState(initial = false)
     val nav = rememberFlashNavigationState()
+    var trayNavTick by remember { mutableStateOf(0) }
+
+    LaunchedEffect(ready, enterpriseCredentials != null) {
+        if (ready) nav.updateHubEnrolled(enterpriseCredentials != null)
+    }
 
     // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
     val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)) }
-
-    var pendingFilesToShare by remember {
-        mutableStateOf(SingleInstanceController.consumeInitialShareFiles())
-    }
 
     DisposableEffect(desktopSettings.windowsContextMenu) {
         if (WindowsContextMenuManager.isSupported && desktopSettings.windowsContextMenu) {
@@ -186,20 +216,17 @@ public fun main(args: Array<String> = emptyArray()) {
 
     // System Tray
     if (SystemTray.isSupported()) {
-        val ready by engine.ready.collectAsState()
         val currentMode by engine.discoveryMode.collectAsState()
         val modeLabel = FlashSettingsMath.discoveryModeShortLabel(currentMode.name)
         val trayTooltip = if (ready) "Flash - Online ($modeLabel)" else "Flash - Connecting..."
+        val trayNavItems = desktopTrayNavItems(nav.hubEnrolled)
 
         Tray(
             icon = painterResource(FlashIcons.Tray.drawableRes),
             state = trayState,
             tooltip = trayTooltip,
             onAction = {
-                isWindowVisible = true
-                windowState.isMinimized = false
-                backgroundUnreadCount = 0
-                DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+                bringWindowToFront()
             },
             menu = {
                 Item(
@@ -208,10 +235,7 @@ public fun main(args: Array<String> = emptyArray()) {
                         if (isWindowVisible) {
                             isWindowVisible = false
                         } else {
-                            isWindowVisible = true
-                            windowState.isMinimized = false
-                            backgroundUnreadCount = 0
-                            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+                            bringWindowToFront()
                         }
                     },
                 )
@@ -238,40 +262,20 @@ public fun main(args: Array<String> = emptyArray()) {
                     },
                 )
                 Separator()
-                Item(
-                    text = "Chats",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        backgroundUnreadCount = 0
-                        DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
-                        nav.selectTab(FlashDestination.ChatList)
-                    },
-                )
-                Item(
-                    text = "Transfers",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        nav.openTransfers()
-                    },
-                )
-                Item(
-                    text = "Nearby Devices",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        nav.selectTab(FlashDestination.NearbyDevices)
-                    },
-                )
-                Item(
-                    text = "Settings",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        nav.selectTab(FlashDestination.Settings)
-                    },
-                )
+                trayNavItems.forEach { navItem ->
+                    Item(
+                        text = navItem.label,
+                        onClick = {
+                            bringWindowToFront()
+                            trayNavTick++
+                            if (navItem.destination == FlashDestination.Transfers) {
+                                nav.openTransfers()
+                            } else {
+                                nav.selectTab(navItem.destination)
+                            }
+                        },
+                    )
+                }
                 Separator()
                 Item(
                     text = "Quit Flash",
@@ -364,6 +368,7 @@ public fun main(args: Array<String> = emptyArray()) {
                     dynamicAccent = desktopSettings.dynamicAccent,
                     hapticsEnabled = false,
                     minimalChrome = effectivePerformanceMode.minimalChrome,
+                    ultraLowUi = effectivePerformanceMode.ultraLowUi,
                     motion = rememberFlashMotion(reduceMotionResolved),
                 ) {
                     // Baseline text colour for the whole desktop window.
@@ -385,6 +390,7 @@ public fun main(args: Array<String> = emptyArray()) {
                                     },
                                     window = window,
                                     nav = nav,
+                                    trayNavTick = trayNavTick,
                                     externalShareFiles = pendingFilesToShare,
                                     onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
                                     pendingHubRoute = pendingHubRoute,
@@ -443,6 +449,7 @@ public fun main(args: Array<String> = emptyArray()) {
                 dynamicAccent = desktopSettings.dynamicAccent,
                 hapticsEnabled = false,
                 minimalChrome = toastPerformance.minimalChrome,
+                ultraLowUi = toastPerformance.ultraLowUi,
                 motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
             ) {
                 DesktopTransferToastWindow(
@@ -488,38 +495,11 @@ public fun main(args: Array<String> = emptyArray()) {
     // `stop()` stays a plain synchronous call.
     DisposableEffect(Unit) {
         SingleInstanceController.onActivate = {
-            isWindowVisible = true
-            windowState.isMinimized = false
-            currentComposeWindow?.let { win ->
-                win.isVisible = true
-                if (win is java.awt.Frame) {
-                    val state = win.extendedState
-                    if ((state and java.awt.Frame.ICONIFIED) != 0) {
-                        win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
-                    }
-                }
-                win.toFront()
-                win.requestFocus()
-            }
-            backgroundUnreadCount = 0
-            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+            bringWindowToFront()
         }
         SingleInstanceController.onShareFiles = { files ->
-            isWindowVisible = true
-            windowState.isMinimized = false
-            currentComposeWindow?.let { win ->
-                win.isVisible = true
-                if (win is java.awt.Frame) {
-                    val state = win.extendedState
-                    if ((state and java.awt.Frame.ICONIFIED) != 0) {
-                        win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
-                    }
-                }
-                win.toFront()
-                win.requestFocus()
-            }
-            backgroundUnreadCount = 0
-            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+            launchSplash.finish()
+            bringWindowToFront()
             pendingFilesToShare = (pendingFilesToShare + files).distinctBy { it.absolutePath }
         }
         onDispose {
@@ -530,6 +510,26 @@ public fun main(args: Array<String> = emptyArray()) {
         }
     }
     }
+}
+
+internal fun shouldPlayDesktopLaunchSplash(
+    launchAnimationEnabled: Boolean,
+    hasInitialShareFiles: Boolean,
+): Boolean = launchAnimationEnabled && !hasInitialShareFiles
+
+internal data class DesktopTrayNavItem(
+    val destination: FlashDestination,
+    val label: String,
+)
+
+internal fun desktopTrayNavItems(hubEnrolled: Boolean): List<DesktopTrayNavItem> = buildList {
+    add(DesktopTrayNavItem(FlashDestination.ChatList, "Chats"))
+    if (hubEnrolled) {
+        add(DesktopTrayNavItem(FlashDestination.Hub, "Hub"))
+    }
+    add(DesktopTrayNavItem(FlashDestination.Transfers, "Transfers"))
+    add(DesktopTrayNavItem(FlashDestination.NearbyDevices, "Nearby Devices"))
+    add(DesktopTrayNavItem(FlashDestination.Settings, "Settings"))
 }
 
 /**

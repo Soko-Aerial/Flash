@@ -69,6 +69,7 @@ class FlashPairingLogicTest {
         assertEquals("Paired", FlashPairingMath.phaseStatusLabel(FlashPairingPhase.Paired))
         assertEquals("Declined", FlashPairingMath.phaseStatusLabel(FlashPairingPhase.Declined))
         assertEquals("Request expired", FlashPairingMath.phaseStatusLabel(FlashPairingPhase.Expired))
+        assertEquals("Pairing failed", FlashPairingMath.phaseStatusLabel(FlashPairingPhase.Failed))
     }
 
     @Test
@@ -109,5 +110,18 @@ class FlashPairingLogicTest {
     @Test
     fun `pairing request defaults to thirty second expiry`() {
         assertEquals(30, samplePairingRequest().expiresInSeconds)
+    }
+
+    @Test
+    fun `back cancel is allowed during awaiting peer confirmation while scrim dismiss stays blocked during active phases`() {
+        assertTrue(FlashPairingMath.allowsBackCancel(FlashPairingPhase.AwaitingPeerConfirmation))
+        assertFalse(FlashPairingMath.allowsBackCancel(FlashPairingPhase.RequestReceived))
+        assertFalse(FlashPairingMath.allowsBackCancel(FlashPairingPhase.Failed))
+
+        assertFalse(FlashPairingMath.allowsScrimDismiss(FlashPairingPhase.RequestReceived))
+        assertFalse(FlashPairingMath.allowsScrimDismiss(FlashPairingPhase.AwaitingPeerConfirmation))
+        assertTrue(FlashPairingMath.allowsScrimDismiss(FlashPairingPhase.Failed))
+        assertTrue(FlashPairingMath.allowsScrimDismiss(FlashPairingPhase.Declined))
+        assertTrue(FlashPairingMath.allowsScrimDismiss(FlashPairingPhase.Expired))
     }
 }

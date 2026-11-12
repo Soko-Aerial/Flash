@@ -29,6 +29,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.HubAnnouncementUi
 import com.transfer.flash.core.messaging.model.HubDepartmentUi
@@ -73,7 +74,7 @@ internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, mod
             .fillMaxWidth()
             .clip(HubShapes.card)
             .background(colors.backgroundSurface)
-            .border(FlashDimensions.borderHairline, if (d.isMine) colors.accentPrimary else colors.borderSubtle, HubShapes.card)
+            .border(FlashDimensions.borderHairline, if (d.isMine) colors.accentFill else colors.borderSubtle, HubShapes.card)
             .hubClickable(onClick = onClick)
             .padding(FlashSpacing.space16)
             .semantics(mergeDescendants = true) { contentDescription = FlashHubMath.departmentAccessibility(d) },
@@ -110,10 +111,16 @@ internal fun FlashHubDepartmentContent(
     onGroupAction: (HubGroupUi) -> Unit,
     joiningGroupId: String?,
     modifier: Modifier = Modifier,
+    bottomInset: Dp = 0.dp,
 ) {
     val colors = FlashTheme.colors
     val shownMembers = members.take(MEMBER_PREVIEW)
-    Column(modifier = modifier.fillMaxWidth().padding(vertical = FlashSpacing.space8), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = FlashSpacing.space8, bottom = FlashSpacing.space16 + bottomInset),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
         Row(Modifier.padding(horizontal = FlashSpacing.space8), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) FlashHubIconButton(FlashIcons.Back, FlashHubCopy.DEPT_BACK, onBack)
             FlashText(department.name, modifier = Modifier.weight(1f).padding(start = FlashSpacing.space8).semantics { heading() },

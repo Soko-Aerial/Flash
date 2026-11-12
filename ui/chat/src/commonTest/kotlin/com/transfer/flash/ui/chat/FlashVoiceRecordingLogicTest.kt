@@ -91,6 +91,99 @@ class FlashVoiceRecordingLogicTest {
     }
 
     @Test
+    fun `only an idle gesture that has not asked the host yet can start capture`() {
+        assertTrue(FlashVoiceRecordingMath.canStartCapture(FlashRecordingPhase.Idle, captureStarted = false))
+        // One gesture asks once: a repeated callback cannot start a second capture.
+        assertFalse(FlashVoiceRecordingMath.canStartCapture(FlashRecordingPhase.Idle, captureStarted = true))
+        // A lock has no start action behind it; only the idle mic may start.
+        assertFalse(FlashVoiceRecordingMath.canStartCapture(FlashRecordingPhase.Holding, captureStarted = true))
+        assertFalse(FlashVoiceRecordingMath.canStartCapture(FlashRecordingPhase.Locked, captureStarted = true))
+        assertFalse(FlashVoiceRecordingMath.canStartCapture(FlashRecordingPhase.Locked, captureStarted = false))
+    }
+
+    @Test
+    fun `a refused start cannot arm cancel or lock a phantom recording`() {
+        // The host said no (permission prompt, call/PTT lease, busy encoder). The same hold's drags
+        // must not move the phase out of Idle.
+        assertFalse(FlashVoiceRecordingMath.acceptsSlide(FlashRecordingPhase.Idle, captureStarted = false))
+        // Locked is ended by its own trash/send buttons, not by a drag across the trailing key.
+        assertFalse(FlashVoiceRecordingMath.acceptsSlide(FlashRecordingPhase.Locked, captureStarted = true))
+        assertTrue(FlashVoiceRecordingMath.acceptsSlide(FlashRecordingPhase.Holding, captureStarted = true))
+        assertTrue(FlashVoiceRecordingMath.acceptsSlide(FlashRecordingPhase.CancelArmed, captureStarted = true))
+        assertFalse(FlashVoiceRecordingMath.acceptsSlide(FlashRecordingPhase.Holding, captureStarted = false))
+        assertFalse(FlashVoiceRecordingMath.acceptsSlide(FlashRecordingPhase.CancelArmed, captureStarted = false))
+    }
+
+    @Test
+    fun `the trailing slot sends only after a locked hold has ended`() {
+        // While the finger is still down the slot must stay the mic: swapping it would dispose the
+        // pointer stream that owns the hold (ERROR-010).
+        assertFalse(FlashVoiceRecordingMath.showsVoiceSend(FlashRecordingPhase.Locked, lockedHandsFree = false))
+        assertTrue(FlashVoiceRecordingMath.showsVoiceSend(FlashRecordingPhase.Locked, lockedHandsFree = true))
+        assertFalse(FlashVoiceRecordingMath.showsVoiceSend(FlashRecordingPhase.Holding, lockedHandsFree = true))
+        assertFalse(FlashVoiceRecordingMath.showsVoiceSend(FlashRecordingPhase.CancelArmed, lockedHandsFree = true))
+        assertFalse(FlashVoiceRecordingMath.showsVoiceSend(FlashRecordingPhase.Idle, lockedHandsFree = true))
+    }
+
+    @Test
+    fun `short release discards on touch with prompt and locks hands-free on desktop`() {
+        assertEquals(
+            FlashVoiceRecordingMath.ReleaseAction.DiscardShortTap,
+            FlashVoiceRecordingMath.resolveReleaseAction(
+                phase = FlashRecordingPhase.Holding,
+                captureStarted = true,
+                elapsedMs = 200L,
+                isDesktop = false,
+            ),
+        )
+        assertEquals(
+            FlashVoiceRecordingMath.ReleaseAction.LockHandsFree,
+            FlashVoiceRecordingMath.resolveReleaseAction(
+                phase = FlashRecordingPhase.Holding,
+                captureStarted = true,
+                elapsedMs = 200L,
+                isDesktop = true,
+            ),
+        )
+        assertEquals(
+            FlashVoiceRecordingMath.ReleaseAction.Send,
+            FlashVoiceRecordingMath.resolveReleaseAction(
+                phase = FlashRecordingPhase.Holding,
+                captureStarted = true,
+                elapsedMs = 1_200L,
+                isDesktop = false,
+            ),
+        )
+        assertEquals(
+            FlashVoiceRecordingMath.ReleaseAction.FinishLockGesture,
+            FlashVoiceRecordingMath.resolveReleaseAction(
+                phase = FlashRecordingPhase.Locked,
+                captureStarted = true,
+                elapsedMs = 200L,
+                isDesktop = false,
+            ),
+        )
+        assertEquals(
+            FlashVoiceRecordingMath.ReleaseAction.Cancel,
+            FlashVoiceRecordingMath.resolveReleaseAction(
+                phase = FlashRecordingPhase.CancelArmed,
+                captureStarted = true,
+                elapsedMs = 800L,
+                isDesktop = true,
+            ),
+        )
+        assertEquals(
+            FlashVoiceRecordingMath.ReleaseAction.None,
+            FlashVoiceRecordingMath.resolveReleaseAction(
+                phase = FlashRecordingPhase.Holding,
+                captureStarted = false,
+                elapsedMs = 800L,
+                isDesktop = true,
+            ),
+        )
+    }
+
+    @Test
     fun `strip samples keep only the most recent window`() {
         val samples = (1..40).toList()
         val strip = FlashVoiceRecordingMath.stripSamples(samples)

@@ -113,4 +113,11 @@ class FlashChatScrollLogicTest {
         assertEquals(-1, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = -1, hasTypingBubble = false))
         assertEquals(-1, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = -1, hasTypingBubble = true))
     }
+
+    @Test
+    fun `empty message list disables reverseLayout so top banners stay top-aligned`() {
+        assertFalse(FlashChatScrollMath.shouldUseReverseLayout(0))
+        assertTrue(FlashChatScrollMath.shouldUseReverseLayout(1))
+        assertTrue(FlashChatScrollMath.shouldUseReverseLayout(25))
+    }
 }

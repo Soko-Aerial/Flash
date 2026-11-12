@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -142,6 +143,7 @@ fun FlashMessageBubble(
     inSelectionMode: Boolean = false,
     onSelectToggle: () -> Unit = {},
     onToggleReaction: (String) -> Unit = {},
+    onOpenReactionDetails: ((com.transfer.flash.core.messaging.model.FlashReaction?) -> Unit)? = null,
     onReplySwipe: () -> Unit = {},
     onJumpToMessage: (String) -> Unit = {},
     onImageClick: (index: Int, image: com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit = { _, _ -> },
@@ -284,6 +286,8 @@ fun FlashMessageBubble(
                 reactions = message.reactions,
                 outgoing = message.isMine,
                 onToggleReaction = onToggleReaction,
+                onLongClickReaction = { reaction -> onOpenReactionDetails?.invoke(reaction) },
+                onOverflowClick = { onOpenReactionDetails?.invoke(null) },
                 modifier = Modifier.padding(top = FlashSpacing.space4),
             )
         }
@@ -446,6 +450,10 @@ private fun FlashMessageBubbleUltraLow(
             FlashMessageTimestampRowUltraLow(
                 message = message,
                 deliveryStatus = deliveryStatus,
+                onRetryMessage = onRetryMessage,
+            )
+            FlashMessageFailedRetryRow(
+                message = message,
                 onRetryMessage = onRetryMessage,
             )
             FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
@@ -719,6 +727,10 @@ private fun FlashBubbleSurface(
                 onOpenMessageInfo = onOpenMessageInfo,
                 onRetryMessage = onRetryMessage,
             )
+            FlashMessageFailedRetryRow(
+                message = message,
+                onRetryMessage = onRetryMessage,
+            )
             FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
         }
     }
@@ -886,7 +898,10 @@ private fun FlashMessageTimestampRow(
             Spacer(modifier = Modifier.width(FlashSpacing.space4))
             Box(
                 modifier = Modifier
-                    .size(16.dp)
+                    .defaultMinSize(
+                        minWidth = FlashDimensions.minTouchTarget,
+                        minHeight = FlashDimensions.minTouchTarget,
+                    )
                     .clip(CircleShape)
                     .clickable(
                         onClick = {
@@ -900,10 +915,62 @@ private fun FlashMessageTimestampRow(
                 FlashIcon(
                     icon = FlashIcons.More,
                     contentDescription = "Message options",
-                    size = 12.dp,
+                    size = 14.dp,
                     tint = timestampColor.copy(alpha = 0.7f),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun FlashMessageFailedRetryRow(
+    message: FlashMessageUi,
+    onRetryMessage: ((String) -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    if (!message.isMine ||
+        message.deliveryStatus != com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed ||
+        onRetryMessage == null
+    ) {
+        return
+    }
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val haptics = rememberFlashHaptics()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = FlashSpacing.space2),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Row(
+            modifier = Modifier
+                .defaultMinSize(minHeight = FlashDimensions.minTouchTarget)
+                .clip(FlashShapes.chip)
+                .clickable {
+                    haptics(FlashHaptic.Confirm)
+                    onRetryMessage(message.id)
+                }
+                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "Failed to send. Tap to retry."
+                },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        ) {
+            FlashIcon(
+                icon = FlashIcons.Retry,
+                contentDescription = null,
+                tint = colors.textError,
+                size = FlashDimensions.iconSm,
+            )
+            FlashText(
+                text = "Tap to retry",
+                style = typography.metadataEmphasis,
+                color = colors.textError,
+            )
         }
     }
 }

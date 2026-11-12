@@ -4,15 +4,12 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,8 +22,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -44,7 +39,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -63,9 +57,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import com.transfer.flash.core.enterprise.OrgLease
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
@@ -134,7 +126,7 @@ internal fun FlashHubTopBar(
                             .focusRequester(searchFocus)
                             .semantics { contentDescription = FlashHubCopy.SEARCH_HINT },
                         textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
-                        cursorBrush = SolidColor(colors.accentPrimary),
+                        cursorBrush = SolidColor(colors.accentFill),
                         decorationBox = { inner ->
                             if (query.isEmpty()) {
                                 FlashText(FlashHubCopy.SEARCH_HINT, style = FlashTheme.typography.bodyDefault, color = colors.textTertiary, maxLines = 1)
@@ -150,9 +142,9 @@ internal fun FlashHubTopBar(
                         .padding(start = FlashSpacing.space8)
                         .size(32.dp)
                         .clip(HubShapes.control)
-                        .background(colors.accentPrimary.copy(alpha = 0.14f)),
+                        .background(colors.accentFill.copy(alpha = 0.14f)),
                     contentAlignment = Alignment.Center,
-                ) { FlashIcon(icon = FlashIcons.Hub, contentDescription = null, tint = colors.accentPrimary, size = FlashDimensions.iconSm) }
+                ) { FlashIcon(icon = FlashIcons.Hub, contentDescription = null, tint = colors.textLink, size = FlashDimensions.iconSm) }
                 FlashText(
                     text = title,
                     modifier = Modifier
@@ -242,7 +234,7 @@ internal fun FlashHubTextAction(label: String, onClick: () -> Unit, modifier: Mo
             .padding(horizontal = FlashSpacing.space12),
         contentAlignment = Alignment.Center,
     ) {
-        FlashText(label, style = FlashTheme.typography.bodyEmphasis, color = if (enabled) colors.accentFill else colors.textTertiary)
+        FlashText(label, style = FlashTheme.typography.bodyEmphasis, color = if (enabled) colors.textLink else colors.textTertiary)
     }
 }
 
@@ -370,11 +362,11 @@ internal fun FlashHubSegments(
                                     .heightIn(min = 18.dp)
                                     .widthIn(min = 18.dp)
                                     .clip(HubShapes.capsule)
-                                    .background(colors.accentPrimary)
+                                    .background(colors.accentFill)
                                     .padding(horizontal = FlashSpacing.space4),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                FlashText(if (badge > 99) "99+" else badge.toString(), style = FlashTheme.typography.numericEmphasis, color = colors.textOnAccent, maxLines = 1)
+                                FlashText(if (badge > 99) "99+" else badge.toString(), style = FlashTheme.typography.numericEmphasis, color = colors.onAccentFill, maxLines = 1)
                             }
                         }
                     }
@@ -388,156 +380,10 @@ internal fun FlashHubSegments(
                         .width(indicatorW)
                         .height(3.dp)
                         .clip(HubShapes.capsule)
-                        .background(colors.accentPrimary),
+                        .background(colors.accentFill),
                 )
             }
         }
-    }
-}
-
-/** One glance number on the header: a count that rolls up on first show, tappable (it opens that segment). */
-internal data class FlashHubStat(
-    val segment: FlashHubSegment,
-    val label: String,
-    val count: Int,
-    val icon: FlashIconSpec,
-)
-
-/**
- * The masthead at the top of every section: the organisation's square mark and name, whether the company server is reachable
- * (a square that breathes while it is), the offline-trust meter (one tick per day), how this device stands (role, whether it
- * may post) and a ledger row of three counts separated by hairlines. No card, no gradient: it sits on the page between two
- * rules. The title row opens the status page when [onOpenStatus] is given.
- */
-@Composable
-internal fun FlashHubOverview(
-    orgName: String,
-    summary: String,
-    roleLine: String,
-    canPost: Boolean,
-    connected: Boolean?,
-    modifier: Modifier = Modifier,
-    stats: List<FlashHubStat> = emptyList(),
-    lease: OrgLease = OrgLease.None,
-    nowMs: Long = 0L,
-    onStat: (FlashHubSegment) -> Unit = {},
-    onOpenStatus: (() -> Unit)? = null,
-) {
-    val colors = FlashTheme.colors
-    val name = orgName.ifBlank { FlashHubCopy.TAB_LABEL }
-    val days = FlashHubVisualMath.leaseDaysLeft(lease, nowMs)
-    val fraction = FlashHubVisualMath.leaseFraction(lease, nowMs)
-    val leaseTone = FlashHubVisualMath.leaseTone(lease, nowMs).hubTone()
-    val spoken = buildString {
-        append(name)
-        if (summary.isNotEmpty()) append(", ").append(summary)
-        append(", ").append(roleLine)
-        if (canPost) append(", ").append(FlashHubCopy.OVERVIEW_CAN_POST)
-        if (connected != null) append(", ").append(if (connected) FlashHubCopy.OVERVIEW_CONNECTED else FlashHubCopy.OVERVIEW_OFFLINE)
-        if (fraction != null) append(", ").append(FlashHubCopy.statusLeaseSpoken(days))
-    }
-    Column(
-        modifier = modifier
-            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
-            .fillMaxWidth()
-            .hubStagger(0, "hub-hero")
-            .clip(HubShapes.card)
-            .background(hubHeroBrush())
-            .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.28f), HubShapes.card)
-            .padding(FlashSpacing.space16),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(if (onOpenStatus != null) Modifier.clip(HubShapes.control).hubClickable(onClick = onOpenStatus) else Modifier)
-                .semantics(mergeDescendants = true) {
-                    contentDescription = if (onOpenStatus != null) "${FlashHubCopy.STATUS_OPEN}. $spoken" else spoken
-                },
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-        ) {
-            HubMonogram(FlashHubMath.initials(name).take(2).uppercase(), 52.dp)
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
-                FlashText(name, style = FlashTheme.typography.headingMedium, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (connected != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                        HubLiveDot(color = if (connected) colors.statusOnline else colors.statusOffline, live = connected)
-                        FlashText(
-                            if (connected) FlashHubCopy.OVERVIEW_CONNECTED else FlashHubCopy.OVERVIEW_OFFLINE,
-                            style = FlashTheme.typography.metadataDefault,
-                            color = colors.textSecondary,
-                            maxLines = 1,
-                        )
-                    }
-                } else if (summary.isNotEmpty() && stats.isEmpty()) {
-                    FlashText(summary, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-            }
-        }
-        if (fraction != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    FlashText(FlashHubCopy.STATUS_TRUST.uppercase(), modifier = Modifier.weight(1f), style = hubCapsStyle(), color = colors.textSecondary, maxLines = 1)
-                    FlashText(
-                        if (days == null || days == 0) FlashHubCopy.STATUS_LEASE_ENDED else FlashHubCopy.statusLeaseDays(days),
-                        style = FlashTheme.typography.numericEmphasis,
-                        color = leaseTone.color(),
-                        maxLines = 1,
-                    )
-                }
-                HubTickMeter(fraction = fraction, color = leaseTone.color())
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8), verticalAlignment = Alignment.CenterVertically) {
-            FlashHubChip(roleLine, emphasised = true, modifier = Modifier.weight(1f, fill = false))
-            if (canPost) FlashHubChip(FlashHubCopy.OVERVIEW_CAN_POST, icon = FlashIcons.Announcement, modifier = Modifier.weight(1f, fill = false))
-        }
-        if (stats.isNotEmpty()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8), modifier = Modifier.fillMaxWidth()) {
-                stats.forEach { stat -> HubStatCell(stat, onClick = { onStat(stat.segment) }, modifier = Modifier.weight(1f)) }
-            }
-        }
-    }
-}
-
-/** One count tile of the masthead: icon, the number in tabular figures that counts up, its label. Opens that section. */
-@Composable
-private fun HubStatCell(stat: FlashHubStat, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val colors = FlashTheme.colors
-    val shown = rememberHubCount(stat.count)
-    Column(
-        modifier = modifier
-            .clip(HubShapes.control)
-            .background(colors.backgroundSurface.copy(alpha = 0.78f))
-            .border(FlashDimensions.borderHairline, colors.borderSubtle, HubShapes.control)
-            .hubClickable(onClick = onClick)
-            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12)
-            .semantics(mergeDescendants = true) { contentDescription = FlashHubCopy.statNumberSpoken(stat.count, stat.label) },
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
-    ) {
-        FlashIcon(icon = stat.icon, contentDescription = null, tint = colors.accentPrimary, size = FlashDimensions.iconSm)
-        FlashText(shown.toString(), style = FlashTheme.typography.headingLarge.copy(fontFeatureSettings = "tnum"), color = colors.textPrimary, maxLines = 1)
-        FlashText(stat.label, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
-}
-
-/** The organisation / department mark: a square tile with initials (flat accent; a faint gradient only in the full mode). */
-@Composable
-internal fun HubMonogram(text: String, size: Dp, modifier: Modifier = Modifier) {
-    val colors = FlashTheme.colors
-    val decor = hubDecorAllowed()
-    Box(
-        modifier = modifier
-            .size(size)
-            .clip(HubShapes.mark(size))
-            .background(
-                if (decor) Brush.linearGradient(listOf(colors.accentPrimary, colors.accentPrimary.copy(alpha = 0.78f)))
-                else SolidColor(colors.accentPrimary),
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        FlashText(text, style = if (size >= 48.dp) FlashTheme.typography.headingSmall else FlashTheme.typography.bodyEmphasis, color = colors.textOnAccent, maxLines = 1)
     }
 }
 
@@ -561,7 +407,7 @@ internal fun FlashHubNoteCard(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        FlashIcon(icon = icon, contentDescription = null, tint = colors.accentPrimary, size = FlashDimensions.iconSm)
+        FlashIcon(icon = icon, contentDescription = null, tint = colors.textLink, size = FlashDimensions.iconSm)
         FlashText(text, modifier = Modifier.weight(1f), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
     }
 }
@@ -572,12 +418,12 @@ internal fun FlashHubSwitch(on: Boolean, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val thumbX by animateDpAsState(if (on) 18.dp else 0.dp, animationSpec = motion.springSnappySpec(), label = "hubSwitchThumb")
-    val track by animateColorAsState(if (on) colors.accentPrimary else colors.backgroundSurfaceStrong, animationSpec = motion.tweenFastSpec(), label = "hubSwitchTrack")
-    val thumb by animateColorAsState(if (on) colors.textOnAccent else colors.textTertiary, animationSpec = motion.tweenFastSpec(), label = "hubSwitchThumbColor")
+    val track by animateColorAsState(if (on) colors.accentFill else colors.backgroundSurfaceStrong, animationSpec = motion.tweenFastSpec(), label = "hubSwitchTrack")
+    val thumb by animateColorAsState(if (on) colors.onAccentFill else colors.textTertiary, animationSpec = motion.tweenFastSpec(), label = "hubSwitchThumbColor")
     Box(
         modifier = modifier.size(width = 46.dp, height = 28.dp).clip(HubShapes.capsule)
             .background(track)
-            .border(FlashDimensions.borderHairline, if (on) colors.accentPrimary else colors.borderStrong, HubShapes.capsule)
+            .border(FlashDimensions.borderHairline, if (on) colors.accentFill else colors.borderStrong, HubShapes.capsule)
             .padding(3.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
@@ -626,7 +472,7 @@ internal fun FlashHubEmptyState(
             modifier = Modifier
                 .size(56.dp),
             contentAlignment = Alignment.Center,
-        ) { FlashIcon(icon = icon, contentDescription = null, tint = colors.accentPrimary, size = FlashDimensions.iconLg) }
+        ) { FlashIcon(icon = icon, contentDescription = null, tint = colors.textLink, size = FlashDimensions.iconLg) }
         FlashText(
             headline,
             modifier = Modifier.semantics { heading() },
@@ -700,12 +546,12 @@ internal fun FlashHubRevokedView(onSignOut: () -> Unit, modifier: Modifier = Mod
 @Composable
 internal fun FlashHubChip(text: String, modifier: Modifier = Modifier, emphasised: Boolean = false, icon: FlashIconSpec? = null) {
     val colors = FlashTheme.colors
-    val fg = if (emphasised) colors.accentPrimary else colors.textSecondary
+    val fg = if (emphasised) colors.textLink else colors.textSecondary
     Row(
         modifier = modifier
-            .clip(HubShapes.chip)
-            .background(if (emphasised) colors.accentPrimary.copy(alpha = 0.16f) else colors.backgroundSurfaceStrong)
-            .then(if (emphasised) Modifier.border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.5f), HubShapes.chip) else Modifier)
+            .clip(FlashShapes.chip)
+            .background(if (emphasised) colors.accentFill.copy(alpha = 0.14f) else colors.backgroundSurfaceStrong)
+            .then(if (emphasised) Modifier.border(FlashDimensions.borderHairline, colors.accentFill.copy(alpha = 0.45f), FlashShapes.chip) else Modifier)
             .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
