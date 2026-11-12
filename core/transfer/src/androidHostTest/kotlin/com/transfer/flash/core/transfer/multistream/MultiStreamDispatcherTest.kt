@@ -516,6 +516,103 @@ class MultiStreamDispatcherTest {
     }
 
     @Test(timeout = 60_000)
+    fun `resume with a non-contiguous done set reads the holes and verifies the whole file`() = runBlocking {
+        // Regression: the first pending index is 0, so the digest guard is active, but the sender
+        // skips holes at 1, 3 and 7. `skipTo` does not hash, so the end-of-stream cross-check used
+        // to fail ("whole-file digest changed between passes") and the retry reported Failed while
+        // the receiver stayed at its old byte count.
+        val h = Harness()
+        val skipped = listOf(1, 3, 7)
+        for (index in skipped) {
+            val start = index * chunkSize
+            val end = minOf(start + chunkSize, payload.size)
+            h.assembler.parts[index] = payload.copyOfRange(start, end)
+        }
+
+        val result = h.build(doneIndexes = skipped).send()
+
+        val completed = result as? MultiStreamResult.Completed
+            ?: throw AssertionError("expected Completed got $result", (result as? MultiStreamResult.Failed)?.let { AssertionError(it.reason) })
+        assertTrue(h.assembler.matches(payload))
+        assertEquals(totalBytes, h.dispatcher.progress.value.bytesDone)
+        assertEquals(skipped.size, completed.chunksSkippedResume)
+    }
+
+    @Test(timeout = 60_000)
+    fun `out-of-range ACK indexes are ignored instead of thrown`() = runBlocking {
+        val h = Harness()
+        val dispatcher = h.build()
+
+        assertTrue(
+            dispatcher.onInboundFrame(
+                0,
+                ChunkFrame.serialize(
+                    ChunkFrame.AckBatch(meta.transferId, meta.fileId, listOf(Int.MAX_VALUE)),
+                ),
+            ),
+        )
+        assertEquals(0, dispatcher.confirmedCountSnapshot())
+
+        val result = dispatcher.send()
+        assertTrue("send failed after a malformed ACK: $result", result is MultiStreamResult.Completed)
+        assertTrue(h.assembler.matches(payload))
+    }
+
+    @Test(timeout = 60_000)
+    fun `receiver-announced durable chunks are skipped even with no local resume set`() = runBlocking {
+        // A desktop sender keeps no transfer store, so its retry has no local done-set. The
+        // receiver re-announces what it already verified on FILE_START; every announced chunk must
+        // stay off the wire, or the receiver sits at its last byte count until the replay catches up.
+        val announced = (0 until 10).toList()
+        val sentIndexes = Collections.synchronizedList(ArrayList<Int>())
+        lateinit var dispatcherRef: MultiStreamDispatcher
+        val channels = (0 until 2).map { id ->
+            object : StreamChannel {
+                override val id: Int = id
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                    when (val parsed = ChunkFrame.parse(frameBytes)) {
+                        is ChunkFrame.FileStart -> {
+                            val ack = ChunkFrame.AckBatch(parsed.transferId, parsed.fileId, announced)
+                            dispatcherRef.onInboundFrame(id, ChunkFrame.serialize(ack))
+                        }
+
+                        is ChunkFrame.Chunk -> {
+                            sentIndexes.add(parsed.index)
+                            val ack = ChunkFrame.AckBatch(parsed.transferId, parsed.fileId, listOf(parsed.index))
+                            dispatcherRef.onInboundFrame(id, ChunkFrame.serialize(ack))
+                        }
+
+                        else -> Unit
+                    }
+                    return true
+                }
+            }
+        }
+        val dispatcher = MultiStreamDispatcher(
+            chunker = Chunker(),
+            meta = meta,
+            source = ChunkSource { Buffer().write(payload) },
+            factory = StreamChannelFactory { id, _ -> channels.firstOrNull { it.id == id } },
+            streamCount = 2,
+            requestedChunkSize = chunkSize,
+            workerDispatcher = Dispatchers.Default,
+            completeGraceMs = 0L,
+        ).also { dispatcherRef = it }
+
+        val result = dispatcher.send()
+
+        val completed = result as? MultiStreamResult.Completed
+            ?: throw AssertionError("Expected Completed but was: $result; reason=${(result as? MultiStreamResult.Failed)?.reason}")
+        assertEquals(19 - announced.size, completed.chunksSent)
+        assertTrue(
+            "already durable chunks were replayed: sent=$sentIndexes",
+            sentIndexes.none { it in announced },
+        )
+        assertEquals((announced.size until 19).toList(), sentIndexes.sorted())
+        assertEquals(totalBytes, dispatcher.progress.value.bytesDone)
+    }
+
+    @Test(timeout = 60_000)
     fun `resume past a done prefix keeps each chunk's own payload`() = runBlocking {
         // Regression (O23-02): the dispatcher opened the non-seekable source at byte 0 but labelled
         // the first frame with the resumed index, so every chunk carried the previous chunk's bytes

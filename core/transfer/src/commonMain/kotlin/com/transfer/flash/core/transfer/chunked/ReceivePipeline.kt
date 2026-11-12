@@ -165,6 +165,23 @@ public class ReceivePipeline(
     }
 
     /**
+     * Forgets the "already announced this durable set" marker for [transferId], so the next
+     * identical FILE_START announces the receiver's done-set again.
+     *
+     * A retry is a new attempt on the same session: ACKs from the previous announcement can be
+     * lost while no new chunk lands, leaving `receivedCount` unchanged. Hosts call this on their
+     * local retry/interruption edge (no wire change) so that attempt still gets a bitmap without
+     * repeating the announcement for every stream of one FILE_START burst.
+     *
+     * @return true when a session exists.
+     */
+    public fun resetResumeAnnouncement(transferId: String): Boolean = lock.withLock {
+        val session = sessions[transferId] ?: return@withLock false
+        session.announcedReceivedCount = -1
+        true
+    }
+
+    /**
      * Drops a receive session (remote CANCEL). Returns true when a live session existed.
      * The destination sink handle is closed by the HOST (it owns the handle map).
      */
@@ -205,10 +222,14 @@ public class ReceivePipeline(
 
         val existing = sessions[frame.transferId]
         if (existing != null) {
-            // Identical re-offer == resume restart: keep accumulated progress, no event.
+            // Identical re-offer == resume restart: keep accumulated progress and re-announce the
+            // durable done-set so a sender with no local resume state (the desktop host keeps no
+            // transfer store) skips what is already on disk instead of replaying it. The
+            // announcement is refreshed only when new chunks landed since the previous one, so
+            // the N FILE_START frames of one multi-stream attempt do not repeat a large ACK.
             // Different facts for the same id is a hard protocol conflict.
             return if (existing.start == frame) {
-                emptyList()
+                announceResumeState(existing, frame.transferId)
             } else {
                 listOf(reject(RejectReason.SESSION_CONFLICT, frame.transferId))
             }
@@ -242,12 +263,70 @@ public class ReceivePipeline(
         if (emitSessionStarted) {
             events.add(ReceiveEvent.SessionStarted(frame))
         }
+        // A resumed session seeds chunks that were persisted in an earlier attempt. Tell the
+        // sender about them once: without this its fresh dispatcher has no way to know they are
+        // already on disk (the sender's own ACK mirror is not persisted on every host) and
+        // replays the whole prefix before the receiver's progress can move.
+        if (seededBytes > 0L) {
+            events.addAll(announceResumeState(session, frame.transferId))
+        }
         // A fully-seeded resume (every chunk already persisted, only the COMPLETE handshake was
         // lost pre-restart) must finalize now — the sender has nothing left to send (#20).
         if (fullySeeded) {
             session.finished = true
             events.add(buildComplete(session, frame.transferId))
         }
+        return events
+    }
+
+    /**
+     * ACK batches describing every durable chunk this receive session holds, or none when the
+     * set was announced already and no chunk landed since.
+     *
+     * The existing ACK_BATCH frames are reused deliberately: the wire format does not change and
+     * an older sender already treats them as monotonic receive confirmations, so this is safe
+     * for a mixed-version pair. `announcedReceivedCount` deduplicates the announcement across the
+     * FILE_START that the sender emits on every stream of one attempt, while a later retry (which
+     * normally has more received chunks than the previous announcement) is announced again.
+     */
+    private fun announceResumeState(session: Session, transferId: String): List<ReceiveEvent> {
+        val received = session.vector.receivedCount
+        if (received == 0 || received == session.announcedReceivedCount) return emptyList()
+        val events = ArrayList<ReceiveEvent>()
+        var batch = ArrayList<Int>(ANNOUNCE_BATCH_SIZE)
+        var announced = 0
+        session.vector.forEachDoneIndex { index ->
+            if (announced >= MAX_ANNOUNCED_CHUNKS) return@forEachDoneIndex
+            batch.add(index)
+            announced++
+            if (batch.size >= ANNOUNCE_BATCH_SIZE) {
+                events.add(
+                    ReceiveEvent.AckBatchReady(
+                        ChunkFrame.AckBatch(transferId, session.start.fileId, batch),
+                    ),
+                )
+                batch = ArrayList(ANNOUNCE_BATCH_SIZE)
+            }
+        }
+        if (batch.isNotEmpty()) {
+            events.add(
+                ReceiveEvent.AckBatchReady(
+                    ChunkFrame.AckBatch(transferId, session.start.fileId, batch),
+                ),
+            )
+        }
+        if (announced < received) {
+            runCatching {
+                FlashLog.w(
+                    "TRANSFER",
+                    "resume announcement truncated transferId=$transferId announced=$announced received=$received",
+                )
+            }
+        }
+        // Indexes in `pending` are already marked received, so the full announcement covers them;
+        // leaving them queued would send the same confirmations a second time.
+        session.pending.clear()
+        session.announcedReceivedCount = received
         return events
     }
 
@@ -452,6 +531,13 @@ public class ReceivePipeline(
         val pending = HashSet<Int>()
         var finished = false
 
+        /**
+         * `receivedCount` at the last resume announcement. A later identical FILE_START only
+         * re-announces when new durable chunks have landed since, unless the host resets this at
+         * a retry boundary (see [ReceivePipeline.resetResumeAnnouncement]).
+         */
+        var announcedReceivedCount: Int = -1
+
         /** Verified bytes held so far (see [ReceivePipeline.doneBytes]). */
         var doneBytes: Long = 0L
     }
@@ -471,6 +557,21 @@ public class ReceivePipeline(
         public const val MAX_TOTAL_CHUNKS: Int = 16_777_216
 
         private const val DEFAULT_FINISHED_RETAINED: Int = 64
+
+        /**
+         * ACK_BATCH size used when a resume announces its durable done-set. Well below
+         * [ChunkFrame.MAX_ACK_COUNT] and the data-channel frame cap, so one batch always fits a
+         * live stream on either transport.
+         */
+        private const val ANNOUNCE_BATCH_SIZE: Int = 65_536
+
+        /**
+         * Upper bound on indexes announced by one resume. A 64 GiB file at the 64 KiB default is
+         * one million chunks; announcing beyond this would build a needlessly large burst of
+         * frames for a size phones do not transfer. The sender simply replays anything beyond the
+         * announced prefix, which is still correct.
+         */
+        private const val MAX_ANNOUNCED_CHUNKS: Int = 2_097_152
     }
 }
 

@@ -8,6 +8,7 @@ import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ChunkSource
 import com.transfer.flash.core.transfer.chunked.Chunker
 import com.transfer.flash.core.transfer.chunked.FileMeta
@@ -256,7 +257,18 @@ public class RealFlashTransferRepository(
     private val _outgoingControl = MutableSharedFlow<OutgoingControl>(extraBufferCapacity = 16)
     public val outgoingControl: MutableSharedFlow<OutgoingControl> = _outgoingControl
 
-    public data class OutgoingControl(val transferId: String, val peerDeviceId: String?, val action: String)
+    public data class OutgoingControl(
+        val transferId: String,
+        val peerDeviceId: String?,
+        val action: String,
+    ) {
+        /**
+         * Optional wire `reason` (refusal token or [REASON_SENDER_INTERRUPTED]), set before the
+         * intent is emitted. Kept out of the constructor so the published three-argument shape
+         * stays binary-compatible for SDK consumers.
+         */
+        public var reason: String? = null
+    }
 
     public companion object {
         /** How long a finished or interrupted row is kept for the Transfers list after its last change (C-05). */
@@ -275,6 +287,22 @@ public class RealFlashTransferRepository(
         /** Stored on a 1:1 row paused because the Android foreground-service timeout stopped the service. */
         public const val REASON_PAUSED_BY_SYSTEM: String = "paused by system"
         public const val ACTION_CANCEL: String = "cancel"
+
+        /**
+         * Local-only intake action (never on the wire): the host must call
+         * `ReceivePipeline.resetResumeAnnouncement` so the next re-offer of this transfer announces
+         * its durable done-set again. Emitted on a sender interruption and on either Retry path.
+         */
+        public const val ACTION_RESET_ANNOUNCEMENT: String = "reset_resume_announcement"
+
+        /**
+         * Reason carried on a `pause` frame when a sending attempt ended without either side choosing
+         * to stop (the dispatcher failed, or the source could not be read). The receiver leaves its
+         * active state instead of waiting for bytes that will never come; a later RESUME from either
+         * Retry action revives it. An explicit cancel stays [ACTION_CANCEL], and a changed source is
+         * refused with its own sentence before any send starts (ADR-352).
+         */
+        public const val REASON_SENDER_INTERRUPTED: String = "sender_interrupted"
 
         /**
          * Local-only intake actions for the inbound offer gate (#5). These never go on the wire as
@@ -313,6 +341,15 @@ public class RealFlashTransferRepository(
     private val runningDispatchers = mutableMapOf<String, MultiStreamDispatcher>()
 
     /**
+     * Transfers whose receiver has explicitly accepted with a RESUME, guarded by [registryLock].
+     * A retry of an accepted transfer must not park again on the #5 acceptance gate just because
+     * the sender's own ACK mirror is still empty (the desktop host has no store at all); that
+     * would leave the sender waiting for a second acceptance the receiver has no UI left to give.
+     * A brand-new send clears its id first, so consent is never inherited by a new attempt.
+     */
+    private val receiverAccepted = mutableSetOf<String>()
+
+    /**
      * Transfer ids whose transmission should be paused, recorded independently of whether a
      * dispatcher exists yet. Guarded by [registryLock].
      *
@@ -338,8 +375,14 @@ public class RealFlashTransferRepository(
         }
 
     /** Emits a wire control intent, logging drops instead of losing them silently. */
-    private fun emitOutgoing(transferId: String, peerDeviceId: String?, action: String) {
-        if (!_outgoingControl.tryEmit(OutgoingControl(transferId, peerDeviceId, action))) {
+    private fun emitOutgoing(
+        transferId: String,
+        peerDeviceId: String?,
+        action: String,
+        reason: String? = null,
+    ) {
+        val control = OutgoingControl(transferId, peerDeviceId, action).also { it.reason = reason }
+        if (!_outgoingControl.tryEmit(control)) {
             runCatching {
                 FlashLog.w(
                     "TRANSFER",
@@ -482,7 +525,11 @@ public class RealFlashTransferRepository(
     // out. A RESUME that beats dispatcher registration clears the intent and the sender streams
     // immediately; either ordering is safe.
     if (requireReceiverAcceptance) {
-        registryLock.withLock { pauseIntents.add(transferIdString) }
+        registryLock.withLock {
+            // A reused id starts a new consent cycle; only a RESUME for THIS attempt may release it.
+            receiverAccepted.remove(transferIdString)
+            pauseIntents.add(transferIdString)
+        }
     }
 
     updateInternalTransfers { it + initialTransfer }
@@ -579,6 +626,27 @@ public class RealFlashTransferRepository(
         runCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
         runCatching { FlashLog.w("TRANSFER", "send refused transferId=$transferId reason=$message") }
     }
+
+    /**
+     * Tells the receiver that this sending attempt ended without either person cancelling, so its
+     * row stops waiting at the last byte count. A pause is used on purpose: it is not terminal on
+     * the receiving side, keeps the durable chunks, and the RESUME that [resumeTransfer] or
+     * [onRemoteTransferControl] sends on Retry revives the same logical transfer. Older peers
+     * simply show a pause. An explicit local cancel or a completed row never emits this.
+     */
+    private fun notifyAttemptInterrupted(transferId: String, peerDeviceId: String?) {
+        val row = _activeTransfers.value.firstOrNull { it.id.value == transferId } ?: return
+        if (row.state == FlashTransferState.Cancelled || row.state == FlashTransferState.Completed) return
+        emitOutgoing(
+            transferId = transferId,
+            peerDeviceId = peerDeviceId ?: row.peerDeviceId,
+            action = ACTION_PAUSE,
+            reason = REASON_SENDER_INTERRUPTED,
+        )
+    }
+
+    private fun isCancelled(transferId: String): Boolean =
+        _activeTransfers.value.any { it.id.value == transferId && it.state == FlashTransferState.Cancelled }
 
     private suspend fun executeSend(
         transferId: String,
@@ -723,6 +791,7 @@ public class RealFlashTransferRepository(
                     progressJob.cancel()
                     // R-01: wait for a tick that is mid-write, or it re-inserts chunk rows after they are deleted below.
                     progressJob.join()
+                    registryLock.withLock { receiverAccepted.remove(transferId) }
                     if (result.verified == false) {
                         // The receiver assembled every chunk and its whole-file check failed (ADR-068). Not a
                         // success, and a retry must resend everything, so the confirmed set goes too.
@@ -755,18 +824,21 @@ public class RealFlashTransferRepository(
 
                 is MultiStreamResult.Failed -> {
                     progressJob.cancel()
-                    // Persist unconfirmed chunks if needed
-                    val unconfirmed = result.unconfirmedIndexes
-                    val failureText = TransferFailureText.friendly(result.reason, transferId)
-                    updateTransferState(transferId) {
-                        it.copy(
-                            state = FlashTransferState.Failed,
-                            errorMessage = failureText,
-                            speedBytesPerSec = 0L,
-                            etaSeconds = 0L,
-                        )
+                    // An explicit cancel always wins over a worker that happened to finish its
+                    // failure path at the same moment (audit B-01's rule, applied on the send side).
+                    if (!isCancelled(transferId)) {
+                        val failureText = TransferFailureText.friendly(result.reason, transferId)
+                        updateTransferState(transferId) {
+                            it.copy(
+                                state = FlashTransferState.Failed,
+                                errorMessage = failureText,
+                                speedBytesPerSec = 0L,
+                                etaSeconds = 0L,
+                            )
+                        }
+                        store?.setStatus(transferId, FlashTransferState.Failed.name)
+                        notifyAttemptInterrupted(transferId, peerDeviceId)
                     }
-                    store?.setStatus(transferId, FlashTransferState.Failed.name)
                 }
             }
         } catch (ce: kotlinx.coroutines.CancellationException) {
@@ -778,16 +850,19 @@ public class RealFlashTransferRepository(
             throw ce
         } catch (t: Throwable) {
             progressJob.cancel()
-            val failureText = TransferFailureText.friendly(t.message ?: t::class.simpleName, transferId)
-            updateTransferState(transferId) {
-                it.copy(
-                    state = FlashTransferState.Failed,
-                    errorMessage = failureText,
-                    speedBytesPerSec = 0L,
-                    etaSeconds = 0L,
-                )
+            if (!isCancelled(transferId)) {
+                val failureText = TransferFailureText.friendly(t.message ?: t::class.simpleName, transferId)
+                updateTransferState(transferId) {
+                    it.copy(
+                        state = FlashTransferState.Failed,
+                        errorMessage = failureText,
+                        speedBytesPerSec = 0L,
+                        etaSeconds = 0L,
+                    )
+                }
+                store?.setStatus(transferId, FlashTransferState.Failed.name)
+                notifyAttemptInterrupted(transferId, peerDeviceId)
             }
-            store?.setStatus(transferId, FlashTransferState.Failed.name)
         } finally {
             // Retire only OUR registrations: a resume that relaunched this transferId may already
             // have registered a replacement dispatcher/job under the same key, and blindly
@@ -1020,6 +1095,9 @@ public class RealFlashTransferRepository(
             updateTransferState(transferId.value) {
                 it.copy(state = FlashTransferState.Transferring, errorMessage = null)
             }
+            // This is a new attempt: even if no chunk landed since the last announcement, the next
+            // re-offer must carry a fresh durable bitmap (the previous ACKs may have been lost).
+            emitIncoming(transferId.value, ACTION_RESET_ANNOUNCEMENT)
             if (transfer.state == FlashTransferState.Offered) {
                 emitIncoming(transferId.value, ACTION_ACCEPT)
             } else {
@@ -1066,8 +1144,11 @@ public class RealFlashTransferRepository(
         // If requireReceiverAcceptance is on and this transfer never moved any bytes (unaccepted offer),
         // re-arm the acceptance gate so FILE_START is sent as an offer and chunks are parked.
         // If the peer is the one that asked for the resume (notifyPeer == false), the receiver has already
-        // explicitly requested/accepted the transfer, so we do not re-park.
-        val waitingForAcceptance = requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer
+        // explicitly requested/accepted the transfer, so we do not re-park. A RESUME seen earlier for this
+        // transfer is also proof of acceptance: re-parking then deadlocks against a receiver whose session is
+        // still open (its re-offer produces no SessionStarted event to accept again).
+        val alreadyAccepted = registryLock.withLock { transferId in receiverAccepted }
+        val waitingForAcceptance = requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer && !alreadyAccepted
         if (waitingForAcceptance) {
             registryLock.withLock { pauseIntents.add(transferId) }
         }
@@ -1124,8 +1205,12 @@ public class RealFlashTransferRepository(
         receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId.value) }
         val job = registryLock.withLock { runningJobs.remove(transferId.value) }
         // Drop the pause intent BEFORE unpausing: a dispatcher registering concurrently must not
-        // re-enter the paused state and swallow the cancellation.
-        registryLock.withLock { pauseIntents.remove(transferId.value) }
+        // re-enter the paused state and swallow the cancellation. The acceptance marker goes too:
+        // a cancelled transfer is never relaunched (B-01), and a reused id starts a new consent cycle.
+        registryLock.withLock {
+            pauseIntents.remove(transferId.value)
+            receiverAccepted.remove(transferId.value)
+        }
         val dispatcher = registryLock.withLock { runningDispatchers.remove(transferId.value) }
         dispatcher?.setPaused(false) // unpause so cancellation lands at the next suspension point
         job?.cancel()
@@ -1207,19 +1292,46 @@ public class RealFlashTransferRepository(
                     // No intake gating here: the sender has already stopped, and the gate is
                     // session-wide — closing it would also stall ACKs for unrelated transfers
                     // sharing this socket. Resume DOES ungate (idempotent, see below).
+                    // A sender that failed on its own says so with a reason: the attempt is over,
+                    // so the row must leave the active state instead of waiting for bytes that
+                    // will never arrive. It stays retryable (Failed, not Cancelled) and the same
+                    // durable chunk set is kept for the resume.
+                    val interrupted = reason?.trim()?.equals(REASON_SENDER_INTERRUPTED, ignoreCase = true) == true
                     updateTransferState(transferId) {
-                        it.copy(
-                            state = FlashTransferState.Paused,
-                            speedBytesPerSec = 0L,
-                            etaSeconds = -1L,
-                            errorMessage = "paused by sender",
-                        )
+                        when {
+                            // An offer nobody accepted yet has no bytes and no pipeline sink; leave it
+                            // Offered so the user can still accept the sender's next offer. Turning it
+                            // Failed would remove the only consent path (Retry cannot accept a session).
+                            interrupted && it.state == FlashTransferState.Offered -> it
+                            interrupted -> it.copy(
+                                state = FlashTransferState.Failed,
+                                speedBytesPerSec = 0L,
+                                etaSeconds = 0L,
+                                errorMessage = TransferFailureText.CONNECTION_LOST,
+                            )
+                            else -> it.copy(
+                                state = FlashTransferState.Paused,
+                                speedBytesPerSec = 0L,
+                                etaSeconds = -1L,
+                                errorMessage = "paused by sender",
+                            )
+                        }
+                    }
+                    if (interrupted) {
+                        // The sender's attempt ended: the next re-offer is a new attempt and must
+                        // re-announce the durable set even when no chunk landed since the last one.
+                        emitIncoming(transferId, ACTION_RESET_ANNOUNCEMENT)
                     }
                 }
             }
             ACTION_RESUME -> when (transfer.direction) {
                 FlashTransferDirection.Sending -> {
-                    registryLock.withLock { pauseIntents.remove(transferId) }
+                    // A RESUME proves the receiver accepted this logical transfer (it is also the
+                    // receiver's Retry). Remember it so a later retry does not wait for consent again.
+                    registryLock.withLock {
+                        receiverAccepted.add(transferId)
+                        pauseIntents.remove(transferId)
+                    }
                     // `isActive`, not mere presence: a send that died before registering a
                     // dispatcher leaves a completed Job behind (executeSend's finally only retires
                     // its own registration pair), and a stale entry must not block the relaunch.
@@ -1245,6 +1357,7 @@ public class RealFlashTransferRepository(
                     // MUST re-open the intake gate: without this a receiver that paused locally
                     // stayed gated forever while its UI claimed Transferring, and the resumed
                     // sender blocked on backpressure with zero progress.
+                    emitIncoming(transferId, ACTION_RESET_ANNOUNCEMENT)
                     emitIncoming(transferId, ACTION_RESUME)
                     updateTransferState(transferId) {
                         it.copy(state = FlashTransferState.Transferring, errorMessage = null)
@@ -1253,7 +1366,10 @@ public class RealFlashTransferRepository(
             }
             ACTION_CANCEL -> when (transfer.direction) {
                 FlashTransferDirection.Sending -> {
-                    registryLock.withLock { pauseIntents.remove(transferId) }
+                    registryLock.withLock {
+                        pauseIntents.remove(transferId)
+                        receiverAccepted.remove(transferId)
+                    }
                     // Unpause first (as local cancelTransfer does): a paused worker parks in a
                     // poll loop, and leaving the flag set risks re-parking before teardown.
                     registryLock.withLock { runningDispatchers.remove(transferId) }?.setPaused(false)
@@ -1301,6 +1417,12 @@ public class RealFlashTransferRepository(
     }
 
     override fun onInboundFrame(bytes: ByteArray): Boolean {
+        // A restored sender can be parked on the consent gate with no memory of the earlier
+        // acceptance (the desktop always is, and an Android process restart loses it). A receiver
+        // that already holds verified chunks re-announces them on the re-offer; that ACK is proof
+        // the transfer was accepted, so release the parked worker instead of waiting for a second
+        // consent the receiver has no UI left to give.
+        maybeReleaseParkedOffer(bytes)
         // Snapshot under the lock, fan out after releasing it. `MultiStreamDispatcher.onInboundFrame`
         // takes the dispatcher's own locks and can reach a host callback, so holding [registryLock]
         // across the loop would nest this lock underneath every dispatcher's — the one ordering
@@ -1314,6 +1436,33 @@ public class RealFlashTransferRepository(
             }
         }
         return handled
+    }
+
+    private fun maybeReleaseParkedOffer(bytes: ByteArray) {
+        if (_activeTransfers.value.none { it.isAwaitingReceiverAcceptance }) return
+        val ack = ChunkFrame.parse(bytes) as? ChunkFrame.AckBatch ?: return
+        if (ack.indexes.isEmpty()) return
+        val waiting = _activeTransfers.value.firstOrNull { it.id.value == ack.transferId } ?: return
+        if (!waiting.isAwaitingReceiverAcceptance) return
+        if (waiting.wireFileId != null && ack.fileId != waiting.wireFileId) return
+        // The dispatcher knows the real chunk count. An ACK with only out-of-range indexes is
+        // malformed wire input and must never release the consent gate.
+        val dispatcher = registryLock.withLock { runningDispatchers[ack.transferId] } ?: return
+        if (!dispatcher.hasValidAckIndex(ack.indexes)) return
+        registryLock.withLock {
+            receiverAccepted.add(ack.transferId)
+            pauseIntents.remove(ack.transferId)
+        }
+        dispatcher.setPaused(false)
+        updateTransferState(ack.transferId) {
+            it.copy(state = FlashTransferState.Transferring, errorMessage = null)
+        }
+        runCatching {
+            FlashLog.i(
+                "TRANSFER",
+                "receiver-confirmed chunks released parked offer transferId=${ack.transferId} confirmed=${ack.indexes.size}",
+            )
+        }
     }
 
     // ---- receive-side tracking (inbound transfers surface in activeTransfers) ------------------

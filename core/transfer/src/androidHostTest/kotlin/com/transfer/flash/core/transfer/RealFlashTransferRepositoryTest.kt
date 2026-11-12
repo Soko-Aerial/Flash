@@ -738,6 +738,205 @@ class RealFlashTransferRepositoryTest {
         Unit
     }
 
+    @Test(timeout = 60_000)
+    fun `a failed send declares the interruption so the receiver row cannot stay active`() = runBlocking {
+        val outgoing = java.util.concurrent.CopyOnWriteArrayList<RealFlashTransferRepository.OutgoingControl>()
+        val scope = newScope()
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
+                        ChunkFrame.parse(frameBytes) is ChunkFrame.FileStart
+                }
+            },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
+            repositoryScope = scope,
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            repo.outgoingControl.collect { outgoing += it }
+        }
+
+        val id = (repo.sendFile(peer, "content://media/fail.bin", "fail.bin", eightChunkPayload.size.toLong())
+            as FlashResult.Success).value
+
+        awaitUntil(describe = { "row=" + repo.snapshot(id).state }) {
+            repo.snapshot(id).state == FlashTransferState.Failed
+        }
+        awaitUntil(describe = { "outgoing=$outgoing" }) {
+            outgoing.any { it.action == RealFlashTransferRepository.ACTION_PAUSE }
+        }
+        val pause = outgoing.first { it.action == RealFlashTransferRepository.ACTION_PAUSE }
+        assertEquals(RealFlashTransferRepository.REASON_SENDER_INTERRUPTED, pause.reason)
+        assertEquals(peer.id.value, pause.peerDeviceId)
+        assertEquals(id.value, pause.transferId)
+    }
+
+    @Test(timeout = 60_000)
+    fun `a sender interruption makes the receiver retryable instead of leaving it transferring`() = runBlocking {
+        val repo = offerRepo()
+        val incoming = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val scope = newScope()
+        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            repo.incomingControl.collect { incoming += it.action }
+        }
+        repo.onIncomingOffered("tx-int", "fx-int", "movie.bin", 2048L, "Pixel", "peer-int")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-int")) is FlashResult.Success)
+
+        repo.onRemoteTransferControl(
+            "tx-int",
+            RealFlashTransferRepository.ACTION_PAUSE,
+            RealFlashTransferRepository.REASON_SENDER_INTERRUPTED,
+        )
+        val stopped = repo.snapshot(FlashTransferId("tx-int"))
+        assertEquals(FlashTransferState.Failed, stopped.state)
+        assertEquals(TransferFailureText.CONNECTION_LOST, stopped.errorMessage)
+        assertTrue("the interruption must not become a cancel", stopped.canRetry)
+        awaitUntil(describe = { "incoming=$incoming" }) {
+            incoming.contains(RealFlashTransferRepository.ACTION_RESET_ANNOUNCEMENT)
+        }
+
+        // The same logical transfer continues: Retry asks the sender for a RESUME and keeps the
+        // durable receiver done-set (nothing here clears it). Retry is also a fresh announcement
+        // boundary, so the next re-offer gets the bitmap again even if its ACKs were lost.
+        incoming.clear()
+        assertTrue(repo.resumeTransfer(FlashTransferId("tx-int")) is FlashResult.Success)
+        val resumed = repo.snapshot(FlashTransferId("tx-int"))
+        assertEquals(FlashTransferState.Transferring, resumed.state)
+        assertNull(resumed.errorMessage)
+        awaitUntil(describe = { "incoming=$incoming" }) {
+            incoming.contains(RealFlashTransferRepository.ACTION_RESET_ANNOUNCEMENT)
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun `receiver-confirmed chunks release a parked offer when acceptance memory is gone`() = runBlocking {
+        val fileStarts = AtomicInteger(0)
+        val chunkAttempts = AtomicInteger(0)
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
+                        when (ChunkFrame.parse(frameBytes)) {
+                            is ChunkFrame.FileStart -> {
+                                fileStarts.incrementAndGet()
+                                true
+                            }
+
+                            is ChunkFrame.Chunk -> {
+                                chunkAttempts.incrementAndGet()
+                                false
+                            }
+
+                            else -> true
+                        }
+                }
+            },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+            requireReceiverAcceptance = true,
+        )
+        val id = (repo.sendFile(peer, "content://media/restored.bin", "restored.bin", eightChunkPayload.size.toLong())
+            as FlashResult.Success).value
+        awaitUntil(describe = { "offer not sent" }) { fileStarts.get() >= 1 }
+        Thread.sleep(150)
+        assertEquals(0, chunkAttempts.get())
+
+        // A restored sender has no acceptance memory. The receiver's durable-chunk announcement
+        // proves it accepted this transfer before, so the parked offer must be released.
+        val wireFileId = repo.snapshot(id).wireFileId!!
+        // Malformed ACK input (only out-of-range indexes) must NOT release the consent gate.
+        repo.onInboundFrame(
+            ChunkFrame.serialize(ChunkFrame.AckBatch(id.value, wireFileId, listOf(Int.MAX_VALUE))),
+        )
+        Thread.sleep(150)
+        assertEquals("out-of-range ACK released the offer", 0, chunkAttempts.get())
+        assertTrue(repo.snapshot(id).isAwaitingReceiverAcceptance)
+
+        repo.onInboundFrame(
+            ChunkFrame.serialize(ChunkFrame.AckBatch(id.value, wireFileId, listOf(0))),
+        )
+
+        awaitUntil(describe = { "ACK did not release the parked offer" }) { chunkAttempts.get() > 0 }
+        assertTrue(!repo.snapshot(id).isAwaitingReceiverAcceptance)
+    }
+
+
+    @Test
+    fun `an unaccepted offer stays acceptable when the sender's attempt ends`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-off", "fx-off", "doc.bin", 2048L, "Pixel", "peer-off")
+        repo.onRemoteTransferControl(
+            "tx-off",
+            RealFlashTransferRepository.ACTION_PAUSE,
+            RealFlashTransferRepository.REASON_SENDER_INTERRUPTED,
+        )
+        assertEquals(FlashTransferState.Offered, repo.snapshot(FlashTransferId("tx-off")).state)
+    }
+
+    @Test(timeout = 60_000)
+    fun `a retry after acceptance does not wait for consent a second time`() = runBlocking {
+        val fileStarts = AtomicInteger(0)
+        val chunkAttempts = AtomicInteger(0)
+        lateinit var repo: RealFlashTransferRepository
+        repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
+                        when (ChunkFrame.parse(frameBytes)) {
+                            is ChunkFrame.FileStart -> {
+                                fileStarts.incrementAndGet()
+                                true
+                            }
+
+                            is ChunkFrame.Chunk -> {
+                                chunkAttempts.incrementAndGet()
+                                false
+                            }
+
+                            else -> true
+                        }
+                }
+            },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+            requireReceiverAcceptance = true,
+        )
+        val id = (repo.sendFile(peer, "content://media/accept.bin", "accept.bin", eightChunkPayload.size.toLong())
+            as FlashResult.Success).value
+
+        awaitUntil(describe = { "offer not sent" }) { fileStarts.get() >= 1 }
+        Thread.sleep(150)
+        assertEquals("chunks must wait for acceptance", 0, chunkAttempts.get())
+
+        // The receiver accepts (RESUME), then the wire fails on its first chunk.
+        repo.onRemoteTransferControl(id.value, RealFlashTransferRepository.ACTION_RESUME)
+        awaitUntil(describe = { "accepted send did not fail" }) {
+            repo.snapshot(id).state == FlashTransferState.Failed
+        }
+        assertTrue(chunkAttempts.get() > 0)
+
+        // Retry must resume the same accepted transfer, not park it as an unaccepted offer again.
+        val before = chunkAttempts.get()
+        assertTrue(repo.resumeTransfer(id) is FlashResult.Success)
+        awaitUntil(describe = { "retry parked again: attempts=$chunkAttempts row=${repo.snapshot(id).state}" }) {
+            chunkAttempts.get() > before
+        }
+        assertTrue("the retry must not claim to be waiting for acceptance", !repo.snapshot(id).isAwaitingReceiverAcceptance)
+    }
+
+
     @Test
     fun `B-02 pauseForSystem keeps a 1to1 row and says Android paused it`() = runBlocking {
         val repo = offerRepo()
