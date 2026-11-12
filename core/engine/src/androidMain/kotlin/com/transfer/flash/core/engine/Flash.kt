@@ -736,13 +736,26 @@ private class Wiring(
         }
         onPeerConnectionClosed = { peerId -> failInboundForPeer(peerId, "data channel closed") }
 
-        val sendXfer: (String, String, String) -> Unit = { peerId, action, transferId ->
+        // `reason` carries a refusal token or REASON_SENDER_INTERRUPTED; older peers ignore it.
+        val sendXferWithReason: (String, String, String, String?) -> Unit = { peerId, action, transferId, reason ->
             val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
             if (session != null) {
-                session.connection.sendText(FlashTextFraming.encodeFields(XFER_PREFIX, listOf("action" to action, "transferId" to transferId)))
+                session.connection.sendText(
+                    FlashTextFraming.encodeFields(
+                        XFER_PREFIX,
+                        listOfNotNull(
+                            "action" to action,
+                            "transferId" to transferId,
+                            reason?.let { "reason" to it },
+                        ),
+                    ),
+                )
             } else {
                 Log.w(TAG, "Cannot deliver XFER $action: no session for $peerId")
             }
+        }
+        val sendXfer: (String, String, String) -> Unit = { peerId, action, transferId ->
+            sendXferWithReason(peerId, action, transferId, null)
         }
         // C-11: a cancel that carries the reason the receiver refused the file (older peers ignore the extra field).
         val sendXferRefuseFrame: (String, String, String) -> Unit = { peerId, transferId, reason ->
@@ -794,13 +807,15 @@ private class Wiring(
                     RealFlashTransferRepository.ACTION_CANCEL -> cleanupInbound(control.transferId, "cancelled by peer")
                     RealFlashTransferRepository.ACTION_ACCEPT -> acceptOffer(control.transferId)
                     RealFlashTransferRepository.ACTION_DECLINE -> declineOffer(control.transferId)
+                    RealFlashTransferRepository.ACTION_RESET_ANNOUNCEMENT ->
+                        receivePipeline.resetResumeAnnouncement(control.transferId)
                 }
             }
         }
         scope.launch {
             transferImpl.outgoingControl.collect { control ->
                 val peerId = control.peerDeviceId ?: return@collect
-                sendXfer(peerId, control.action, control.transferId)
+                sendXferWithReason(peerId, control.action, control.transferId, control.reason)
             }
         }
 

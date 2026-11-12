@@ -265,8 +265,10 @@ class ReceivePipelineTest {
         )
 
         val startEvents = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
-        // Fresh session still just announces itself — seeded indexes are not yet complete.
+        // The session announces itself, then re-announces the durable prefix so a sender with no
+        // local resume state skips it instead of replaying forty chunks.
         assertEquals(1, startEvents.filterIsInstance<ReceiveEvent.SessionStarted>().size)
+        assertEquals(seeded, startEvents.filterIsInstance<ReceiveEvent.AckBatchReady>().single().frame.indexes)
         assertTrue(startEvents.none { it is ReceiveEvent.Completed })
 
         // The resuming sender omits the 40 seeded chunks and sends only the remaining 30.
@@ -281,6 +283,94 @@ class ReceivePipelineTest {
         // Only the non-seeded chunks were written; seeded chunks were never re-received.
         assertEquals((40 until frames.size).toList(), sink.indexesWritten)
     }
+
+    @Test
+    fun `an identical re-offer announces durable chunks so a stateless sender can skip them`() {
+        val frames = chunkFrames()
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(sink, ackEvery = 1000)
+
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        for (frame in frames.take(5)) pipeline.onFrame(ChunkFrame.serialize(frame))
+        assertEquals(5, sink.writes)
+
+        // A retry re-offers the same transfer identity. The receiver keeps the session and tells
+        // the sender exactly what is already verified on disk.
+        val again = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertTrue(again.none { it is ReceiveEvent.SessionStarted }, "identical re-offer must not reopen the session")
+        val announced = again.filterIsInstance<ReceiveEvent.AckBatchReady>()
+        assertEquals(listOf(listOf(0, 1, 2, 3, 4)), announced.map { it.frame.indexes })
+        assertEquals(5, sink.writes, "announcing durable chunks must not rewrite them")
+
+        // A second FILE_START from another stream in the same attempt repeats neither event.
+        assertTrue(pipeline.onFrame(ChunkFrame.serialize(startFrame())).isEmpty())
+    }
+
+    @Test
+    fun `a later retry re-announces chunks that landed after the previous announcement`() {
+        val frames = chunkFrames()
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(sink, ackEvery = 1000)
+
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        for (frame in frames.take(5)) pipeline.onFrame(ChunkFrame.serialize(frame))
+        // First retry announcement, then more chunks land.
+        val first = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertEquals(listOf(0, 1, 2, 3, 4), first.filterIsInstance<ReceiveEvent.AckBatchReady>().single().frame.indexes)
+        for (frame in frames.drop(5).take(3)) pipeline.onFrame(ChunkFrame.serialize(frame))
+
+        val second = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertEquals(
+            listOf(0, 1, 2, 3, 4, 5, 6, 7),
+            second.filterIsInstance<ReceiveEvent.AckBatchReady>().single().frame.indexes,
+        )
+    }
+
+    @Test
+    fun `a retry boundary re-announces an unchanged durable set after lost ACKs`() {
+        val frames = chunkFrames()
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(sink, ackEvery = 1000)
+
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        for (frame in frames.take(5)) pipeline.onFrame(ChunkFrame.serialize(frame))
+
+        // First retry: the sender gets the bitmap (which may then be lost on the wire).
+        val first = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertEquals(listOf(0, 1, 2, 3, 4), first.filterIsInstance<ReceiveEvent.AckBatchReady>().single().frame.indexes)
+
+        // The same set on a second FILE_START is currently treated as the per-stream burst and
+        // suppressed; that is correct only while it is the SAME attempt.
+        assertTrue(pipeline.onFrame(ChunkFrame.serialize(startFrame())).isEmpty())
+
+        // The host marks the retry/interruption boundary (local event, no wire change).
+        assertTrue(pipeline.resetResumeAnnouncement(meta.transferId))
+
+        // A second retry with no newly durable chunk must still get a bitmap.
+        val second = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertEquals(
+            listOf(0, 1, 2, 3, 4),
+            second.filterIsInstance<ReceiveEvent.AckBatchReady>().single().frame.indexes,
+        )
+        assertFalse(pipeline.resetResumeAnnouncement("unknown-transfer"))
+    }
+
+
+    @Test
+    fun `a fully received session answers a re-offer with its complete durable set`() {
+        val frames = chunkFrames()
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(sink, ackEvery = 1000, emitSessionStarted = true)
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        for (frame in frames) pipeline.onFrame(ChunkFrame.serialize(frame))
+
+        val again = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        val announced = again.filterIsInstance<ReceiveEvent.AckBatchReady>()
+        assertEquals(frames.indices.toList(), announced.flatMap { it.frame.indexes })
+        // A finished session is not re-finalized: the sender only needs the durable coverage.
+        assertTrue(again.none { it is ReceiveEvent.Completed })
+    }
+
 
     @Test
     fun `fully seeded resume completes on fileStart with no further chunks`() {
