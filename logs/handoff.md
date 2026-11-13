@@ -1,5 +1,22 @@
 # Current Handoff
 
+> **2026-11-13 — Hub readiness phases HR6–HR11 implemented on `agent/hub-readiness` (commits `6dfce2b0`..`69ef31c0`, atop `0b162b80`).**
+> Implemented in isolated worktree `C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness` (main checkout `C:\Users\KaliOxygen\Downloads\Flash` preserved untouched).
+> - **Implemented phases:**
+>   - **HR6 (`6dfce2b0`):** Scoped one-use expiring device replacement (`POST /admin/api/v1/devices/{id}/replace`, `AdminRoutePolicy.OWN`), org/dept scope + quota + separate approver/admin step-up rules, immediate old credential/session/directory revocation across restart and offline LAN sync, Console Devices workflow, Android & Desktop enrollment paths.
+>   - **HR7 (`8b1807c3`):** Title-only system announcement notifications on Android & Desktop (`NotificationDecision`, `FlashNotificationManager`, `DesktopNotificationManager`), scope/mute/permission/author/duplicate suppression, cold-start & desktop tap deep-link, usable muted feed, and Hub group relay confidentiality notice.
+>   - **HR8 (`770afd09`):** Cross-route LAN ↔ Hub transfer continuity (`LogicalTransferId`, `RouteTransferArbitrator`, `HubRouteContinuationCoordinator`), destination-verified byte resume, exclusive route ownership, fail-closed tamper/layout/older-peer handling, single logical transfer / completion / published file.
+>   - **HR9 (`ae2f74a9`):** Authenticated short-lived off-LAN call signaling, idempotent state transitions, `GET /api/v1/calls/ice-config` STUN/TURN policy, conditional UI support check, preserved LAN calls, documented ICE/TURN setup.
+>   - **HR10 (`e6ee5e1c`):** End-to-end encrypted Hub-relayed group messages (`hge1` authenticated membership epochs via `GroupRelaySealing`, `HubGroupE2eeCoordinator`, `FileHubGroupEpochKeyStore`), fail-closed legacy blocking, server opacity verified (`GroupE2eeRelayOpacityTest`), group UI honesty/blocked notices (`HubNotice`, `FlashHubNotice`).
+>   - **HR11 (`6105be0b`, `69ef31c0`):** `OperationalMonitor` alerts (`unreadable_queue`, `oldest_queued_mail`, bounded `disk_pressure`, `delegation_expiring`, `tls_cert_expiring`) wired to `/health/detail` and `/metrics`, runbook thresholds in `docs/deploy/HUB-SERVER-DEPLOYMENT.md`, `docs/protocol-routes.txt` & `ConsoleScope.kt` synced, restore/signer-rotation/`HUBREADY-01..05` drills & synthetic `PERF-H03` (`EXP-143`), `RealFlashChatRepositoryHubFileTest` await ordering fix.
+> - **Verified at `69ef31c0`:**
+>   - **Node Admin UI tests (`node --no-warnings --test server/admin-ui-tests/*.test.mjs`):** `83 tests, 83 passed, 0 failed`.
+>   - **Client / Protocol / UI / Android / Desktop Gradle suite:** `2,745` tests executed, `0` failures, `0` errors, `4` pre-existing Windows POSIX skips (`:core:hub-protocol:jvmTest` 126, `:core:security:jvmTest` 183 [2 skipped], `:core:enterprise:jvmTest` 282, `:core:messaging:jvmTest` 390, `:core:calling:jvmTest` 243, `:core:transfer:jvmTest` 145, `:core:engine:jvmTest` 182, `:ui:chat:jvmTest` 790, `:desktop:jvmTest` 293 [2 skipped], `:app:testDebugUnitTest` 111) + `:app:assembleDebug` green.
+>   - **Server suite (`tools\flash-gradle.cmd --max-workers=2 :server:test`):** `692 tests, 0 failures, 0 errors, 0 skipped`.
+> - **Owed physical-device / isolated-VPS / Chrome acceptance (`docs/testing/TEST-BACKLOG.md`):**
+>   `HR6-DEV-01 / ORGT-14`, `HR7-DEV-01`, `HR8-DEV-01`, `HR9-DEV-01`, `HR9-DEV-02`, `HR10-DEV-01`, `HR11-ENV-01`, `HR11-ENV-02`.
+> - **Next step:** Independent verifier review (`docs/plans/HUB-PLANS-PROMPTS.md` §2) before reporting completion.
+
 > **2026-11-12 — Phase 7 UI/UX diff audit & ERROR-1018 transfer retry committed on `dev` (`37c45602`, `58f9b236`).**
 > Seven-phase UI/UX overhaul, audit remediation pass, and transfer retry boundary re-announcements committed on `dev`
 > across `:core:transfer`, `:core:engine`, `:core:security`, `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`,
