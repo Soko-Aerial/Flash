@@ -1030,6 +1030,17 @@ object DiscoveryEngineHolder {
                     "Path traversal escape detected for transferId=${start.transferId}, fileName=${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
+                kotlinx.coroutines.runBlocking {
+                    transferForResume?.adoptHubPartialForLan(
+                        transferId = start.transferId,
+                        fileId = start.fileId,
+                        fileName = start.fileName,
+                        totalBytes = start.totalBytes,
+                        senderDeviceId = null,
+                        chunkSize = start.chunkSize,
+                        destPath = dest.absolutePath,
+                    )
+                }
                 receivedPaths[start.transferId] = dest.absolutePath
                 val handle = FileRandomAccessSinkHandle(dest, start.totalBytes)
                 openHandles[start.transferId] = handle
@@ -1040,9 +1051,16 @@ object DiscoveryEngineHolder {
             // #5: hold every fresh inbound transfer as an OFFER — no destination file is created
             // and no chunk is written until the user accepts (acceptSession resolves the sink).
             requireAcceptance = true,
-            // #20: seed a resumed FILE_START's bit-vector from the persisted receiver done-set.
+            // #20 + HR8: seed a resumed FILE_START's bit-vector from persisted LAN chunks or verified Hub partial bytes.
             resumeIndexesProvider = { start ->
-                transferForResume?.receiverDoneIndexes(start.transferId) ?: emptyList()
+                transferForResume?.prepareLanReceiveResume(
+                    transferId = start.transferId,
+                    fileId = start.fileId,
+                    fileName = start.fileName,
+                    totalBytes = start.totalBytes,
+                    senderDeviceId = null,
+                    chunkSize = start.chunkSize,
+                ) ?: emptyList()
             },
         )
 
@@ -1075,7 +1093,15 @@ object DiscoveryEngineHolder {
         }
         if (dataPort > 0) Log.i(TAG_WS, "Real multistream data channels listening on port=$dataPort")
 
-        // Late-bound reference so the stream factory can route inbound ACKs before assignment.
+        // HR8: Single cross-route continuity coordinator shared by LAN transferImpl and HubFileBinding.
+        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator()
+        var hubFileTransfersRef: com.transfer.flash.core.enterprise.files.HubFileTransfers? = null
+        val routeContinuityPort = com.transfer.flash.core.engine.hubfiles.EngineTransferRouteContinuityPort(
+            localDeviceId = { identity.deviceId.value },
+            coordinator = transferRouteCoordinator,
+            transfersProvider = { hubFileTransfersRef },
+        )
+
         var transferRef: RealFlashTransferRepository? = null
 
         val transferImpl = RealFlashTransferRepository(
@@ -1210,6 +1236,7 @@ object DiscoveryEngineHolder {
                 val placed = com.transfer.flash.core.engine.ReceivedFilePlacement.publish(path, root.path, name, preserveFolders = true)
                 placed
             },
+            routeContinuity = routeContinuityPort,
         )
 
         // PC4 (ADR-046): presence sharing. Built before the chat repository, whose Online set it
@@ -2230,10 +2257,12 @@ object DiscoveryEngineHolder {
         }
         // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub. The engine's state lives in
         // no-backup app storage (excluded from Auto Backup); finished files land beside every other received file.
+        val hubFileTransfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(appContext.noBackupFilesDir, "hub-files").path))
+        hubFileTransfersRef = hubFileTransfers
         hubFileBindingRef = HubFileBinding(
             scope = appScope,
             dao = db.hubFileDao(),
-            transfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(appContext.noBackupFilesDir, "hub-files").path)),
+            transfers = hubFileTransfers,
             api = hub.files,
             transferRepository = transferImpl,
             hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
@@ -2259,6 +2288,9 @@ object DiscoveryEngineHolder {
                     else -> autoDownloadFile
                 }
             },
+            continuityCoordinator = transferRouteCoordinator,
+            continuityPort = routeContinuityPort,
+            localDeviceId = { identity.deviceId.value },
         ).also { it.start() }
         // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.
         chatImpl.onHubFileMessageDeleted = { transferId -> appScope.launch { hubFileBindingRef?.cancelOutgoing(transferId) } }

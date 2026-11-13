@@ -210,6 +210,7 @@ public class HubFileTransfers(
     public suspend fun download(
         request: HubDownloadRequest,
         onProgress: (HubTransferProgress) -> Unit = {},
+        onChunkVerified: ((chunkIndex: Int) -> Unit)? = null,
     ): HubDownloadOutcome {
         val t = request.ticket
         if (!HubFileIds.isFileId(t.fileId)) return HubDownloadOutcome.Failed(HubFileError.Refused(BAD_ID))
@@ -217,7 +218,7 @@ public class HubFileTransfers(
         if (layout == null || layout.chunkCount != t.chunkCount || !HubFileIds.isSha256(t.cipherSha256)) {
             return HubDownloadOutcome.Failed(HubFileError.Integrity)
         }
-        return locked("d:${t.fileId}") { DownloadRun(request, layout, onProgress).run() }
+        return locked("d:${t.fileId}") { DownloadRun(request, layout, onProgress, onChunkVerified).run() }
     }
 
     /** Throws away a partial download and its record (situation 9: a recipient cancels). Safe to call twice. */
@@ -686,6 +687,7 @@ public class HubFileTransfers(
         val request: HubDownloadRequest,
         val layout: HubFileLayout,
         val onProgress: (HubTransferProgress) -> Unit,
+        val onChunkVerified: ((chunkIndex: Int) -> Unit)? = null,
     ) {
         val ticket = request.ticket
         val fileId = ticket.fileId
@@ -780,6 +782,7 @@ public class HubFileTransfers(
                                                 terminalIsInterrupted = true
                                             }
                                         } else {
+                                            onChunkVerified?.invoke(index)
                                             onProgress(progress())
                                         }
                                     }

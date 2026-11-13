@@ -1422,6 +1422,14 @@ public class DesktopEngine(
             }
             FileSystem.SYSTEM.source(file.absolutePath.toPath())
         }
+        // HR8: Single cross-route continuity coordinator shared by LAN transfer and HubFileBinding.
+        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator()
+        var hubFileTransfersRef: com.transfer.flash.core.enterprise.files.HubFileTransfers? = null
+        val routeContinuityPort = com.transfer.flash.core.engine.hubfiles.EngineTransferRouteContinuityPort(
+            localDeviceId = { localId },
+            coordinator = transferRouteCoordinator,
+            transfersProvider = { hubFileTransfersRef },
+        )
         val transfer = RealFlashTransferRepository(
             streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
             fileSourceOpener = fileOpener,
@@ -1440,6 +1448,7 @@ public class DesktopEngine(
                 receivedManifest.recordFile(root, File(placed))
                 placed
             },
+            routeContinuity = routeContinuityPort,
         )
         transferImpl = transfer
 
@@ -1876,10 +1885,12 @@ public class DesktopEngine(
             // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub; the engine keeps its
             // state under the state directory, and finished files land in the receive folder like any other.
             chatImpl?.let { c ->
+                val hubFileTransfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(stateDir, "hub-files").path))
+                hubFileTransfersRef = hubFileTransfers
                 hubFileBindingRef = HubFileBinding(
                     scope = scope,
                     dao = db.hubFileDao(),
-                    transfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(stateDir, "hub-files").path)),
+                    transfers = hubFileTransfers,
                     api = hub.files,
                     transferRepository = transfer,
                     hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
@@ -1910,6 +1921,9 @@ public class DesktopEngine(
                         val voiceFromColleague = mime.startsWith("audio/") && s.autoDownloadVoice && orgPeerResolver.isOrgPeer(peerId)
                         voiceFromColleague || shouldAutoAcceptOffer(trustStoreImpl.isTrusted(FlashDeviceId(peerId)), perKind, autoAcceptIncoming)
                     },
+                    continuityCoordinator = transferRouteCoordinator,
+                    continuityPort = routeContinuityPort,
+                    localDeviceId = { localId },
                 ).also { it.start() }
                 // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.
                 c.onHubFileMessageDeleted = { transferId -> scope.launch { hubFileBindingRef?.cancelOutgoing(transferId) } }
@@ -2060,6 +2074,17 @@ public class DesktopEngine(
                     "path traversal escape: ${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
+                runBlocking {
+                    transferImpl?.adoptHubPartialForLan(
+                        transferId = start.transferId,
+                        fileId = start.fileId,
+                        fileName = start.fileName,
+                        totalBytes = start.totalBytes,
+                        senderDeviceId = null,
+                        chunkSize = start.chunkSize,
+                        destPath = dest.absolutePath,
+                    )
+                }
                 receivedManifest.record(canonicalRoot, destDir)
                 receivedPaths[start.transferId] = dest.absolutePath
                 val handle = OkioRandomAccessSinkHandle(dest.absolutePath.toPath(), start.totalBytes)
@@ -2068,10 +2093,16 @@ public class DesktopEngine(
             },
             emitSessionStarted = true,
             requireAcceptance = true,
-            // #20 on the desktop too: the in-memory done-set survives a peer disconnect and lets a
-            // re-offer seed its vector instead of re-downloading chunks already in the .part file.
+            // #20 + HR8 on the desktop too: seed from LAN resume set or verified Hub partial bytes.
             resumeIndexesProvider = { start ->
-                transferImpl?.receiverDoneIndexes(start.transferId).orEmpty()
+                transferImpl?.prepareLanReceiveResume(
+                    transferId = start.transferId,
+                    fileId = start.fileId,
+                    fileName = start.fileName,
+                    totalBytes = start.totalBytes,
+                    senderDeviceId = null,
+                    chunkSize = start.chunkSize,
+                ).orEmpty()
             },
         )
 
