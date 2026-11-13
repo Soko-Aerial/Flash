@@ -643,6 +643,11 @@ class AdminAuthService(
         db.withConnection { it.update("UPDATE admin_users SET approver_device_id = NULL WHERE username = ?", username) }
     }
 
+    /** Unbinds the enrolled device / step-up signer from the administrator. */
+    fun clearEnrolledDevice(username: String) {
+        db.withConnection { it.update("UPDATE admin_users SET enrolled_device_id = NULL WHERE username = ?", username) }
+    }
+
     /** The device id of [username]'s approver phone, or null. */
     fun approverOf(username: String): String? = loadAdmin(username)?.approverDeviceId
 

@@ -507,6 +507,103 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
             d.audit.log(session.username, "device.unrevoke", "device=$id changed=${result.changed} published=${result.publishedVersion}")
             call.respondJson(d.identities.device(id)!!.toDto(false))
         }
+
+        post("/{id}/replace") {
+            val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
+            val id = call.parameters["id"].orEmpty()
+            val b = call.body<DeviceReplaceBody>() ?: return@post
+            val revocations = d.revocations ?: return@post call.notAvailable()
+            val enrollment = d.enrollment ?: return@post call.notAvailable()
+            val oldDevice = d.identities.device(id) ?: return@post call.notFound()
+
+            if (scope !is ConsoleScope.Org && !scope.allows(oldDevice.department)) return@post call.notFound()
+
+            val targetDept = (b.department ?: oldDevice.department)?.trim()?.ifEmpty { null }
+            if (scope !is ConsoleScope.Org) {
+                if (targetDept.isNullOrBlank()) {
+                    return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Choose a department for this replacement.")
+                }
+                if (!scope.allows(targetDept)) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "A head can only replace devices in their own department.")
+                }
+                if (b.role != null && b.role != HubRoles.MEMBER) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "A department head can only issue member replacements.")
+                }
+            }
+            if (targetDept != null && d.directory.getDepartment(targetDept) == null) {
+                return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "That department no longer exists.")
+            }
+
+            for (groupId in (b.allowedGroups + b.autoJoinGroups)) {
+                val group = d.directory.getGroup(groupId)
+                if (group == null || (targetDept != null && group.departmentId != targetDept && scope !is ConsoleScope.Org)) {
+                    return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Invalid group for department.")
+                }
+            }
+
+            val isOldAdmin = oldDevice.role == HubRoles.ADMIN
+            val targetRole = b.role ?: if (isOldAdmin && scope is ConsoleScope.Org) HubRoles.ADMIN else if (isOldAdmin) HubRoles.MEMBER else oldDevice.role
+            val isBoundApprover = d.admins.listAdmins().any { it.approverDeviceId == id }
+            val isBoundSigner = d.admins.listAdmins().any { it.enrolledDeviceId == id }
+
+            if (isOldAdmin || targetRole == HubRoles.ADMIN || isBoundApprover || isBoundSigner) {
+                if (scope !is ConsoleScope.Org) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Only an organisation administrator can replace an administrator or approver device.")
+                }
+            }
+            if (!call.stepUpOk(d, session, StepUpActions.REPLACE_DEVICE, id)) return@post
+
+            if (oldDevice.status != DeviceStatus.ACTIVE && enrollment.currentRemainingQuota <= 0) {
+                return@post call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_QUOTA_EXCEEDED, "Device quota exceeded.")
+            }
+
+            call.guarded {
+                val reason = b.reason.take(200)
+                val revokeResult = revocations.revokeDevice(id, reason, session.username)
+                d.bearerTokens?.revokeDevice(id)
+                d.directory.removeDevice(id)
+                d.onDeviceRevoked(id)
+
+                if (isBoundApprover || isBoundSigner) {
+                    d.admins.listAdmins().forEach { admin ->
+                        if (admin.approverDeviceId == id) d.admins.clearApprover(admin.username)
+                        if (admin.enrolledDeviceId == id) d.admins.clearEnrolledDevice(admin.username)
+                    }
+                }
+
+                val inviteNote = "replacement:$id ${b.note.orEmpty()}".trim()
+                val ttl = b.ttlMinutes ?: (d.admins.getSetting(SETTING_TTL)?.toLongOrNull() ?: DEFAULT_TTL_MINUTES)
+                val createdInvite = createInvite(
+                    d,
+                    enrollment,
+                    session.username,
+                    InviteCreateBody(
+                        department = targetDept,
+                        role = targetRole,
+                        allowedGroups = b.allowedGroups,
+                        autoJoinGroups = b.autoJoinGroups,
+                        ttlMinutes = ttl,
+                        maxUses = 1,
+                        note = inviteNote,
+                    ),
+                )
+
+                d.audit.log(
+                    session.username,
+                    "device.replace",
+                    "oldDevice=$id department=${targetDept.orEmpty()} role=$targetRole invite=${createdInvite.invite.inviteId} reason=$reason",
+                )
+
+                call.respondJson(
+                    DeviceReplaceResultDto(
+                        oldDevice = d.identities.device(id)!!.toDto(false),
+                        invite = createdInvite,
+                    ),
+                    HttpStatusCode.OK,
+                )
+            }
+        }
     }
 }
 

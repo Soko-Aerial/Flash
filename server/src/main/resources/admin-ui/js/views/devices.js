@@ -338,6 +338,63 @@ export function mountDevices(container, ctx) {
     return updated || null;
   }
 
+  async function replaceFlow(device) {
+    const sel = selectInput([{ value: '', label: t('devices.move.none') }, ...departments.map((d) => ({ value: d.id, label: d.name }))], device.department || '', { ariaLabel: t('devices.move.label') });
+    const df = field({ label: t('devices.col.department'), control: sel });
+    const reason = textInput({ maxlength: 200, value: '', placeholder: t('devices.revoke.reason.placeholder') });
+    const rf = field({ label: t('devices.revoke.reason'), control: reason, hint: t('devices.revoke.reason.hint') });
+    const note = textInput({ maxlength: 200, value: '', placeholder: 'Replacement notes' });
+    const nf = field({ label: 'Notes', control: note });
+    const go = button({ label: t('devices.replace.confirm'), variant: 'danger' });
+
+    const answer = await new Promise((resolve) => {
+      const dlg = openDialog({
+        title: t('devices.replace.title', { name: device.name || shortId(device.deviceId) }),
+        size: 'sm',
+        body: [
+          banner({ tone: 'warn', text: t('devices.replace.effect') }),
+          orgAdmin ? df.el : null,
+          rf.el,
+          nf.el,
+        ],
+        actions: [button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close(null) } }), go],
+        onClose: (r) => resolve(r || null),
+      });
+      go.addEventListener('click', () => {
+        dlg.close({
+          department: orgAdmin ? (sel.value || null) : (device.department || null),
+          reason: reason.value.trim() || 'Device replaced',
+          note: note.value.trim() || null,
+        });
+      });
+    });
+
+    if (!answer) return null;
+
+    const res = await guarded('device.replace', device.deviceId, (id) =>
+      api.post('/devices/' + encodeURIComponent(device.deviceId) + '/replace', answer, { stepUp: id })
+    );
+
+    if (res) {
+      replaceDevice(res.oldDevice);
+      events.emit('devices-changed');
+      const linkInput = textInput({ value: res.invite.link, readonly: true });
+      const copy = copyButton({ text: res.invite.link, label: t('common.copy') });
+      openDialog({
+        title: t('devices.replace.result.title'),
+        size: 'sm',
+        body: [
+          h('p', { class: 'muted', text: t('devices.replace.result.text') }),
+          h('div', { class: 'inline-form' }, linkInput, copy),
+        ],
+        actions: [button({ label: t('common.close'), variant: 'primary', on: { click: () => {} } })],
+      });
+      toast(t('devices.replace.done', { name: device.name || shortId(device.deviceId) }), { kind: 'success' });
+      return res.oldDevice;
+    }
+    return null;
+  }
+
   async function bulkRevokeFlow() {
     const targets = view.filter((d) => table.selection.has(d.deviceId) && d.status === 'ACTIVE');
     if (targets.length === 0) {
@@ -490,13 +547,21 @@ export function mountDevices(container, ctx) {
       .catch((e) => mount(history, errorState(e)));
 
     const actions = [];
-    if (orgAdmin && device.status === 'ACTIVE') {
-      const revoke = button({ label: t('devices.revoke.button'), icon: 'lock', variant: 'danger' });
-      revoke.addEventListener('click', async () => {
-        const res = await revokeFlow(device);
+    if (device.status === 'ACTIVE') {
+      if (orgAdmin) {
+        const revoke = button({ label: t('devices.revoke.button'), icon: 'lock', variant: 'danger' });
+        revoke.addEventListener('click', async () => {
+          const res = await revokeFlow(device);
+          if (res) renderDrawer(body, res);
+        });
+        actions.push(revoke);
+      }
+      const replace = button({ label: t('devices.replace.button'), icon: 'refresh', variant: 'secondary' });
+      replace.addEventListener('click', async () => {
+        const res = await replaceFlow(device);
         if (res) renderDrawer(body, res);
       });
-      actions.push(revoke);
+      actions.push(replace);
     } else if (orgAdmin && device.status === 'REVOKED') {
       const un = button({ label: t('devices.unrevoke.button'), icon: 'refresh', variant: 'secondary' });
       un.addEventListener('click', async () => {
