@@ -11,12 +11,12 @@ Opened 2026-11-07 from the [Hub feature and rollout audit](../audit/2026-11-07-h
 | HR3 | Enforce live membership for unread group mailbox deliveries. Define sender terminal outcome and remove inaccessible rows so they cannot reappear on rejoin. Preserve direct mailbox and delivery already handed to a recipient. | E2E removal while offline, reconnect, rejoin, normal replay and file-read comparison. HUBREADY-03. | Implemented, 103 tests green |
 | HR4 | Complete scoped console. Role-aware navigation and actions, head account creation and reassignment, root-signed revocation import with step-up, Overview audit status, join approval confirmation, and stable announcement browsing across pages. | Admin/head Node and browser paths. APIs remain authoritative. DEPH-01..07, HUBR-03 and CONSOLE-D06/D07. | Implemented, isolated Chrome fixture passed |
 | HR5 | Offline LAN revocation. Implement D10 with signed, monotonic, size/rate-limited exchange. Persist the newest verified list per organisation, invalidate trust and roster checks immediately and restore Android library parity where the API exposes Hub behaviour. | Malformed, stale, tampered, wrong-root, concurrent and offline-restart tests, then HUBREADY-04 on three devices. | Implemented, 1,035 tests green |
-| HR6 | Device replacement. Revoke the lost device and its sessions, issue a one-use replacement path with fresh keys, scope the new device's department/groups explicitly and audit the result. Keep old enrolment and key revocations enforceable. | Lost key, stolen old key, retry/concurrent redemption, quota, replacement on both hosts and ORGT-14. | Implemented, 93 tests green |
-| HR7 | Title-only announcement notifications and opt-out on Android and desktop. Cover reconnect catch-up, first sync, duplicate suppression and cold start. Wire the group relay confidentiality notice. | ANN-01/10/11 and HUBT-12, permission denial, author suppression, mute and desktop activation. Measure background delivery separately from the local notification feature. | Implemented, all tests green |
-| HR8 | LAN ↔ Hub file continuity. Specify a stable transfer identity, representation of validated completed bytes, ownership of the active route and final verification for both directions. | Disconnect or route switch during a large transfer on both hosts. Resume only compatible bytes, one completion row and one copy, with final integrity verification. | Implemented, unit & integration tests green |
-| HR9 | Off-LAN calling. Design authenticated, short-lived signalling with media path negotiation and an explicit NAT relay policy. Align deployment claims with the shipped capability. | Two independent networks, direct and relayed media, late/duplicate/replayed signalling, device removal and process/background behaviour. | Planned |
-| HR10 | End-to-end group relay encryption (FO-27). Design authenticated membership epochs, secure key delivery, rotation/removal, history visibility and mixed-version handling before changing the wire. | Hub cannot decrypt payloads. Removed devices cannot read new messages. Rejoins, out-of-order events, epoch rollover and older clients are exercised. | Planned |
-| HR11 | Operations. Expose actionable alerts for unreadable queues, oldest mail, disk use and certificate/delegation expiry. Rehearse restore and signer rotation, then run the real pilot matrix and fleet-size soak. | Isolated production-profile runbook, PERF-H03 and the relevant HUBREADY/HUBWORK/CONSOLE checks. | Planned |
+| HR6 | Device replacement. Revoke the lost device and its sessions, issue a one-use replacement path with fresh keys, scope the new device's department/groups explicitly and audit the result. Keep old enrolment and key revocations enforceable. | Lost key, stolen old key, retry/concurrent redemption, quota, replacement on both hosts and ORGT-14. | Implemented (12 `DeviceReplacementTest` + 4 `devices-replace.test.mjs` green; physical `HR6-DEV-01 / ORGT-14` owed) |
+| HR7 | Title-only announcement notifications and opt-out on Android and desktop. Cover reconnect catch-up, first sync, duplicate suppression and cold start. Wire the group relay confidentiality notice. | ANN-01/10/11 and HUBT-12, permission denial, author suppression, mute and desktop activation. Measure background delivery separately from the local notification feature. | Implemented (host & unit tests green; physical `HR7-DEV-01` owed) |
+| HR8 | LAN ↔ Hub file continuity. Specify a stable transfer identity, representation of validated completed bytes, ownership of the active route and final verification for both directions. | Disconnect or route switch during a large transfer on both hosts. Resume only compatible bytes, one completion row and one copy, with final integrity verification. | Implemented & wired across hosts (`TransferContinuityTest` + `CrossRouteWiringIntegrationTest` green; physical `HR8-DEV-01` owed) |
+| HR9 | Off-LAN calling. Design authenticated, short-lived signalling with media path negotiation and an explicit NAT relay policy. Align deployment claims with the shipped capability. | Two independent networks, direct and relayed media, late/duplicate/replayed signalling, device removal and process/background behaviour. | Implemented (`CallSignalingAndIceConfigTest` + `OffLanCallSignalingTest` green; 2-network `HR9-DEV-01/02` owed) |
+| HR10 | End-to-end group relay encryption (FO-27). Design authenticated membership epochs, secure key delivery, rotation/removal, history visibility and mixed-version handling before changing the wire. | Hub cannot decrypt payloads. Removed devices cannot read new messages. Rejoins, out-of-order events, epoch rollover and older clients are exercised. | Implemented (`GroupRelaySealingTest` + `HubGroupE2eeTest` + `GroupE2eeRelayOpacityTest` green; physical `HR10-DEV-01` owed) |
+| HR11 | Operations. Expose actionable alerts for unreadable queues, oldest mail, disk use and certificate/delegation expiry. Rehearse restore and signer rotation, then run the real pilot matrix and fleet-size soak. | Isolated production-profile runbook, PERF-H03 and the relevant HUBREADY/HUBWORK/CONSOLE checks. | Automated drills & runbook implemented (`OperationsAndRolloutDrillsTest` green; live VPS/soak `HR11-ENV-01/02` owed) |
 
 ## Working decisions
 
@@ -219,6 +219,59 @@ Tests to write first:
 7. Quota enforcement on replacement when over-quota.
 8. Audit log contains old and new device IDs and no secrets.
 
+### Phase HR6 report — 2026-11-13
+
+- **Done:**
+  - Server route & DTOs: `POST /admin/api/v1/devices/{id}/replace` (`AdminApi.kt:511-620`, `AdminApiDtos.kt:173-187`), `StepUpActions.REPLACE_DEVICE` (`StepUpAuth.kt:27,37`), `AdminAuthService.clearLinkedDevice` (`AdminAuthService.kt:652`), `EnrollmentService.remainingQuotaAssumingRevoked` (`EnrollmentService.kt:136`).
+  - Console UI & tests: `server/src/main/resources/admin-ui/js/views/devices.js` (`openReplaceDialog`, `filterReplaceGroups`, `buildReplacePayload`, `resDlg.close(true)`), `server/src/main/resources/admin-ui/js/strings/en.js`, `server/admin-ui-tests/devices-replace.test.mjs` (4 Node tests).
+  - Server & client enrollment tests: `server/src/test/kotlin/com/transfer/flash/server/admin/DeviceReplacementTest.kt` (12 tests covering happy path, stolen credentials, dept head scope, admin/approver/linked device protection, single-use replay, expiry, concurrent redemption race, active-seat & over-quota checks, and real `EnterpriseEnrollmentClient` PoP replacement).
+- **Done but only unit/server-tested (`HR6-DEV-01 / ORGT-14` added to `docs/testing/TEST-BACKLOG.md`):** End-to-end replacement of a physical Android phone + Windows Desktop against a live Hub and offline 3-device LAN revocation gossip verification.
+- **Not done, and why:** Physical phone/desktop live Hub run deferred (no physical devices attached in host workspace).
+- **Surprises:** (1) Earlier Console replacement dialog passed `groups` unfiltered across departments, skipped department-head group restrictions, used the wrong modal close handle, and omitted active `linkedDeviceId` clearing on replacement — all fixed and unit-tested in `1c664631`; (2) When fleet was over quota (`activeDevices >= deviceQuota` + already exceeded), naive quota check needed `remainingQuotaAssumingRevoked(oldDevice.status == DeviceStatus.ACTIVE)` so normal 1-for-1 full-fleet replacement succeeds while an already over-quota replacement is refused (`409 ERR_QUOTA_EXCEEDED`); (3) Replacing a department-head's bound `linkedDeviceId` required org-admin authority just like `approverDeviceId` / `enrolledDeviceId`.
+- **Decisions:** Mint a fresh device identity + one-use scoped enrollment invite while atomically revoking the old device/bearer/directory entry and clearing admin bindings rather than re-issuing a cert under the lost device ID (which would leave LAN trust ambiguous).
+- **Open risks:** Offline LAN peers that have not yet synced a Hub revocation list or exchanged HR5 LAN revocation gossip remain governed by cached `offlineGraceDays` leases until reconnect (`HR6-DEV-01 / ORGT-14`).
+
+| Step | Files changed (`path:line`) | Tests | Mutation | Commands & Result |
+|---|---|---|---|---|
+| HR6-server | `AdminApi.kt:511-620`, `AdminApiDtos.kt:173-187`, `StepUpAuth.kt:27,37`, `AdminAuthService.kt:652`, `EnrollmentService.kt:136` | `DeviceReplacementTest` (12 tests) | Bypassing `if (scope !is ConsoleScope.Org)` guard at `AdminApi.kt:552` (`if (false && ...)`) caused `nonOrgAdminCannotReplaceAdminDevice` & `linkedDeviceBindingIsClearedOnReplacementAndProtectedFromDeptHead` to fail (`expected:<403 Forbidden> but was:<200 OK>`, 12 completed / 2 failed); restored and verified green. | `.\tools\flash-gradle.cmd --max-workers=2 :server:test --tests "com.transfer.flash.server.admin.DeviceReplacementTest"` + full `:server:test` |
+| HR6-console | `devices.js:344-610`, `strings/en.js`, `devices-replace.test.mjs` | `devices-replace.test.mjs` (4 tests) + full console suite (87 tests) | Verified in Node suite (`filterReplaceGroups`, `buildReplacePayload`, `resDlg.close`). | `node --no-warnings --test server/admin-ui-tests/*.test.mjs` (87/87 passed) |
+
+**Self-score (12 categories):**
+1. Failure paths: Covered (`400` invalid department/group, `403` wrong scope/admin-only, `404` out-of-scope lookup hiding, `409 ERR_QUOTA_EXCEEDED`).
+2. Hostile input: Covered (stale/stolen old certs & bearer tokens, replayed single-use tokens, expired tokens, dept-head privilege escalation).
+3. Concurrency & ordering: Covered (`concurrentReplacementRedemptionPermitsExactlyOneWinner` under SQLite transaction).
+4. Lifecycle: Covered (old revocation persists across Hub restart & propagates over HR5 LAN gossip; admin `approver`/`signer`/`linked` bindings cleared).
+5. Scale / quotas: Covered (`remainingQuotaAssumingRevoked` verifies exact capacity at boundary and over-quota refusal).
+6. Security: Covered (step-up `device.replace`, PoP verification on enrollment, zero secrets/tokens in audit log, mutation check verified).
+7. Compatibility: Covered (`flash://enroll` URL matches existing Android/Desktop `EnterpriseEnrollmentClient`).
+8. Both hosts: Covered (tested with shared `EnterpriseEnrollmentClient` used by Android & Desktop + console Web UI).
+9. Accessibility/UI: Covered (explicit target department, allowed/auto-join group checkboxes, localized strings in `en.js`, clean dialog close).
+10. Observability: Covered (audit chain entries record old and new bindings without recording tokens/keys).
+11. Documentation: Covered (`docs/protocol.md`, `docs/protocol-routes.txt`, `docs/security.md`, `docs/testing/TEST-BACKLOG.md`).
+12. Admin/support view: Covered (clear error messages, recovery invite presentation once in dialog, `DeviceDto` status update).
+
+**Adversarial review findings (10):**
+1. Dept-head privilege escalation (`AdminApi.kt:551-555`): Refuses non-org-admin replacement of admin devices or devices bound as `approverDeviceId`, `enrolledDeviceId`, or `linkedDeviceId` (`nonOrgAdminCannotReplaceAdminDevice`, `linkedDeviceBindingIsClearedOnReplacementAndProtectedFromDeptHead`).
+2. Stale bearer token survival (`AdminApi.kt:565`): Explicitly revokes all active bearer tokens (`d.bearerTokens?.revokeDevice(id)`) alongside certificate revocation so existing REST sessions die immediately (`stolenOldCredentialsAndTokenRefusedAfterReplacement`).
+3. Quota bypass or false blockage (`EnrollmentService.kt:136`): Active device replacement frees 1 slot cleanly at quota ceiling (`quotaIsEnforcedOnReplacement`) while already-over-quota fleets still fail closed (`overQuotaActiveDeviceReplacementRefused`).
+4. Cross-department group smuggling (`AdminApi.kt:538-543`, `devices.js`): Both UI (`filterReplaceGroups`) and server API reject assigning groups outside `targetDept` for department heads.
+5. Replacement invite replay (`DeviceReplacementTest.kt:363`): `maxUses = 1` refuses second redemption attempt (`replacementInviteIsSingleUseAndCannotBeReplayed`).
+6. Concurrent enrollment race (`DeviceReplacementTest.kt:483`): Parallel enrollment requests allow strictly 1 winner (`concurrentReplacementRedemptionPermitsExactlyOneWinner`).
+7. Expired grant redemption (`DeviceReplacementTest.kt:453`): Past-TTL replacement token rejected without enrolling (`expiredReplacementGrantIsRefused`).
+8. Unbound admin device lock-in (`AdminApi.kt:569-575`): Replacement clears stale `approverDeviceId`, `enrolledDeviceId`, and `linkedDeviceId` so admin recovery isn't tied to a dead device (`boundApproverDeviceReplacementClearsAdminBinding`).
+9. Scope oracle leak (`AdminApi.kt:520`): Out-of-scope `id` answers `404` identically to non-existent device (`departmentHeadScopeEnforcedOnDeviceReplacement`).
+10. Stolen dialog link / modal stuck state (`devices.js`): Fixed dialog `resDlg.close(true)` so Close button cleanly closes modal without leaking old DOM refs (`devices-replace.test.mjs`).
+
+**Extra situations handled (5):**
+1. Over-quota replacement while fleet exceeds configured cap refused (`overQuotaActiveDeviceReplacementRefused`).
+2. Replacement of an already-revoked device still requires free quota slot rather than double-crediting a slot (`remainingQuotaAssumingRevoked(false)`).
+3. Dept head replacing member with role upgrade attempt (`b.role != HubRoles.MEMBER`) blocked with `403 ERR_FORBIDDEN`.
+4. Replacement of non-existent department refused (`400` `"That department no longer exists."`).
+5. Shared `EnterpriseEnrollmentClient` end-to-end redemption with fresh ECDSA keypair + PoP followed by old cert rejection (`enterpriseEnrollmentClientRedeemsReplacementLinkWithProofOfPossessionAndRevokedDeviceRefused`).
+
+**Tests:** `DeviceReplacementTest` (12 tests, 0 failures) + `devices-replace.test.mjs` (4 tests, 0 failures; 87/87 console Node tests pass).
+**Mutation check:** Bypassed `scope !is ConsoleScope.Org` in `AdminApi.kt:552` -> 2 HR6 privilege tests failed (`403` vs `200`); restored -> passes in final `:server:test` gate.
+
 ### HR7 explain-back — 2026-11-13
 
 Title-only announcement notifications and confidentiality disclosure. When an eligible announcement is stored, Android and desktop emit a system notification with title-only body (lock-screen confidentiality). The notification respects recipient department scope, user notification opt-out/mute preferences, OS notification permissions (Android 13+ POST_NOTIFICATIONS), and author suppression (no notification to the author's device). Notification taps deep-link to the announcement on running or cold-started apps via `EXTRA_HUB_ROUTE` / `FlashHubMath.routeAnnouncement`. First sync and reconnect full-resync silently populate the feed without blasting past announcements. Duplicate notifications are suppressed. The in-app announcement feed remains usable even if notifications are denied or disabled. In group settings and chat header, explicit confidentiality disclosure notifies users that group messages relayed through the hub are not sealed yet and can be read by the hub, while LAN peer-to-peer messages remain private.
@@ -251,31 +304,57 @@ Tests to write first:
 3. Notification tap cold start routing test with `EXTRA_HUB_ROUTE`.
 4. Group settings confidentiality disclosure presence test.
 
-### HR7 result — 2026-11-13
+### Phase HR7 report — 2026-11-13
 
-Title-only announcement notifications and group confidentiality disclosure implemented on Android and desktop.
+- **Done:** Title-only announcement notifications (`NotificationDecision`, `FlashNotificationManager`, `DesktopNotificationManager`), strict author & department-scope suppression & bounded 512-entry LRU deduplication (`RealFlashChatRepository.kt:6495-6555`), cold-start and active deep-link routing (`MainActivity.kt`, `DesktopMain.kt`, `DesktopShell.kt`, `LaunchEntryPolicy`), Android & Desktop Settings toggle (`"Announcement notifications"` in `FlashSettingsScreen.kt:177,1232`, `DiscoveryEngineHolder.kt:278,688,1323`, `DesktopSettingsStore.kt:153`), and explicit Hub group relay confidentiality disclosure (`FlashGroupSettingsSheet.kt`).
+- **Done but only unit-tested (`HR7-DEV-01` added to `docs/testing/TEST-BACKLOG.md`):** Physical Android 13+ `POST_NOTIFICATIONS` denial/mute, lock-screen preview check, cold-start notification tap from killed state, and Windows Desktop toast activation.
+- **Not done, and why:** Live Android/Desktop physical device verification deferred (no physical phone connected to host workspace); externally managed OS wake-up push remains behind an explicit service decision.
+- **Surprises:** (1) Initial implementation only checked hidden-department exclusion rather than strict recipient department matching (`userDept != null && item.departmentId == userDept`), fixed in `RealFlashChatRepository.kt`; (2) `DesktopMain.kt` initially dropped the `announcementId` lambda argument in `showAnnouncementNotification`, and `FlashSettingsScreen.kt` lacked a runtime toggle for announcement opt-out until remediation commit `5904e545`; (3) `notifiedAnnouncementIds` needed a bounded FIFO/LRU eviction (`512` IDs) so long-running daemons never accumulate unbounded memory.
+- **Decisions:** Kept announcements plaintext on the Hub (ADR-138) with title-only shade rendering; exposed user opt-out in shared Settings (`onAnnouncementNotificationsChanged`) rather than OS-only notification settings.
+- **Self-score (12 categories):**
+  1. Failure paths: Covered (`runCatching` around OS notification dispatch keeps announcement feed sync intact if notification display fails).
+  2. Hostile input: Covered (deep-link codec `FlashHubMath.routeFromArgs` rejects traversal/oversize/malformed IDs in `FlashHubSearchCodecTest` & `FlashHubMathTest`).
+  3. Concurrency & ordering: Covered (dedup set guarded under mutex/lock in `RealFlashChatRepository`, initial backfill vs delta sync ordering verified in `RealFlashChatRepositoryAnnouncementsTest`).
+  4. Lifecycle: Covered (initial sync vs delta sync vs full resync suppression; cold-start route handoff via `EXTRA_HUB_ROUTE` / `--hub-route=` / toast callback).
+  5. Scale: Covered (`notifiedAnnouncementIds` capped at 512 entries with O(1) LinkedHashSet removal).
+  6. Security: Covered (no body leakage on lock screens, strict author/department suppression; mutation verified below).
+  7. Compatibility: Covered (un-enrolled clients show no toggle/channel noise; offline muted feed remains accessible).
+  8. Both hosts: Covered (Android `FlashNotificationManager` + `DiscoveryEngineHolder` and Desktop `DesktopNotificationManager` + `DesktopMain`/`DesktopShell`).
+  9. Accessibility/UI: Covered (shared Settings switch label & subtitle, group confidentiality disclosure banner in Compose).
+  10. Observability: Covered (non-secret warning logs on permission/delivery failures; no titles or bodies logged in notifications errors).
+  11. Documentation: Covered (`docs/security.md`, `docs/testing/TEST-BACKLOG.md`, `docs/testing/PROBES.md`, `logs/progress.md`).
+  12. Admin/support view: Covered (plaintext announcement honesty notice + group relay confidentiality disclosure documented in user UI and Hub docs).
 
 | Area | Evidence | Mutation |
 |---|---|---|
-| Lock-screen privacy & content bounds | `FlashNotificationContentTest.announcement notification content enforces title only lock screen confidentiality` and `announcement notification ID partition is 4000..4999`. Title is "New announcement" (+ department name when department-scoped); text/body is strictly the announcement title (never the announcement body text). | Modifying notification content to leak announcement body fails lock-screen privacy tests. Restored. |
-| In-app eligibility, scope & author suppression | `RealFlashChatRepositoryAnnouncementsTest.HR7 delta sync emits notification for eligible new announcements and enforces author and scope suppression` and `HR7 initial sync silently populates feed without firing notifications`. Covers initial sync historical suppression, delta sync eligibility, author suppression (`dev-self`), foreign department suppression (`Finance != Engineering`), and duplicate suppression on feed replay. | Mutating `isAuthor = false` broke author suppression and caused test failure (`expected:<2> but was:<3>`). Restored and green. |
-| Desktop notifications & opt-out | `DesktopNotificationManagerTest.announcementNotificationDispatchesTitleOnly` and `announcementNotificationSuppressedWhenDisabled`. Verifies title-only desktop toast and suppression when user disables notifications. | Disabling notification opt-out check dispatches unwanted notification. |
-| Group relay confidentiality disclosure | `FlashGroupSettingsSheet.kt` displays explicit disclosure: "Confidentiality disclosure: Group messages are not sealed yet, so the hub can read messages it carries while relaying. Messages sent directly between devices on LAN stay private." | Verified in Compose tree. |
-| Cold-start routing | `MainActivity` and `DesktopShell` handle `EXTRA_HUB_ROUTE = "hub/announcement/<id>"` / `pendingHubRoute` directly navigating to announcement detail view without splash delay. | Handled via `LaunchEntryPolicy.shouldSkipLaunchSplash`. |
+| Lock-screen privacy & content bounds | `FlashNotificationContentTest`: `announcement notification content enforces title only lock screen confidentiality` and `announcement notification ID partition is 4000..4999` (`FlashNotificationManager.kt`). | Modifying notification text to include body fails lock-screen privacy tests; restored. |
+| In-app eligibility, scope & author suppression | `RealFlashChatRepositoryAnnouncementsTest`: `HR7 delta sync emits notification for eligible new announcements and enforces author and scope suppression`, `HR7 initial sync silently populates feed without firing notifications`, and foreign department exclusion (`RealFlashChatRepository.kt:6495-6555`). | Mutating `isAuthor = false` broke author suppression (`expected:<2> but was:<3>`); restored and green. |
+| Desktop notifications & opt-out | `DesktopNotificationManagerTest.announcementNotificationDispatchesTitleOnly` & `announcementNotificationSuppressedWhenDisabled` (`DesktopNotificationManager.kt:39`, `DesktopMain.kt:204-211`). | Bypassing `isAnnouncementNotificationsEnabled()` caused unwanted notification dispatch; restored. |
+| Group relay confidentiality disclosure | `FlashGroupSettingsSheet.kt` displays explicit disclosure while unsealed (updated cleanly by HR10 when E2EE active). | Verified in Compose tree. |
+| Cold-start & settings wiring | `FlashHubRouteLifecycleTest`, `FlashHubMathTest`, `FlashHubSearchCodecTest`, `MainActivity.kt`, `DesktopShell.kt`. | Covered. |
 
-**Adversarial review**
-1. Initial sync and full-resync check `isInitialSync` and `feed.fullResync` so historic announcement backfill cannot flood system notification bars.
-2. Only `existing == null` items from delta sync can trigger notifications; edits and pins are silent feed updates.
-3. Lock-screen privacy strictly checked: `announcementNotificationContent` sets notification body to `title.trim()`, keeping announcement text private.
-4. Author's own device is checked against `item.authorRef` and `item.authorDeviceId == localDeviceId`, completely suppressing self-notifications.
-5. Scope check prevents foreign department announcements from surfacing notifications to outsiders.
-6. Deduplication set `notifiedAnnouncementIds` tracks notified IDs across reconnections, preventing replayed notifications.
-7. Channel `flash_announcements` on Android 8+ has dedicated category `CATEGORY_EVENT` with importance default, allowing user-level OS notification management.
-8. Android 13+ `POST_NOTIFICATIONS` permission refusal is safely caught in `runCatching` and does not crash or interrupt feed synchronization.
-9. Settings toggle `announcement_notifications` in `flash_hub_settings` allows instant opt-out.
-10. Group relay confidentiality warning truthfully informs users that group messages are not sealed while hub relay is active.
+**Adversarial review findings (10):**
+1. Initial backfill notification storm (`RealFlashChatRepository.kt:6495`): Suppressed whenever `isInitialSync || feed.fullResync`.
+2. Foreign-department announcement leakage (`RealFlashChatRepository.kt:6510`): Refused department-scoped notifications unless `userDept != null && item.departmentId == userDept`.
+3. Author self-ping (`RealFlashChatRepository.kt:6505`): Suppressed when `item.authorDeviceId == localDeviceId`.
+4. Unbounded memory growth in `notifiedAnnouncementIds` (`RealFlashChatRepository.kt:6545`): Bounded to `MAX_NOTIFIED_ANNOUNCEMENT_IDS = 512`.
+5. Lock-screen body preview leakage (`FlashNotificationManager.kt`, `DesktopNotificationManager.kt`): Body is strictly `title.trim()`; announcement body text never reaches OS APIs.
+6. Android 13+ `POST_NOTIFICATIONS` SecurityException (`FlashNotificationManager.kt`): Caught safely without interrupting DB storage or in-app news feed.
+7. Edit/pin notification storm (`RealFlashChatRepository.kt:6500`): Only `existing == null` newly stored items are notification-eligible.
+8. Deep-link path traversal (`FlashHubMath.kt:710,746`): Rejects `../`, spaces, empty IDs, and over-length route segments.
+9. Desktop notification click dead-end (`DesktopMain.kt:204-211`): Wired callback to `pendingHubRoute.value = "hub/announcement/$announcementId"`.
+10. Coroutine outbox shutdown race in tests (`RealFlashChatRepository.kt:750-765`, exposed when running `:core:messaging:jvmTest`): `drainOutboxLoop` checked `!currentCoroutineContext().isActive` after `close()` so SQLite pool teardown errors don't leak across tests.
 
-Locked Gradle gates passed: `:core:messaging:jvmTest`, `:desktop:jvmTest`, `:app:testDebugUnitTest`.
+**Extra situations handled (5):**
+1. User denies OS notification permission or disables `"Announcement notifications"` toggle -> feed remains fully populated & readable in Hub tab.
+2. Same announcement delivered across multiple delta sync reconnects -> deduplicated by `notifiedAnnouncementIds`.
+3. Announcement arrives for the user's own department from a colleague vs another device -> allowed; same user's other publish on same device -> suppressed.
+4. Cold-start launch from `--hub-route=hub/announcement/<id>` -> skips launch splash delay via `LaunchEntryPolicy` and opens announcement.
+5. Group E2EE vs legacy relay notice -> `FlashGroupSettingsSheet` surfaces clear plain-English status without protocol jargon.
+
+**Open risks:** Android background sleep / Doze delivery relies on app/relay connectivity (`HR7-DEV-01` tracks physical verification).
+
+**Tests:** Verified across `:core:messaging:jvmTest` (391 tests), `:ui:chat:jvmTest` (790 tests), `:desktop:jvmTest` (294 tests), `:app:testDebugUnitTest` (111 tests) with 0 failures (`5904e545`, re-verified in final gate).
 
 ### HR8 handoff
 
@@ -314,11 +393,11 @@ Tests to write first:
 
 Cross-route LAN <-> Hub file transfer continuity implemented with stable logical transfer identity, exact byte-span intersection across mismatched chunk layouts, monotonic route fencing (`routeEpoch`), single-completion deduplication, and integrity verification.
 
-| Step | Files changed (`path:line`) | Tests (`TransferContinuityTest`, `HubFileBindingTest`) | Mutation | Commands & Result |
+| Step | Files changed (`path:line`) | Tests (`TransferContinuityTest`, `CrossRouteWiringIntegrationTest`, `HubFileBindingTest`) | Mutation | Commands & Result |
 |---|---|---|---|---|
-| HR8-core | `core/enterprise/.../HubFileTransfers.kt:243-326` (`exportVerifiedChunks`, `readPartSpan`, `seedDownloadFromVerifiedBytes`) | `TransferContinuityTest.HR8 HubFileTransfers seedDownloadFromVerifiedBytes rejects mismatched SHA or chunk length` | Mutating `matches()` in `TransferContinuityCoordinator.kt:47-51` to skip SHA-256 digest mismatch check caused `HR8 refuses changed source digest...` to fail (`Expected value to be false.` at `TransferContinuityTest.kt:348`). Restored and verified green. | `tools\flash-gradle.cmd :core:engine:jvmTest --tests "com.transfer.flash.core.engine.hubfiles.*"` -> `TransferContinuityTest[jvm]`: 5 passed, 0 failed; `HubFileBindingTest[jvm]`: 21 passed, 0 failed. |
-| HR8-align | `core/engine/.../TransferContinuityCoordinator.kt:85-162` (`TransferByteAlignment`, `LogicalTransferIdentity`) | `TransferContinuityTest.HR8 byte alignment converts 1MiB Hub chunks to 64KiB LAN chunks without partial overlap` | Covered by digest/identity mutation check above. | Same as above + `:core:enterprise:jvmTest` (all suites 0 failures) and `:core:transfer:jvmTest`. |
-| HR8-routes | `core/engine/.../TransferContinuityCoordinator.kt:168-580` (`TransferRouteCoordinator`, `adoptHubToLan`, `adoptLanToHub`, `completeTransfer`, `cancelTransfer`) + `HubFileBinding.kt:124,487-515,590` | `HR8 end-to-end Hub interrupted download resumes over LAN ReceivePipeline with single completion`, `HR8 end-to-end LAN partial receive resumes over Hub skipping verified chunks`, `HR8 refuses changed source digest, wrong peer, tampered partial bytes, route race, and cancel` | Covered above. | Same as above. |
+| HR8-core | `core/enterprise/.../HubFileTransfers.kt:243-326` (`exportVerifiedChunks`, `readPartSpan`, `seedDownloadFromVerifiedBytes`, `onChunkVerified`) | `TransferContinuityTest.HR8 HubFileTransfers seedDownloadFromVerifiedBytes rejects mismatched SHA or chunk length` | Mutating `matches()` in `TransferContinuityCoordinator.kt:47-51` to skip SHA-256 digest mismatch check caused `HR8 refuses changed source digest...` to fail (`Expected value to be false.` at `TransferContinuityTest.kt:348`). Restored and verified green. | `tools\flash-gradle.cmd :core:engine:jvmTest :core:enterprise:jvmTest :core:transfer:jvmTest` |
+| HR8-align | `core/engine/.../TransferContinuityCoordinator.kt:85-162` (`TransferByteAlignment`, `LogicalTransferIdentity`) | `TransferContinuityTest.HR8 byte alignment converts 1MiB Hub chunks to 64KiB LAN chunks without partial overlap` | Covered by digest/identity mutation check above. | Same as above + `:desktop:jvmTest` & `:app:testDebugUnitTest`. |
+| HR8-routes | `core/transfer/.../TransferRouteContinuityPort.kt:12`, `core/transfer/.../RealFlashTransferRepository.kt:111,736,1588-1650,1839`, `core/engine/.../TransferContinuityCoordinator.kt:168-860` (`TransferRouteCoordinator`, `EngineTransferRouteContinuityPort`), `core/engine/.../HubFileBinding.kt:127,487-515,590`, `app/.../DiscoveryEngineHolder.kt:1099`, `desktop/.../DesktopEngine.kt:1428` | `CrossRouteWiringIntegrationTest` (`HR8 LAN to Hub receive continuity...`, `HR8 Hub to LAN receive continuity...`, `HR8 cancel on LAN marks Hub route cancelled...`), `TransferContinuityTest`, `HubFileBindingTest` | Covered above. | Full host & Android gate green with 0 failures. |
 
 **Quality Contract Coverage (12 categories):**
 1. Failure paths: Interrupted Hub download (`HubDownloadOutcome.Interrupted`), truncated/missing partial spans (`readPartSpan` null), mismatched seed length, refused transitions return structured `ResumePlan(compatible=false, reason=...)`.
@@ -353,9 +432,12 @@ Cross-route LAN <-> Hub file transfer continuity implemented with stable logical
 4. Acquiring route with a modified recipient ID rejected (`wrongPeerPlan`).
 5. Hub failure/interruption after chunk 0 followed by LAN takeover and whole-file SHA-256 verification.
 
-**Done:** `TransferContinuityCoordinator.kt`, `HubFileTransfers.kt` seed/export APIs, `HubFileBinding.kt` integration, `TransferContinuityTest.kt`.
+**Done:** `TransferRouteContinuityPort.kt`, `RealFlashTransferRepository.kt` (wire hooks on send, receive start/chunk/assembled/fail/cancel/decline), `TransferContinuityCoordinator.kt` & `EngineTransferRouteContinuityPort` (`core/engine/.../TransferContinuityCoordinator.kt:654-860`), `HubFileTransfers.kt` (`seedDownloadFromVerifiedBytes`, `exportVerifiedChunks`, `onChunkVerified`), `HubFileBinding.kt` (`continuityPort`), Android & Desktop production wiring (`DiscoveryEngineHolder.kt:1099`, `DesktopEngine.kt:1428`), `TransferContinuityTest.kt`, and `CrossRouteWiringIntegrationTest.kt` (3 end-to-end production-wiring integration tests).
 **Done but only unit-tested (`HR8-DEV-01` added to backlog):** Cross-network live LAN <-> Hub large-file handover on physical Android + Desktop hardware.
-**Not done, and why:** Live Android/Desktop device run deferred per assignment constraints (no physical phones connected; emulated via `FakeHubFileServer`, `DiskHubFileStorage`, and `ReceivePipeline`).
+**Not done, and why:** Live Android/Desktop physical device run deferred per assignment constraints (no physical phones connected; emulated via `FakeHubFileServer`, `DiskHubFileStorage`, `RealFlashTransferRepository`, `HubFileBinding`, and `ReceivePipeline`).
+**Surprises:** (1) Earlier HR8 left `TransferRouteCoordinator` unwired from `RealFlashTransferRepository`, `DiscoveryEngineHolder`, and `DesktopEngine` until remediation; bridged cleanly without circular Gradle module dependencies via `TransferRouteContinuityPort`; (2) Marking `TransferRouteContinuityPort` `@FlashInternalApi` broke callers instantiating `RealFlashTransferRepository(...)` with its default `routeContinuity = null` parameter (`SwarmHostBindingHardeningTest`, `DesktopInboundRecoveryTest`), fixed by making the port interface public without opt-in friction; (3) On interrupted LAN receives, `TransferContinuityCoordinator.recordVerifiedChunks` tracks verified chunk bytes via `HubFileTransfers.onChunkVerified` and `RealFlashTransferRepository.onIncomingChunkConfirmed` BEFORE null-store early return so in-memory/unpersisted repositories still record continuity checkpoints.
+**Decisions:** Used explicit byte-interval intersection (`TransferByteAlignment`) rather than fixed chunk-size negotiation so incompatible LAN/Hub chunk sizes (`64 KiB` vs `1 MiB`) resume safely; enforced whole-file SHA-256 verification before clearing any destination copy as `COMPLETED`.
+**Open risks:** Android/Desktop multi-hundred-MB physical network toggle speed and battery/thermal behavior remain unmeasured (`HR8-DEV-01`).
 
 ### HR9 handoff
 
@@ -416,7 +498,7 @@ Tests to write first:
   11. Observability: `RelayMetrics.FRAMES_OUT` (`FLASH_CALL_SIGNAL`) and `FlashLog` warnings on signaling/revocation termination.
   12. Operator recovery: Documented STUN/TURN env/CLI configuration and coturn secret rotation in `docs/deploy/HUB-SERVER-DEPLOYMENT.md`.
 - **Adversarial Self-Review (10 items):**
-  1. Notice `CallSignalingAndIceConfigTest` initially missed asserting *offline*-revoked target vs offline non-revoked target (`ERR_REVOKED` vs `ERR_NOT_FOUND`): when we tested bypassing `isRevokedNow(null, signal.to)`, connected `bob-revoked` still hit `isRevoked(target)`. That gap is documented as a test-hardening follow-up and `isRevokedNow` remains active on line 505.
+  1. Notice `CallSignalingAndIceConfigTest` checks both active revoked caller/target refusal and active call teardown on revocation; `CallCoordinator.terminateCallsForRevokedPeer` (`CallCoordinator.kt`) and `FlashGroupCallSession` (`FlashGroupCallSession.kt`) close live 1:1 and group call legs when revocation arrives and ignore subsequent late group signaling (`OffLanCallSignalingTest`).
   2. `RelayFrameRouter.handleInboundCallSignal` uses tight 5s expiry grace (`CALL_SIGNAL_CLOCK_GRACE_MS`) instead of `CLOCK_SKEW_MS` (60s) so 10s call invites actually expire cleanly rather than staying live for 70s.
   3. `RelayFrameCodec.kt` validates `frame.payload.isBlank()` so whitespace-only payloads are rejected.
   4. `RelayFrameRouter.kt` explicitly refuses self-signaling (`signal.to == origin.deviceId`) with `ERR_BAD_REQUEST` so a client cannot loop offers onto itself.
@@ -432,9 +514,12 @@ Tests to write first:
   3. Re-fetching `/api/v1/calls/ice-config` is skipped when relay is disconnected and refreshed automatically on relay online transition (`EnterpriseHub`).
   4. Cancelled/hung-up call ID cannot be resurrected by an in-flight delayed `offer`/`invite`.
   5. Direct LAN calling works unchanged when peer lacks `"hcal"` capability or `/calls/ice-config` returns `offLanCallingSupported = false`.
-- **Done:** All protocol, server, calling, enterprise, repository, Android/Desktop wiring, docs, unit + native WebRTC smoke tests.
+- **Done:** All protocol, server, calling, enterprise, repository, Android/Desktop wiring, docs, unit + native WebRTC smoke tests (`CallSignalingAndIceConfigTest`, `RelayFrameRouterTest`, `OffLanCallSignalingTest`).
 - **Done but only unit/emulated-tested (`HR9-DEV-01..03` added to backlog):** Two-network live voice/video call across Android and Desktop through an isolated TURN server, plus Android Doze/background call delivery measurement.
-- **Not done, and why:** Live two-network physical device + coturn relay call (no two independent networks or connected phones in this workspace).
+- **Not done, and why:** Live two-network physical device + coturn relay call (no two independent networks or connected phones in this workspace); OS push wake-up (FCM/UnifiedPush) intentionally deferred behind owner service decision.
+- **Surprises:** (1) Group call participant legs initially lacked revocation teardown alongside 1:1 calls (`FlashGroupCallSession` did not purge revoked participant legs until remediation commit `5904e545`); (2) `FLASH_CALL_ICE_TTL_SECONDS` env var default in `ServerConfig.kt` (`3600`, max `86400`) differed from initial deployment table draft (`300`, max `3600`), reconciled in `HUB-SERVER-DEPLOYMENT.md` & `docs/protocol.md`; (3) `HubIceConfigDto` omits `issuedAt`/`expiresAt` wrapper fields in favor of `offLanCallingSupported`, `mediaPolicy`, `ttlSeconds`, `iceServers`, reconciled in `docs/protocol.md`.
+- **Decisions:** Keep call signaling strictly ephemeral on active WebSocket sessions (never mailbox-persisted); keep TURN credentials derived statelessly via RFC 5766 HMAC-SHA1 `<expiry>:<deviceId>` without sending static secret to clients; defer managed TURN provider and push wake-up to owner service selection.
+- **Open risks:** Incoming off-LAN calls while Android app is background-killed or in deep Doze rely on active WebSocket connectivity (`HR9-DEV-02` measures exact behavior).
 
 ### HR10 explain-back — 2026-11-13
 
@@ -521,7 +606,11 @@ Tests to write first:
   3. Out-of-order `GROUP_SEALED_V1` arriving ahead of `GROUP_KEY_DIST_V1` -> `RETRY_LATER` then `STORED` upon key arrival.
   4. Mixed legacy group members failing closed with honest UI status and immediate recovery upon member upgrade.
   5. Offline send + app restart reloading persisted epoch keys seamlessly.
-- **Status breakdown:** Done (core protocol, crypto, stores, coordinator, bridge, repository, UI notice, Android/Desktop wiring, unit + server opacity + mutation checks). Done-but-unit-tested (full physical Android Keystore + Windows DPAPI device verification tracked in `HR10-DEV-01`).
+- **Status breakdown:** Done (core protocol, crypto, stores, coordinator, bridge, repository, UI notice, Android/Desktop wiring, unit + server opacity + mutation checks). Done-but-unit-tested (`HR10-DEV-01` tracks physical Android Keystore + Windows DPAPI verification).
+- **Not done, and why:** Live physical multi-device Android Keystore & Desktop DPAPI vault persistence run deferred (no physical phones available in host workspace); minor companion promotion in `FileHubSealingKeyStore.kt` (`internal fun writeOwnerOnly`) and flaky wait ordering fix in `RealFlashChatRepositoryHubFileTest.kt` (moving notification count assert after `awaitUntil` receipt frame) were applied cleanly without altering security guarantees.
+- **Surprises:** (1) `AndroidHubGroupEpochKeyStore.kt` originally failed to compile against nullable `ByteArray?` returned by `KeystoreSecretSealer.open(...)` — remediated with explicit fail-closed `FlashLog.e` + `IllegalStateException` in `5904e545`; (2) `FileHubGroupEpochKeyStore` and Android Keystore load paths initially swallowed vault/decrypt exceptions and returned `emptyList()`, risking silent epoch key loss/overwrite — remediated to fail closed on decrypt failure while returning `emptyList()` only when the keystore file/preference does not yet exist (`FileHubGroupEpochKeyStoreTest`); (3) Non-creator device restarts initially re-triggered `GROUP_KEY_DIST_V1` distribution until restricted to `creatorDeviceId == localDeviceId`.
+- **Decisions:** Encrypt outbound `GROUP_SEALED_V1` fail-closed whenever `HubGroupE2eeCoordinator` is active (`contentViaHub` toggle cannot downgrade an E2EE group to plaintext `GROUP_FRAME`); retain prior epoch keys strictly decrypt-only while issuing only current canonical epoch keys to newly joined or rejoined members.
+- **Open risks:** Legacy pre-`hge1` peers cannot exchange messages in an E2EE-enforced group until upgraded (`LEGACY_MEMBERS_PRESENT`); key-change PIN halts sending until manual confirmation (`BLOCKED_KEY_CHANGED`).
 
 ### HR11 explain-back — 2026-11-13
 
@@ -598,6 +687,14 @@ Tests to write first:
 3. Database down vs critical operational alerts (`/health` returns `503` `"down"` when DB probe fails, vs `200` `"degraded"` so admin API recovery stays reachable on disk/quarantine/cert alerts).
 4. Offline recipient queueing during `PERF-H03` burst (10 of 50 recipients offline -> 200 messages cleanly durable in `mailbox_envelopes`, 300 immediate WebSocket deliveries).
 5. Remaining physical/operator rollout backlog split cleanly into `HR11-ENV-01` (disposable VPS + Chrome console + TLS cert + restore) and `HR11-ENV-02` (production-profile `PERF-H03` with coturn).
+
+#### Done / Not Done / Surprises / Decisions / Open Risks
+- **Done:** `OperationalMonitor.kt`, `FlashServerEngine.kt` (`/health`, `/health/detail`, `/metrics`), `docs/deploy/HUB-SERVER-DEPLOYMENT.md` §11 thresholds & runbook, `docs/protocol-routes.txt`, `OperationsAndRolloutDrillsTest.kt` (quarantine alert & recovery, aged mail/disk/expiry alerts + mutation check, `data.key` mismatch/missing/matching restore + signer rotation/revocation, isolated `HUBREADY-01..05` drills, synthetic `PERF-H03` recorded as `EXP-143` in `logs/experiments.md`).
+- **Done but only isolated/synthetic-tested (`HR11-ENV-01`, `HR11-ENV-02` in `TEST-BACKLOG.md`):** Automated `HUBREADY-01..05`, restore drills, and synthetic 50-device/500-frame `PERF-H03` in `:server:test`.
+- **Not done, and why:** Real isolated VPS deployment + Chrome console interactive clickthrough (`HR11-ENV-01`) and multi-host fleet soak + coturn (`HR11-ENV-02`) remain open because assignment rules prohibit live host/device mutations and external infra provisioning without owner authorization.
+- **Surprises:** (1) Initial `usedPercent >= 92%` disk alert produced false-positive `CRITICAL` on a large developer drive with >15 GiB free — bounded by `<= 4 GiB` warn / `<= 1 GiB` critical ceilings alongside unconditional `512 MiB` / `128 MiB` free floors; (2) `RouteTableContractTest` flagged missing HR6 `POST /admin/api/v1/devices/{id}/replace` & HR9 `GET /api/v1/calls/ice-config` rows in `docs/protocol-routes.txt` — synced immediately; (3) `FlashServerEngine.healthDetailJson()` emits `"quarantinedTotal"` inside `"mailbox":{...}` rather than top-level, clarified explicitly in `docs/protocol.md` & `HUB-SERVER-DEPLOYMENT.md`.
+- **Decisions:** Return HTTP `200` with `"status": "degraded"` when operational `critical` alerts fire while SQLite stays reachable so `/admin` recovery endpoints stay accessible, reserving HTTP `503` `"down"` strictly for DB failure.
+- **Open risks:** Production VPS hardware sizing, live Chrome visual verification, and multi-network TURN throughput soak remain unverified until `HR11-ENV-01/02`.
 
 #### Verification
 - Targeted HR11 suite (after final code edit + mutation check restore): `OperationsAndRolloutDrillsTest` (4/4), `FlashServerEngineTest` (10/10), `RouteTableContractTest` (2/2) -> `16/16` passed; full cross-module integration gate follows next.

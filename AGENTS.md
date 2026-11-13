@@ -917,6 +917,17 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-13 — Hub readiness HR6–HR11 implemented and audit-remediated on `agent/hub-readiness`.**
+Implemented secure device replacement (HR6), title-only announcement notifications and group relay
+confidentiality notice (HR7), cross-route LAN ↔ Hub transfer continuity (HR8), authenticated off-LAN
+calling signaling and STUN/TURN ICE policy (HR9), fail-closed `hge1` group E2EE (HR10), and operational
+monitoring, restore drills, and quality-contract reporting (HR11) in isolated worktree
+`C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness`. Host/unit/integration/Android/Desktop
+gates green (`697` server tests, `87` Node Admin UI tests, `2,751` client/UI/Android/Desktop tests with
+`4` POSIX skips + `:app:assembleDebug`). Physical device, browser console, and isolated VPS acceptance
+items remain tracked in `docs/testing/TEST-BACKLOG.md`; see `logs/handoff.md` and
+`docs/plans/HUB-READINESS-REMEDIATION.md`.
+
 **2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0` and Hub prerelease
 `server-v2.2.0-beta.1` point to `322a92aa`. The release-wide host gate passed. SDK beta.3
 published on JitPack from `13e0fa3f`; beta.2 also has a verified Maven repository ZIP. See
