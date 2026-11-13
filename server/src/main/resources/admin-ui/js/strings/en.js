@@ -394,6 +394,14 @@ export default {
   'devices.tech.fingerprint': 'Key fingerprint',
   'devices.fingerprint.visual': 'Visual fingerprint of the device key',
   'devices.fingerprint.copy': 'Copy fingerprint',
+  'devices.replace.note': 'Notes',
+  'devices.replace.note.placeholder': 'Replacement notes',
+  'devices.replace.defaultReason': 'Device replaced',
+  'devices.replace.groups': 'Groups',
+  'devices.replace.groups.none': 'No groups in this department yet.',
+  'devices.replace.groups.allow': 'Allow',
+  'devices.replace.groups.autoJoin': 'Auto-join',
+  'devices.replace.groups.hint': 'The replacement device can join allowed groups and joins auto-joined groups immediately.',
 
   // ---------------------------------------------------------------- invites
   'invites.title': 'Invites',

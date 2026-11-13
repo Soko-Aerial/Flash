@@ -546,15 +546,16 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
             val targetRole = b.role ?: if (isOldAdmin && scope is ConsoleScope.Org) HubRoles.ADMIN else if (isOldAdmin) HubRoles.MEMBER else oldDevice.role
             val isBoundApprover = d.admins.listAdmins().any { it.approverDeviceId == id }
             val isBoundSigner = d.admins.listAdmins().any { it.enrolledDeviceId == id }
+            val isBoundLinked = d.admins.listAdmins().any { it.linkedDeviceId == id }
 
-            if (isOldAdmin || targetRole == HubRoles.ADMIN || isBoundApprover || isBoundSigner) {
+            if (isOldAdmin || targetRole == HubRoles.ADMIN || isBoundApprover || isBoundSigner || isBoundLinked) {
                 if (scope !is ConsoleScope.Org) {
                     return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Only an organisation administrator can replace an administrator or approver device.")
                 }
             }
             if (!call.stepUpOk(d, session, StepUpActions.REPLACE_DEVICE, id)) return@post
 
-            if (oldDevice.status != DeviceStatus.ACTIVE && enrollment.currentRemainingQuota <= 0) {
+            if (enrollment.remainingQuotaAssumingRevoked(oldDevice.status == DeviceStatus.ACTIVE) <= 0) {
                 return@post call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_QUOTA_EXCEEDED, "Device quota exceeded.")
             }
 
@@ -565,10 +566,11 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
                 d.directory.removeDevice(id)
                 d.onDeviceRevoked(id)
 
-                if (isBoundApprover || isBoundSigner) {
+                if (isBoundApprover || isBoundSigner || isBoundLinked) {
                     d.admins.listAdmins().forEach { admin ->
                         if (admin.approverDeviceId == id) d.admins.clearApprover(admin.username)
                         if (admin.enrolledDeviceId == id) d.admins.clearEnrolledDevice(admin.username)
+                        if (admin.linkedDeviceId == id) d.admins.clearLinkedDevice(admin.username)
                     }
                 }
 

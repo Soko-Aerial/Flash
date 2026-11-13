@@ -128,6 +128,16 @@ class EnrollmentService(
     val currentRemainingQuota: Int
         get() = (maxActiveDevices() - store.activeDeviceCount()).coerceAtLeast(0).toInt()
 
+    /**
+     * Devices still allowed if [releasingOneActiveSeat] (replacing an ACTIVE device)
+     * frees one active seat as part of replacement. Rejects replacement when ACTIVE count
+     * is already at or above the quota ceiling after freeing that seat.
+     */
+    fun remainingQuotaAssumingRevoked(releasingOneActiveSeat: Boolean): Int {
+        val effectiveActive = (store.activeDeviceCount() - if (releasingOneActiveSeat) 1 else 0).coerceAtLeast(0)
+        return (maxActiveDevices() - effectiveActive).coerceAtLeast(0).toInt()
+    }
+
     private fun maxActiveDevices(): Int = minOf(delegationCert.maxDevices, quotaCeiling)
 
     // ------------------------------------------------------------------------------------------------ invites

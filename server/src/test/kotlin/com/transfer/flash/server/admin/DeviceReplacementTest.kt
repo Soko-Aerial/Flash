@@ -1,16 +1,23 @@
 package com.transfer.flash.server.admin
 
+import com.transfer.flash.core.enterprise.EnterpriseEnrollmentClient
+import com.transfer.flash.core.enterprise.EnrollmentOutcome
 import com.transfer.flash.core.hubprotocol.certs.DelegationCert
 import com.transfer.flash.core.hubprotocol.certs.DeviceCert
+import com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite
 import com.transfer.flash.core.hubprotocol.certs.HubAuth
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.security.crypto.FlashCrypto
+import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
+import com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore
 import com.transfer.flash.server.auth.BearerTokenStore
+import com.transfer.flash.server.auth.ChallengeResponseAuth
 import com.transfer.flash.server.auth.EnrollmentService
 import com.transfer.flash.server.auth.HubRateLimits
 import com.transfer.flash.server.auth.RevocationSigner
 import com.transfer.flash.server.auth.SqliteRevocationService
+import com.transfer.flash.server.auth.authRoutes
 import com.transfer.flash.server.auth.generateEcKeyPair
 import com.transfer.flash.server.auth.issue
 import com.transfer.flash.server.auth.sign
@@ -36,8 +43,13 @@ import io.ktor.http.contentType
 import io.ktor.http.setCookie
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
+import java.nio.file.Files
 import java.security.KeyPair
 import java.util.Base64
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -309,15 +321,42 @@ class DeviceReplacementTest {
         mount(r)
         val client = createClient { followRedirects = false }
         val headSess = client.login(r, user = "head_sales", pass = headPassword)
+        val headKey = FlashCrypto.generateEcKeyPair()
+        r.admins.registerConsoleKey("head_sales", headKey.toBase64Spki(), "Head browser key")
 
-        // Try replacing admin device
+        // 1. Org admin device (null department) is out of head_sales scope -> 404
         val res = client.postJson(
             "/devices/admin-device/replace",
             headSess,
             DeviceReplaceBody(department = "sales", reason = "Takeover"),
         )
-        // admin-device has null department so not in sales scope -> 404
         assertEquals(HttpStatusCode.NotFound, res.status)
+
+        // 2. Member inside head_sales's OWN department that is bound as approver -> 403 ERR_FORBIDDEN
+        val invSales = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-sales-approver", invSales.token, dept = "sales")
+        r.admins.bindApprover("boss", "dev-sales-approver")
+        val suApprover = client.stepUp(r, headSess, StepUpActions.REPLACE_DEVICE, "dev-sales-approver", key = headKey)
+        val appRes = client.postJson(
+            "/devices/dev-sales-approver/replace",
+            headSess,
+            DeviceReplaceBody(department = "sales", reason = "Bypass approver"),
+            stepUp = suApprover,
+        )
+        assertEquals(HttpStatusCode.Forbidden, appRes.status, appRes.bodyAsText())
+        assertEquals(DeviceStatus.ACTIVE, r.identities.device("dev-sales-approver")!!.status)
+
+        // 3. Regular member inside head_sales's department cannot be promoted to admin role -> 403 ERR_FORBIDDEN
+        val invMember = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-sales-member", invMember.token, dept = "sales")
+        val suPromote = client.stepUp(r, headSess, StepUpActions.REPLACE_DEVICE, "dev-sales-member", key = headKey)
+        val promoteRes = client.postJson(
+            "/devices/dev-sales-member/replace",
+            headSess,
+            DeviceReplaceBody(department = "sales", role = "admin", reason = "Escalate"),
+            stepUp = suPromote,
+        )
+        assertEquals(HttpStatusCode.Forbidden, promoteRes.status, promoteRes.bodyAsText())
     }
 
     @Test
@@ -408,5 +447,206 @@ class DeviceReplacementTest {
         val pNew = FlashCrypto.sign(kNew.private, HubAuth.enrollProofBytes(repDto.invite.token, "dev-new", kNew.toBase64Spki(), r.enrollment.serverId))
         val enrollOk = r.enrollment.enrollDevice(repDto.invite.token, "dev-new", kNew.toBase64Spki(), pNew, currentTimeMs = r.now)
         assertTrue(enrollOk.isSuccess)
+    }
+
+    @Test
+    fun expiredReplacementGrantIsRefused() = testApplication {
+        val r = Realm()
+        mount(r)
+        val client = createClient { followRedirects = false }
+        val s = client.login(r)
+
+        val inv = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-exp", inv.token, dept = "sales")
+
+        val su = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-exp")
+        val repRes = client.postJson(
+            "/devices/dev-exp/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Lost", ttlMinutes = 5),
+            stepUp = su,
+        )
+        assertEquals(HttpStatusCode.OK, repRes.status)
+        val repDto = HubRestCodec.decode<DeviceReplaceResultDto>(repRes.bodyAsText())
+
+        // Advance past 5-minute TTL
+        r.now += 6 * 60_000L
+        val kNew = FlashCrypto.generateEcKeyPair()
+        val pNew = FlashCrypto.sign(kNew.private, HubAuth.enrollProofBytes(repDto.invite.token, "dev-late", kNew.toBase64Spki(), r.enrollment.serverId))
+        val late = r.enrollment.enrollDevice(repDto.invite.token, "dev-late", kNew.toBase64Spki(), pNew, currentTimeMs = r.now)
+        assertTrue(late.isFailure)
+        val ex = late.exceptionOrNull() as? com.transfer.flash.server.auth.InviteRefusedException
+        assertEquals(com.transfer.flash.server.auth.InviteRefusal.EXPIRED, ex?.refusal)
+    }
+
+    @Test
+    fun concurrentReplacementRedemptionPermitsExactlyOneWinner() = testApplication {
+        val r = Realm()
+        mount(r)
+        val client = createClient { followRedirects = false }
+        val s = client.login(r)
+
+        val inv = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-race", inv.token, dept = "sales")
+
+        val su = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-race")
+        val repRes = client.postJson(
+            "/devices/dev-race/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Lost"),
+            stepUp = su,
+        )
+        val repDto = HubRestCodec.decode<DeviceReplaceResultDto>(repRes.bodyAsText())
+
+        val outcomes = runBlocking {
+            (1..4).map { idx ->
+                async(Dispatchers.IO) {
+                    val key = FlashCrypto.generateEcKeyPair()
+                    val devId = "dev-racer-$idx"
+                    val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(repDto.invite.token, devId, key.toBase64Spki(), r.enrollment.serverId))
+                    r.enrollment.enrollDevice(repDto.invite.token, devId, key.toBase64Spki(), proof, currentTimeMs = r.now)
+                }
+            }.awaitAll()
+        }
+        assertEquals(1, outcomes.count { it.isSuccess }, "Exactly one concurrent redemption must win")
+        assertEquals(3, outcomes.count { it.isFailure }, "Losers must fail")
+    }
+
+    @Test
+    fun overQuotaActiveDeviceReplacementRefused() = testApplication {
+        // Ceiling = 2 (admin-device = 1), force 2 extra ACTIVE devices so activeCount = 3 > 2
+        val r = Realm(initialQuota = 2)
+        mount(r)
+        val client = createClient { followRedirects = false }
+        val s = client.login(r)
+
+        val k1 = FlashCrypto.generateEcKeyPair()
+        val k2 = FlashCrypto.generateEcKeyPair()
+        r.identities.createInvite("tok-over-1", "sales", "member", emptySet(), emptySet(), r.now + 86400000, 1, r.now)
+        r.identities.enroll("tok-over-1", "dev-over-1", k1.toBase64Spki(), "Over 1", r.now, 100, 1L) { serial, _ ->
+            DeviceCert.issue(r.serverKey.private, r.serverKey.toBase64Spki(), "dev-over-1", k1.toBase64Spki(), "member", "sales", r.now - 1000, r.now + 86400000, serial)
+        }
+        r.identities.createInvite("tok-over-2", "sales", "member", emptySet(), emptySet(), r.now + 86400000, 1, r.now)
+        r.identities.enroll("tok-over-2", "dev-over-2", k2.toBase64Spki(), "Over 2", r.now, 100, 1L) { serial, _ ->
+            DeviceCert.issue(r.serverKey.private, r.serverKey.toBase64Spki(), "dev-over-2", k2.toBase64Spki(), "member", "sales", r.now - 1000, r.now + 86400000, serial)
+        }
+        assertEquals(3L, r.identities.activeDeviceCount())
+
+        // Even after freeing 1 active seat, 2 >= 2 ceiling -> must fail 409 ERR_QUOTA_EXCEEDED
+        val su = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-over-1")
+        val repRes = client.postJson(
+            "/devices/dev-over-1/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Over quota"),
+            stepUp = su,
+        )
+        assertEquals(HttpStatusCode.Conflict, repRes.status, repRes.bodyAsText())
+        assertEquals(DeviceStatus.ACTIVE, r.identities.device("dev-over-1")!!.status)
+    }
+
+    @Test
+    fun linkedDeviceBindingIsClearedOnReplacementAndProtectedFromDeptHead() = testApplication {
+        val r = Realm()
+        val inv = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-head-linked", inv.token, dept = "sales")
+        r.admins.createHead("head_linked", "HeadPass123!", "boss", "Linked Head", listOf("sales"), "dev-head-linked")
+        mount(r)
+        val client = createClient { followRedirects = false }
+
+        // Dept head in sales cannot replace another head's linked personal device
+        val headSess = client.login(r, user = "head_sales", pass = headPassword)
+        val headKey = FlashCrypto.generateEcKeyPair()
+        r.admins.registerConsoleKey("head_sales", headKey.toBase64Spki(), "Head key")
+        val headSu = client.stepUp(r, headSess, StepUpActions.REPLACE_DEVICE, "dev-head-linked", key = headKey)
+        val denied = client.postJson(
+            "/devices/dev-head-linked/replace",
+            headSess,
+            DeviceReplaceBody(department = "sales", reason = "Unbind"),
+            stepUp = headSu,
+        )
+        assertEquals(HttpStatusCode.Forbidden, denied.status)
+
+        // Org admin can replace and linkedDeviceId is cleared
+        val orgSess = client.login(r)
+        val orgSu = client.stepUp(r, orgSess, StepUpActions.REPLACE_DEVICE, "dev-head-linked")
+        val ok = client.postJson(
+            "/devices/dev-head-linked/replace",
+            orgSess,
+            DeviceReplaceBody(department = "sales", reason = "Lost linked phone"),
+            stepUp = orgSu,
+        )
+        assertEquals(HttpStatusCode.OK, ok.status, ok.bodyAsText())
+        assertNull(r.admins.listAdmins().first { it.username == "head_linked" }.linkedDeviceId)
+    }
+
+    @Test
+    fun enterpriseEnrollmentClientRedeemsReplacementLinkWithProofOfPossessionAndRevokedDeviceRefused() = testApplication {
+        val r = Realm()
+        val challengeAuth = ChallengeResponseAuth(
+            rootPublicKey = r.rootKey.toBase64Spki(),
+            revocationListProvider = { r.revocations.current() },
+            revocations = r.revocations,
+        )
+        routing {
+            adminApiRoutes(r.deps)
+            authRoutes(
+                challengeAuth = challengeAuth,
+                enrollmentService = r.enrollment,
+                serverExternalUrl = "http://localhost",
+                bearerTokens = r.tokens,
+                revocations = r.revocations,
+                directory = r.directory,
+                audit = r.audit,
+                limits = HubRateLimits.unlimited(),
+                clock = { r.now },
+            )
+        }
+        val client = createClient { followRedirects = false }
+        val s = client.login(r)
+
+        val inv = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-client-old", inv.token, dept = "sales")
+        val oldSerial = r.identities.device("dev-client-old")!!.serial
+
+        val su = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-client-old")
+        val repRes = client.postJson(
+            "/devices/dev-client-old/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Broken screen", note = "Client e2e"),
+            stepUp = su,
+        )
+        assertEquals(HttpStatusCode.OK, repRes.status)
+        val repDto = HubRestCodec.decode<DeviceReplaceResultDto>(repRes.bodyAsText())
+
+        // Old device challenge-response authentication is refused because its serial/device is revoked
+        assertTrue(r.revocations.isRevoked(oldSerial, "dev-client-old"))
+        assertTrue(r.revocations.current()?.revokedSerials?.contains(oldSerial) == true)
+
+        // Real EnterpriseEnrollmentClient parses invite link, signs PoP, validates cert chain, stores credentials
+        val parsed = EnrollmentInvite.parseOrNull(repDto.invite.link)
+        assertNotNull(parsed)
+        assertEquals(repDto.invite.token, parsed.token)
+        assertEquals(r.enrollment.serverId, parsed.rootFingerprint)
+        // Ktor testApplication routes loopback http://localhost:80 to the in-process Hub
+        val testInvite = parsed.copy(serverUrl = "http://localhost")
+        val keyDir = Files.createTempDirectory("hr6-client-key").toFile()
+        try {
+            val crypto = PersistedFlashCrypto(keyDir)
+            val trustStore = MemoryEnterpriseTrustStore()
+            val enrollClient = EnterpriseEnrollmentClient(
+                httpClient = client,
+                trustStore = trustStore,
+                allowCleartext = { true },
+                clock = { r.now },
+            )
+            val outcome = enrollClient.enroll(testInvite, "dev-client-new", "Replacement Client", crypto, nowMs = r.now)
+            assertTrue(outcome is EnrollmentOutcome.Enrolled, "Expected Enrolled, got $outcome")
+            val creds = trustStore.getCredentials()
+            assertNotNull(creds)
+            assertEquals("dev-client-new", creds.deviceCert.deviceId)
+            assertEquals("sales", creds.deviceCert.department)
+        } finally {
+            keyDir.deleteRecursively()
+        }
     }
 }
