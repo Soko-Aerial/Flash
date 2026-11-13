@@ -1898,3 +1898,20 @@ enrolment credential. No manual pairing pin is changed.
   2. Revoked senders or recipients, expired TTLs (`now - issuedAt > ttlMs`), and >30 s future skew are rejected (`ERR_REVOKED`, `ERR_EXPIRED`, `ERR_BAD_REQUEST`).
   3. Receivers enforce `OffLanCallSignalGuard`: per-call `signalId` replay rejection, per-sender monotonic `seq`, terminal call locking (`hangup`/`decline`/`ended`), and immediate teardown (`terminateCallsForRevokedPeer`) on peer revocation.
   4. Background / platform note: because off-LAN call signals are strictly ephemeral live WebSocket frames (no APNs/FCM push wake-up bridge yet), receiving an incoming off-LAN call requires the Flash foreground/background service or desktop app to hold an active relay session. Externally managed push wake-up remains a separate owner decision.
+
+## Hub-relayed Group End-to-End Encryption (HR10)
+
+- **Capability advertising:** Clients advertise `HubContract.FEATURE_GROUP_E2EE` (`"hge1"`) in relay `HELLO`. Pairwise identity and sealing keys come from the signed Organisation Directory (`EnterpriseDirectoryMember.sealingPublicKey` + `sealingSignature` + `subjectPublicKey` identity PIN).
+- **Group envelope (`GROUP_SEALED_V1`, `HubContract.GROUP_SEALED_ENVELOPE_TYPE`):**
+  `1.<b64url(groupId)>.<epoch>.<b64url(keyId)>.<b64url(senderId)>.<b64url(innerType)>.<b64url(nonce)>.<b64url(ciphertext)>.<b64url(signature)>`
+  - **AEAD:** 256-bit AES-GCM per `(groupId, epoch, keyId)`, fresh 96-bit CSPRNG nonce.
+  - **AAD (`flash-group-e2ee-v1`):** length-prefixed binary encoding of `(groupId, epoch, keyId, senderId, msgId, sentAt, innerType)`.
+  - **Author signature:** ECDSA P-256 (`crypto.sign(aad || nonce || ciphertext)`), verified against the directory-pinned identity public key of `senderId` so neither the Hub nor another group member can forge authorship.
+- **Pairwise epoch key distribution (`GROUP_KEY_DIST_V1` inside `SEALED_V1`):**
+  - `1|<groupId>|<epoch>|<keyId>|<b64url(keyBytes)>|<rosterVersion>|<sortedMemberCsv>|<creatorDeviceId>|<createdAtMs>`
+  - Distributed exclusively via `HubSealing.seal` (`SEALED_V1`) to active group members with valid sealing keys; never sent plaintext on the Hub or in `GROUP_SEALED_V1`.
+  - Only the key creator (`creatorDeviceId == localDeviceId`) distributes a `GROUP_KEY_DIST_V1` payload; receivers verify `dist.creatorDeviceId == fromDeviceId`.
+- **Epoch rotation & compatibility rules:**
+  - Any membership change (`add`, `remove`, `leave`, `rejoin`, or roster sync change) calls `onMembershipChanged`, marking prior epoch keys decrypt-only (`canSend = false`) and minting a fresh epoch key on the next send.
+  - Simultaneous creations at the same `rosterVersion` break ties deterministically by `(epoch, rosterVersion, keyId)`.
+  - Fail-closed policy: if any active member lacks a valid sealing key (`LEGACY_MEMBERS_PRESENT`), has an unconfirmed key change (`BLOCKED_KEY_CHANGED`), or fails identity pin verification (`BLOCKED_IDENTITY_MISMATCH`), sending fails closed (`HubChatBridge` refuses plaintext fallback) and surfaces an honest compatibility disclosure (`FlashHubNoticeKind.GROUP_E2EE_BLOCKED` / `GROUP_ENCRYPTED` in `FlashGroupSettingsSheet`). Unsealed inbound `GROUP_FRAME` / `LEGACY_GROUP` frames are rejected when group E2EE is active.

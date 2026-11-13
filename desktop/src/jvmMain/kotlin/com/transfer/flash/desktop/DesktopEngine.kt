@@ -1557,6 +1557,15 @@ public class DesktopEngine(
                 },
                 lookup = { hub.peers.lookup(it) },
             )
+            val hubGroupE2ee = com.transfer.flash.core.messaging.hub.HubGroupE2eeCoordinator(
+                localDeviceId = localId,
+                crypto = crypto,
+                keyStore = com.transfer.flash.core.security.enterprise.FileHubGroupEpochKeyStore(
+                    File(File(stateDir, "hub"), "group-keys.dat"),
+                    hubSealingVault,
+                ),
+            )
+            scope.launch { runCatching { hubGroupE2ee.load() } }
 
             val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
                 dao = db.orgDirectoryDao(),
@@ -1844,6 +1853,7 @@ public class DesktopEngine(
                     hubPresence = hub.hubOnlinePeerIds,
                 ),
                 hubSealing = hubSealingPort,
+                hubGroupE2ee = hubGroupE2ee,
                 radioPort = radioPort,
                 hubFileDao = db.hubFileDao(),
                 offLanCallSupported = {

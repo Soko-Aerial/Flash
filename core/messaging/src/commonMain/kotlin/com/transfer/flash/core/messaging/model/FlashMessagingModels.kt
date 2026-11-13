@@ -642,10 +642,16 @@ public enum class FlashHubNoticeKind {
     /** Readable content through the hub is off and this device cannot seal either. */
     HUB_SWITCHED_OFF,
 
-    /** A hub-linked group, and readable group messages through the hub are switched on. */
+    /** A hub-linked group protected with E2EE epoch keys (HR10). */
+    GROUP_ENCRYPTED,
+
+    /** A hub-linked group whose Hub relay is paused fail-closed until all members have verified E2EE keys (HR10). */
+    GROUP_E2EE_BLOCKED,
+
+    /** A hub-linked group in legacy unencrypted mode, and readable group messages through the hub are switched on. */
     GROUP_READABLE,
 
-    /** A hub-linked group, and readable group messages through the hub are switched off. */
+    /** A hub-linked group in legacy unencrypted mode, and readable group messages through the hub are switched off. */
     GROUP_HUB_OFF,
 
     /** The hub's directory contradicts the key saved when this device paired with the colleague directly (ADR-164b). */

@@ -1313,6 +1313,12 @@ object DiscoveryEngineHolder {
             },
             lookup = { hub.peers.lookup(it) },
         )
+        val hubGroupE2ee = com.transfer.flash.core.messaging.hub.HubGroupE2eeCoordinator(
+            localDeviceId = identity.deviceId.value,
+            crypto = crypto,
+            keyStore = com.transfer.flash.core.security.enterprise.AndroidHubGroupEpochKeyStore(appContext),
+        )
+        appScope.launch { runCatching { hubGroupE2ee.load() } }
 
         val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
             dao = db.orgDirectoryDao(),
@@ -1651,6 +1657,7 @@ object DiscoveryEngineHolder {
                 hubPresence = hub.hubOnlinePeerIds,
             ),
             hubSealing = hubSealingPort,
+            hubGroupE2ee = hubGroupE2ee,
             radioPort = radioPort,
             hubFileDao = db.hubFileDao(),
             offLanCallSupported = {

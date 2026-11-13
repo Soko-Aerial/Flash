@@ -8507,3 +8507,14 @@ Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`
 - **Steps:** Trigger `FLASH_CALL_SIGNAL` invite from Desktop to Android and record delivery latency / OS socket drop rate.
 - **Pass:** Observed background/Doze reachability matches the disclosure in `docs/protocol.md` (and documents whether foreground relay or OS push wake-up is required).
 - **Status:** TODO
+
+### HR10-DEV-01 — End-to-end encrypted group messaging on physical Android & Desktop against Hub
+- **Setup:** Physical Android phones (A, B, C) and Windows Desktop (D) enrolled in isolated Hub; a linked organisation group created with A, B, C; an older non-`hge1` or un-upgraded peer optional for legacy block check.
+- **Steps:**
+  1. Send messages across A, B, C, D in the linked group and inspect Hub `mailbox_envelopes` / server logs to verify only `GROUP_SEALED_V1` & `SEALED_V1` ciphertext traverse the Hub.
+  2. Remove C from the group; have A send post-removal messages and verify C never displays them.
+  3. Add D and rejoin C; verify new messages arrive and neither D nor C receives/decrypts pre-join or gap epochs.
+  4. Restart Android & Desktop apps offline, resume online, and verify stored epoch keys reload via Android Keystore / Desktop DPAPI vault and continue encrypting seamlessly.
+  5. Open `FlashGroupSettingsSheet` & conversation banner and verify truthful E2EE status (`Group messages are end-to-end encrypted` or fail-closed pause notice when a legacy member is present).
+- **Pass:** Plaintext never reaches the Hub database; removed members cannot read post-removal messages; new/rejoined members cannot decrypt pre-join/gap epochs; Keystore/vault survival works across process kill and reboot.
+- **Status:** TODO (automated unit/integration/server opacity + mutation tests pass; physical device run owed).

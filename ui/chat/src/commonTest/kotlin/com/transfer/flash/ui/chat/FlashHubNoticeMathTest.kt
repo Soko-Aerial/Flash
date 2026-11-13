@@ -36,9 +36,13 @@ class FlashHubNoticeMathTest {
     }
 
     @Test
-    fun `group copy says truthfully that groups are not sealed`() {
+    fun `group copy says truthfully whether groups are readable or end-to-end encrypted`() {
         assertTrue("not sealed" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_READABLE)))
         assertTrue("not sealed" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_HUB_OFF)))
+        assertTrue("end-to-end encrypted" in FlashHubNoticeMath.title(n(FlashHubNoticeKind.GROUP_ENCRYPTED)))
+        assertTrue("cannot read them" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_ENCRYPTED)))
+        assertTrue("paused" in FlashHubNoticeMath.title(n(FlashHubNoticeKind.GROUP_E2EE_BLOCKED)))
+        assertTrue("paused instead of falling back" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_E2EE_BLOCKED)))
     }
 
     @Test

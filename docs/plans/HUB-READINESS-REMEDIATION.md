@@ -478,5 +478,79 @@ Tests to write first:
 2. `HubGroupE2eeTest`: Hub relay inspects zero plaintext (only opaque ciphertext), removed member cannot decrypt post-removal epochs, member add/rejoin cannot access pre-join history via key push, concurrent epoch rotation converges cleanly, out-of-order delivery across two legitimate epochs succeeds, offline group send/rotate queues and completes on reconnect, mixed legacy/missing-key peer fails closed and reports compatibility status without plaintext leakage.
 3. Server relay proof test in `RelayFrameRouterTest` / `CallSignalingAndIceConfigTest`: Hub routes `GROUP_SEALED_V1` envelopes end-to-end and stored mailbox payload contains zero plaintext substring.
 
+### HR10 Implementation Report — 2026-11-13
+
+- **Scope & files:**
+  - `core/hub-protocol/.../HubContract.kt`: added `FEATURE_GROUP_E2EE = "hge1"` and `GROUP_SEALED_ENVELOPE_TYPE = "GROUP_SEALED_V1"`.
+  - `core/security/.../enterprise/GroupRelaySealing.kt`: implemented `GROUP_SEALED_V1` AES-256-GCM + binary length-prefixed AAD (`groupId`, `epoch`, `keyId`, `senderId`, `msgId`, `sentAt`, `innerType`) + ECDSA-P256 author signature codec and `GROUP_KEY_DIST_V1` codec.
+  - `core/security/.../enterprise/GroupEpochKeyStore.kt`, `FileHubGroupEpochKeyStore.kt` (desktop `IdentityKeyVault` + `0600` atomic write), `AndroidHubGroupEpochKeyStore.kt` (Android Keystore `KeystoreSecretSealer` excluded from Auto Backup).
+  - `core/enterprise/.../relay/KtorRelayTransport.kt`: advertises `hge1` capability alongside `ann1` and `hcall1`.
+  - `core/messaging/.../hub/HubGroupE2eeCoordinator.kt`, `DirectoryHubSealing.kt`, `HubChatBridge.kt`, `HubNotice.kt`, `RealFlashChatRepository.kt`: epoch lifecycle (`onMembershipChanged` on add/remove/leave/rejoin/roster update), pairwise key dist via `SEALED_V1` (`creatorDeviceId == localDeviceId`), deterministic concurrent epoch tie-break `(epoch, rosterVersion, keyId)`, fail-closed outbound/inbound gating (no silent plaintext `GROUP_FRAME` downgrade), and `GROUP_ENCRYPTED` / `GROUP_E2EE_BLOCKED` UI notices.
+  - `ui/chat/.../FlashHubNotice.kt`, `FlashGroupSettingsSheet.kt`, `FlashConversationScreen.kt`, `app/.../DiscoveryEngineHolder.kt`, `desktop/.../DesktopEngine.kt`: end-to-end host wiring and truthful group confidentiality notices.
+  - `docs/security.md`, `docs/protocol.md`, `docs/testing/TEST-BACKLOG.md`: updated threat model, wire spec, and `HR10-DEV-01`.
+- **12 Quality Contract categories:**
+  1. Normal use: Multi-member encrypted relay (`HubGroupE2eeTest`, `GroupE2eeRelayOpacityTest`), Android + Desktop notice copy (`FlashHubNoticeMathTest`, `HubNoticeMathTest`).
+  2. Failure paths: Unavailable sealing key / wrong vault / out-of-order missing epoch (`RETRY_LATER`, then decrypt after key delivery).
+  3. Hostile input: Malformed envelopes, swapped group/epoch/msgId/sentAt, author signature spoofing, creator spoofing (`GroupRelaySealingTest`, `HubGroupE2eeTest`).
+  4. Concurrency: Mutex-guarded epoch state + concurrent simultaneous epoch minting converging via `(epoch, rosterVersion, keyId)`.
+  5. Lifecycle & restart: `FileHubGroupEpochKeyStoreTest` + `simultaneousRotationOutOfOrderDeliveryAndOfflineRestartAllConverge` restart continuity check (discovered & fixed `creatorDeviceId != localDeviceId` re-distribution bug during restart!).
+  6. Scale & bounds: `MAX_MEMBERS = 512`, key list bounded per epoch without leaking historical keys to newcomers.
+  7. Security & mutation check: Temporarily disabled `if (groupE2ee != null && !sealed)` plaintext downgrade guard in `HubChatBridge`; `HubGroupE2eeTest` failed (`legacyMemberOrChangedKeyOrIdentityMismatchFailsClosedWithoutPlaintextFallback` expected `REJECTED`, got `STORED`, 1/4 failed). Restored exact guard and re-ran `HubGroupE2eeTest`, `HubSealingHostFlowTest`, `HubNoticeMathTest` -> 0 failures.
+  8. Compatibility: Honest `GroupE2eeCompatStatus` (`LEGACY_MEMBERS_PRESENT`, `BLOCKED_KEY_CHANGED`, `BLOCKED_IDENTITY_MISMATCH`) fails closed instead of silent downgrade.
+  9. Both hosts: `:desktop:compileKotlinJvm` & `:app:compileDebugKotlin` both pass with host Keystore/Vault stores wired.
+  10. UI / accessibility: Updated `FlashHubNoticeMath` & `FlashGroupSettingsSheet` with calm, protocol-free E2EE / paused notices (`FlashHubNoticeMathTest` enforces zero protocol words).
+  11. Observability: `_droppedPlain` counter + structured non-secret logs.
+  12. Operator recovery: Hub sees no keys/plaintext (`GroupE2eeRelayOpacityTest`), backup-excluded device keystores.
+- **Verification commands & observed counts:**
+  - `.\tools\flash-gradle.cmd :core:security:jvmTest :core:messaging:jvmTest --tests "com.transfer.flash.core.messaging.hub.HubGroupE2eeTest" --tests "com.transfer.flash.core.messaging.hub.HubNoticeMathTest" --tests "com.transfer.flash.core.messaging.hub.HubChatBridgeTest" --tests "com.transfer.flash.core.messaging.hub.HubSealingHostFlowTest" :ui:chat:jvmTest :server:test --tests "com.transfer.flash.server.relay.GroupE2eeRelayOpacityTest" :desktop:compileKotlinJvm :app:compileDebugKotlin` -> `BUILD SUCCESSFUL` (`exit 0`, 139 tasks). XML suites: `GroupRelaySealingTest` (`5/5`), `FileHubGroupEpochKeyStoreTest` (`1/1`), `HubGroupE2eeTest` (`4/4`), `HubChatBridgeTest` (`29/29`), `HubNoticeMathTest` (`6/6`), `GroupE2eeRelayOpacityTest` (`1/1`), plus `:ui:chat:jvmTest` and `:core:security:jvmTest` suites (with pre-existing Windows-skipped POSIX/Linux chmod checks in `FileHubSealingKeyStoreTest` `1 skipped` and `KeyFileVaultTest` `1 skipped`).
+  - Restored mutation run: `.\tools\flash-gradle.cmd :core:messaging:jvmTest --tests "com.transfer.flash.core.messaging.hub.HubGroupE2eeTest" --tests "com.transfer.flash.core.messaging.hub.HubSealingHostFlowTest" --tests "com.transfer.flash.core.messaging.hub.HubNoticeMathTest"` -> `BUILD SUCCESSFUL` (`exit 0`).
+- **Adversarial self-review (>=10 points):**
+  1. Sender forgery prevented: `senderId` is bound in both AES-GCM AAD and ECDSA signature verified against directory-pinned identity key, not shared epoch key alone.
+  2. Creator impersonation prevented: `acceptKeyDist` checks `dist.creatorDeviceId == fromDeviceId` and only the creator transmits `GROUP_KEY_DIST_V1` (restarted non-creators send `GROUP_SEALED_V1` directly without spoofing creator).
+  3. Removed member isolation: `onMembershipChanged` demotes prior keys `canSend = false` and `openSealedGroup` rejects non-member sender/local membership.
+  4. Pre-join/gap history protection: newcomers receive only current epoch key; prior envelopes return `RETRY_LATER` cleanly without leaking plaintext or epoch keys.
+  5. Downgrade resistance: `contentViaHub` opt-in NEVER bypasses E2EE when `groupE2ee != null`, both on send (`prepareGroupSend` fails closed) and receive (`GROUP_FRAME`/`LEGACY_GROUP` rejected).
+  6. Key-bytes memory discipline: `GroupEpochKey.keyBytes` always returns defensive copy and `GroupRelaySealing` zeroes its working buffer in `finally`.
+  7. Disk key confidentiality: `FileHubGroupEpochKeyStoreTest` verifies raw file contains zero `groupId`, `keyId`, or `FLASH_GROUP_KEYS_V1` plaintext and wrong vault fails closed.
+  8. SQLite & server blindness: `GroupE2eeRelayOpacityTest` inspects `mailbox_envelopes` rows directly in SQLite and confirms zero plaintext body or Base64 key bytes appear.
+  9. Key-change & identity mismatch gating: Directory key rotation without user confirmation or identity PIN mismatch halts group sends cleanly (`BLOCKED_KEY_CHANGED` / `BLOCKED_IDENTITY_MISMATCH`).
+  10. Replay / cross-context swap resistance: Moving ciphertext across `groupId`, `epoch`, `keyId`, `msgId`, or `sentAt` fails AAD + signature verification immediately.
+- **Extra situations handled (5):**
+  1. Non-creator restart re-sending in adopted epoch without spurious `KEY_DIST_V1` rejection.
+  2. Simultaneous concurrent epoch creation at `rosterVersion = 1` converging deterministically.
+  3. Out-of-order `GROUP_SEALED_V1` arriving ahead of `GROUP_KEY_DIST_V1` -> `RETRY_LATER` then `STORED` upon key arrival.
+  4. Mixed legacy group members failing closed with honest UI status and immediate recovery upon member upgrade.
+  5. Offline send + app restart reloading persisted epoch keys seamlessly.
+- **Status breakdown:** Done (core protocol, crypto, stores, coordinator, bridge, repository, UI notice, Android/Desktop wiring, unit + server opacity + mutation checks). Done-but-unit-tested (full physical Android Keystore + Windows DPAPI device verification tracked in `HR10-DEV-01`).
+
+### HR11 explain-back — 2026-11-13
+
+HR11 closes the operational monitoring and rollout-evidence gap required before fleet deployment. Today `FlashServerEngine` serves `/health`, `/health/detail`, and Prometheus `/metrics` with queue depths, oldest mailbox age, and `delegationDaysRemaining`, and `MailboxStats` tracks `quarantinedTotal()`, **but**:
+- `FlashServerEngine.gauges()` and `/health/detail` omit `quarantinedTotal` (unreadable rows), disk free/used space on the Hub data filesystem, certificate/delegation expiry warning thresholds (`warn` / `critical`), and structured actionable alerts (`alerts` array / Prometheus alert gauges) so operators can alert on unreadable queues, oldest mail age, disk pressure, and expiring certificates/delegations.
+- `docs/deploy/HUB-SERVER-DEPLOYMENT.md` §11 lists `/health/detail` and `/metrics` but lacks concrete alert threshold tables, alert meanings, and step-by-step operator recovery procedures for unreadable/quarantined queues, mail age spikes, disk pressure, certificate/delegation expiry rotation, and signer rotation/restore drills.
+- We also need executed automated drills in `:server` covering intentionally broken/quarantined fixture recovery, backup-restore key mismatch/missing/matching keys + signer rotation/revocation + client continuity, automated `HUBREADY-01..05` / `HUBWORK` checks against disposable isolated Hub instances, and a measured synthetic `PERF-H03` host benchmark recorded in `logs/experiments.md`, while keeping physical phone / production VPS / browser checks honestly open in `TEST-BACKLOG.md`.
+
+Files to inspect/touch:
+- `server/src/main/kotlin/com/transfer/flash/server/observability/`: `OperationalMonitor.kt` (or extend `FlashServerEngine.kt`) evaluating threshold rules for quarantined rows, oldest queued mail age, filesystem disk pressure (`FileStore` usable/total bytes), and delegation/TLS cert expiry hours, plus `RelayMetrics.Gauge` metrics and structured `alerts` in `/health/detail`.
+- `server/src/main/kotlin/com/transfer/flash/server/core/FlashServerEngine.kt`: wire `dataDir` disk probe, `quarantinedTotal` gauge & `/health/detail` fields, alert evaluation, and overall `healthLevel()` (`DEGRADED` when critical alerts fire while DB stays up).
+- `server/src/main/kotlin/com/transfer/flash/server/HubServices.kt` / `config/ServerConfig.kt` (if thresholds/dataDir need passing into `FlashServerEngine`).
+- `docs/deploy/HUB-SERVER-DEPLOYMENT.md`: document every monitoring gauge/detail field, exact warn/critical thresholds, what each alert means, and concrete operator recovery commands/steps.
+- `server/src/test/kotlin/com/transfer/flash/server/ops/OperationsAndRolloutDrillsTest.kt`: automated drills for quarantine alert + broken fixture recovery, oldest-mail / disk-pressure / expiry threshold alerts + mutation check, backup restore (matching, missing, wrong `HubDataKey`), signer rotation/revocation + client continuity, isolated `HUBREADY-01..05` & `HUBWORK` drills, and a bounded synthetic `PERF-H03` benchmark (recorded in `logs/experiments.md`).
+
+Three most similar existing classes:
+1. `server/src/main/kotlin/com/transfer/flash/server/core/FlashServerEngine.kt` (`/health/detail` & `gauges()`): extends directly with `quarantinedTotal`, disk metrics, and evaluated `alerts` using `ManagementGuard`.
+2. `server/src/main/kotlin/com/transfer/flash/server/observability/MailboxStats.kt` & `RelayMetrics.kt`: reuses lock-free gauges and `quarantinedTotal()` already exposed by `MailboxQueue`.
+3. `server/src/test/kotlin/com/transfer/flash/server/DataAtRestTest.kt` / `MainCommandsTest.kt`: reuses Hub startup/restore preflight and backup/key validation patterns.
+
+Five failure modes to guard:
+1. Event-loop blocking on `/health/detail` or `/metrics`: file-store / DB probes must stay fast/bounded and guarded by `ManagementGuard` (never exposed publicly on `/health`).
+2. Secret/credential leakage in alerts: alert details report device counts, hours remaining, byte percentages, and error categories — NEVER keys, tokens, file contents, or plaintext messages.
+3. False-negative `OK` status during critical disk/quarantine/expiry conditions: critical alerts must flip `/metrics` alert state + `/health/detail` status cleanly without falsely taking down live WebSocket relays unless DB itself fails (`DOWN` = 503 only when DB cannot answer).
+4. Backup restore key swap silently minting a new key or corrupting existing ciphertext: `HubDataKey` verifier gate must remain fail-closed (`wrong`/`missing` key refuses boot while matching key + rotated delegation restores continuity).
+5. Unbounded disk usage / stale-mail blindness when a single recipient stays offline forever: `oldestAgeSeconds` and `diskUsedRatio` / `diskFreeBytes` warn before hard `ENOSPC`.
+
+Tests to write first:
+- `OperationsAndRolloutDrillsTest.kt`: alert evaluation + `/health/detail` & `/metrics` assertions on intentionally quarantined SQLite rows, aged queued mail, low-disk simulated probe, expiring delegation/cert hours, restore drills (matching/missing/wrong key + signer rotation/revocation + client auth/relay continuity), isolated `HUBREADY-01..05` API drills, and synthetic `PERF-H03` measurement.
+
 
 
