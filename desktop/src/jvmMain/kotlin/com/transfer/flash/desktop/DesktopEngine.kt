@@ -1565,7 +1565,15 @@ public class DesktopEngine(
                     hubSealingVault,
                 ),
             )
-            scope.launch { runCatching { hubGroupE2ee.load() } }
+            scope.launch {
+                try {
+                    hubGroupE2ee.load()
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    FlashLog.e("SECURITY", "Failed to load persisted Hub group epoch keys: ${t.message}", t)
+                }
+            }
 
             val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
                 dao = db.orgDirectoryDao(),

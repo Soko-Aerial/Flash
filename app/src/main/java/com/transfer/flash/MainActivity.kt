@@ -1021,6 +1021,7 @@ fun FlashApp(
     val hubStatusFlow = remember(hubObject) { hubObject?.status ?: hubStatusFallback }
     val hubStatus by hubStatusFlow.collectAsState(initial = null)
     val hubContentViaHub by engine.hubContentViaHub.collectAsState()
+    val announcementNotifications by engine.announcementNotifications.collectAsState()
     // ADR-126: the sealing key state and the dropped-message counts for the connection details.
     val hubSealingKeyFallback = remember { MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
     val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
@@ -1128,6 +1129,7 @@ fun FlashApp(
         enterpriseRootFingerprint = enterpriseCreds?.rootFingerprint,
         hubStatus = hubStatus,
         hubContentViaHub = hubContentViaHub,
+        announcementNotifications = announcementNotifications,
         hubSealing = if (hubObject?.sealingKeys == null) null else com.transfer.flash.ui.settings.FlashHubSealingUi(
             keyState = hubSealingKeyState,
             unverified = hubDropped.unverified,
@@ -3399,6 +3401,7 @@ private fun FlashShell(
             onRetryHub = { engine.enterpriseHub?.retryNow() },
             onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
             onSetHubContentViaHub = { engine.setHubContentViaHub(it) },
+            onAnnouncementNotificationsChanged = { engine.setAnnouncementNotifications(it) },
             onRestoreHubGroups = {
                 scope.launch {
                     val restored = engine.enterpriseHub?.relinkPreviousGroups() ?: 0

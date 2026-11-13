@@ -581,4 +581,32 @@ class DesktopNotificationManagerTest {
 
         assertEquals(0, notifications.size)
     }
+
+    @Test
+    fun announcementNotificationSuppressedWhenAnnouncementSettingMutedAndPersisted() {
+        val stateDir = tempFolder.newFolder("desktop_state_ann_muted")
+        val store = DesktopSettingsStore(stateDir)
+        assertTrue(store.loadSettings().announcementNotifications)
+        store.saveSettings(store.loadSettings().copy(announcementNotifications = false))
+        assertEquals(false, store.loadSettings().announcementNotifications)
+
+        val engine = testDesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { false },
+            activeConversationId = { null },
+            isNotificationsEnabled = { true },
+            isAnnouncementNotificationsEnabled = { false },
+        )
+
+        manager.handleAnnouncement(
+            announcementId = "ann-104",
+            title = "Muted Announcement",
+            departmentName = "Sales",
+        )
+        assertEquals(0, notifications.size)
+    }
 }
