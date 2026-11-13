@@ -201,8 +201,14 @@ public fun main(args: Array<String> = emptyArray()) {
             isNotificationsEnabled = { engine.settings.value.showNotifications },
             isWindowMinimized = { windowState.isMinimized },
             isWindowFocused = { isWindowFocused },
+            isAnnouncementNotificationsEnabled = { engine.settings.value.announcementNotifications },
         ).apply {
             onBackgroundMessageReceived = {
+                backgroundUnreadCount++
+                DesktopTaskbarBadgeManager.updateBadge(currentComposeWindow, backgroundUnreadCount)
+            }
+            onBackgroundAnnouncementReceived = { announcementId ->
+                pendingHubRoute.value = "hub/announcement/$announcementId"
                 backgroundUnreadCount++
                 DesktopTaskbarBadgeManager.updateBadge(currentComposeWindow, backgroundUnreadCount)
             }

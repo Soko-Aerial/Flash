@@ -515,6 +515,12 @@ public class CallCoordinator(
             FlashLog.w("CALL_OFFLAN", "Terminating active call with revoked peer=$peerId")
             hangUp()
         }
+        currentGroupSession?.let { groupSession ->
+            if (groupSession.hasParticipant(peerId)) {
+                FlashLog.w("CALL_OFFLAN", "Removing revoked peer=$peerId from active group call ${groupSession.callId}")
+                groupSession.terminateRevokedPeer(peerId)
+            }
+        }
     }
 
     /** Local user accepted the incoming call. */

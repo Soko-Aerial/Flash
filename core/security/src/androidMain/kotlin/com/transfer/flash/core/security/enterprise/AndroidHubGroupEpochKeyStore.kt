@@ -5,6 +5,7 @@ package com.transfer.flash.core.security.enterprise
 import android.content.Context
 import android.content.SharedPreferences
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.security.trust.KeystoreSecretSealer
 import com.transfer.flash.core.security.trust.SecretSealer
 import kotlinx.coroutines.CoroutineDispatcher
@@ -29,9 +30,20 @@ public class AndroidHubGroupEpochKeyStore(
 
     override suspend fun loadAll(): List<GroupEpochKey> = withContext(ioDispatcher) {
         val wrapped = preferences.getString(KEY_RECORDS, null) ?: return@withContext emptyList()
-        val bytes = runCatching { sealer.open(wrapped) }.getOrNull() ?: return@withContext emptyList()
+        val bytes = try {
+            sealer.open(wrapped)
+        } catch (t: Throwable) {
+            FlashLog.e("SECURITY", "Failed to decrypt sealed Hub group epoch keys", t)
+            throw IllegalStateException("Failed to decrypt sealed Hub group epoch keys", t)
+        } ?: run {
+            FlashLog.e("SECURITY", "Failed to decrypt sealed Hub group epoch keys: unseal returned null")
+            throw IllegalStateException("Failed to decrypt sealed Hub group epoch keys")
+        }
         try {
             GroupEpochKeyCodec.decode(bytes)
+        } catch (t: Throwable) {
+            FlashLog.e("SECURITY", "Corrupt sealed Hub group epoch key payload", t)
+            throw IllegalStateException("Corrupt sealed Hub group epoch key payload", t)
         } finally {
             bytes.fill(0)
         }

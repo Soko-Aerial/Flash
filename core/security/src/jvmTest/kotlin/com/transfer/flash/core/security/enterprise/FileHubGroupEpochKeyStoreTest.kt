@@ -59,9 +59,29 @@ class FileHubGroupEpochKeyStoreTest {
         assertEquals(key.canSend, restored.canSend)
         assertTrue(rawSecretKey.contentEquals(restored.keyBytes))
 
-        // Different vault key cannot unprotect the file
+        // Different vault key cannot unprotect the file — must fail loudly and preserve sealed bytes on disk
         val wrongVault = FileHubGroupEpochKeyStore(file, vault(File(tmp.root, "other")))
-        assertTrue(wrongVault.loadAll().isEmpty())
+        var threw = false
+        try {
+            wrongVault.loadAll()
+        } catch (_: IllegalStateException) {
+            threw = true
+        }
+        assertTrue("Expected wrong vault key to fail loudly with IllegalStateException", threw)
+        assertTrue("Sealed file must remain intact after failed unlock", file.isFile)
+        assertEquals(1, primary.loadAll().size)
+
+        // Corrupt bytes fail loudly rather than silently returning emptyList
+        val backup = file.readBytes()
+        file.writeBytes(byteArrayOf(0x01, 0x02, 0x03, 0x04))
+        var corruptThrew = false
+        try {
+            primary.loadAll()
+        } catch (_: IllegalStateException) {
+            corruptThrew = true
+        }
+        assertTrue("Expected corrupt vault file to fail loudly with IllegalStateException", corruptThrew)
+        file.writeBytes(backup)
 
         // Clear removes file on disk
         primary.clear()

@@ -209,6 +209,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -456,7 +458,19 @@ public class RealFlashChatRepository(
 ) : FlashChatRepository, AutoCloseable {
 
     public var onNewAnnouncementNotificationHook: ((String, String, String?) -> Unit)? = null
+    private val notifiedAnnouncementLock = Any()
+    private val notifiedAnnouncementOrder: ArrayDeque<String> = ArrayDeque()
     private val notifiedAnnouncementIds: MutableSet<String> = mutableSetOf()
+
+    private fun markAnnouncementNotified(id: String): Boolean = synchronized(notifiedAnnouncementLock) {
+        if (!notifiedAnnouncementIds.add(id)) return@synchronized false
+        notifiedAnnouncementOrder.addLast(id)
+        while (notifiedAnnouncementOrder.size > MAX_NOTIFIED_ANNOUNCEMENT_IDS) {
+            val evicted = notifiedAnnouncementOrder.removeFirst()
+            notifiedAnnouncementIds.remove(evicted)
+        }
+        true
+    }
 
     private val hubAnnouncementDao: HubAnnouncementDao? = hubAnnouncementDao
     private val hubAnnouncementsApi: HubAnnouncementsApi? = hubAnnouncementsApi
@@ -6502,8 +6516,15 @@ public class RealFlashChatRepository(
      * leftover row due immediately.
      */
     private suspend fun drainOutboxLoop() {
-        while (true) {
-            val batchWasFull = drainOutboxOnce()
+        while (currentCoroutineContext().isActive) {
+            val batchWasFull = try {
+                drainOutboxOnce()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                if (!currentCoroutineContext().isActive) return
+                throw t
+            }
             if (batchWasFull) {
                 // More rows were already due than one batch holds, so there is nothing to wait for.
                 // The floor is only here to keep a long backlog from becoming a hot loop.
@@ -7804,6 +7825,9 @@ public class RealFlashChatRepository(
         /** ADR-174: a failed automatic pairing with a colleague is not tried again for this long. */
         const val AUTO_PAIR_RETRY_MS: Long = 60_000L
 
+        /** HR7: bounded in-session announcement notification deduplication window. */
+        const val MAX_NOTIFIED_ANNOUNCEMENT_IDS: Int = 512
+
         /** ADR-174: how many of the newest messages of a 1:1 chat are read to see whether both sides have written. */
         const val AUTO_PAIR_SCAN: Int = 200
 
@@ -8473,10 +8497,10 @@ public class RealFlashChatRepository(
                         if (existing == null && !isInitialSync && !feed.fullResync) {
                             val isAuthor = (item.authorKind == "device" && item.authorRef == localDeviceId) ||
                                 item.authorRef == localDeviceId
-                            val userDept = creds.deviceCert.department
+                            val userDept = creds.deviceCert.department?.takeIf { it.isNotBlank() }
                             val inScope = item.scope == "org" ||
-                                (item.scope == "department" && (userDept == null || item.departmentId == userDept))
-                            if (!isAuthor && inScope && notifiedAnnouncementIds.add(item.id)) {
+                                (item.scope == "department" && userDept != null && item.departmentId == userDept)
+                            if (!isAuthor && inScope && markAnnouncementNotified(item.id)) {
                                 val deptName = item.departmentId
                                 onNewAnnouncementNotification(item.id, item.title, deptName)
                                 onNewAnnouncementNotificationHook?.invoke(item.id, item.title, deptName)

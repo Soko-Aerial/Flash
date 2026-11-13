@@ -246,4 +246,51 @@ class OffLanCallSignalingTest {
             pc.close()
         }
     }
+
+    @Test
+    fun `revoking peer terminates active group call leg and blocks late group signaling`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val coordinator = CallCoordinator(
+            localDeviceId = "alice",
+            localName = "Alice",
+            scope = scope,
+            sendFrame = { _, _ -> true },
+        )
+        try {
+            val now = 1_700_000_000_000L
+            val groupInvite = CallFrameCodec.encode(
+                CallWireFrame.GroupInvite(
+                    callId = "grp-call-rev-1",
+                    from = "bob",
+                    groupId = "grp-1",
+                    callerName = "Bob",
+                    video = false,
+                    members = listOf("alice", "bob"),
+                ),
+            )
+            assertTrue(
+                coordinator.onInboundOffLanSignal(
+                    InboundOffLanCallSignal("gsig-1", "grp-call-rev-1", "bob", seq = 1L, issuedAtMs = now, ttlMs = 15_000L, payloadText = groupInvite),
+                    nowMs = now,
+                ),
+            )
+            val ringing = withTimeout(2_000L) {
+                coordinator.activeCall.first { it?.state == FlashCallState.RINGING && it.groupId == "grp-1" }
+            }
+            assertEquals("grp-1", ringing?.groupId)
+
+            coordinator.terminateCallsForRevokedPeer("bob")
+            withTimeout(2_000L) {
+                coordinator.activeCall.first { it == null || it.state == FlashCallState.ENDED }
+            }
+            assertFalse(
+                coordinator.onInboundOffLanSignal(
+                    InboundOffLanCallSignal("gsig-2", "grp-call-rev-1", "bob", seq = 2L, issuedAtMs = now + 50L, ttlMs = 15_000L, payloadText = groupInvite),
+                    nowMs = now + 50L,
+                ),
+            )
+        } finally {
+            scope.cancel()
+        }
+    }
 }

@@ -947,6 +947,22 @@ public class FlashGroupCallSession(
         endSession(reason, notifyPeers = true)
     }
 
+    /** Returns true when [peerId] currently has an active/invited leg or pending announcement in this group call. */
+    public fun hasParticipant(peerId: String): Boolean =
+        legs[peerId] != null || peerId in announceMembers
+
+    /**
+     * HR9: Removes a revoked participant from this group call immediately, closing its media leg and
+     * ending the group call cleanly if nobody else remains.
+     */
+    public suspend fun terminateRevokedPeer(peerId: String) {
+        if (isEnded) return
+        announceMembers = announceMembers.filter { it != peerId }
+        if (legs[peerId] != null) {
+            handlePeerLeft(peerId, reason = "revoked")
+        }
+    }
+
     /**
      * G7: a device this call doesn't count yet ([peerId]) accepted or joined. When the call
      * already holds [FlashGroupCallLimits.maxParticipants] people (this device included), it is

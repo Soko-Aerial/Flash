@@ -3559,6 +3559,7 @@ private fun DesktopSettingsDestination(
             enterpriseRootFingerprint = enterpriseCredentials?.rootFingerprint.orEmpty(),
             hubStatus = hubStatus,
             hubContentViaHub = desktopSettings.hubContentViaHub,
+            announcementNotifications = desktopSettings.announcementNotifications,
             hubSealing = if (hubObject?.sealingKeys == null) null else com.transfer.flash.ui.settings.FlashHubSealingUi(
                 keyState = hubSealingKeyState,
                 unverified = hubDropped.unverified,
@@ -3712,6 +3713,7 @@ private fun DesktopSettingsDestination(
         onRetryHub = { engine.enterpriseHub?.retryNow() },
         onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
         onSetHubContentViaHub = { enabled -> engine.updateSettings { it.copy(hubContentViaHub = enabled) } },
+        onAnnouncementNotificationsChanged = { enabled -> engine.updateSettings { it.copy(announcementNotifications = enabled) } },
         onRestoreHubGroups = {
             scope.launch {
                 val restored = engine.enterpriseHub?.relinkPreviousGroups() ?: 0

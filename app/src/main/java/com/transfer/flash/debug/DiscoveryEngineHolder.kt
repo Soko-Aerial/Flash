@@ -275,6 +275,7 @@ object DiscoveryEngineHolder {
 
     /** User opt-in to let the hub carry readable chat content (ADR-121). Default OFF; stored in SharedPreferences. */
     private val hubContentViaHubFlag = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val announcementNotificationsFlag = kotlinx.coroutines.flow.MutableStateFlow(true)
 
     /**
      * Live WebRTC calling engine (C7 / ADR-025). Constructed in [startEngineLocked], torn down in
@@ -682,6 +683,15 @@ object DiscoveryEngineHolder {
         hubContentViaHubFlag.value = enabled
         appContextRef?.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
             ?.edit()?.putBoolean("content_via_hub", enabled)?.apply()
+    }
+
+    fun announcementNotifications(): kotlinx.coroutines.flow.StateFlow<Boolean> = announcementNotificationsFlag
+
+    /** HR7: persists user mute preference for system announcement notifications. */
+    fun setAnnouncementNotifications(enabled: Boolean) {
+        announcementNotificationsFlag.value = enabled
+        appContextRef?.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+            ?.edit()?.putBoolean("announcement_notifications", enabled)?.apply()
     }
 
     fun currentCrypto(): FlashCrypto? = cryptoRef
@@ -1281,8 +1291,9 @@ object DiscoveryEngineHolder {
         hubRevocations.load()
 
         val debuggable = (appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        hubContentViaHubFlag.value = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
-            .getBoolean("content_via_hub", false)
+        val hubPrefs = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+        hubContentViaHubFlag.value = hubPrefs.getBoolean("content_via_hub", false)
+        announcementNotificationsFlag.value = hubPrefs.getBoolean("announcement_notifications", true)
         appContextRef = appContext
         val hub = EnterpriseHub(
             deviceId = identity.deviceId.value,
@@ -1318,7 +1329,19 @@ object DiscoveryEngineHolder {
             crypto = crypto,
             keyStore = com.transfer.flash.core.security.enterprise.AndroidHubGroupEpochKeyStore(appContext),
         )
-        appScope.launch { runCatching { hubGroupE2ee.load() } }
+        appScope.launch {
+            try {
+                hubGroupE2ee.load()
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                com.transfer.flash.core.common.logging.FlashLog.e(
+                    "SECURITY",
+                    "Failed to load persisted Hub group epoch keys: ${t.message}",
+                    t,
+                )
+            }
+        }
 
         val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
             dao = db.orgDirectoryDao(),

@@ -36,6 +36,7 @@ public class DesktopNotificationManager(
     private val isNotificationsEnabled: () -> Boolean = { engine.settings.value.showNotifications },
     private val isWindowMinimized: () -> Boolean = { false },
     private val isWindowFocused: () -> Boolean = { true },
+    private val isAnnouncementNotificationsEnabled: () -> Boolean = { engine.settings.value.announcementNotifications },
 ) {
     public var onBackgroundMessageReceived: ((conversationId: String) -> Unit)? = null
     public var onBackgroundAnnouncementReceived: ((announcementId: String) -> Unit)? = null
@@ -231,7 +232,7 @@ public class DesktopNotificationManager(
         title: String,
         departmentName: String? = null,
     ) {
-        if (!isNotificationsEnabled()) return
+        if (!isNotificationsEnabled() || !isAnnouncementNotificationsEnabled()) return
         val notifTitle = if (departmentName.isNullOrBlank()) "New announcement" else "New announcement · $departmentName"
         val notifBody = title.trim()
         dispatchNotification(notifTitle, notifBody, Notification.Type.Info)
