@@ -478,8 +478,8 @@ class RealFlashChatRepositoryHubFileTest {
         val message = bob.db.messageDao().getByLocalId(groupMessageId)!!
         assertEquals(groupId, message.conversationId, "the file lands in the group chat, not in a chat with its sender")
         assertEquals(inId, message.attachmentTransferId)
-        assertEquals(1, bob.notified.get())
         awaitUntil("bob's group receipt") { bob.groupFrames.any { it.second is GroupWireFrame.Receipt } }
+        assertEquals(1, bob.notified.get())
         val receipt = bob.groupFrames.map { it.second }.filterIsInstance<GroupWireFrame.Receipt>().single()
         assertEquals("alice", bob.groupFrames.first().first)
         assertEquals(groupMessageId, receipt.messageId)
