@@ -552,5 +552,56 @@ Five failure modes to guard:
 Tests to write first:
 - `OperationsAndRolloutDrillsTest.kt`: alert evaluation + `/health/detail` & `/metrics` assertions on intentionally quarantined SQLite rows, aged queued mail, low-disk simulated probe, expiring delegation/cert hours, restore drills (matching/missing/wrong key + signer rotation/revocation + client auth/relay continuity), isolated `HUBREADY-01..05` API drills, and synthetic `PERF-H03` measurement.
 
+### HR11 Implementation Report (Automated Drills & Runbook; Live VPS/Fleet Soak Owed)
+
+#### What Changed
+- `server/src/main/kotlin/com/transfer/flash/server/observability/OperationalMonitor.kt`: Added `DiskUsage`, `OperationalThresholds`, `AlertSeverity`, `OperationalAlert`, `OperationalMonitor.probeDirectory(...)`, and `OperationalMonitor.evaluate(...)` covering:
+  - `unreadable_queue` (warn `>= 1`, critical `>= 10` quarantined rows)
+  - `oldest_queued_mail` (warn `>= 259200s` / 72h, critical `>= 518400s` / 144h)
+  - `disk_pressure` (warn `(>= 80% used AND <= 4 GiB free) OR <= 512 MiB free`, critical `(>= 92% used AND <= 1 GiB free) OR <= 128 MiB free` — avoids false critical alerts on large developer disks that still have tens of GiB free)
+  - `delegation_expiring` (warn `<= 14d`, critical `<= 3d` remaining)
+  - `tls_cert_expiring` (warn `<= 14d`, critical `<= 3d` remaining)
+- `server/src/main/kotlin/com/transfer/flash/server/core/FlashServerEngine.kt`: Wired `tlsDaysRemaining`, `diskUsageProvider` (probing `config.dataDir`), and `operationalThresholds` into `healthLevel()`, Prometheus `gauges()` (`flash_mailbox_quarantined_total`, `flash_disk_*`, `flash_tls_cert_days_remaining`, `flash_alerts_warning`, `flash_alerts_critical`, `flash_alert_*`), and `/health/detail` (`quarantinedTotal`, `disk`, `tlsDaysRemaining`, `alerts`).
+- `docs/deploy/HUB-SERVER-DEPLOYMENT.md`: Documented `### Actionable Monitoring Thresholds & Operator Alerts (HR11)` with exact metric names, warn/critical thresholds, operator meaning, remediation steps, and `/health` (`degraded` vs `down`) semantics.
+- `docs/protocol-routes.txt`: Added missing HR6 (`POST /admin/api/v1/devices/{id}/replace`) and HR9 (`GET /api/v1/calls/ice-config`) routes to keep `RouteTableContractTest` green.
+- `server/src/test/kotlin/com/transfer/flash/server/ops/OperationsAndRolloutDrillsTest.kt`: Added 4 end-to-end operational & rollout tests (`operationalMonitoringExposesQuarantineMailAgeDiskAndCertAlertsWithRecovery`, `backupRestoreRefusesMissingOrWrongDataKeyAndRecoversEnrolledClientsAcrossSignerRotation`, `isolatedHubReadyAndHubWorkEndToEndLifecycleDrills`, `syntheticPerfH03CapacityAndLatencyBenchmark`).
+
+#### 12 Coverage Categories
+1. **Normal use:** Healthy `/health` & `/health/detail` with zero alerts; `HUBREADY-01..05` isolated lifecycle (health/metrics -> admin login -> invite/enroll -> directory sync -> announcement -> message relay + offline queue -> device revoke); synthetic 50-device/500-frame `PERF-H03`.
+2. **Failure / error paths:** 12 corrupted/wrong-key mailbox rows quarantined; missing `data.key` and wrong `data.key` both throw `HubStartupException` fail-closed at startup; stale delegation serial #1 rejected `403 ERR_REVOKED` after signer revocation.
+3. **Hostile / malformed input:** Corrupt/un-decryptable AEAD mailbox ciphertexts quarantined safely instead of crashing drains; anonymous/proxied callers still blocked from `/health/detail` and `/metrics` (`FlashServerEngineTest`).
+4. **Concurrency:** `PERF-H03` dispatches 500 concurrent/sequenced relay frames across 50 registered WebSocket pools (40 connected + 10 offline queued = 200 persisted mailbox rows) under lock-free gauge tracking.
+5. **Lifecycle / restart:** Database close -> missing/wrong `data.key` refusal -> matching `data.key` restore -> delegation #2 hot rotation -> serial #1 revocation restart -> continued auth & sync for serial #2 enrolled devices.
+6. **Scale / backpressure / quotas:** Synthetic `PERF-H03` measured on Windows host JVM (`devices=50`, `messages=500`, `elapsedMs=738.4`, `throughput=677.2 msg/s`, `p50Us=722.3`, `p99Us=5008.3`, `mailboxQueued=200`, `heapDeltaKb=-9786`).
+7. **Security invariants & mutation proof:** Guarded `/health/detail` & `/metrics` keep credentials/keys absent from alert payloads; `HubDataKey` startup preflight refuses key mismatch; **mutation check:** temporarily disabled `quarantinedRows` critical/warn branches in `OperationalMonitor.evaluate` (`false &&`), ran `:server:test --tests "...OperationsAndRolloutDrillsTest"` -> `operationalMonitoringExposesQuarantineMailAgeDiskAndCertAlertsWithRecovery` failed at line 229 (`unreadable_queue` missing); restored check -> all 4 tests passed (`16 tests` green with `FlashServerEngineTest` + `RouteTableContractTest`).
+8. **Compatibility:** `RouteTableContractTest` aligned with HR6 & HR9 REST surface; non-revoked delegation rotation preserves continuity for existing enrolled clients while enforcing revocation once old signer serials are revoked.
+9. **Both hosts:** Server observability, SQLite quarantine, and restore gates cover Windows & Linux JVM; Android/Desktop clients share `HubAuth`/REST sync compatibility verified in the cross-module gate.
+10. **UI / accessibility:** N/A for server-only monitoring & restore code; Admin Console overview/files/devices metrics remain accessible through existing approved Console pages (`HUBWORK-*` interactive Chrome/VPS acceptance tracked in `HR11-ENV-01`).
+11. **Observability:** Prometheus gauges + structured JSON alerts in `/health/detail` (`/health` public status stays minimal: `"ok"` / `"degraded"` / `"down"`).
+12. **Operator recovery:** Verified operator recovery loop clears alerts (`liveQueue.acknowledge`, expanded disk headroom, rotated delegation/TLS days -> `cleanAlerts.isEmpty()`), and runbook in `docs/deploy/HUB-SERVER-DEPLOYMENT.md` defines exact CLI/console recovery actions.
+
+#### Adversarial Self-Review (>= 10 items)
+1. **Large dev disk false-positive:** Initial `usedPercent >= 92%` rule flagged `disk_pressure CRITICAL` on a 255 GB Windows drive with 15.6 GiB free; bounded percentage alerts with `<= 4 GiB` warn / `<= 1 GiB` critical ceilings alongside unconditional `512 MiB` / `128 MiB` floors.
+2. **Public `/health` leak check:** Verified `/health` returns only `{"status":...}` without exposing `alerts[]`, queue depths, paths, or counts (those require `ManagementGuard` on `/health/detail` & `/metrics`).
+3. **Log/alert secret leakage:** `OperationalMonitor` summaries contain counts, seconds, MiB, and days only — never `data.key`, bearer tokens, device keys, or message plaintext.
+4. **Silent new `data.key` mint on restore:** Verified `HubServices.build` throws `HubStartupException` when `data.key` is missing or replaced with a different 32-byte key while `flash-hub.db` already has data.
+5. **Quarantine alert recovery after TTL/ack:** Checked `MailboxQueue.quarantinedTotal()` drops back to clear state when stale/corrupt rows are swept or DB is restored cleanly.
+6. **Stale delegation after emergency revocation:** Confirmed `revokedDelegationSerials` rejects clients still presenting serial #1 with `403 ERR_REVOKED`, while clients holding serial #2 continue syncing.
+7. **Non-revoked graceful rotation continuity:** Confirmed deploying delegation #2 before revoking #1 keeps previously enrolled serial #1 clients authenticated and syncing without forced outage.
+8. **Missing route contract entries:** Caught HR6 (`replace`) & HR9 (`ice-config`) omissions in `docs/protocol-routes.txt` via `RouteTableContractTest` and restored 1:1 parity.
+9. **Synthetic vs production `PERF-H03` honesty:** Marked `syntheticPerfH03CapacityAndLatencyBenchmark` explicitly as an in-process synthetic Ktor/JVM measurement (`logs/experiments.md`), keeping real VPS + TLS + coturn fleet soak open under `HR11-ENV-02`.
+10. **Windows filesystem probe edge:** Verified `OperationalMonitor.probeDirectory` handles missing leaf paths by walking `parentFile` until an existing mount exists, returning `null` safely rather than throwing on unmounted paths.
+
+#### Extra Situations Considered (>= 5 items)
+1. Pre-existing empty `dataDir` before first SQLite file write (falls back cleanly to `0` queued rows and parent mount free space).
+2. Mixed alert severities (e.g., 4 CRITICAL + 1 WARN simultaneously active) reporting accurate `flash_alerts_critical` and `flash_alerts_warning` counts.
+3. Database down vs critical operational alerts (`/health` returns `503` `"down"` when DB probe fails, vs `200` `"degraded"` so admin API recovery stays reachable on disk/quarantine/cert alerts).
+4. Offline recipient queueing during `PERF-H03` burst (10 of 50 recipients offline -> 200 messages cleanly durable in `mailbox_envelopes`, 300 immediate WebSocket deliveries).
+5. Remaining physical/operator rollout backlog split cleanly into `HR11-ENV-01` (disposable VPS + Chrome console + TLS cert + restore) and `HR11-ENV-02` (production-profile `PERF-H03` with coturn).
+
+#### Verification
+- Targeted HR11 suite (after final code edit + mutation check restore): `OperationsAndRolloutDrillsTest` (4/4), `FlashServerEngineTest` (10/10), `RouteTableContractTest` (2/2) -> `16/16` passed; full cross-module integration gate follows next.
+
+
 
 
