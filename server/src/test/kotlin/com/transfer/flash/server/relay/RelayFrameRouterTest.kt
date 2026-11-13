@@ -384,6 +384,11 @@ class RelayFrameRouterTest {
                 delay(300)
                 return real.fetchPage(target, afterSeq, limit)
             }
+
+            override suspend fun fetchPageDetailed(target: String, afterSeq: Long, limit: Int): com.transfer.flash.server.mailbox.MailboxPage {
+                delay(300)
+                return real.fetchPageDetailed(target, afterSeq, limit)
+            }
         }
         val rig = rig(slow)
         val (alice, aliceWs) = rig.connect("alice")

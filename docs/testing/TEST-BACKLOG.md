@@ -8497,7 +8497,7 @@ Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`
 - **Status:** TODO (automated unit/integration tests pass; physical multi-hundred-MB phone <-> Desktop run owed).
 
 ### HR9-DEV-01 — Off-LAN 1:1 and group voice/video calling across two independent networks + TURN relay
-- **Setup:** Android phone (cellular / separate AP) and Windows Desktop (home LAN) enrolled in isolated Hub configured with `FLASH_CALL_STUN_URLS`, `FLASH_CALL_TURN_URLS`, and `FLASH_CALL_TURN_SECRET` pointing at a disposable coturn instance (`RELAY_ONLY` and fallback runs).
+- **Setup:** Android phone (cellular / separate AP) and Windows Desktop (home LAN) enrolled in isolated Hub configured with `FLASH_STUN_URLS`, `FLASH_TURN_URLS`, and `FLASH_TURN_SECRET` pointing at a disposable coturn instance (`RELAY_ONLY` and fallback runs).
 - **Steps:** Place outgoing and incoming audio and video calls from Android -> Desktop and Desktop -> Android; verify accept, decline, cancel, hang-up, direct candidate attempt, TURN relay fallback, bidirectional media playback, and existing LAN call path.
 - **Pass:** Audio and video both flow clearly on direct and relayed paths; late/replayed/revoked signaling is ignored; LAN calls still work with Hub disconnected.
 - **Status:** TODO (automated server + client + native `webrtc-java` smoke tests pass; two-network physical device + coturn run owed).

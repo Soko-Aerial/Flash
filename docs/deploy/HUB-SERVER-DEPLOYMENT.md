@@ -223,7 +223,7 @@ tried to set. Every setting can be given as `--kebab-case` on the command line o
 | `FLASH_STUN_URLS` | `--stun-urls` | empty | Comma-separated `stun:`/`stuns:` URLs served by `/api/v1/calls/ice-config` for off-LAN WebRTC calls (HR9) |
 | `FLASH_TURN_URLS` | `--turn-urls` | empty | Comma-separated `turn:`/`turns:` relay URLs for symmetric-NAT fallback (`RELAY_ONLY` or fallback policy) |
 | `FLASH_TURN_SECRET` | `--turn-secret` | empty | Shared HMAC-SHA1 secret matching coturn `use-auth-secret` / `static-auth-secret` to mint short-lived credentials (≥16 chars in production; keep in environment secret, never CLI) |
-| `FLASH_CALL_ICE_TTL_SECONDS` | `--call-ice-ttl-seconds` | `300` | Lifetime of minted ICE credentials (`60..3600` seconds) |
+| `FLASH_CALL_ICE_TTL_SECONDS` | `--call-ice-ttl-seconds` | `3600` | Lifetime of minted ICE credentials (`60..86400` seconds) |
 | `FLASH_CALL_MEDIA_POLICY` | `--call-media-policy` | `DIRECT_PREFERRED_RELAY_FALLBACK` | One of `DIRECT_ONLY`, `DIRECT_PREFERRED_RELAY_FALLBACK`, or `RELAY_ONLY` |
 
 > **Do not pass the two tokens as command-line flags on a shared machine** (SEC-D18-01, audit 2026-10-22): arguments are visible to every local user in the process list. Use the environment variables (a systemd `EnvironmentFile`, a Docker secret or `env_file`) or let the hub create `setup-token.txt`. The `--setup-token` / `--management-token` flags exist for quick local tests only.
