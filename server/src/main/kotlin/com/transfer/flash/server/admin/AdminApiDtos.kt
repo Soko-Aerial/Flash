@@ -170,6 +170,23 @@ data class DeviceDto(
 data class DeviceUpdateBody(val name: String? = null, val department: String? = null, val moveToDepartment: Boolean = false)
 
 @Serializable
+data class DeviceReplaceBody(
+    val department: String? = null,
+    val role: String? = null,
+    val allowedGroups: List<String> = emptyList(),
+    val autoJoinGroups: List<String> = emptyList(),
+    val reason: String = "Device replaced",
+    val ttlMinutes: Long? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class DeviceReplaceResultDto(
+    val oldDevice: DeviceDto,
+    val invite: InviteCreatedDto,
+)
+
+@Serializable
 data class RevokeBody(val reason: String = "revoked by administrator")
 
 @Serializable

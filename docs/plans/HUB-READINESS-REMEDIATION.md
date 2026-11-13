@@ -11,7 +11,7 @@ Opened 2026-11-07 from the [Hub feature and rollout audit](../audit/2026-11-07-h
 | HR3 | Enforce live membership for unread group mailbox deliveries. Define sender terminal outcome and remove inaccessible rows so they cannot reappear on rejoin. Preserve direct mailbox and delivery already handed to a recipient. | E2E removal while offline, reconnect, rejoin, normal replay and file-read comparison. HUBREADY-03. | Implemented, 103 tests green |
 | HR4 | Complete scoped console. Role-aware navigation and actions, head account creation and reassignment, root-signed revocation import with step-up, Overview audit status, join approval confirmation, and stable announcement browsing across pages. | Admin/head Node and browser paths. APIs remain authoritative. DEPH-01..07, HUBR-03 and CONSOLE-D06/D07. | Implemented, isolated Chrome fixture passed |
 | HR5 | Offline LAN revocation. Implement D10 with signed, monotonic, size/rate-limited exchange. Persist the newest verified list per organisation, invalidate trust and roster checks immediately and restore Android library parity where the API exposes Hub behaviour. | Malformed, stale, tampered, wrong-root, concurrent and offline-restart tests, then HUBREADY-04 on three devices. | Implemented, 1,035 tests green |
-| HR6 | Device replacement. Revoke the lost device and its sessions, issue a one-use replacement path with fresh keys, scope the new device's department/groups explicitly and audit the result. Keep old enrolment and key revocations enforceable. | Lost key, stolen old key, retry/concurrent redemption, quota, replacement on both hosts and ORGT-14. | Planned |
+| HR6 | Device replacement. Revoke the lost device and its sessions, issue a one-use replacement path with fresh keys, scope the new device's department/groups explicitly and audit the result. Keep old enrolment and key revocations enforceable. | Lost key, stolen old key, retry/concurrent redemption, quota, replacement on both hosts and ORGT-14. | Implemented, 93 tests green |
 | HR7 | Title-only announcement notifications and opt-out on Android and desktop. Cover reconnect catch-up, first sync, duplicate suppression and cold start. Wire the group relay confidentiality notice. | ANN-01/10/11 and HUBT-12, permission denial, author suppression, mute and desktop activation. Measure background delivery separately from the local notification feature. | Planned |
 | HR8 | LAN ↔ Hub file continuity. Specify a stable transfer identity, representation of validated completed bytes, ownership of the active route and final verification for both directions. | Disconnect or route switch during a large transfer on both hosts. Resume only compatible bytes, one completion row and one copy, with final integrity verification. | Planned |
 | HR9 | Off-LAN calling. Design authenticated, short-lived signalling with media path negotiation and an explicit NAT relay policy. Align deployment claims with the shipped capability. | Two independent networks, direct and relayed media, late/duplicate/replayed signalling, device removal and process/background behaviour. | Planned |
@@ -181,3 +181,40 @@ The Android app, Android SDK and desktop now exchange signed revocation lists wi
 ### HR6 handoff
 
 Start with the enrollment transaction in `IdentityStore.enroll`, the certificate and invite handling in `EnrollmentService`, and the bearer/session and directory effects of `SqliteRevocationService.revokeDevice`. Use HR5's device-ID cutoff when defining identity replacement. A new certificate serial under the same old device ID and key would leave the LAN identity ambiguous. A replacement needs a fresh identity, a one-use scoped enrollment grant, an explicit old-device cutoff, and an operator choice for department and groups. Pin the audit and failure-recovery story before adding the console action. Exercise the regenerated-key case in ORGT-14 and test old-device auth, concurrent redemption, replay, scope, and quota.
+
+### HR6 explain-back — 2026-11-13
+
+Device replacement must allow an authorized operator to select a lost, stolen, broken, or regenerated device and issue a scoped, expiring, one-use replacement grant that revokes the old device binding, active sessions, and directory presence immediately while enrolling a fresh device identity and keypair with proof of possession. A new certificate serial under the same old device ID and key would leave the LAN identity ambiguous, so replacement creates a fresh identity with an explicit old-device cutoff. The revocation must persist across restart and offline LAN trust synchronization (HR5). The replacement requires an explicit authorized choice of department and groups within the operator's scope, enforces quotas at the point of change, handles administrator and approver bindings with step-up and privilege rules, and records old and new bindings in the audit log without recording credentials or tokens.
+
+Files touched:
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminApi.kt`: `POST /devices/{id}/replace` endpoint handling scope, step-up, old-device revocation, one-use replacement invite generation, and audit logging.
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminApiDtos.kt`: `DeviceReplaceBody`, `DeviceReplaceResultDto`.
+- `server/src/main/kotlin/com/transfer/flash/server/admin/StepUpAuth.kt`: `StepUpActions.REPLACE_DEVICE = "device.replace"`.
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminAuthService.kt`: helper to unbind revoked approver/signer devices.
+- `server/src/main/resources/admin-ui/js/views/devices.js`: Replace device button in drawer, replacement dialog with department/groups selection and link presentation.
+- `server/src/main/resources/admin-ui/js/i18n/en.js`: replacement strings.
+- `server/src/test/kotlin/com/transfer/flash/server/admin/DeviceReplacementTest.kt`: new comprehensive test suite.
+- `docs/plans/HUB-READINESS-REMEDIATION.md`: HR6 explain-back, log, and results.
+
+Three most similar existing classes read:
+1. `AdminApi.kt` (lines 483-510: `revoke`/`unrevoke` routes and lines 537-574: invite creation routes): Reused `stepUpOk`, `adminSession`, `scopeOf`, `d.revocations.revokeDevice`, `d.bearerTokens?.revokeDevice`, and `createInvite`. Deliberately combined atomic revocation of old device with generation of single-use scoped invite and audit recording in one authorized transaction.
+2. `SqliteRevocationService.kt` / `RevocationAndEnrolmentTest.kt`: Reused existing device revocation mechanisms, ensuring durable monotonic version increment and LAN gossip eligibility.
+3. `EnrollmentService.kt` / `IdentityStore.kt`: Reused ECDSA proof-of-possession verification (`HubAuth.enrollProofBytes`), invite state validation, and atomic registration.
+
+Five failure modes:
+1. Races: Concurrent redemption of the replacement invite or racing requests. (Guarded by SQLite immediate transaction in `IdentityStore.enroll` and single-use `maxUses = 1`).
+2. Wire compatibility: Replacement invite URL uses standard `flash://enroll` schema so Android, desktop, and CLI clients enroll without wire breaks.
+3. Security & Privilege Escalation: A department head attempting to replace an admin device or assign groups/departments outside their scope. (Guarded by `ConsoleScope` validation and requiring org-admin for admin/approver device replacement).
+4. Quota exhaustion: When fleet is at maximum capacity, replacing a device revokes the old device first, freeing quota; edge case where fleet was already over-quota is rejected cleanly.
+5. Old device retention: Old device certificate or bearer token reused after replacement. (Guarded by immediate bearer token deletion, directory removal, and `hub_revocations` cutoffs checked on every handshake and LAN gossip).
+
+Tests to write first:
+`DeviceReplacementTest.kt` covering:
+1. Happy path: operator replaces device -> old revoked, new device enrolls with fresh key and inherits department/groups.
+2. Refusal of old device credentials and bearer tokens after replacement.
+3. Department head cannot replace out-of-scope device or assign out-of-scope department.
+4. Non-org admin cannot replace admin device.
+5. Expired and replayed replacement invite rejected.
+6. Concurrent redemption of replacement invite allows only one winner.
+7. Quota enforcement on replacement when over-quota.
+8. Audit log contains old and new device IDs and no secrets.

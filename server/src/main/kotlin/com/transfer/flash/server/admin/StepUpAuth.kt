@@ -24,6 +24,7 @@ object StepUpActions {
     const val SETTINGS_CHANGE = "settings.change"
     const val REVOCATION_INSTALL = "revocation.install"
     const val RECOVERY_REGENERATE = "recovery.regenerate"
+    const val REPLACE_DEVICE = "device.replace"
 
     /** Replacing the browser key / bound device of the signer (REV-11). With an approver phone bound this needs the phone, not the browser key. */
     const val SIGNER_REPLACE = "admin.signer.replace"
@@ -33,7 +34,7 @@ object StepUpActions {
 
     val ALL: Set<String> = setOf(
         REVOKE_DEVICE, UNREVOKE_DEVICE, MOVE_DEVICE, DELEGATION_INSTALL, DELEGATION_RELOAD, ADMIN_CREATE, ADMIN_DISABLE, SETTINGS_CHANGE,
-        REVOCATION_INSTALL, RECOVERY_REGENERATE, SIGNER_REPLACE, APPROVER_CHANGE,
+        REVOCATION_INSTALL, RECOVERY_REGENERATE, REPLACE_DEVICE, SIGNER_REPLACE, APPROVER_CHANGE,
     )
 
     /**
