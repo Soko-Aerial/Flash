@@ -44,10 +44,37 @@ async function sha256Hex(b64) {
   }
 }
 
+export function filterReplaceGroups(groups, departmentId) {
+  const dept = departmentId || '';
+  return (groups || []).filter((g) => !dept || g.departmentId === dept);
+}
+
+export function buildReplacePayload({
+  orgAdmin,
+  selectedDepartment,
+  currentDepartment,
+  reason,
+  note,
+  allowedGroups = [],
+  autoJoinGroups = [],
+  defaultReason = 'Device replaced',
+}) {
+  const allowedSet = new Set(allowedGroups);
+  for (const id of autoJoinGroups) allowedSet.add(id);
+  return {
+    department: orgAdmin ? (selectedDepartment || null) : (currentDepartment || null),
+    reason: (reason || '').trim() || defaultReason,
+    note: (note || '').trim() || null,
+    allowedGroups: Array.from(allowedSet),
+    autoJoinGroups: Array.from(new Set(autoJoinGroups)),
+  };
+}
+
 export function mountDevices(container, ctx) {
   const orgAdmin = isOrgAdmin();
   let all = [];
   let departments = [];
+  let groups = [];
   let loaded = false;
   let stopped = false;
   let drawer = null;
@@ -201,7 +228,10 @@ export function mountDevices(container, ctx) {
       if (stopped || seq !== loadSeq) return;
       all = firstPage.slice();
       loaded = true;
-      departments = await api.get('/departments').catch(() => departments);
+      [departments, groups] = await Promise.all([
+        api.get('/departments').catch(() => departments),
+        api.get('/groups').catch(() => groups),
+      ]);
       if (stopped || seq !== loadSeq) return;
       fillDepartments();
       apply();
@@ -343,8 +373,43 @@ export function mountDevices(container, ctx) {
     const df = field({ label: t('devices.col.department'), control: sel });
     const reason = textInput({ maxlength: 200, value: '', placeholder: t('devices.revoke.reason.placeholder') });
     const rf = field({ label: t('devices.revoke.reason'), control: reason, hint: t('devices.revoke.reason.hint') });
-    const note = textInput({ maxlength: 200, value: '', placeholder: 'Replacement notes' });
-    const nf = field({ label: 'Notes', control: note });
+    const note = textInput({ maxlength: 200, value: '', placeholder: t('devices.replace.note.placeholder') });
+    const nf = field({ label: t('devices.replace.note'), control: note });
+    const groupBox = h('fieldset', { class: 'fieldset' });
+    const groupBoxes = new Map();
+    const drawGroups = () => {
+      groupBoxes.clear();
+      const targetDept = orgAdmin ? sel.value : (device.department || '');
+      const list = filterReplaceGroups(groups, targetDept);
+      mount(groupBox, h('legend', { text: t('devices.replace.groups') }));
+      if (list.length === 0) {
+        groupBox.appendChild(h('p', { class: 'muted small', text: t('devices.replace.groups.none') }));
+        return;
+      }
+      for (const g of list) {
+        const allow = h('input', { type: 'checkbox' });
+        const auto = h('input', { type: 'checkbox' });
+        auto.addEventListener('change', () => {
+          if (auto.checked) allow.checked = true;
+        });
+        allow.addEventListener('change', () => {
+          if (!allow.checked) auto.checked = false;
+        });
+        groupBoxes.set(g.groupId, { allow, auto });
+        groupBox.appendChild(
+          h(
+            'div',
+            { class: 'group-pick' },
+            h('span', { class: 'group-pick-name', text: g.name }),
+            h('label', { class: 'check check-inline' }, allow, h('span', { text: t('devices.replace.groups.allow') })),
+            h('label', { class: 'check check-inline' }, auto, h('span', { text: t('devices.replace.groups.autoJoin') })),
+          ),
+        );
+      }
+      groupBox.appendChild(h('p', { class: 'muted small', text: t('devices.replace.groups.hint') }));
+    };
+    if (orgAdmin) sel.addEventListener('change', drawGroups);
+    drawGroups();
     const go = button({ label: t('devices.replace.confirm'), variant: 'danger' });
 
     const answer = await new Promise((resolve) => {
@@ -355,17 +420,29 @@ export function mountDevices(container, ctx) {
           banner({ tone: 'warn', text: t('devices.replace.effect') }),
           orgAdmin ? df.el : null,
           rf.el,
+          groupBox,
           nf.el,
         ],
         actions: [button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close(null) } }), go],
         onClose: (r) => resolve(r || null),
       });
       go.addEventListener('click', () => {
-        dlg.close({
-          department: orgAdmin ? (sel.value || null) : (device.department || null),
-          reason: reason.value.trim() || 'Device replaced',
-          note: note.value.trim() || null,
-        });
+        const allowed = [];
+        const auto = [];
+        for (const [gid, b] of groupBoxes) {
+          if (b.allow.checked) allowed.push(gid);
+          if (b.auto.checked) auto.push(gid);
+        }
+        dlg.close(buildReplacePayload({
+          orgAdmin,
+          selectedDepartment: sel.value,
+          currentDepartment: device.department,
+          reason: reason.value,
+          note: note.value,
+          allowedGroups: allowed,
+          autoJoinGroups: auto,
+          defaultReason: t('devices.replace.defaultReason'),
+        }));
       });
     });
 
@@ -380,14 +457,14 @@ export function mountDevices(container, ctx) {
       events.emit('devices-changed');
       const linkInput = textInput({ value: res.invite.link, readonly: true });
       const copy = copyButton({ text: res.invite.link, label: t('common.copy') });
-      openDialog({
+      const resDlg = openDialog({
         title: t('devices.replace.result.title'),
         size: 'sm',
         body: [
           h('p', { class: 'muted', text: t('devices.replace.result.text') }),
           h('div', { class: 'inline-form' }, linkInput, copy),
         ],
-        actions: [button({ label: t('common.close'), variant: 'primary', on: { click: () => {} } })],
+        actions: [button({ label: t('common.close'), variant: 'primary', on: { click: () => resDlg.close(true) } })],
       });
       toast(t('devices.replace.done', { name: device.name || shortId(device.deviceId) }), { kind: 'success' });
       return res.oldDevice;
