@@ -281,3 +281,79 @@ Locked Gradle gates passed: `:core:messaging:jvmTest`, `:desktop:jvmTest`, `:app
 
 Define transfer continuity across LAN and Hub. Define stable transfer session identity, validated saved byte representation, ownership of the active route, and final integrity verification in both LAN -> Hub and Hub -> LAN directions.
 
+### HR8 explain-back — 2026-11-13
+
+Transfer continuity across LAN and Hub allows a file transfer started on either route (LAN direct or sealed Hub relay) to resume seamlessly on the alternate route when connectivity changes, without duplicating transfer rows, duplicating published output files, or risking file corruption. Both routes share a canonical `LogicalTransferIdentity` bound to `(logicalTransferId, senderDeviceId, recipientDeviceId, totalBytes, plainSha256Hex)`. Verified saved plaintext bytes are represented as discrete byte spans and mapped across incompatible chunk layouts (`64 KiB` vs `1 MiB`) using exact byte-interval containment: only target chunks completely covered by cryptographically verified saved ranges are pre-satisfied, with partial or unaligned chunks cleanly re-fetched. Route ownership is serialized by `TransferRouteCoordinator` with monotonic `routeEpoch` counters so superseded route frames, progress updates, or completions cannot race. Before completing and publishing to the user-visible directory, either route verifies the whole assembled file against `plainSha256Hex`, producing at most one completion row and one published copy.
+
+Files touched:
+- `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/files/HubFileTransfers.kt`: Add `seedDownloadFromVerifiedBytes` and `exportVerifiedChunks` so Hub file downloads can seed/export verified plaintext spans safely across route handovers.
+- `core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/hubfiles/TransferContinuityCoordinator.kt`: Define `LogicalTransferIdentity`, `VerifiedByteSpan` alignment math (`TransferByteAlignment`), `RouteOwner`, and atomic `TransferRouteCoordinator` with `routeEpoch` race prevention, changed-source verification, cancellation, and idempotent single-completion guarantees.
+- `core/engine/src/jvmTest/kotlin/com/transfer/flash/core/engine/hubfiles/TransferContinuityTest.kt`: Test LAN->Hub and Hub->LAN byte adoption across mismatched chunk sizes, tampered partial data rejection, changed source rejection, concurrent route races, cancellation, and final digest verification.
+- `docs/plans/HUB-READINESS-REMEDIATION.md`: HR8 explain-back, results, and adversarial review.
+
+Three most similar existing classes read:
+1. `HubFileBinding.kt` (`core/engine/hubfiles/`): Reused `PlatformLock`, external rows attachment to `RealFlashTransferRepository`, and `ReceivedFilePlacement.publish` single-copy semantics.
+2. `HubFileTransfers.kt` (`core/enterprise/files/`): Reused `HubFileLayout`, `HubChunkBitmap`, `DownloadState` disk persistence, and whole-file SHA-256 verification.
+3. `ReceivePipeline.kt` (`core/transfer/chunked/`): Reused `resumeIndexesProvider`, per-chunk SHA-256 verification, and `recheckWholeFileDigest` backstop.
+
+Five failure modes:
+1. Chunk layout mismatch corrupts tail: Hub plaintext chunks (1,048,560 B) do not divide LAN chunks (65,536 B) cleanly. (Guarded by exact interval intersection: target chunks extending beyond verified saved boundaries are NOT marked done and are re-fetched).
+2. Changed source file during handover: User edits source file after LAN drop before continuing on Hub. (Guarded by re-hashing source file against `logicalIdentity.plainSha256Hex` and `totalBytes` before route switch).
+3. Tampered `.part` file on disk before handover: Corrupted saved bytes adopted onto new route. (Guarded by optional per-span hash verification on import and mandatory whole-file SHA-256 verification before publication).
+4. Route race (dual completion or stale progress): Old LAN coroutine completes or emits failure after Hub route assumed ownership. (Guarded by atomic `routeEpoch` in `TransferRouteCoordinator`; stale epochs are dropped).
+5. Wrong sender/recipient confusion: Attempting to adopt partial bytes from a different peer or unauthorized fileId. (Guarded by binding `senderDeviceId`, `recipientDeviceId`, and `plainSha256Hex` inside `LogicalTransferIdentity`).
+
+Tests to write first:
+1. Chunk interval alignment across mismatched layouts (1 MiB Hub <-> 64 KiB LAN, misaligned offsets).
+2. End-to-end LAN -> Hub download continuation: partial bytes seeded into Hub `DownloadRun`, remaining chunks downloaded, single final verified copy matching original SHA-256.
+3. End-to-end Hub -> LAN download continuation: partial Hub download exported, LAN `ReceivePipeline` seeded via `resumeIndexesProvider`, remaining chunks fetched, single final verified copy.
+4. Changed source file / mismatched digest / wrong peer identity / wrong recipient rejected cleanly (zero bytes adopted).
+5. Tampered partial file caught before publish; route race with stale epoch rejected; cancellation closes both routes.
+
+### Phase HR8 report — 2026-11-13
+
+Cross-route LAN <-> Hub file transfer continuity implemented with stable logical transfer identity, exact byte-span intersection across mismatched chunk layouts, monotonic route fencing (`routeEpoch`), single-completion deduplication, and integrity verification.
+
+| Step | Files changed (`path:line`) | Tests (`TransferContinuityTest`, `HubFileBindingTest`) | Mutation | Commands & Result |
+|---|---|---|---|---|
+| HR8-core | `core/enterprise/.../HubFileTransfers.kt:243-326` (`exportVerifiedChunks`, `readPartSpan`, `seedDownloadFromVerifiedBytes`) | `TransferContinuityTest.HR8 HubFileTransfers seedDownloadFromVerifiedBytes rejects mismatched SHA or chunk length` | Mutating `matches()` in `TransferContinuityCoordinator.kt:47-51` to skip SHA-256 digest mismatch check caused `HR8 refuses changed source digest...` to fail (`Expected value to be false.` at `TransferContinuityTest.kt:348`). Restored and verified green. | `tools\flash-gradle.cmd :core:engine:jvmTest --tests "com.transfer.flash.core.engine.hubfiles.*"` -> `TransferContinuityTest[jvm]`: 5 passed, 0 failed; `HubFileBindingTest[jvm]`: 21 passed, 0 failed. |
+| HR8-align | `core/engine/.../TransferContinuityCoordinator.kt:85-162` (`TransferByteAlignment`, `LogicalTransferIdentity`) | `TransferContinuityTest.HR8 byte alignment converts 1MiB Hub chunks to 64KiB LAN chunks without partial overlap` | Covered by digest/identity mutation check above. | Same as above + `:core:enterprise:jvmTest` (all suites 0 failures) and `:core:transfer:jvmTest`. |
+| HR8-routes | `core/engine/.../TransferContinuityCoordinator.kt:168-580` (`TransferRouteCoordinator`, `adoptHubToLan`, `adoptLanToHub`, `completeTransfer`, `cancelTransfer`) + `HubFileBinding.kt:124,487-515,590` | `HR8 end-to-end Hub interrupted download resumes over LAN ReceivePipeline with single completion`, `HR8 end-to-end LAN partial receive resumes over Hub skipping verified chunks`, `HR8 refuses changed source digest, wrong peer, tampered partial bytes, route race, and cancel` | Covered above. | Same as above. |
+
+**Quality Contract Coverage (12 categories):**
+1. Failure paths: Interrupted Hub download (`HubDownloadOutcome.Interrupted`), truncated/missing partial spans (`readPartSpan` null), mismatched seed length, refused transitions return structured `ResumePlan(compatible=false, reason=...)`.
+2. Hostile input: Wrong source digest, changed size, wrong peer/recipient, tampered partial bytes (`verifyChunkPlaintext` / `verifySpanIntegrity` abort adoption), invalid hex digests (`Sha256.isValidHex`) all fail closed.
+3. Concurrency & ordering: All state transitions, route ownership acquisitions, handovers, verified span recording, and final completion run under `PlatformLock` with monotonic `routeEpoch`; stale epochs cannot overwrite or double-publish.
+4. Lifecycle: Hub download state (`DownloadState`) + `.part` files survive process stop via `DiskHubFileStorage`, exported cleanly via `exportVerifiedChunks`; cancellation moves coordinator to `CANCELLED` across routes.
+5. Scale: `TransferByteAlignment.normalizeSpans` sorts and merges spans in `O(n log n)` and iterates target chunks in `O(c)` linear scan over sorted merged intervals.
+6. Security: Binds `(logicalTransferId, senderDeviceId, recipientDeviceId, plainBytes, fileSha256Hex)`; rejects digest changes or wrong recipient; requires whole-file SHA-256 verification before `completeTransfer`; verified with mutation check.
+7. Compatibility: Legacy Hub rows without a continuity checkpoint behave identically (`latestContinuity == null` preserves normal Hub flow in `HubFileBinding.download`); older/incompatible chunk sizes trigger clean re-fetch of unaligned boundary chunks without breaking either protocol.
+8. Both hosts: All continuity and alignment logic lives in `core/enterprise` and `core/engine` (`commonMain`), shared identically by Android and Desktop hosts; existing UI/progress state (`HubFileBinding.rows`) surfaces single consolidated progress/retry/cancel without route duplication.
+9. UI/accessibility: `HubFileBinding` routes consolidated state through `RealFlashTransferRepository.attachExternalRows` and existing transfer progress/cancel controls; prevents duplicate completion rows when `completeTransfer` returns `false`.
+10. Observability: `HubFileBinding` emits `hubfile.receive.done` and `hubfile.cancel` probes with shortened 8-char IDs; coordinator returns machine-readable refusal reasons (`source_identity_mismatch`, `tampered_partial_bytes`, `cancelled`, `already_completed`).
+11. Documentation: HR8 explain-back, report, and backlog item (`HR8-DEV-01` for physical two-device Android <-> Desktop large-file switch test) recorded.
+12. Admin/support view: Coordinator exposes explicit `ContinuityCheckpoint` snapshot and `ResumePlan.reason` strings explaining why cross-route resume succeeded or fell back cleanly.
+
+**Adversarial Self-Review (10 findings):**
+1. `TransferByteAlignment.intersectChunksCoveredBySpans` (`TransferContinuityCoordinator.kt:128`): Previously if a Hub chunk ended mid-way through a 64 KiB LAN chunk (e.g., 1,048,560 is 16 bytes short of 16 * 65,536 = 1,048,576), naive `floor(bytes / 65536)` vs chunk index math could mark chunk 15 done; fixed by checking exact `[start, endExclusive)` full interval containment (`span.offset <= start && span.endExclusive >= endExclusive`), verified in `HR8 byte alignment...`.
+2. `LogicalTransferIdentity.matches` (`TransferContinuityCoordinator.kt:35`): If sender initially advertises `fileSha256Hex = null` on one route and binds the digest later, promoting `fileSha256Hex` on `tryAcquireRoute` ensures later mismatches are caught rather than bypassed.
+3. `HubFileTransfers.seedDownloadFromVerifiedBytes` (`HubFileTransfers.kt:276`): If `storage.writeState` fails after writing `.part` chunks, `storage.deleteState` cleans up partial state and returns `0` rather than leaving a corrupt bitmap.
+4. `TransferRouteCoordinator.adoptHubToLan` (`TransferContinuityCoordinator.kt:405`): If a single verified chunk fails `verifyChunkPlaintext`, the whole `adoptHubToLan` returns `compatible=false, reason="tampered_partial_bytes"` instead of partially seeding an untrusted file.
+5. `TransferRouteCoordinator.completeTransfer` (`TransferContinuityCoordinator.kt:548`): Validates `Sha256.isValidHex(actualSha256Hex)` and checks constant-time digest equality (`Sha256.hexEqualsConstantTime`) when expected digest exists, rejecting blank output paths or wrong digests.
+6. `HubFileBinding.download` (`HubFileBinding.kt:489`): Checks `continuityCoordinator.snapshot(row.fileId)` before even fetching chunks from Hub if LAN already completed or user cancelled, immediately deleting duplicate file placement if LAN raced and finished first.
+7. `TransferRouteCoordinator.tryAcquireRoute` (`TransferContinuityCoordinator.kt:200`): Calling `tryAcquireRoute` with an incompatible identity poisons `status = INCOMPATIBLE` and clears `activeRoute = RouteOwner.NONE` so no route proceeds with mixed bytes.
+8. `TransferByteAlignment.normalizeSpans` (`TransferContinuityCoordinator.kt:90`): Filters out `length <= 0L` and clamps `[0, totalBytes)` so integer overflow or negative offsets from malformed metadata cannot create phantom coverage.
+9. `TransferContinuityTest` (`TransferContinuityTest.kt:284`): Verifies `0 !in fetchedIndexes` during LAN -> Hub resume, proving already-verified bytes actually skip Hub chunk fetches rather than silently re-downloading everything.
+10. `TransferRouteCoordinator.cancelTransfer` (`TransferContinuityCoordinator.kt:573`): Refuses to cancel an already `COMPLETED` transfer (preserving immutable completion audit), while blocking any `ACTIVE` transfer from resuming or publishing on another route.
+
+**Extra Situations Handled (5+):**
+1. Non-divisible chunk boundaries (1,048,560-byte Hub plaintext chunks vs 65,536-byte LAN chunks leaving 16-byte deficit on chunk 15).
+2. Stale-epoch late completion race after route handover (`completeTransfer` returns `false`, `HubFileBinding` deletes duplicate file).
+3. Seeding `HubFileTransfers` with wrong slice length rejected before bitmap mutation.
+4. Acquiring route with a modified recipient ID rejected (`wrongPeerPlan`).
+5. Hub failure/interruption after chunk 0 followed by LAN takeover and whole-file SHA-256 verification.
+
+**Done:** `TransferContinuityCoordinator.kt`, `HubFileTransfers.kt` seed/export APIs, `HubFileBinding.kt` integration, `TransferContinuityTest.kt`.
+**Done but only unit-tested (`HR8-DEV-01` added to backlog):** Cross-network live LAN <-> Hub large-file handover on physical Android + Desktop hardware.
+**Not done, and why:** Live Android/Desktop device run deferred per assignment constraints (no physical phones connected; emulated via `FakeHubFileServer`, `DiskHubFileStorage`, and `ReceivePipeline`).
+

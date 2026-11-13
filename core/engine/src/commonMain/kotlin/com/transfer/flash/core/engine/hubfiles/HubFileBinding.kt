@@ -120,6 +120,8 @@ public class HubFileBinding(
     private val retryDelayMs: Long = DEFAULT_RETRY_DELAY_MS,
     private val maxRetryDelayMs: Long = DEFAULT_MAX_RETRY_DELAY_MS,
     private val infoTtlMs: Long = DEFAULT_INFO_TTL_MS,
+    /** HR8: Cross-route logical transfer coordinator shared between LAN and Hub routes. */
+    public val continuityCoordinator: TransferRouteCoordinator = TransferRouteCoordinator(),
 ) {
     private val bindingJob: Job = SupervisorJob(scope.coroutineContext[Job])
     private val bindingScope = CoroutineScope(
@@ -483,6 +485,17 @@ public class HubFileBinding(
 
     private suspend fun download(row: HubFileEntity): Boolean {
         val id = row.transferId
+        val existingContinuity = continuityCoordinator.snapshot(row.fileId)
+        if (existingContinuity?.status == ContinuityStatus.CANCELLED) {
+            dao.moveState(id, HubFileStates.DOWNLOADING, HubFileStates.CANCELLED, null, timeSource.nowMs())
+            transfers.discardDownload(row.fileId)
+            return false
+        }
+        if (existingContinuity?.status == ContinuityStatus.COMPLETED && existingContinuity.completedPath != null) {
+            dao.markDownloaded(id, existingContinuity.completedPath, timeSource.nowMs())
+            transfers.discardDownload(row.fileId)
+            return false
+        }
         val sender = peerName(row.peerId)
         val key = row.fileKey?.let(HubFileKey::decode)
         val sha = row.cipherSha256
@@ -495,11 +508,25 @@ public class HubFileBinding(
             is HubDownloadOutcome.Done -> {
                 val placed = withContext(workerDispatcher) { runCatching { place(outcome.path, row) }.getOrNull() }
                     ?: return failIncoming(row, HubFileError.LocalStorage("place"), sender)
-                if (dao.markDownloaded(id, placed, now) == 1) {
+                val latestContinuity = continuityCoordinator.snapshot(row.fileId)
+                val singleCopyWon = latestContinuity == null || (
+                    latestContinuity.status == ContinuityStatus.ACTIVE &&
+                        (
+                            latestContinuity.activeRoute != RouteOwner.HUB ||
+                                continuityCoordinator.completeTransfer(
+                                    row.fileId,
+                                    latestContinuity.routeEpoch,
+                                    RouteOwner.HUB,
+                                    placed,
+                                    outcome.plainSha256,
+                                )
+                            )
+                    )
+                if (singleCopyWon && dao.markDownloaded(id, placed, now) == 1) {
                     runCatching { onPlaced(placed) }
                     FlashProbe.emit("hubfile.receive.done", "id" to FlashProbe.short(row.fileId), "bytes" to outcome.plainBytes)
                 } else {
-                    // Cancelled while the last chunk arrived: the cancel wins, and its file goes.
+                    // Cancelled or won on another route while the last chunk arrived: discard duplicate file.
                     withContext(workerDispatcher) { runCatching { fileSystem.delete(placed.toPath(), mustExist = false) } }
                 }
                 false
@@ -560,6 +587,7 @@ public class HubFileBinding(
     private suspend fun cancel(transferId: String) {
         val row = dao.get(transferId) ?: return
         val now = timeSource.nowMs()
+        continuityCoordinator.cancelTransfer(row.fileId)
         if (row.direction == HubFileStates.OUT) {
             val moved = OUT_CANCELLABLE.any { from -> dao.moveState(transferId, from, HubFileStates.CANCELLED, null, now) == 1 }
             stop(transferId)
