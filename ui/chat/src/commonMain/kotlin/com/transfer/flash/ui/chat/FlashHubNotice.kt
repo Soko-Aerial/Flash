@@ -42,6 +42,8 @@ public object FlashHubNoticeMath {
         FlashHubNoticeKind.KEY_CHANGED -> "${nameOf(notice)}'s security key changed"
         FlashHubNoticeKind.PEER_NEEDS_UPDATE -> "Waiting for ${nameOf(notice)} to update the app"
         FlashHubNoticeKind.HUB_SWITCHED_OFF -> "Waiting for ${nameOf(notice)} to be reachable"
+        FlashHubNoticeKind.GROUP_ENCRYPTED -> "Group messages are end-to-end encrypted"
+        FlashHubNoticeKind.GROUP_E2EE_BLOCKED -> "Encrypted group relay paused"
         FlashHubNoticeKind.GROUP_READABLE -> "The hub can read this group's messages"
         FlashHubNoticeKind.GROUP_HUB_OFF -> "Group messages through the hub are off"
         FlashHubNoticeKind.IDENTITY_MISMATCH -> "${nameOf(notice)}'s key does not match"
@@ -58,6 +60,12 @@ public object FlashHubNoticeMath {
         FlashHubNoticeKind.HUB_SWITCHED_OFF ->
             "Sending message text through your organisation's hub is switched off, so this message waits until you can " +
                 "reach them directly. You can change this in Settings."
+        FlashHubNoticeKind.GROUP_ENCRYPTED ->
+            "Messages relayed through your organisation's hub are sealed with per-membership epoch keys so the hub " +
+                "cannot read them. Keys rotate when members join or leave."
+        FlashHubNoticeKind.GROUP_E2EE_BLOCKED ->
+            "One or more active members do not have verified encryption keys yet (older app or pending key check). " +
+                "Hub sending is paused instead of falling back to readable text."
         FlashHubNoticeKind.GROUP_READABLE ->
             "Group messages are not sealed yet, so the hub can read the ones it carries. Messages sent directly between " +
                 "phones stay private."

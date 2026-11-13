@@ -15,6 +15,7 @@ import com.transfer.flash.core.messaging.protocol.HubFileFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.enterprise.HubPeerStanding
 import com.transfer.flash.core.hubprotocol.HubContract
+import com.transfer.flash.core.security.enterprise.GroupRelaySealing
 import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.HubSealingPin
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -110,6 +111,9 @@ public interface HubSealingPort {
      * message for the next delivery instead of acknowledging it, which would make the hub delete it (RVW22 F1).
      */
     public suspend fun openFailureMayClear(senderDeviceId: String): Boolean = false
+
+    /** Verified X.509 SPKI identity public key of [deviceId], or null when unavailable or mismatched with a pairing pin. */
+    public suspend fun identityPublicKeyEncoded(deviceId: String): ByteArray? = null
 }
 
 /** What happened to one hub delivery, for tests and counters. */
@@ -214,6 +218,11 @@ public class HubChatBridge(
     private val standing: suspend (String) -> HubPeerStanding = { HubPeerStanding.UNKNOWN },
     private val isPaired: (String) -> Boolean = { false },
     private val groupLinked: (String) -> Boolean = { false },
+    private val groupE2ee: HubGroupE2eeCoordinator? = null,
+    private val groupMembershipProvider: suspend (String) -> Pair<Set<String>, Long>? = { null },
+    private val groupMemberAllowed: suspend (groupId: String, deviceId: String) -> Boolean = { _, deviceId ->
+        standing(deviceId) == HubPeerStanding.MEMBER || isPaired(deviceId)
+    },
 ) {
     private val seenLock = Mutex()
     // Keyed by (sender, id): ids are chosen by the sender, so two senders may use the same one (ERROR-396, REV-08 on the hub side).
@@ -252,6 +261,27 @@ public class HubChatBridge(
     /** Per colleague: why content for them is held back from the hub right now. Updated by [canCarry]. */
     public val waiting: StateFlow<Map<String, HubWaitReason>> = _waiting.asStateFlow()
 
+    private val _groupE2eeStates = MutableStateFlow<Map<String, GroupE2eeGroupState>>(emptyMap())
+    /** Per groupId: live E2EE status and compatibility/blocking state for UI and fail-closed controls (HR10). */
+    public val groupE2eeStates: StateFlow<Map<String, GroupE2eeGroupState>> = _groupE2eeStates.asStateFlow()
+
+    public val isGroupE2eeEnabled: Boolean get() = groupE2ee != null
+
+    public suspend fun evaluateGroupE2ee(groupId: String): GroupE2eeGroupState? {
+        val e2ee = groupE2ee ?: return null
+        val members = groupMembershipProvider(groupId)?.first.orEmpty()
+        val state = e2ee.evaluateGroup(groupId, members, sealing)
+        _groupE2eeStates.update { it + (groupId to state) }
+        return state
+    }
+
+    private fun waitReasonForStatus(status: HubSealingStatus): HubWaitReason = when (status) {
+        HubSealingStatus.KEY_CHANGED -> HubWaitReason.KEY_CHANGED
+        HubSealingStatus.IDENTITY_MISMATCH -> HubWaitReason.IDENTITY_MISMATCH
+        HubSealingStatus.NOT_PUBLISHED, HubSealingStatus.AVAILABLE ->
+            if (sealing != null) HubWaitReason.NEEDS_UPDATE else HubWaitReason.SWITCHED_OFF
+    }
+
     private fun setWaiting(recipientDeviceId: String, reason: HubWaitReason?) {
         _waiting.update { current ->
             if (current[recipientDeviceId] == reason) current
@@ -282,7 +312,8 @@ public class HubChatBridge(
      */
     public suspend fun canCarry(recipientDeviceId: String, group: Boolean = false): Boolean {
         if (!canSignal(recipientDeviceId)) return false
-        val status = if (group || sealing == null) HubSealingStatus.NOT_PUBLISHED else sealing.statusFor(recipientDeviceId)
+        val legacyGroupPlain = group && groupE2ee == null
+        val status = if (legacyGroupPlain || sealing == null) HubSealingStatus.NOT_PUBLISHED else sealing.statusFor(recipientDeviceId)
         return when {
             status == HubSealingStatus.KEY_CHANGED -> {
                 setWaiting(recipientDeviceId, HubWaitReason.KEY_CHANGED)
@@ -296,12 +327,14 @@ public class HubChatBridge(
                 setWaiting(recipientDeviceId, null)
                 true
             }
-            contentViaHub() -> {
+            (!group || legacyGroupPlain) && contentViaHub() -> {
                 setWaiting(recipientDeviceId, null)
                 true
             }
             else -> {
-                if (!group) setWaiting(recipientDeviceId, if (sealing != null) HubWaitReason.NEEDS_UPDATE else HubWaitReason.SWITCHED_OFF)
+                if (!legacyGroupPlain) {
+                    setWaiting(recipientDeviceId, if (sealing != null) HubWaitReason.NEEDS_UPDATE else HubWaitReason.SWITCHED_OFF)
+                }
                 false
             }
         }
@@ -365,11 +398,64 @@ public class HubChatBridge(
     }
 
     /**
-     * Sends a group chat frame to one member through the hub. Group frames are NOT sealed (ADR-126, the group design is
-     * open, ADR-123): they travel readable, and only when the user opted in to readable content.
+     * Sends a group chat frame to one member through the hub. When [groupE2ee] is configured (HR10), sends ONLY
+     * inside authenticated `GROUP_SEALED_V1` ciphertexts with pairwise `SEALED_V1` key distribution and fails closed
+     * if any active member lacks verified keys. Without [groupE2ee], legacy readable group mode requires [contentViaHub].
      */
-    public suspend fun sendGroup(to: String, id: String, sentAt: Long, frame: GroupWireFrame): Boolean =
-        sendPayload(to, id, sendTime(sentAt), GROUP_FRAME, GroupFrameCodec.encode(frame), seal = false)
+    public suspend fun sendGroup(to: String, id: String, sentAt: Long, frame: GroupWireFrame): Boolean {
+        val e2ee = groupE2ee
+        val body = GroupFrameCodec.encode(frame)
+        val stamp = sendTime(sentAt)
+        if (e2ee == null) {
+            return sendPayload(to, id, stamp, GROUP_FRAME, body, seal = false)
+        }
+        if (!port.usable) return false
+        val membership = groupMembershipProvider(frame.groupId) ?: return false
+        val (activeMembers, rosterVersion) = membership
+        return when (val result = e2ee.prepareGroupSend(
+            groupId = frame.groupId,
+            activeMembers = activeMembers,
+            rosterVersion = rosterVersion,
+            recipientDeviceId = to,
+            msgId = id,
+            sentAt = stamp,
+            innerType = GROUP_FRAME,
+            body = body,
+            sealing = sealing,
+        )) {
+            is GroupSealResult.Blocked -> {
+                _groupE2eeStates.update { it + (frame.groupId to result.state) }
+                sealing?.let { setWaiting(to, waitReasonForStatus(it.statusFor(to))) }
+                FlashLog.i("HUB", "group E2EE send blocked (fail-closed) group=${frame.groupId} reason=${result.reason}")
+                false
+            }
+            is GroupSealResult.Ready -> {
+                val state = GroupE2eeGroupState(
+                    status = GroupE2eeCompatStatus.ENCRYPTED,
+                    currentEpoch = result.epochKey.epoch,
+                    activeMembers = activeMembers,
+                )
+                _groupE2eeStates.update { it + (frame.groupId to state) }
+                val keyDist = result.keyDistForRecipient
+                if (keyDist != null) {
+                    val sealPort = sealing ?: return false
+                    val keyDistId = "gk-${frame.groupId}-${result.epochKey.epoch}-${result.epochKey.keyId.take(10)}-$to"
+                    val sealedKeyDist = sealPort.seal(
+                        recipientDeviceId = to,
+                        msgId = keyDistId,
+                        sentAt = stamp,
+                        innerType = GroupRelaySealing.KEY_DIST_INNER_TYPE,
+                        body = GroupRelaySealing.encodeKeyDist(keyDist),
+                    ) ?: return false
+                    if (!port.send(to, keyDistId, HubSealing.ENVELOPE_TYPE, stamp, sealedKeyDist)) {
+                        return false
+                    }
+                    e2ee.markKeyDistributed(frame.groupId, result.epochKey.epoch, result.epochKey.keyId, to)
+                }
+                port.send(to, id, GroupRelaySealing.ENVELOPE_TYPE, stamp, result.sealedEnvelope)
+            }
+        }
+    }
 
     /**
      * Sends a hub file's ticket to [to], sealed (inner type [HUB_FILE]). Never readable: false when the ticket cannot be
@@ -498,38 +584,94 @@ public class HubChatBridge(
             return reject(d, "delivery is older than the hub's retention")
         }
 
-        // 3. Content: sealed, or readable only when the user opted in.
+        // 3. Content: pairwise sealed, group-epoch sealed, or readable only when the user opted in.
         val innerType: String
         val body: String
-        val sealed = d.type == HubSealing.ENVELOPE_TYPE
-        if (sealed) {
-            val opened = sealing?.open(d.from, d.id, d.sentAt, d.payload)
-            if (opened == null) {
-                // A sender the directory cannot be asked about right now is not a forgery: keep it for the next delivery.
-                if (sealing != null && (standing(d.from) == HubPeerStanding.UNAVAILABLE || sealing.openFailureMayClear(d.from))) return HubInboundOutcome.RETRY_LATER
-                _droppedUnverified.update { it + 1 }
-                return reject(d, "sealed message did not verify")
+        var expectedGroupId: String? = null
+        val sealed: Boolean
+        when (d.type) {
+            HubSealing.ENVELOPE_TYPE -> {
+                sealed = true
+                val opened = sealing?.open(d.from, d.id, d.sentAt, d.payload)
+                if (opened == null) {
+                    // A sender the directory cannot be asked about right now is not a forgery: keep it for the next delivery.
+                    if (sealing != null && (standing(d.from) == HubPeerStanding.UNAVAILABLE || sealing.openFailureMayClear(d.from))) {
+                        return HubInboundOutcome.RETRY_LATER
+                    }
+                    _droppedUnverified.update { it + 1 }
+                    return reject(d, "sealed message did not verify")
+                }
+                innerType = opened.innerType
+                body = opened.body
             }
-            innerType = opened.innerType
-            body = opened.body
-        } else {
-            if (!contentViaHub()) {
-                _droppedPlain.update { it + 1 }
-                return reject(d, "readable hub content is switched off")
+            GroupRelaySealing.ENVELOPE_TYPE -> {
+                sealed = true
+                val e2ee = groupE2ee ?: return reject(d, "group E2EE not configured")
+                val meta = GroupRelaySealing.peekMetadata(d.payload)
+                    ?: run {
+                        _droppedUnverified.update { it + 1 }
+                        return reject(d, "malformed group E2EE envelope")
+                    }
+                if (!groupLinked(meta.groupId)) return reject(d, "group is not linked to the hub")
+                val senderMember = groupMemberAllowed(meta.groupId, d.from)
+                val localMember = groupMemberAllowed(meta.groupId, localDeviceId)
+                when (val res = e2ee.openSealedGroup(
+                    senderDeviceId = d.from,
+                    expectedGroupId = meta.groupId,
+                    msgId = d.id,
+                    sentAt = d.sentAt,
+                    payload = d.payload,
+                    sealing = sealing,
+                    isSenderActiveMember = senderMember,
+                    isLocalActiveMember = localMember,
+                )) {
+                    is GroupOpenResult.Opened -> {
+                        innerType = res.payload.innerType
+                        body = res.payload.body
+                        expectedGroupId = res.payload.groupId
+                    }
+                    is GroupOpenResult.MissingEpochKey -> {
+                        return if (senderMember && localMember) {
+                            HubInboundOutcome.RETRY_LATER
+                        } else {
+                            _droppedUnverified.update { it + 1 }
+                            reject(d, "missing group key for non-active member")
+                        }
+                    }
+                    GroupOpenResult.RetryUnavailableIdentity -> return HubInboundOutcome.RETRY_LATER
+                    is GroupOpenResult.Rejected -> {
+                        _droppedUnverified.update { it + 1 }
+                        return reject(d, res.reason)
+                    }
+                }
             }
-            innerType = d.type
-            body = d.payload
+            else -> {
+                sealed = false
+                if (!contentViaHub()) {
+                    _droppedPlain.update { it + 1 }
+                    return reject(d, "readable hub content is switched off")
+                }
+                innerType = d.type
+                body = d.payload
+            }
         }
 
         // 4. Decode and route. The author named inside the frame must be the authenticated sender.
-        return runCatching { route(d, innerType, body, sealed, sink) }.getOrElse { e ->
+        return runCatching { route(d, innerType, body, sealed, expectedGroupId, sink) }.getOrElse { e ->
             if (e is kotlinx.coroutines.CancellationException) throw e
             FlashLog.w("HUB", "inbound id=${d.id} not stored: ${e::class.simpleName}")
             HubInboundOutcome.RETRY_LATER
         }
     }
 
-    private suspend fun route(d: HubInbound, innerType: String, body: String, sealed: Boolean, sink: HubInboundSink): HubInboundOutcome {
+    private suspend fun route(
+        d: HubInbound,
+        innerType: String,
+        body: String,
+        sealed: Boolean,
+        expectedGroupId: String?,
+        sink: HubInboundSink,
+    ): HubInboundOutcome {
         val now = timeSource.nowMs()
         when (innerType) {
             CHAT_FRAME -> {
@@ -555,12 +697,42 @@ public class HubChatBridge(
                 sink.direct(frame, d.from)
                 return HubInboundOutcome.STORED
             }
+            GroupRelaySealing.KEY_DIST_INNER_TYPE -> {
+                val e2ee = groupE2ee
+                if (!sealed || e2ee == null) return reject(d, "group key distribution must arrive sealed")
+                val dist = GroupRelaySealing.decodeKeyDist(body)
+                    ?: return reject(d, "malformed group key distribution payload")
+                if (!groupLinked(dist.groupId)) return reject(d, "group is not linked to the hub")
+                val senderAllowed = groupMemberAllowed(dist.groupId, d.from)
+                val currentMembership = groupMembershipProvider(dist.groupId)
+                return when (val outcome = e2ee.acceptKeyDist(
+                    fromDeviceId = d.from,
+                    dist = dist,
+                    senderAllowedInGroup = senderAllowed,
+                    activeMembersNow = currentMembership?.first,
+                    currentRosterVersion = currentMembership?.second,
+                )) {
+                    GroupKeyAcceptOutcome.ACCEPTED_CANONICAL,
+                    GroupKeyAcceptOutcome.ACCEPTED_DECRYPT_ONLY,
+                    GroupKeyAcceptOutcome.DUPLICATE -> HubInboundOutcome.STORED
+                    GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED,
+                    GroupKeyAcceptOutcome.REJECTED_STALE_ROSTER,
+                    GroupKeyAcceptOutcome.REJECTED_CONFLICT -> reject(d, "group key dist refused ($outcome)")
+                }
+            }
             GROUP_FRAME, LEGACY_GROUP -> {
+                if (groupE2ee != null && !sealed) {
+                    _droppedPlain.update { it + 1 }
+                    return reject(d, "unencrypted group frame rejected on E2EE channel")
+                }
                 val frame = GroupFrameCodec.decode(body) ?: return reject(d, "unreadable group frame")
                 val allowed = frame is GroupWireFrame.Message || frame is GroupWireFrame.Receipt ||
                     frame is GroupWireFrame.Read || frame is GroupWireFrame.DeleteForEveryone
                 if (!allowed) return reject(d, "group frame kind is not allowed through the hub")
                 if (frame.from != d.from) return reject(d, "frame author is not the sender")
+                if (expectedGroupId != null && frame.groupId != expectedGroupId) {
+                    return reject(d, "inner group id does not match outer sealed envelope")
+                }
                 if (!groupLinked(frame.groupId)) return reject(d, "group is not linked to the hub")
                 sink.group(frame, d.from)
                 return HubInboundOutcome.STORED

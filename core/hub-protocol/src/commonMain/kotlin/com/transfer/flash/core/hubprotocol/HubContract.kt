@@ -132,6 +132,10 @@ public object HubContract {
     /** Feature capability for announcement push over WebSocket relay (Plan A3 §3.7). */
     public const val FEATURE_ANNOUNCEMENTS_V1: String = "ann1"
 
+    /** Feature capability & relay envelope type for E2EE Hub-relayed group messages (HR10). */
+    public const val FEATURE_GROUP_E2EE: String = "hge1"
+    public const val GROUP_SEALED_ENVELOPE_TYPE: String = "GROUP_SEALED_V1"
+
     // ---- sealed files (ADR-215) -----------------------------------------------------------------------------
 
     /**

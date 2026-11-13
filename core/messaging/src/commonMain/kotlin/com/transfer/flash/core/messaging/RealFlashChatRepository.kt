@@ -14,10 +14,13 @@ import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.messaging.hub.GroupE2eeCompatStatus
+import com.transfer.flash.core.messaging.hub.GroupE2eeGroupState
 import com.transfer.flash.core.messaging.hub.HubAckEvent
 import com.transfer.flash.core.messaging.hub.HubChatBridge
 import com.transfer.flash.core.messaging.hub.HubDeliveryNote
 import com.transfer.flash.core.messaging.hub.HubDropCounts
+import com.transfer.flash.core.messaging.hub.HubGroupE2eeCoordinator
 import com.transfer.flash.core.messaging.hub.HubNoticeMath
 import com.transfer.flash.core.messaging.hub.HubWaitReason
 import com.transfer.flash.core.messaging.hub.HubFileMessages
@@ -416,6 +419,8 @@ public class RealFlashChatRepository(
     private val hubContentViaHub: () -> Boolean = { false },
     /** End-to-end sealing of hub content (ADR-121, ADR-126). Null when the host has no sealing key store. */
     private val hubSealing: HubSealingPort? = null,
+    /** Epoch-based E2EE for Hub-relayed groups (HR10). Null keeps legacy group relay behaviour. */
+    private val hubGroupE2ee: HubGroupE2eeCoordinator? = null,
     /** After a LAN send succeeds, how long to wait for a delivery receipt before also sending through the hub. */
     private val hubFallbackGraceMs: Long = HUB_FALLBACK_GRACE_MS,
     /** B2: Capability resolver for colleagues in the organisation directory (Plan B, ADR-134). */
@@ -615,6 +620,31 @@ public class RealFlashChatRepository(
                 allowed
             },
             groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
+            groupE2ee = hubGroupE2ee,
+            groupMembershipProvider = { groupId ->
+                val members = groupMemberDao?.activeMembers(groupId)?.mapTo(HashSet()) { it.deviceId }.orEmpty()
+                if (members.isEmpty()) {
+                    null
+                } else {
+                    val version = hubGroupRosters?.current(groupId, timeSource.nowMs())?.version
+                        ?: groupMemberDao?.allMembers(groupId)?.maxOfOrNull { it.membershipVersion }
+                        ?: 0L
+                    members to version
+                }
+            },
+            groupMemberAllowed = { groupId, deviceId ->
+                if (deviceId == localDeviceId) {
+                    val row = groupMemberDao?.member(groupId, localDeviceId)
+                    (row == null || row.isActive) && hubGroupRosters?.revocationBlocks(groupId) != true
+                } else {
+                    val members = groupMemberDao
+                    if (members == null) {
+                        isGroupPeerTrusted(groupId, deviceId)
+                    } else {
+                        isActiveGroupMember(members, groupId, deviceId)
+                    }
+                }
+            },
         )
     }
 
@@ -721,12 +751,23 @@ public class RealFlashChatRepository(
         }
             .stateIn(scope, SharingStarted.WhileSubscribed(5_000), HubDropCounts())
 
-    /** What the hub path of a chat needs the user to know: why messages are held, and changed keys (ADR-126). */
-    private class HubNoticeInputs(val waiting: Map<String, HubWaitReason>, val changed: Map<String, HubSealingPin>)
+    /** What the hub path of a chat needs the user to know: why messages are held, changed keys, and group E2EE state. */
+    private class HubNoticeInputs(
+        val waiting: Map<String, HubWaitReason>,
+        val changed: Map<String, HubSealingPin>,
+        val groupE2ee: Map<String, GroupE2eeGroupState> = emptyMap(),
+    )
 
     private val hubNoticeInputs: Flow<HubNoticeInputs> =
-        if (hubBridge == null) flowOf(HubNoticeInputs(emptyMap(), emptyMap()))
-        else combine(hubBridge.waiting, hubSealing?.pendingKeyChanges ?: flowOf(emptyMap())) { waiting, changed -> HubNoticeInputs(waiting, changed) }
+        if (hubBridge == null) flowOf(HubNoticeInputs(emptyMap(), emptyMap(), emptyMap()))
+        else combine(
+            hubBridge.waiting,
+            hubSealing?.pendingKeyChanges ?: flowOf(emptyMap()),
+            hubBridge.groupE2eeStates,
+        ) { waiting, changed, groupStates -> HubNoticeInputs(waiting, changed, groupStates) }
+
+    public suspend fun evaluateHubGroupE2ee(groupId: String): GroupE2eeGroupState? =
+        hubBridge?.evaluateGroupE2ee(groupId)
 
     override suspend fun confirmHubKeyChange(peerDeviceId: String): Boolean {
         val bridge = hubBridge ?: return false
@@ -1036,6 +1077,8 @@ public class RealFlashChatRepository(
             peerOnline = peerOnline,
             waiting = inputs.waiting[conversationId],
             changedKey = inputs.changed[conversationId],
+            groupE2eeEnabled = hubGroupE2ee != null,
+            groupE2eeStatus = inputs.groupE2ee[conversationId]?.status,
         )
     }
 
@@ -1588,6 +1631,9 @@ public class RealFlashChatRepository(
                 launch {
                     groupMemberDao?.observeMembers(conversationId)?.collect { roster ->
                         openGroupMemberNames = roster.associate { it.deviceId to it.displayName }
+                        if (isGroupLinkedToHub(conversationId)) {
+                            evaluateHubGroupE2ee(conversationId)
+                        }
                     }
                 }
             }
@@ -2615,6 +2661,7 @@ public class RealFlashChatRepository(
                 )
             }
         }
+        notifyGroupE2eeMembershipChanged(groupId, now)
         val frame = GroupWireFrame.Add(groupId, localDeviceId, operationId, now, memberIds.sorted())
         // F2: existing members learn the Add; the NEWCOMERS instead receive a full State
         // bootstrap — they have no local membership rows, so a bare Add would be dropped by
@@ -2729,6 +2776,7 @@ public class RealFlashChatRepository(
         }
         val removed = signed.removeMember(groupId, deviceId)
             ?: return FlashResult.Failure(FlashError.Unknown("That device is not a removable member of this group"))
+        notifyGroupE2eeMembershipChanged(groupId)
         val targets = members.activeMembers(groupId).map { it.deviceId }.filter { it != localDeviceId } + deviceId
         targets.distinct().forEach { groupTransportSink?.send(it, removed.bundle) }
         FlashLog.i("CHAT", "Group v2 member removed: group=$groupId member=$deviceId")
@@ -2777,6 +2825,7 @@ public class RealFlashChatRepository(
                 ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
             val bundle = signed.leave(groupId, successorId)
                 ?: return FlashResult.Failure(FlashError.Unknown("Unknown group"))
+            notifyGroupE2eeMembershipChanged(groupId)
             members.activeMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { target ->
                 groupTransportSink?.send(target.deviceId, bundle)
             }
@@ -2787,6 +2836,7 @@ public class RealFlashChatRepository(
         val now = timeSource.nowMs()
         val operationId = UuidIdGenerator.newId()
         members.upsert(current.copy(membershipVersion = now, operationId = operationId, isActive = false))
+        notifyGroupE2eeMembershipChanged(groupId, now)
         val frame = GroupWireFrame.Leave(groupId, localDeviceId, operationId, now, localDeviceId)
         members.activeMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { target ->
             groupTransportSink?.send(target.deviceId, frame)
@@ -5985,6 +6035,7 @@ public class RealFlashChatRepository(
     /** Forgets the in-memory rosters (leaving the organisation) and deactivates the rows they produced. */
     public suspend fun clearHubGroupRosters() {
         hubFacade?.onCleared()
+        hubGroupE2ee?.clear()
         val rosters = hubGroupRosters ?: return
         withContext(ioDispatcher) {
             val members = groupMemberDao
@@ -6060,6 +6111,7 @@ public class RealFlashChatRepository(
             }
             if (writes.isEmpty()) continue
             runInTransaction { writes.forEach { members.upsert(it) } }
+            notifyGroupE2eeMembershipChanged(groupId, roster.version)
             FlashProbe.emit("org.roster.projected", "group" to FlashProbe.short(groupId), "version" to roster.version, "rows" to writes.size)
         }
     }
@@ -6129,7 +6181,21 @@ public class RealFlashChatRepository(
         val current = members.member(candidate.groupId, candidate.deviceId)
         val candidateVersion = GroupMembershipVersion(candidate.membershipVersion, candidate.operationId)
         val currentVersion = current?.let { GroupMembershipVersion(it.membershipVersion, it.operationId) }
-        if (membershipUpdateWins(candidateVersion, currentVersion)) members.upsert(candidate)
+        if (membershipUpdateWins(candidateVersion, currentVersion)) {
+            members.upsert(candidate)
+            notifyGroupE2eeMembershipChanged(candidate.groupId, candidate.membershipVersion)
+        }
+    }
+
+    private suspend fun notifyGroupE2eeMembershipChanged(groupId: String, rosterVersionHint: Long? = null) {
+        val coordinator = hubGroupE2ee ?: return
+        val members = groupMemberDao?.activeMembers(groupId)?.mapTo(HashSet()) { it.deviceId }.orEmpty()
+        val version = rosterVersionHint
+            ?: hubGroupRosters?.current(groupId, timeSource.nowMs())?.version
+            ?: groupMemberDao?.allMembers(groupId)?.maxOfOrNull { it.membershipVersion }
+            ?: 0L
+        coordinator.onMembershipChanged(groupId, members, version)
+        hubBridge?.evaluateGroupE2ee(groupId)
     }
 
     /**
@@ -8145,6 +8211,7 @@ public class RealFlashChatRepository(
         // Strictly adhere to Zero Cloud Dump Invariant:
         // Linking NEVER reads past rows from messageDao or uploads historical messages.
         trust.linkGroupToHub(groupId)
+        notifyGroupE2eeMembershipChanged(groupId)
         return FlashResult.Success(Unit)
     }
 
@@ -8157,6 +8224,7 @@ public class RealFlashChatRepository(
             ?: return FlashResult.Failure(FlashError.Unknown("Enterprise trust store unavailable"))
         trust.unlinkGroupFromHub(groupId)
         groupMemberDao?.let { deactivateHubRosterRows(it, groupId) }
+        notifyGroupE2eeMembershipChanged(groupId)
         return FlashResult.Success(Unit)
     }
 

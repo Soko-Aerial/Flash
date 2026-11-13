@@ -77,6 +77,7 @@ public fun FlashGroupSettingsSheet(
     isEnterpriseEnrolled: Boolean = false,
     isLinkedToHub: Boolean = false,
     onToggleLinkToHub: ((Boolean) -> Unit)? = null,
+    hubConfidentialityNotice: String? = null,
 ) {
     val colors = FlashTheme.colors
     val canEdit = remember(isOwner, isAdmin) { FlashGroupSettingsMath.canEditGroupRules(isOwner, isAdmin) }
@@ -455,7 +456,7 @@ public fun FlashGroupSettingsSheet(
                 if (isLinkedToHub) {
                     Spacer(modifier = Modifier.height(FlashSpacing.space8))
                     FlashText(
-                        text = "Confidentiality disclosure: Group messages are not sealed yet, so the hub can read messages it carries while relaying. Messages sent directly between devices on LAN stay private.",
+                        text = hubConfidentialityNotice ?: "End-to-end encrypted: Hub group messages are sealed with per-membership epoch keys so your organisation's hub cannot read them. Keys rotate when membership changes, and past history stays on member devices only.",
                         style = FlashTheme.typography.metadataDefault,
                         color = FlashTheme.colors.textSecondary,
                         modifier = Modifier.padding(horizontal = FlashSpacing.space16),
