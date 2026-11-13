@@ -440,7 +440,16 @@ public class RealFlashChatRepository(
     radioBridge: com.transfer.flash.core.messaging.radio.RadioChatBridge? = null,
     /** ADR-216: files sent and received through the hub. Null (or no [hubRelay]) means this device takes no hub files. */
     hubFileDao: HubFileDao? = null,
+    /** Plan A3 §4.4 / HR7: host callback fired when a new eligible announcement is stored: (announcementId, title, departmentName). */
+    private val onNewAnnouncementNotification: (
+        announcementId: String,
+        title: String,
+        departmentName: String?,
+    ) -> Unit = { _, _, _ -> },
 ) : FlashChatRepository, AutoCloseable {
+
+    public var onNewAnnouncementNotificationHook: ((String, String, String?) -> Unit)? = null
+    private val notifiedAnnouncementIds: MutableSet<String> = mutableSetOf()
 
     private val hubAnnouncementDao: HubAnnouncementDao? = hubAnnouncementDao
     private val hubAnnouncementsApi: HubAnnouncementsApi? = hubAnnouncementsApi
@@ -8349,6 +8358,7 @@ public class RealFlashChatRepository(
 
             var state = dao.getState()
             var currentSince = state?.seq ?: 0L
+            val isInitialSync = currentSince == 0L
             var knownEpoch = state?.epoch
             var loopCount = 0
             val maxLoops = 20
@@ -8382,6 +8392,20 @@ public class RealFlashChatRepository(
                         val existing = dao.getById(item.id)
                         val entity = item.toEntity(existingReadAtMs = existing?.readAtMs)
                         dao.upsertOne(entity)
+
+                        // HR7: Eligibility check for announcement notification
+                        if (existing == null && !isInitialSync && !feed.fullResync) {
+                            val isAuthor = (item.authorKind == "device" && item.authorRef == localDeviceId) ||
+                                item.authorRef == localDeviceId
+                            val userDept = creds.deviceCert.department
+                            val inScope = item.scope == "org" ||
+                                (item.scope == "department" && (userDept == null || item.departmentId == userDept))
+                            if (!isAuthor && inScope && notifiedAnnouncementIds.add(item.id)) {
+                                val deptName = item.departmentId
+                                onNewAnnouncementNotification(item.id, item.title, deptName)
+                                onNewAnnouncementNotificationHook?.invoke(item.id, item.title, deptName)
+                            }
+                        }
                     }
                 }
 

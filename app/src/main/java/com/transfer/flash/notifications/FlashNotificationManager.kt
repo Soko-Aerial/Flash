@@ -47,6 +47,7 @@ object FlashNotificationManager {
     const val CHANNEL_CALLS = "flash_calls_v2"
     private const val LEGACY_CHANNEL_CALLS = "flash_calls"
     const val CHANNEL_DISCOVERY = "flash_discovery_bg"
+    const val CHANNEL_ANNOUNCEMENTS = "flash_announcements"
 
     // Backward compatibility alias
     private const val CHANNEL_ID = CHANNEL_MESSAGES
@@ -62,6 +63,9 @@ object FlashNotificationManager {
     /** Base ID for individual active/completed/failed transfer notifications */
     const val TRANSFER_NOTIFICATION_BASE = 3000
     const val TRANSFER_NOTIFICATION_SLOTS = 1000
+    /** Base ID for announcement notifications */
+    const val ANNOUNCEMENT_NOTIFICATION_BASE = 4000
+    const val ANNOUNCEMENT_NOTIFICATION_SLOTS = 1000
 
     /** Actions */
     const val ACTION_VIEW_TRANSFERS = "com.transfer.flash.action.VIEW_TRANSFERS"
@@ -73,6 +77,7 @@ object FlashNotificationManager {
     const val EXTRA_PEER_DEVICE_ID = "com.transfer.flash.EXTRA_PEER_DEVICE_ID"
     const val EXTRA_TRANSFER_ID = "extra_transfer_id"
     const val EXTRA_FILE_PATH = "extra_file_path"
+    const val EXTRA_HUB_ROUTE = "com.transfer.flash.extra.HUB_ROUTE"
 
     /** Set true in MainActivity.onStart, false in onStop. */
     @Volatile
@@ -147,8 +152,16 @@ object FlashNotificationManager {
             description = "Keeps nearby discovery ready in the background"
         }
 
+        val announcementsChannel = NotificationChannel(
+            CHANNEL_ANNOUNCEMENTS,
+            "Company announcements",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Notifications for company and department announcements"
+        }
+
         manager.createNotificationChannels(
-            listOf(messagesChannel, transfersChannel, pttChannel, pairingChannel, callsChannel, discoveryChannel),
+            listOf(messagesChannel, transfersChannel, pttChannel, pairingChannel, callsChannel, discoveryChannel, announcementsChannel),
         )
         channelsInitialized.set(true)
     }
@@ -200,6 +213,48 @@ object FlashNotificationManager {
     /** M-23: this device was added to a signed group it cannot accept; [message] says why and what to do. */
     fun showGroupOfferRefused(context: Context, groupId: String, groupName: String, message: String) {
         post(context, groupId, groupName.ifBlank { "Group" }, message)
+    }
+
+    /**
+     * Plan A3 §4.4 / HR7: System notification for an eligible new company or department announcement.
+     * Content is STRICTLY title-only (lock-screen confidentiality). Tapping opens the announcement.
+     */
+    @SuppressLint("MissingPermission")
+    fun showAnnouncement(
+        context: Context,
+        announcementId: String,
+        title: String,
+        departmentName: String? = null,
+    ) {
+        val appContext = context.applicationContext
+        initChannels(appContext)
+
+        val content = announcementNotificationContent(title, departmentName)
+        val notifId = notificationIdForAnnouncement(announcementId)
+
+        val intent = Intent(appContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_HUB_ROUTE, "hub/announcement/$announcementId")
+        }
+        val contentIntent = PendingIntent.getActivity(
+            appContext,
+            notifId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ANNOUNCEMENTS)
+            .setSmallIcon(R.drawable.ic_notification_flash)
+            .setContentTitle(content.title)
+            .setContentText(content.body)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+            .build()
+
+        runCatching {
+            NotificationManagerCompat.from(appContext).notify(notifId, notification)
+        }.onFailure { Log.w(TAG, "Failed to post announcement notification", it) }
     }
 
     /** Clears the notification for a conversation (e.g. the user just opened it). */
@@ -751,12 +806,31 @@ object FlashNotificationManager {
         transferNotificationIds[transferId] = id
         id
     }
+
+    /** Stable id per announcement within [ANNOUNCEMENT_NOTIFICATION_BASE] range. */
+    fun notificationIdForAnnouncement(announcementId: String): Int =
+        ANNOUNCEMENT_NOTIFICATION_BASE + (announcementId.hashCode() and 0x7FFFFFFF) % ANNOUNCEMENT_NOTIFICATION_SLOTS
 }
 
 internal data class FlashNotificationContent(
     val title: String,
     val body: String,
 )
+
+/**
+ * Generates notification title and body for an announcement.
+ * Strict lock-screen confidentiality: body is strictly the announcement title (never the announcement body).
+ */
+internal fun announcementNotificationContent(
+    title: String,
+    departmentName: String? = null,
+): FlashNotificationContent {
+    val notifTitle = if (departmentName.isNullOrBlank()) "New announcement" else "New announcement · $departmentName"
+    return FlashNotificationContent(
+        title = notifTitle,
+        body = title.trim(),
+    )
+}
 
 internal fun messageNotificationContent(
     conversationId: String,

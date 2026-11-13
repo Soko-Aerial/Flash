@@ -680,6 +680,9 @@ public class DesktopEngine(
     /** Inbound group join request notification hook (for DesktopNotificationManager / shell). */
     public var onJoinRequestNotification: ((groupId: String, groupTitle: String, requesterName: String) -> Unit)? = null
 
+    /** Inbound announcement notification hook (Plan A3 §4.4 / HR7, for DesktopNotificationManager). */
+    public var onAnnouncementNotification: ((announcementId: String, title: String, departmentName: String?) -> Unit)? = null
+
     /** A member added this device to a group it cannot accept (not paired with the owner): the sentence to show (M-23). */
     public var onGroupOfferRefused: ((groupId: String, groupName: String, message: String) -> Unit)? = null
 
@@ -1804,6 +1807,10 @@ public class DesktopEngine(
                 onInboundAttachmentWithGroupTitle = { conversationId, senderName, fileName, mimeType, groupTitle ->
                     FlashLog.i(TAG_WS, "Inbound attachment in $conversationId from ${senderName ?: "?"} (group $groupTitle): $fileName ($mimeType)")
                     onInboundAttachmentNotification?.invoke(conversationId, senderName, fileName, mimeType, groupTitle)
+                },
+                onNewAnnouncementNotification = { announcementId, title, deptName ->
+                    FlashLog.i(TAG_WS, "Inbound announcement notification: $announcementId")
+                    onAnnouncementNotification?.invoke(announcementId, title, deptName)
                 },
                 scope = scope,
                 enterpriseTrustStore = enterpriseTrustStore,

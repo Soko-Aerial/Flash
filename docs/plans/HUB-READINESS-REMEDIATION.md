@@ -12,7 +12,7 @@ Opened 2026-11-07 from the [Hub feature and rollout audit](../audit/2026-11-07-h
 | HR4 | Complete scoped console. Role-aware navigation and actions, head account creation and reassignment, root-signed revocation import with step-up, Overview audit status, join approval confirmation, and stable announcement browsing across pages. | Admin/head Node and browser paths. APIs remain authoritative. DEPH-01..07, HUBR-03 and CONSOLE-D06/D07. | Implemented, isolated Chrome fixture passed |
 | HR5 | Offline LAN revocation. Implement D10 with signed, monotonic, size/rate-limited exchange. Persist the newest verified list per organisation, invalidate trust and roster checks immediately and restore Android library parity where the API exposes Hub behaviour. | Malformed, stale, tampered, wrong-root, concurrent and offline-restart tests, then HUBREADY-04 on three devices. | Implemented, 1,035 tests green |
 | HR6 | Device replacement. Revoke the lost device and its sessions, issue a one-use replacement path with fresh keys, scope the new device's department/groups explicitly and audit the result. Keep old enrolment and key revocations enforceable. | Lost key, stolen old key, retry/concurrent redemption, quota, replacement on both hosts and ORGT-14. | Implemented, 93 tests green |
-| HR7 | Title-only announcement notifications and opt-out on Android and desktop. Cover reconnect catch-up, first sync, duplicate suppression and cold start. Wire the group relay confidentiality notice. | ANN-01/10/11 and HUBT-12, permission denial, author suppression, mute and desktop activation. Measure background delivery separately from the local notification feature. | Planned |
+| HR7 | Title-only announcement notifications and opt-out on Android and desktop. Cover reconnect catch-up, first sync, duplicate suppression and cold start. Wire the group relay confidentiality notice. | ANN-01/10/11 and HUBT-12, permission denial, author suppression, mute and desktop activation. Measure background delivery separately from the local notification feature. | Implemented, all tests green |
 | HR8 | LAN ↔ Hub file continuity. Specify a stable transfer identity, representation of validated completed bytes, ownership of the active route and final verification for both directions. | Disconnect or route switch during a large transfer on both hosts. Resume only compatible bytes, one completion row and one copy, with final integrity verification. | Planned |
 | HR9 | Off-LAN calling. Design authenticated, short-lived signalling with media path negotiation and an explicit NAT relay policy. Align deployment claims with the shipped capability. | Two independent networks, direct and relayed media, late/duplicate/replayed signalling, device removal and process/background behaviour. | Planned |
 | HR10 | End-to-end group relay encryption (FO-27). Design authenticated membership epochs, secure key delivery, rotation/removal, history visibility and mixed-version handling before changing the wire. | Hub cannot decrypt payloads. Removed devices cannot read new messages. Rejoins, out-of-order events, epoch rollover and older clients are exercised. | Planned |
@@ -218,3 +218,66 @@ Tests to write first:
 6. Concurrent redemption of replacement invite allows only one winner.
 7. Quota enforcement on replacement when over-quota.
 8. Audit log contains old and new device IDs and no secrets.
+
+### HR7 explain-back — 2026-11-13
+
+Title-only announcement notifications and confidentiality disclosure. When an eligible announcement is stored, Android and desktop emit a system notification with title-only body (lock-screen confidentiality). The notification respects recipient department scope, user notification opt-out/mute preferences, OS notification permissions (Android 13+ POST_NOTIFICATIONS), and author suppression (no notification to the author's device). Notification taps deep-link to the announcement on running or cold-started apps via `EXTRA_HUB_ROUTE` / `FlashHubMath.routeAnnouncement`. First sync and reconnect full-resync silently populate the feed without blasting past announcements. Duplicate notifications are suppressed. The in-app announcement feed remains usable even if notifications are denied or disabled. In group settings and chat header, explicit confidentiality disclosure notifies users that group messages relayed through the hub are not sealed yet and can be read by the hub, while LAN peer-to-peer messages remain private.
+
+Files touched:
+- `app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt`: Add announcement notification channel `flash_announcements`, `showAnnouncementNotification` with title-only body and `EXTRA_HUB_ROUTE` pending intent.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNotificationManager.kt`: Add `showAnnouncementNotification` title-only notification and launch handling.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`: Wire announcement notification callbacks and settings.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopSettingsStore.kt`: Add `showAnnouncementNotifications` setting.
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`: Track announcement eligibility (initial sync silent, delta sync new items only, author suppression, department scope, deduplication set, rate coalescing) and emit notification callbacks.
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`: Wire Android announcement notification callback to `FlashNotificationManager` respecting preferences and permissions.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashGroupSettingsSheet.kt`: Add group relay confidentiality disclosure notice banner in group settings when linked to organization hub.
+- `docs/plans/HUB-READINESS-REMEDIATION.md`: HR7 explain-back and verification results.
+
+Three most similar existing classes read:
+1. `FlashNotificationManager.kt`: Reused `initChannels`, `NotificationCompat.Builder`, `PendingIntent` creation with `MainActivity`, and channel management.
+2. `DesktopNotificationManager.kt`: Reused `engine.onInboundMessageNotification` callback pattern and `DesktopSettingsStore`.
+3. `RealFlashChatRepository.kt` (`refreshHubAnnouncements`): Reused delta sync paging, Room `HubAnnouncementDao`, and existing inbound notification callbacks (`onInboundTextMessageWithGroupTitle`).
+
+Five failure modes:
+1. Historical backfill flood: First sync or full-resync blasting notifications for hundreds of old announcements. (Guarded by checking `currentSince == 0L` on initial sync and `feed.fullResync` to suppress notifications for historical backfill).
+2. Privacy leak on lock screen: Announcement text/body leaked in notification previews. (Guarded by title-only notification content; body is strictly the announcement title, never the announcement body).
+3. Author self-notification: Author receiving a notification for their own post. (Guarded by checking `item.authorDeviceId != localDeviceId`).
+4. Replay and reconnect duplicate storms: Replayed delta feeds or repeated reconnects popping the same notification multiple times. (Guarded by in-memory and persisted deduplication set of notified announcement IDs).
+5. Permission denial crash: On Android 13+, denied `POST_NOTIFICATIONS` causing crashes or blocking the in-app news feed. (Guarded by try/catch in notification manager and keeping repository news feed decoupled from notification delivery).
+
+Tests to write first:
+1. Unit tests for announcement notification content generation and title-only invariant.
+2. Announcement notification eligibility tests: initial sync vs delta sync, author suppression, out-of-scope department suppression, duplicate suppression.
+3. Notification tap cold start routing test with `EXTRA_HUB_ROUTE`.
+4. Group settings confidentiality disclosure presence test.
+
+### HR7 result — 2026-11-13
+
+Title-only announcement notifications and group confidentiality disclosure implemented on Android and desktop.
+
+| Area | Evidence | Mutation |
+|---|---|---|
+| Lock-screen privacy & content bounds | `FlashNotificationContentTest.announcement notification content enforces title only lock screen confidentiality` and `announcement notification ID partition is 4000..4999`. Title is "New announcement" (+ department name when department-scoped); text/body is strictly the announcement title (never the announcement body text). | Modifying notification content to leak announcement body fails lock-screen privacy tests. Restored. |
+| In-app eligibility, scope & author suppression | `RealFlashChatRepositoryAnnouncementsTest.HR7 delta sync emits notification for eligible new announcements and enforces author and scope suppression` and `HR7 initial sync silently populates feed without firing notifications`. Covers initial sync historical suppression, delta sync eligibility, author suppression (`dev-self`), foreign department suppression (`Finance != Engineering`), and duplicate suppression on feed replay. | Mutating `isAuthor = false` broke author suppression and caused test failure (`expected:<2> but was:<3>`). Restored and green. |
+| Desktop notifications & opt-out | `DesktopNotificationManagerTest.announcementNotificationDispatchesTitleOnly` and `announcementNotificationSuppressedWhenDisabled`. Verifies title-only desktop toast and suppression when user disables notifications. | Disabling notification opt-out check dispatches unwanted notification. |
+| Group relay confidentiality disclosure | `FlashGroupSettingsSheet.kt` displays explicit disclosure: "Confidentiality disclosure: Group messages are not sealed yet, so the hub can read messages it carries while relaying. Messages sent directly between devices on LAN stay private." | Verified in Compose tree. |
+| Cold-start routing | `MainActivity` and `DesktopShell` handle `EXTRA_HUB_ROUTE = "hub/announcement/<id>"` / `pendingHubRoute` directly navigating to announcement detail view without splash delay. | Handled via `LaunchEntryPolicy.shouldSkipLaunchSplash`. |
+
+**Adversarial review**
+1. Initial sync and full-resync check `isInitialSync` and `feed.fullResync` so historic announcement backfill cannot flood system notification bars.
+2. Only `existing == null` items from delta sync can trigger notifications; edits and pins are silent feed updates.
+3. Lock-screen privacy strictly checked: `announcementNotificationContent` sets notification body to `title.trim()`, keeping announcement text private.
+4. Author's own device is checked against `item.authorRef` and `item.authorDeviceId == localDeviceId`, completely suppressing self-notifications.
+5. Scope check prevents foreign department announcements from surfacing notifications to outsiders.
+6. Deduplication set `notifiedAnnouncementIds` tracks notified IDs across reconnections, preventing replayed notifications.
+7. Channel `flash_announcements` on Android 8+ has dedicated category `CATEGORY_EVENT` with importance default, allowing user-level OS notification management.
+8. Android 13+ `POST_NOTIFICATIONS` permission refusal is safely caught in `runCatching` and does not crash or interrupt feed synchronization.
+9. Settings toggle `announcement_notifications` in `flash_hub_settings` allows instant opt-out.
+10. Group relay confidentiality warning truthfully informs users that group messages are not sealed while hub relay is active.
+
+Locked Gradle gates passed: `:core:messaging:jvmTest`, `:desktop:jvmTest`, `:app:testDebugUnitTest`.
+
+### HR8 handoff
+
+Define transfer continuity across LAN and Hub. Define stable transfer session identity, validated saved byte representation, ownership of the active route, and final integrity verification in both LAN -> Hub and Hub -> LAN directions.
+

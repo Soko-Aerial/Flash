@@ -1529,6 +1529,18 @@ object DiscoveryEngineHolder {
                     groupTitle,
                 )
             },
+            onNewAnnouncementNotification = { announcementId, title, deptName ->
+                val prefs = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+                val enabled = prefs.getBoolean("announcement_notifications", true)
+                if (enabled) {
+                    FlashNotificationManager.showAnnouncement(
+                        appContext,
+                        announcementId,
+                        title,
+                        deptName,
+                    )
+                }
+            },
             transportSink = { targetDeviceId, wireFrame ->
                 // PC3 dial on demand: a message to a peer that is seen but not connected dials first
                 // (≤ 1 s) instead of waiting for the next sweep. Receipts and typing never wait.

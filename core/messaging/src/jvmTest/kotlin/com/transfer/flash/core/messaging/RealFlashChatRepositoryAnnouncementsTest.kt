@@ -80,6 +80,7 @@ class RealFlashChatRepositoryAnnouncementsTest {
         body: String = "Body of $id",
         scope: String = "org",
         departmentId: String? = null,
+        authorRef: String = "dev-admin",
         pinned: Boolean = false,
         expiresAt: Long? = null,
         deleted: Boolean = false,
@@ -89,6 +90,7 @@ class RealFlashChatRepositoryAnnouncementsTest {
         departmentId = departmentId,
         title = title,
         body = body,
+        authorRef = authorRef,
         authorName = "Alice Admin",
         authorRole = "org_admin",
         createdAt = 1000L * seq,
@@ -586,5 +588,106 @@ class RealFlashChatRepositoryAnnouncementsTest {
             hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
         )
         assertTrue(repo.canPostHubAnnouncement.first() is HubPostingRights.Department)
+    }
+
+    @Test
+    fun `HR7 initial sync silently populates feed without firing notifications`(): Unit = runBlocking {
+        val db = openEncryptedFlashDatabase(dbFile, encryptionKey)
+        val api = FakeHubAnnouncementsApi()
+        val notifications = mutableListOf<Triple<String, String, String?>>()
+
+        api.items["a-old-1"] = sampleItem("a-old-1", 1L, title = "Old Company News", authorRef = "dev-other")
+        api.items["a-old-2"] = sampleItem("a-old-2", 2L, title = "Historical Update", authorRef = "dev-other")
+
+        val repo = RealFlashChatRepository(
+            localDeviceId = "dev-self",
+            localDisplayName = "Self",
+            messageDao = db.messageDao(),
+            conversationDao = db.conversationDao(),
+            outboxDao = db.outboxDao(),
+            receiptDao = db.receiptDao(),
+            draftDao = db.draftDao(),
+            recentSearchDao = db.recentSearchDao(),
+            reactionDao = db.reactionDao(),
+            runInTransaction = { block -> db.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(sampleCredentials(department = "Engineering")),
+            hubAnnouncementDao = db.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
+            onNewAnnouncementNotification = { id, title, dept ->
+                notifications.add(Triple(id, title, dept))
+            },
+        )
+
+        // First sync (state was empty)
+        val result = repo.refreshHubAnnouncements()
+        assertTrue(result is FlashResult.Success)
+
+        // Both items exist in database
+        assertEquals(2, db.hubAnnouncementDao().observeAll().first().size)
+        // But zero notifications were emitted (no notification storm for historical backfill)
+        assertEquals(0, notifications.size)
+    }
+
+    @Test
+    fun `HR7 delta sync emits notification for eligible new announcements and enforces author and scope suppression`(): Unit = runBlocking {
+        val db = openEncryptedFlashDatabase(dbFile, encryptionKey)
+        val api = FakeHubAnnouncementsApi()
+        val notifications = mutableListOf<Triple<String, String, String?>>()
+
+        // Initial historical item
+        api.items["a-1"] = sampleItem("a-1", 1L, title = "Initial News", authorRef = "dev-admin")
+
+        val repo = RealFlashChatRepository(
+            localDeviceId = "dev-self",
+            localDisplayName = "Self",
+            messageDao = db.messageDao(),
+            conversationDao = db.conversationDao(),
+            outboxDao = db.outboxDao(),
+            receiptDao = db.receiptDao(),
+            draftDao = db.draftDao(),
+            recentSearchDao = db.recentSearchDao(),
+            reactionDao = db.reactionDao(),
+            runInTransaction = { block -> db.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(sampleCredentials(department = "Engineering")),
+            hubAnnouncementDao = db.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
+            onNewAnnouncementNotification = { id, title, dept ->
+                notifications.add(Triple(id, title, dept))
+            },
+        )
+
+        // Initial sync
+        repo.refreshHubAnnouncements()
+        assertEquals(0, notifications.size)
+
+        // 1. New eligible org-wide announcement from another device
+        api.items["a-2"] = sampleItem("a-2", 2L, title = "Company All Hands", authorRef = "dev-admin", scope = "org")
+
+        // 2. Author suppression: announcement authored by this device (dev-self)
+        api.items["a-3"] = sampleItem("a-3", 3L, title = "My Own Announcement", authorRef = "dev-self", scope = "org")
+
+        // 3. Scope suppression: department announcement for a foreign department (Finance != Engineering)
+        api.items["a-4"] = sampleItem("a-4", 4L, title = "Finance Only", authorRef = "dev-admin", scope = "department", departmentId = "Finance")
+
+        // 4. In-scope department announcement (Engineering)
+        api.items["a-5"] = sampleItem("a-5", 5L, title = "Eng Team Meeting", authorRef = "dev-admin", scope = "department", departmentId = "Engineering")
+
+        // Run delta sync
+        val deltaResult = repo.refreshHubAnnouncements()
+        assertTrue(deltaResult is FlashResult.Success)
+
+        // Exactly 2 notifications: a-2 (org-wide) and a-5 (own department)
+        assertEquals(2, notifications.size)
+        assertEquals("a-2", notifications[0].first)
+        assertEquals("Company All Hands", notifications[0].second)
+        assertEquals("a-5", notifications[1].first)
+        assertEquals("Eng Team Meeting", notifications[1].second)
+        assertEquals("Engineering", notifications[1].third)
+
+        // Duplicate suppression: replaying the delta feed does not duplicate notifications
+        repo.refreshHubAnnouncements()
+        assertEquals(2, notifications.size)
     }
 }
