@@ -38,6 +38,7 @@ public class DesktopNotificationManager(
     private val isWindowFocused: () -> Boolean = { true },
 ) {
     public var onBackgroundMessageReceived: ((conversationId: String) -> Unit)? = null
+    public var onBackgroundAnnouncementReceived: ((announcementId: String) -> Unit)? = null
 
     private var started = false
     private var transferJob: Job? = null
@@ -73,6 +74,9 @@ public class DesktopNotificationManager(
             handleJoinRequest(groupId, groupTitle, requesterName)
         }
         engine.onGroupOfferRefused = { _, groupName, message -> handleGroupOfferRefused(groupName, message) }
+        engine.onAnnouncementNotification = { announcementId, title, departmentName ->
+            handleAnnouncement(announcementId, title, departmentName)
+        }
 
         // Observe transfers when ready
         // OPT-O19-02: Filter activeTransfers emissions with distinctUntilChanged on lifecycle/notification fields.
@@ -128,6 +132,7 @@ public class DesktopNotificationManager(
         engine.onInboundAttachmentNotification = null
         engine.onJoinRequestNotification = null
         engine.onGroupOfferRefused = null
+        engine.onAnnouncementNotification = null
         transferJob?.cancel()
         transferJob = null
         callsJob?.cancel()
@@ -218,6 +223,19 @@ public class DesktopNotificationManager(
         if (isNotificationsEnabled()) {
             dispatchNotification(groupName.ifBlank { "Group" }, message, Notification.Type.Warning)
         }
+    }
+
+    /** Plan A3 §4.4 / HR7: Desktop system notification for eligible announcement. Strictly title-only. */
+    public fun handleAnnouncement(
+        announcementId: String,
+        title: String,
+        departmentName: String? = null,
+    ) {
+        if (!isNotificationsEnabled()) return
+        val notifTitle = if (departmentName.isNullOrBlank()) "New announcement" else "New announcement · $departmentName"
+        val notifBody = title.trim()
+        dispatchNotification(notifTitle, notifBody, Notification.Type.Info)
+        onBackgroundAnnouncementReceived?.invoke(announcementId)
     }
 
     public fun handleTransfersUpdate(transfers: List<com.transfer.flash.core.transfer.model.FlashTransfer>) {

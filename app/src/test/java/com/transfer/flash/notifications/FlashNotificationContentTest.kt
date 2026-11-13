@@ -249,6 +249,36 @@ class FlashNotificationContentTest {
             val transferId = FlashNotificationManager.notificationIdForTransfer(xferId)
             org.junit.Assert.assertTrue("Transfer ID $transferId must be in 3000..3999", transferId in 3000..3999)
             org.junit.Assert.assertFalse("Transfer ID $transferId must not collide with dedicated IDs", dedicatedIds.contains(transferId))
+
+            val annId = "test-ann-$i"
+            val announcementId = FlashNotificationManager.notificationIdForAnnouncement(annId)
+            org.junit.Assert.assertTrue("Announcement ID $announcementId must be in 4000..4999", announcementId in 4000..4999)
+            org.junit.Assert.assertFalse("Announcement ID $announcementId must not collide with dedicated IDs", dedicatedIds.contains(announcementId))
         }
+    }
+
+    @Test
+    fun `announcement notification content enforces title only lock screen confidentiality`() {
+        val companyWide = announcementNotificationContent(
+            title = "All-Hands Meeting on Friday",
+            departmentName = null,
+        )
+        assertEquals("New announcement", companyWide.title)
+        assertEquals("All-Hands Meeting on Friday", companyWide.body)
+
+        val deptScoped = announcementNotificationContent(
+            title = "Q4 Budget Review",
+            departmentName = "Finance",
+        )
+        assertEquals("New announcement · Finance", deptScoped.title)
+        assertEquals("Q4 Budget Review", deptScoped.body)
+
+        // Title is trimmed and never includes secrets or announcement body text
+        val trimmed = announcementNotificationContent(
+            title = "   System Maintenance Scheduled   ",
+            departmentName = "IT Operations",
+        )
+        assertEquals("New announcement · IT Operations", trimmed.title)
+        assertEquals("System Maintenance Scheduled", trimmed.body)
     }
 }

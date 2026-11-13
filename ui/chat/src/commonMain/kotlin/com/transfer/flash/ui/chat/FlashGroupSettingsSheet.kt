@@ -451,6 +451,16 @@ public fun FlashGroupSettingsSheet(
                         onToggleLinkToHub?.invoke(checked)
                     },
                 )
+
+                if (isLinkedToHub) {
+                    Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                    FlashText(
+                        text = "Confidentiality disclosure: Group messages are not sealed yet, so the hub can read messages it carries while relaying. Messages sent directly between devices on LAN stay private.",
+                        style = FlashTheme.typography.metadataDefault,
+                        color = FlashTheme.colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = FlashSpacing.space16),
+                    )
+                }
             }
         }
     }

@@ -896,7 +896,7 @@ private const val KEY_NOTIFICATIONS_BANNER_DISMISSED = "notifications_banner_dis
 
 /** UI-056: how long the system splash takes to fade into the Ink splash. */
 /** Intent extra with a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`); validated before use (UI-058 H9). */
-internal const val EXTRA_HUB_ROUTE: String = "com.transfer.flash.extra.HUB_ROUTE"
+internal const val EXTRA_HUB_ROUTE: String = FlashNotificationManager.EXTRA_HUB_ROUTE
 
 private const val SYSTEM_SPLASH_FADE_MS: Long = 200L
 
