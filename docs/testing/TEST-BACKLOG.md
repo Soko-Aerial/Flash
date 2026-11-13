@@ -8518,3 +8518,18 @@ Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`
   5. Open `FlashGroupSettingsSheet` & conversation banner and verify truthful E2EE status (`Group messages are end-to-end encrypted` or fail-closed pause notice when a legacy member is present).
 - **Pass:** Plaintext never reaches the Hub database; removed members cannot read post-removal messages; new/rejoined members cannot decrypt pre-join/gap epochs; Keystore/vault survival works across process kill and reboot.
 - **Status:** TODO (automated unit/integration/server opacity + mutation tests pass; physical device run owed).
+
+### HR11-ENV-01 — HUBREADY-01..05 live VPS/isolated host deployment + restore rehearsal
+- **Setup:** Disposable VPS or isolated container host running the assembled Hub server binary with TLS leaf certificates (`tlsMode=self` or proxy ACME), backup snapshot (`flash-hub.db` + `data.key`), and Chrome Admin Console session.
+- **Steps:**
+  1. Execute `HUBREADY-01..05` end-to-end through the real TLS proxy and Chrome Admin UI (`https://<host>/admin`).
+  2. Rehearse filesystem snapshot backup and restore with matching, missing, and wrong `data.key`, plus offline `keytool delegate` rotation and `keytool revoke` signer revocation with enrolled Android & Desktop clients reconnecting live.
+  3. Trigger simulated disk pressure, quarantine alert, and expiring delegation/TLS alerts on the disposable host and verify operator scrape of `/health/detail` and `/metrics` matches `docs/deploy/HUB-SERVER-DEPLOYMENT.md`.
+- **Pass:** Live VPS health/metrics/console/restore match automated isolated drills; enrolled Android & Desktop reconnect without data loss on matching restore; missing/wrong key blocks startup.
+- **Status:** TODO (automated JVM Ktor `testApplication` & restore drills pass; disposable VPS + Chrome console + real TLS cert run owed).
+
+### HR11-ENV-02 — Production-profile PERF-H03 pilot load benchmark with target fleet & coturn
+- **Setup:** Production-sized Hub host + target fleet (or multi-host load generator matching intended tenant concurrency, network RTT, TLS termination, and disposable coturn TURN relay).
+- **Steps:** Measure steady-state and burst WebSocket relay throughput, p50/p99 frame latency, SQLite WAL checkpoint size, mailbox drain rate, heap/RSS growth, and TURN relay bandwidth under the documented production deployment profile.
+- **Pass:** Meets target pilot capacity without sustained queue backlog, `WAL` stall, or critical alert breach.
+- **Status:** TODO (synthetic 50-session / 500-frame JVM host benchmark recorded in `logs/experiments.md`; real multi-host + TLS + coturn pilot soak owed).

@@ -1,5 +1,13 @@
 # Experiments Log
 
+## EXP-143 — HR11 PERF-H03 synthetic Hub relay & mailbox capacity benchmark (2026-11-13)
+
+- **Note:** **Synthetic in-process JVM benchmark, not physical devices or production VPS network.**
+- **Setup:** Windows 11 host JVM (OpenJDK 21, 64-bit), local loopback SQLite (`HikariPool` + WAL) + `RelayFrameRouter` + `RelayConnectionPool` in `OperationsAndRolloutDrillsTest.syntheticPerfH03CapacityAndLatencyBenchmark`, 50 registered devices (40 connected in-memory WebSocket sinks, 10 offline queued to `MailboxQueue`), 500 `RELAY_MESSAGE` frames.
+- **Measured:** `devices=50`, `messages=500`, `elapsedMs=738.4`, `throughput=677.2 msg/s`, `p50Us=722.3`, `p99Us=5008.3`, `mailboxQueued=200` (offline recipients persisted & AEAD-sealed via `HubDataKey`), `heapDeltaKb=-9786` (GC ran during test).
+- **Not measured:** TLS handshake CPU under concurrent physical clients, cross-WAN latency/jitter, coturn TURN bandwidth, multi-hour WAL checkpoint growth, or multi-core Linux container saturation. Tracked in `docs/testing/TEST-BACKLOG.md` (`HR11-ENV-02`).
+- **Status:** synthetic host baseline passed; real fleet & coturn pilot benchmark owed.
+
 ## EXP-142 — 2.2.0 debug direct transfer, 512 MB with pause/resume (2026-11-08)
 
 - **Setup:** Infinix X6882B (Android 14, API 34) → Samsung SM-G986U1 (Android 13, API 33), both on
