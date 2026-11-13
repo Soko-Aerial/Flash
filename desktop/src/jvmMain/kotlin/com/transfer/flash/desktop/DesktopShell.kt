@@ -720,6 +720,15 @@ public fun DesktopShell(
                 fallback?.transport ?: base.header.transport
             }
             val isColleaguePeer = base.header.isColleague || (fallback?.isColleague == true)
+            val offLanCallReady = engine.enterpriseHub?.let { hub ->
+                val cfg = hub.callIceConfig.value
+                hub.relay.state.value.canSend &&
+                    cfg != null &&
+                    cfg.offLanCallingSupported &&
+                    cfg.iceServers.isNotEmpty()
+            } == true
+            val canShowCallActions = base.header.showCallActions &&
+                (isDirectPeerOnline || (!isColleaguePeer && resolvedTransport != FlashNetworkTransport.Relay) || offLanCallReady)
             val header = base.header.copy(
                 title = resolvedTitle,
                 avatarInitials = resolvedInitials,
@@ -729,7 +738,7 @@ public fun DesktopShell(
                 transport = resolvedTransport,
                 typingMemberNames = base.header.typingMemberNames,
                 isEncrypted = isEncrypted,
-                showCallActions = true,
+                showCallActions = canShowCallActions,
                 isColleague = isColleaguePeer,
                 orgName = base.header.orgName ?: fallback?.orgName,
             )

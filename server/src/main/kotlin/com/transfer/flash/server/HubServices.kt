@@ -25,6 +25,8 @@ import com.transfer.flash.server.auth.HubApiGate
 import com.transfer.flash.server.auth.HubKeyStore
 import com.transfer.flash.server.auth.HubRateLimits
 import com.transfer.flash.server.auth.RevocationSigner
+import com.transfer.flash.server.relay.CallIceService
+import com.transfer.flash.server.relay.callConfigRoutes
 import com.transfer.flash.server.auth.SqliteRevocationService
 import com.transfer.flash.server.auth.TrustedProxies
 import com.transfer.flash.server.auth.authRoutes
@@ -454,6 +456,20 @@ class HubServices private constructor(
                         clock = clock,
                     )
                     approvalRoutes(stepUp = stepUp, principalResolver = resolver, limits = limits, audit = audit)
+                    val callIce = CallIceService(
+                        stunUrls = config.stunUrls,
+                        turnUrls = config.turnUrls,
+                        turnSharedSecret = config.turnSharedSecret,
+                        ttlSeconds = config.callIceTtlSeconds,
+                        mediaPolicy = config.callMediaPolicy,
+                        clockMs = clock,
+                    )
+                    callConfigRoutes(
+                        iceService = callIce,
+                        principalResolver = resolver,
+                        revocations = revService ?: com.transfer.flash.server.auth.RevocationService.None,
+                        limits = limits,
+                    )
                     if (authService != null && enrollService != null) {
                         authRoutes(
                             challengeAuth = authService,
@@ -469,6 +485,7 @@ class HubServices private constructor(
                             clock = clock,
                             principalResolver = resolver,
                             maxFileBytes = { FileSettings.maxFileBytes(admins::getSetting) },
+                            offLanCallingSupported = { callIce.isSupported },
                         )
                     }
                 },

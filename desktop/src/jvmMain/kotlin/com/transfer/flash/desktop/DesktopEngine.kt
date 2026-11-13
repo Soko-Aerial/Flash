@@ -321,6 +321,7 @@ public class DesktopEngine(
 
     @Volatile
     private var orgSnapshotCoordinatorRef: com.transfer.flash.core.enterprise.OrgSnapshotCoordinator? = null
+    private val offLanCallSignalSeq = java.util.concurrent.atomic.AtomicLong(0L)
 
     /** Pull-to-refresh and Hub tab opening: ask for a directory sync (honours the 60 s minimum unless [force]). */
     public fun requestOrgSync(reason: String, force: Boolean = false) {
@@ -1580,6 +1581,20 @@ public class DesktopEngine(
             val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
                 orgPeerResolver.onRevocationsChanged()
                 hubRosterChat?.refreshHubGroupRosters()
+                val currentList = hubRevocations.current()
+                val revokedIds = currentList?.revokedDeviceIds.orEmpty()
+                val activePeerId = callsImpl?.activeCall?.value?.peerId
+                val activePeerRevoked = activePeerId != null &&
+                    (currentList?.revokesDevice(activePeerId) == true || !hubRevocations.permitsOrg())
+                if (revokedIds.isNotEmpty() || activePeerRevoked) {
+                    scope.launch {
+                        val c = callsImpl as? CallCoordinator ?: return@launch
+                        revokedIds.forEach { c.terminateCallsForRevokedPeer(it) }
+                        if (activePeerId != null && activePeerRevoked) {
+                            c.terminateCallsForRevokedPeer(activePeerId)
+                        }
+                    }
+                }
             })
             val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
                 dao = db.orgDirectoryDao(),
@@ -1831,6 +1846,13 @@ public class DesktopEngine(
                 hubSealing = hubSealingPort,
                 radioPort = radioPort,
                 hubFileDao = db.hubFileDao(),
+                offLanCallSupported = {
+                    val cfg = hub.callIceConfig.value
+                    hub.relay.state.value.canSend &&
+                        cfg != null &&
+                        cfg.offLanCallingSupported &&
+                        cfg.iceServers.isNotEmpty()
+                },
             )
             hubRosterChat = chatImpl
             // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub; the engine keeps its
@@ -1945,6 +1967,7 @@ public class DesktopEngine(
             // G2: Ethernet or the Wi-Fi band, cached (netsh is a process spawn) and never blocking.
             networkBand = DesktopNetworkBand(scope).also { it.start() }::current,
             sendFrame = { frame, peerId -> sendCallFrame(network, peerId, frame) },
+            iceConfigProvider = { peerId -> resolveIceConfigForPeer(network.activeSessions.value.containsKey(FlashDeviceId(peerId))) },
             // Every terminated call becomes a row in the peer's thread (UI-050), mirroring the
             // app host. Each side writes its own row — no wire frame involved. Fires on
             // whichever thread ended the call, so this only logs + launches into the repo.
@@ -1966,6 +1989,25 @@ public class DesktopEngine(
             },
         )
         boot("call coordinator built")
+        enterpriseHubRef?.let { activeHub ->
+            scope.launch {
+                activeHub.relay.callSignals.collect { signal ->
+                    val coordinator = callsImpl as? CallCoordinator ?: return@collect
+                    coordinator.onInboundOffLanSignal(
+                        com.transfer.flash.core.calling.InboundOffLanCallSignal(
+                            signalId = signal.signalId,
+                            callId = signal.callId,
+                            fromPeerId = signal.from,
+                            seq = signal.seq,
+                            issuedAtMs = signal.issuedAt,
+                            ttlMs = signal.ttlMs,
+                            payloadText = signal.payload,
+                            senderCapabilities = signal.capabilities.toSet(),
+                        ),
+                    )
+                }
+            }
+        }
 
         // PTT (ADR-032, ADR-058): built via attachPtt over this host's transport. Every
         // transport access is a lazy lambda, so it does not matter that sessions come and go after this point.
@@ -2563,11 +2605,33 @@ public class DesktopEngine(
     private fun peerIdFor(transferId: String): String =
         transferImpl?.activeTransfers?.value?.firstOrNull { it.id.value == transferId }?.peerDeviceId.orEmpty()
 
+    private fun resolveIceConfigForPeer(
+        hasLanSession: Boolean,
+    ): Pair<List<com.shepeliev.webrtckmp.IceServer>, com.shepeliev.webrtckmp.IceTransportPolicy> {
+        if (hasLanSession) {
+            return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+        }
+        val cfg = enterpriseHubRef?.callIceConfig?.value
+            ?: return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+        val servers = cfg.iceServers.map { server ->
+            com.transfer.flash.core.calling.CallIceServerSpec(
+                urls = server.urls,
+                username = server.username ?: "",
+                credential = server.credential ?: "",
+            ).toWebRtcIceServer()
+        }
+        val policy = when (cfg.mediaPolicy.uppercase()) {
+            "RELAY_ONLY" -> com.shepeliev.webrtckmp.IceTransportPolicy.Relay
+            else -> com.shepeliev.webrtckmp.IceTransportPolicy.All
+        }
+        return servers to policy
+    }
+
     /**
      * Outbound call signaling frame → text, mirroring the app host. An invite races session
      * establishment (the user taps Call on a discovered peer whose session is still coming
      * up), so invites wait up to 2 s for the session the way the holder does; anything else
-     * sends only on a live session. Blocking `sendTextAsync`, like the host.
+     * sends on a live LAN session first and falls back to authenticated Hub off-LAN signaling when configured.
      */
     private suspend fun sendCallFrame(
         network: JvmWsFlashNetwork,
@@ -2589,6 +2653,25 @@ public class DesktopEngine(
             session.connection.sendTextAsync(encoded)
             FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
             return true
+        }
+        val hub = enterpriseHubRef
+        val iceCfg = hub?.callIceConfig?.value
+        if (hub != null && hub.relay.state.value.canSend && iceCfg != null && iceCfg.offLanCallingSupported) {
+            val sent = hub.relay.sendCallSignal(
+                com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(
+                    to = peerId,
+                    from = identity.deviceId.value,
+                    callId = frame.callId,
+                    signalId = com.transfer.flash.core.common.id.UuidIdGenerator.newId(),
+                    seq = offLanCallSignalSeq.incrementAndGet(),
+                    issuedAt = com.transfer.flash.core.common.time.SystemTimeSource.nowMs(),
+                    ttlMs = com.transfer.flash.core.hubprotocol.HubContract.CALL_SIGNAL_DEFAULT_TTL_MS,
+                    payload = encoded,
+                    capabilities = listOf(com.transfer.flash.core.hubprotocol.HubContract.FEATURE_HUB_CALLING),
+                ),
+            )
+            FlashLog.i(TAG_WS, "Call sendFrame via Hub off-LAN action=${frame.javaClass.simpleName} peer=$peerId sent=$sent")
+            return sent
         }
         FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
         return false

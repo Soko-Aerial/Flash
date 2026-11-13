@@ -65,6 +65,16 @@ public data class ServerConfig(
     /** Refuse the first delegation unless [rootFingerprint] is set: no trust on first use of whatever file appears (REV-16). */
     val requireRootPin: Boolean = false,
     val managementToken: String? = null,
+    /** HR9: Optional STUN server URLs advertised for off-LAN calling (e.g. `stun:stun.example:3478`). */
+    val stunUrls: List<String> = emptyList(),
+    /** HR9: Optional TURN relay URLs advertised for off-LAN calling (e.g. `turns:turn.example:5349`). */
+    val turnUrls: List<String> = emptyList(),
+    /** HR9: Shared HMAC-SHA1 secret matching coturn `--use-auth-secret` for ephemeral credentials. Never logged or sent. */
+    val turnSharedSecret: String? = null,
+    /** HR9: Validity lifetime (seconds) for minted ephemeral TURN credentials. */
+    val callIceTtlSeconds: Long = DEFAULT_CALL_ICE_TTL_SECONDS,
+    /** HR9: Off-LAN media policy: `DIRECT_PREFERRED_RELAY_FALLBACK`, `RELAY_ONLY`, or `DIRECT_ONLY`. */
+    val callMediaPolicy: String = DEFAULT_CALL_MEDIA_POLICY,
 ) {
 
     init {
@@ -146,6 +156,8 @@ public data class ServerConfig(
         public const val DEFAULT_DEVICE_CERT_VALIDITY_DAYS: Int = 30
         public const val MIN_DEVICE_CERT_VALIDITY_DAYS: Int = 1
         public const val MAX_DEVICE_CERT_VALIDITY_DAYS: Int = 365
+        public const val DEFAULT_CALL_ICE_TTL_SECONDS: Long = 3600L
+        public const val DEFAULT_CALL_MEDIA_POLICY: String = "DIRECT_PREFERRED_RELAY_FALLBACK"
 
         public const val TLS_PROXY: String = "proxy"
         public const val TLS_SELF: String = "self"
@@ -229,6 +241,13 @@ public data class ServerConfig(
                 },
                 rootFingerprint = text("root-fingerprint", "rootFingerprint", envName = "FLASH_ROOT_FINGERPRINT"),
                 requireRootPin = text("require-root-pin", "requireRootPin", envName = "FLASH_REQUIRE_ROOT_PIN")?.equals("true", ignoreCase = true) == true,
+                stunUrls = (text("stun-urls", "stunUrls", envName = "FLASH_STUN_URLS") ?: "")
+                    .split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                turnUrls = (text("turn-urls", "turnUrls", envName = "FLASH_TURN_URLS") ?: "")
+                    .split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                turnSharedSecret = text("turn-secret", "turnSecret", envName = "FLASH_TURN_SECRET")?.takeIf { it.isNotBlank() },
+                callIceTtlSeconds = long("call-ice-ttl-seconds", "callIceTtlSeconds", envName = "FLASH_CALL_ICE_TTL_SECONDS", default = DEFAULT_CALL_ICE_TTL_SECONDS),
+                callMediaPolicy = text("call-media-policy", "callMediaPolicy", envName = "FLASH_CALL_MEDIA_POLICY")?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: DEFAULT_CALL_MEDIA_POLICY,
             )
         }
 

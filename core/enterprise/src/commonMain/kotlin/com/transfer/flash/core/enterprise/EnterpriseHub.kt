@@ -11,6 +11,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite
+import com.transfer.flash.core.hubprotocol.rest.HubIceConfigDto
 import com.transfer.flash.core.enterprise.announcements.HubAnnouncementsApi
 import com.transfer.flash.core.enterprise.announcements.RealHubAnnouncementsApi
 import com.transfer.flash.core.enterprise.relay.FlashRelayClient
@@ -176,6 +177,17 @@ public class EnterpriseHub(
     private var jobs: List<Job> = emptyList()
 
     private val hubOnline = MutableStateFlow<Set<String>>(emptySet())
+    private val _callIceConfig = MutableStateFlow<HubIceConfigDto?>(null)
+
+    /** HR9: Last Hub-provided STUN/TURN configuration fetched for off-LAN calling (null when unconfigured or offline). */
+    public val callIceConfig: StateFlow<HubIceConfigDto?> = _callIceConfig.asStateFlow()
+
+    /** HR9: Refreshes [callIceConfig] from `/api/v1/calls/ice-config`. */
+    public suspend fun refreshCallIceConfig(): HubIceConfigDto? {
+        val fetched = runSuspendCatching { session.fetchCallIceConfig() }.getOrNull()
+        _callIceConfig.value = fetched
+        return fetched
+    }
 
     /**
      * Device ids the hub reports as **online** for the listing this device may see — i.e. colleagues that currently hold
@@ -217,8 +229,19 @@ public class EnterpriseHub(
             }
         }
         val sealingJob = sealingKeys?.let { keys -> scope.launch { keepSealingKeyPublished(keys) } }
+        val iceJob = scope.launch {
+            combine(trustStore.credentials, relay.state.map { it.canSend }.distinctUntilChanged()) { creds, canSend ->
+                creds != null && canSend
+            }.distinctUntilChanged().collect { ready ->
+                if (ready) {
+                    refreshCallIceConfig()
+                } else {
+                    _callIceConfig.value = null
+                }
+            }
+        }
         val presenceJob = if (hubPresencePollMs > 0) scope.launch { pollHubPresence() } else null
-        jobs = listOfNotNull(credentialJob, statusJob, revokeJob, tickJob, sealingJob, presenceJob)
+        jobs = listOfNotNull(credentialJob, statusJob, revokeJob, tickJob, sealingJob, iceJob, presenceJob)
     }
 
     /**
@@ -283,6 +306,7 @@ public class EnterpriseHub(
         if (creds == null) {
             addressRefused.value = false
             hubOnline.value = emptySet()
+            _callIceConfig.value = null
             relay.stop()
             return
         }

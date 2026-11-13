@@ -446,6 +446,8 @@ public class RealFlashChatRepository(
         title: String,
         departmentName: String?,
     ) -> Unit = { _, _, _ -> },
+    /** HR9: whether off-LAN Hub-relayed calling (ICE config + connected relay) is supported right now. */
+    private val offLanCallSupported: () -> Boolean = { true },
 ) : FlashChatRepository, AutoCloseable {
 
     public var onNewAnnouncementNotificationHook: ((String, String, String?) -> Unit)? = null
@@ -1978,6 +1980,11 @@ public class RealFlashChatRepository(
         // dedicated file route is unavailable too.
         val radioOnlyForAttachments = link.presence == FlashPeerPresence.RadioOnly &&
             hubFileRoute(conversationId) != HubFileRoute.READY
+        val canShowCallActions = when {
+            link.transport == FlashNetworkTransport.Lan -> true
+            link.transport == FlashNetworkTransport.Relay || isColleaguePeer -> offLanCallSupported()
+            else -> true
+        }
         return FlashConversationUiState(
             header = FlashChatHeaderUiState(
                 title = title,
@@ -1986,6 +1993,7 @@ public class RealFlashChatRepository(
                 transport = link.transport,
                 typingMemberNames = link.typingNames,
                 isEncrypted = isChannelEncrypted(conversationId),
+                showCallActions = canShowCallActions,
                 isColleague = isColleaguePeer,
                 orgName = orgName,
             ),
