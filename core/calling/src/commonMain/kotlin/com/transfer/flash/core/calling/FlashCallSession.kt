@@ -3,6 +3,8 @@ package com.transfer.flash.core.calling
 import com.shepeliev.webrtckmp.AudioStreamTrack
 import com.shepeliev.webrtckmp.BundlePolicy
 import com.shepeliev.webrtckmp.IceCandidate
+import com.shepeliev.webrtckmp.IceServer
+import com.shepeliev.webrtckmp.IceTransportPolicy
 import com.shepeliev.webrtckmp.MediaDevices
 import com.shepeliev.webrtckmp.MediaStream
 import com.shepeliev.webrtckmp.MediaStreamTrackKind
@@ -152,6 +154,9 @@ public class FlashCallSession(
     private val screenCapture: ScreenCaptureProvider = defaultScreenCaptureProvider(),
     /** The wall clock the screen-share rules read (the start counter and the first-frame watchdog); a test drives it. */
     private val shareNowMs: () -> Long = { SystemTimeSource.nowMs() },
+    /** HR9: ICE servers + transport policy for off-LAN calls (default empty = host/LAN candidates only). */
+    private val iceServers: List<IceServer> = emptyList(),
+    private val iceTransportPolicy: IceTransportPolicy = IceTransportPolicy.All,
 ) : FlashCallMedia {
     private val _state = MutableStateFlow(
         FlashCallUiState(
@@ -1498,7 +1503,8 @@ public class FlashCallSession(
             stream.videoTracks.firstOrNull()?.let { watchLocalCamera(it) }
             val pc = PeerConnection(
                 RtcConfiguration(
-                    iceServers = emptyList(), // LAN-only: host candidates (ADR-025).
+                    iceServers = iceServers,
+                    iceTransportPolicy = iceTransportPolicy,
                     // Both endpoints are Flash, so bundling is a foregone conclusion —
                     // demanding it up front means ONE ICE check list and ONE DTLS
                     // handshake for audio+video instead of two of each.

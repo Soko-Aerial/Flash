@@ -271,6 +271,7 @@ object DiscoveryEngineHolder {
     /** The one object for everything about the organisation hub (ADR-120); null while the engine is stopped. */
     @Volatile
     private var enterpriseHubRef: EnterpriseHub? = null
+    private val offLanCallSignalSeq = java.util.concurrent.atomic.AtomicLong(0L)
 
     /** User opt-in to let the hub carry readable chat content (ADR-121). Default OFF; stored in SharedPreferences. */
     private val hubContentViaHubFlag = kotlinx.coroutines.flow.MutableStateFlow(false)
@@ -1336,6 +1337,20 @@ object DiscoveryEngineHolder {
         val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
             orgPeerResolver.onRevocationsChanged()
             hubRosterChat?.refreshHubGroupRosters()
+            val currentList = hubRevocations.current()
+            val revokedIds = currentList?.revokedDeviceIds.orEmpty()
+            val activePeerId = calling?.activeCall?.value?.peerId
+            val activePeerRevoked = activePeerId != null &&
+                (currentList?.revokesDevice(activePeerId) == true || !hubRevocations.permitsOrg())
+            if (revokedIds.isNotEmpty() || activePeerRevoked) {
+                appScope.launch {
+                    val coordinator = calling as? CallCoordinator ?: return@launch
+                    revokedIds.forEach { coordinator.terminateCallsForRevokedPeer(it) }
+                    if (activePeerId != null && activePeerRevoked) {
+                        coordinator.terminateCallsForRevokedPeer(activePeerId)
+                    }
+                }
+            }
         })
         val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
             dao = db.orgDirectoryDao(),
@@ -1638,6 +1653,13 @@ object DiscoveryEngineHolder {
             hubSealing = hubSealingPort,
             radioPort = radioPort,
             hubFileDao = db.hubFileDao(),
+            offLanCallSupported = {
+                val cfg = hub.callIceConfig.value
+                hub.relay.state.value.canSend &&
+                    cfg != null &&
+                    cfg.offLanCallingSupported &&
+                    cfg.iceServers.isNotEmpty()
+            },
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             FlashNotificationManager.showJoinRequest(
@@ -1787,8 +1809,31 @@ object DiscoveryEngineHolder {
                 trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
                     ?: engine.discoveredEndpoints.value.firstOrNull { it.deviceId.value == peerId }?.friendlyName
             },
-            // G2: Ethernet or the connected Wi-Fi band, exchanged in group call announcements.
+            // G2: Ethernet or the connected Wi-Fi band, cached by AndroidNetworkBand.
             networkBand = { AndroidNetworkBand.read(appContext) },
+            iceConfigProvider = { peerId ->
+                if (networkImpl.activeSessions.value.containsKey(FlashDeviceId(peerId))) {
+                    emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+                } else {
+                    val cfg = hub.callIceConfig.value
+                    if (cfg == null) {
+                        emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+                    } else {
+                        val servers = cfg.iceServers.map { s ->
+                            com.transfer.flash.core.calling.CallIceServerSpec(
+                                urls = s.urls,
+                                username = s.username ?: "",
+                                credential = s.credential ?: "",
+                            ).toWebRtcIceServer()
+                        }
+                        val policy = when (cfg.mediaPolicy.uppercase()) {
+                            "RELAY_ONLY" -> com.shepeliev.webrtckmp.IceTransportPolicy.Relay
+                            else -> com.shepeliev.webrtckmp.IceTransportPolicy.All
+                        }
+                        servers to policy
+                    }
+                }
+            },
             sendFrame = { frame, peerId ->
                 val encoded = CallFrameCodec.encode(frame)
                 var session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
@@ -1807,8 +1852,27 @@ object DiscoveryEngineHolder {
                     Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
                     true
                 } else {
-                    Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
-                    false
+                    val iceCfg = hub.callIceConfig.value
+                    if (hub.relay.state.value.canSend && iceCfg != null && iceCfg.offLanCallingSupported) {
+                        val sent = hub.relay.sendCallSignal(
+                            com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(
+                                to = peerId,
+                                from = identity.deviceId.value,
+                                callId = frame.callId,
+                                signalId = com.transfer.flash.core.common.id.UuidIdGenerator.newId(),
+                                seq = offLanCallSignalSeq.incrementAndGet(),
+                                issuedAt = com.transfer.flash.core.common.time.SystemTimeSource.nowMs(),
+                                ttlMs = com.transfer.flash.core.hubprotocol.HubContract.CALL_SIGNAL_DEFAULT_TTL_MS,
+                                payload = encoded,
+                                capabilities = listOf(com.transfer.flash.core.hubprotocol.HubContract.FEATURE_HUB_CALLING),
+                            ),
+                        )
+                        Log.i(TAG_WS, "Call sendFrame via Hub off-LAN action=${frame.javaClass.simpleName} peer=$peerId sent=$sent")
+                        sent
+                    } else {
+                        Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
+                        false
+                    }
                 }
             },
             // Every terminated call becomes a row in the peer's thread (UI-050). No wire frame is
@@ -2180,6 +2244,22 @@ object DiscoveryEngineHolder {
             }
         }
         this.calling = callCoordinator
+        appScope.launch {
+            hub.relay.callSignals.collect { signal ->
+                callCoordinator.onInboundOffLanSignal(
+                    com.transfer.flash.core.calling.InboundOffLanCallSignal(
+                        signalId = signal.signalId,
+                        callId = signal.callId,
+                        fromPeerId = signal.from,
+                        seq = signal.seq,
+                        issuedAtMs = signal.issuedAt,
+                        ttlMs = signal.ttlMs,
+                        payloadText = signal.payload,
+                        senderCapabilities = signal.capabilities.toSet(),
+                    ),
+                )
+            }
+        }
         // PTT voice session (ADR-032 Phase 1): all transport access is lazy lambdas over
         // holder fields, so construction order within this function does not matter.
         val ptt = PttSessionEngine(

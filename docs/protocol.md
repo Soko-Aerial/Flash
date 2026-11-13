@@ -1886,3 +1886,15 @@ delegation cutoffs. The signed list is saved atomically before it changes trust.
 directory lease. The LAN directory carries statement serials rather than the remote device's current certificate
 serial. Device-ID and delegation revocations apply remotely and certificate-serial revocations apply to the local
 enrolment credential. No manual pairing pin is changed.
+
+## Off-LAN Voice and Video Calling (HR9)
+
+- **Capability advertising:** `GET /api/v1/hub` (`HubInfo`) exposes `offLanCallingSupported: Boolean` (`true` only when the Hub has STUN or TURN URLs configured and is ready to mint ICE config). Clients show off-LAN call controls only when `offLanCallingSupported` is true, ICE servers are available, and the relay WebSocket is connected; LAN call controls continue to rely on direct LAN session availability.
+- **Short-lived ICE config:** `GET /api/v1/calls/ice-config` (device bearer, revocation-enforced, rate-limited) returns `HubIceConfigDto{mediaPolicy, ttlSeconds, issuedAt, expiresAt, servers: [HubIceServerDto]}`. When `FLASH_TURN_SECRET` is configured, each `turn:`/`turns:` entry receives RFC 5766 HMAC-SHA1 time-limited credentials (`username = "<expiryEpochSec>:<deviceId>"`, `credential = Base64(HMAC-SHA1(secret, username))`).
+- **Ephemeral relay frame `FLASH_CALL_SIGNAL` (`RelayFrame.CallSignal`):**
+  Fields: `to`, `from` (stamped by Hub from the authenticated device ID, never caller-trusted), `callId`, `signalId`, `seq` (monotonic per sender per call), `issuedAt` (Unix ms), `ttlMs` (`1..60_000`), `payload` (existing `FLASH_CALL` SDP/ICE/state frame), `capabilities` (optional set).
+  **Routing & security rules:**
+  1. Never stored in the offline mailbox. If the recipient has no live authenticated relay connection, the Hub answers immediately with `ERR_NOT_FOUND` (offline undeliverable).
+  2. Revoked senders or recipients, expired TTLs (`now - issuedAt > ttlMs`), and >30 s future skew are rejected (`ERR_REVOKED`, `ERR_EXPIRED`, `ERR_BAD_REQUEST`).
+  3. Receivers enforce `OffLanCallSignalGuard`: per-call `signalId` replay rejection, per-sender monotonic `seq`, terminal call locking (`hangup`/`decline`/`ended`), and immediate teardown (`terminateCallsForRevokedPeer`) on peer revocation.
+  4. Background / platform note: because off-LAN call signals are strictly ephemeral live WebSocket frames (no APNs/FCM push wake-up bridge yet), receiving an incoming off-LAN call requires the Flash foreground/background service or desktop app to hold an active relay session. Externally managed push wake-up remains a separate owner decision.

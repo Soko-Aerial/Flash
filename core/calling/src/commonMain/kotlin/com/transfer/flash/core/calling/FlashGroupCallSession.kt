@@ -5,6 +5,8 @@ package com.transfer.flash.core.calling
 import com.shepeliev.webrtckmp.AudioStreamTrack
 import com.shepeliev.webrtckmp.BundlePolicy
 import com.shepeliev.webrtckmp.IceCandidate
+import com.shepeliev.webrtckmp.IceServer
+import com.shepeliev.webrtckmp.IceTransportPolicy
 import com.shepeliev.webrtckmp.MediaDevices
 import com.shepeliev.webrtckmp.onEnded
 import com.shepeliev.webrtckmp.MediaStream
@@ -122,6 +124,9 @@ public class FlashGroupCallSession(
     private val nowMs: () -> Long = { SystemTimeSource.nowMs() },
     /** ADR-102: what this device presents with. The default is the platform's capturer (desktop only today). */
     private val screenCapture: ScreenCaptureProvider = defaultScreenCaptureProvider(),
+    /** HR9: ICE servers + transport policy for off-LAN group calls (default empty = host/LAN candidates only). */
+    private val iceServers: List<IceServer> = emptyList(),
+    private val iceTransportPolicy: IceTransportPolicy = IceTransportPolicy.All,
 ) : FlashCallMedia {
 
     private fun resolveName(peerId: String, fallback: String? = null): String {
@@ -1172,7 +1177,8 @@ public class FlashGroupCallSession(
         // below are pinned at launch so no leg continuation escapes the media thread.
         val pc = PeerConnection(
             RtcConfiguration(
-                iceServers = emptyList(),
+                iceServers = iceServers,
+                iceTransportPolicy = iceTransportPolicy,
                 bundlePolicy = BundlePolicy.MaxBundle,
                 rtcpMuxPolicy = RtcpMuxPolicy.Require,
                 iceCandidatePoolSize = 1,

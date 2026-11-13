@@ -8477,3 +8477,33 @@ Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`
   - Search auto-focuses, offers Clear (`X`), shows empty state instead of blank screen when empty, and keeps 2-row `FlashChatSearchBar` + drawer toggle clickable at 360 dp.
   - Group member sheets cap list height (`<= 280 dp`), offer `"Find devices"` when empty, scroll all `eligibleSuccessors` in Leave dialog, move per-member actions into `More` with confirmation on Promote/Demote, step max members cleanly (`2 ↔ 5 ↔ 10 ↔ 15 ↔ 20`) with `48 dp` buttons and plain-language labels, and use distinct icons (`Copy`, `Connection`, `Forward`).
 - **Status:** TODO
+
+### HR6-DEV-01 / ORGT-14 — Secure device replacement on Android + Desktop against live Hub
+- **Setup:** Isolated test Hub, Android phone, and Desktop client enrolled in the Hub, plus console operator access.
+- **Steps:** Issue a scoped replacement grant for the lost phone binding, redeem on a fresh Android install, verify old binding + active sessions are rejected across Hub restart and LAN revocation sync, and repeat with Desktop replacement.
+- **Pass:** Replacement succeeds with explicit department/group selection and quota checks; old/stolen credentials fail across both Hub and LAN; audit log records old -> new binding without secrets.
+- **Status:** TODO (automated unit/server tests pass; physical device + isolated live Hub run owed).
+
+### HR7-DEV-01 — Title-only announcement notifications + cold start tap on Android & Desktop
+- **Setup:** Physical Android phone (Notification permission granted and denied runs) + Windows Desktop enrolled in isolated Hub.
+- **Steps:** Publish announcement via Hub console while target Android app is killed/cold, receive announcement catch-up, inspect notification shade, tap notification, and verify author/mute suppression + Desktop activation.
+- **Pass:** Title-only notification appears (`ANN-01`/`ANN-10`/`ANN-11`/`HUBT-12` + cold start opens announcement); author suppression and mute silence notifications while feed remains readable; background OS constraints measured and matching docs.
+- **Status:** TODO (automated tests pass; physical device cold-start & Android permission/mute verification owed).
+
+### HR8-DEV-01 — Cross-route LAN <-> Hub large-file transfer continuity on physical devices
+- **Setup:** Android phone + Desktop sharing a large (>100 MB) file on LAN, toggling Wi-Fi off mid-transfer (forcing Hub resume) and on again in reverse direction.
+- **Steps:** Interrupt LAN transfer partway through, allow Hub continuation, repeat starting on Hub and finishing over LAN, verify final output file hash.
+- **Pass:** One logical transfer row, one completion row, one published file copy, byte-exact SHA-256 match across LAN -> Hub and Hub -> LAN.
+- **Status:** TODO (automated unit/integration tests pass; physical multi-hundred-MB phone <-> Desktop run owed).
+
+### HR9-DEV-01 — Off-LAN 1:1 and group voice/video calling across two independent networks + TURN relay
+- **Setup:** Android phone (cellular / separate AP) and Windows Desktop (home LAN) enrolled in isolated Hub configured with `FLASH_CALL_STUN_URLS`, `FLASH_CALL_TURN_URLS`, and `FLASH_CALL_TURN_SECRET` pointing at a disposable coturn instance (`RELAY_ONLY` and fallback runs).
+- **Steps:** Place outgoing and incoming audio and video calls from Android -> Desktop and Desktop -> Android; verify accept, decline, cancel, hang-up, direct candidate attempt, TURN relay fallback, bidirectional media playback, and existing LAN call path.
+- **Pass:** Audio and video both flow clearly on direct and relayed paths; late/replayed/revoked signaling is ignored; LAN calls still work with Hub disconnected.
+- **Status:** TODO (automated server + client + native `webrtc-java` smoke tests pass; two-network physical device + coturn run owed).
+
+### HR9-DEV-02 — Android background / Doze off-LAN call signaling measurement
+- **Setup:** Physical Android phone enrolled in isolated Hub, screen off for 5 minutes and in light Doze while app backgrounded with foreground sync vs standard idle.
+- **Steps:** Trigger `FLASH_CALL_SIGNAL` invite from Desktop to Android and record delivery latency / OS socket drop rate.
+- **Pass:** Observed background/Doze reachability matches the disclosure in `docs/protocol.md` (and documents whether foreground relay or OS push wake-up is required).
+- **Status:** TODO

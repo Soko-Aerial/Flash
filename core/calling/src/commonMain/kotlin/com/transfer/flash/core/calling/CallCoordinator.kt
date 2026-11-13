@@ -2,6 +2,8 @@
 
 package com.transfer.flash.core.calling
 
+import com.shepeliev.webrtckmp.IceServer
+import com.shepeliev.webrtckmp.IceTransportPolicy
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallLogEntry
@@ -142,6 +144,12 @@ public class CallCoordinator(
     private val peerFeatures: (peerId: String) -> Set<String> = { emptySet() },
     /** ADR-102: what a session presents the screen with. The default is the platform's capturer (desktop only today). */
     private val screenCapture: ScreenCaptureProvider = defaultScreenCaptureProvider(),
+    /** HR9: resolves ICE servers and transport policy for off-LAN/relayed calls (empty = host/LAN candidates). */
+    private val iceConfigProvider: (peerId: String) -> Pair<List<IceServer>, IceTransportPolicy> = {
+        emptyList<IceServer>() to IceTransportPolicy.All
+    },
+    /** HR9: stateful guard for Hub-relayed ephemeral signaling (TTL, replay, sequence, terminal calls, revocations). */
+    private val offLanSignalGuard: OffLanCallSignalGuard = OffLanCallSignalGuard(),
 ) : FlashCalling {
     /** When each refusal line (see [logRefusal]) was last written. */
     private val refusalLoggedAt = SyncMap<String, Long>()
@@ -259,6 +267,7 @@ public class CallCoordinator(
 
         warmRosterNames(groupId)
         val callId = com.transfer.flash.core.common.id.UuidIdGenerator.newId()
+        val (iceServers, icePolicy) = iceConfigProvider(groupId)
         val session = FlashGroupCallSession(
             callId = callId,
             groupId = groupId,
@@ -277,6 +286,8 @@ public class CallCoordinator(
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
             screenCapture = screenCapture,
+            iceServers = iceServers,
+            iceTransportPolicy = icePolicy,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -302,6 +313,7 @@ public class CallCoordinator(
         val groupName = groupCallUi?.groupName ?: "Group Call"
         warmRosterNames(groupId)
 
+        val (iceServers, icePolicy) = iceConfigProvider(groupId)
         val session = FlashGroupCallSession(
             callId = callId,
             groupId = groupId,
@@ -320,6 +332,8 @@ public class CallCoordinator(
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
             screenCapture = screenCapture,
+            iceServers = iceServers,
+            iceTransportPolicy = icePolicy,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -475,6 +489,34 @@ public class CallCoordinator(
         return false
     }
 
+    /**
+     * HR9: Validates a Hub-relayed ephemeral [InboundOffLanCallSignal] against TTL, clock skew, replay/sequence
+     * rules, revocation state, and terminal-call locks before forwarding its wrapped `FLASH_CALL` payload.
+     */
+    public suspend fun onInboundOffLanSignal(
+        signal: InboundOffLanCallSignal,
+        nowMs: Long = SystemTimeSource.nowMs(),
+    ): Boolean {
+        val verdict = offLanSignalGuard.validateInbound(signal, nowMs)
+        if (verdict is OffLanSignalVerdict.Rejected) {
+            FlashLog.w("CALL_OFFLAN", "Dropped off-LAN signal callId=${signal.callId} from=${signal.fromPeerId} seq=${signal.seq}: ${verdict.reason}")
+            return false
+        }
+        return onInboundText(signal.fromPeerId, signal.payloadText)
+    }
+
+    /**
+     * HR9: Marks [peerId] revoked so future off-LAN signals are refused, and tears down any live 1:1 call with
+     * that peer immediately.
+     */
+    public suspend fun terminateCallsForRevokedPeer(peerId: String) {
+        offLanSignalGuard.markPeerRevoked(peerId)
+        if (currentSession?.peerId == peerId) {
+            FlashLog.w("CALL_OFFLAN", "Terminating active call with revoked peer=$peerId")
+            hangUp()
+        }
+    }
+
     /** Local user accepted the incoming call. */
     override suspend fun accept(audioOnly: Boolean): Boolean {
         currentGroupSession?.let { return it.accept(audioOnly) }
@@ -607,6 +649,7 @@ public class CallCoordinator(
         direction: FlashCallDirection,
         video: Boolean,
     ): FlashCallSession {
+        val (iceServers, icePolicy) = iceConfigProvider(peerId)
         return FlashCallSession(
             callId = callId,
             peerId = peerId,
@@ -623,7 +666,10 @@ public class CallCoordinator(
             performanceMode = performanceMode,
             peerCanUpgrade = { FEATURE_VIDEO_UPGRADE in peerFeatures(peerId) },
             screenCapture = screenCapture,
+            iceServers = iceServers,
+            iceTransportPolicy = icePolicy,
             onEnded = { ended ->
+                offLanSignalGuard.markCallTerminal(ended.callId)
                 publishCallLog(ended)
                 if (currentSession === ended) {
                     currentSession = null
@@ -678,6 +724,7 @@ public class CallCoordinator(
      */
     private fun onGroupSessionEnded(ended: FlashGroupCallSession) {
         if (currentGroupSession !== ended) return
+        offLanSignalGuard.markCallTerminal(ended.callId)
         rememberEndedGroupCall(ended.callId)
         currentGroupSession = null
         stateCollector?.cancel()
@@ -850,6 +897,7 @@ public class CallCoordinator(
 
     private suspend fun startIncomingGroup(peerId: String, frame: CallWireFrame.GroupInvite) {
         warmRosterNames(frame.groupId)
+        val (iceServers, icePolicy) = iceConfigProvider(frame.groupId)
         val session = FlashGroupCallSession(
             callId = frame.callId,
             groupId = frame.groupId,
@@ -868,6 +916,8 @@ public class CallCoordinator(
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
             screenCapture = screenCapture,
+            iceServers = iceServers,
+            iceTransportPolicy = icePolicy,
         )
         currentGroupSession = session
         observeGroupSession(session)

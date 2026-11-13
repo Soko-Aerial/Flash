@@ -33,7 +33,9 @@ import com.transfer.flash.server.observability.LogSanitizer
 import com.transfer.flash.server.observability.MailboxStats
 import com.transfer.flash.server.observability.ManagementGuard
 import com.transfer.flash.server.observability.RelayMetrics
+import com.transfer.flash.server.relay.CallIceService
 import com.transfer.flash.server.relay.CertChainRelayAuthenticator
+import com.transfer.flash.server.relay.callConfigRoutes
 import com.transfer.flash.server.relay.DirectoryGroupMembership
 import com.transfer.flash.server.relay.GroupMembershipView
 import com.transfer.flash.server.relay.RelayAuthenticator
@@ -264,10 +266,24 @@ public class FlashServerEngine(
             adminConsoleRoutes(AdminWeb(adminAuthService, externalUrl = config.externalUrl))
 
             // Organization Directory REST routes (/api/v1/directory/*)
+            val resolver = BearerPrincipalResolver(bearerTokens)
             directoryRoutes(
                 directory = directory,
-                principalResolver = BearerPrincipalResolver(bearerTokens),
+                principalResolver = resolver,
                 isOnline = connectionPool::isConnected,
+            )
+            val callIce = CallIceService(
+                stunUrls = config.stunUrls,
+                turnUrls = config.turnUrls,
+                turnSharedSecret = config.turnSharedSecret,
+                ttlSeconds = config.callIceTtlSeconds,
+                mediaPolicy = config.callMediaPolicy,
+                clockMs = clock,
+            )
+            callConfigRoutes(
+                iceService = callIce,
+                principalResolver = resolver,
+                revocations = revocationService,
             )
 
             // Organization Announcements REST routes (/api/v1/announcements/*)
