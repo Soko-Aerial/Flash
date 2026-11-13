@@ -6,7 +6,12 @@ import com.transfer.flash.core.engine.concurrent.PlatformLock
 import com.transfer.flash.core.enterprise.files.HubDownloadRequest
 import com.transfer.flash.core.enterprise.files.HubFileTransfers
 import com.transfer.flash.core.security.enterprise.HubFileLayout
+import com.transfer.flash.core.transfer.TransferRouteContinuityPort
+import com.transfer.flash.core.transfer.chunked.IncrementalSha256
 import com.transfer.flash.core.transfer.chunked.Sha256
+import okio.FileSystem
+import okio.Path.Companion.toPath
+import okio.buffer
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -604,5 +609,259 @@ public class TransferRouteCoordinator {
             )
             true
         }
+    }
+
+    /**
+     * Marks an outbound logical transfer completed after the sender confirms completion on [route].
+     */
+    public fun completeOutboundTransfer(
+        logicalTransferId: String,
+        expectedEpoch: Long,
+        route: RouteOwner,
+    ): Boolean {
+        return lock.withLock {
+            val current = checkpoints[logicalTransferId] ?: return@withLock false
+            if (current.status != ContinuityStatus.ACTIVE) return@withLock false
+            if (current.activeRoute != route || current.routeEpoch != expectedEpoch) return@withLock false
+            checkpoints[logicalTransferId] = current.copy(
+                activeRoute = RouteOwner.NONE,
+                status = ContinuityStatus.COMPLETED,
+                verifiedSpans = listOf(VerifiedByteSpan(0L, current.identity.plainBytes)),
+            )
+            true
+        }
+    }
+
+    /**
+     * Discards unverified partial byte spans after an integrity failure and releases active route ownership.
+     */
+    public fun failIntegrity(logicalTransferId: String) {
+        lock.withLock {
+            val current = checkpoints[logicalTransferId] ?: return@withLock
+            if (current.status != ContinuityStatus.ACTIVE) return@withLock
+            checkpoints[logicalTransferId] = current.copy(
+                activeRoute = RouteOwner.NONE,
+                verifiedSpans = emptyList(),
+            )
+        }
+    }
+}
+
+/**
+ * Production bridge between `:core:transfer` ([TransferRouteContinuityPort]), [TransferRouteCoordinator],
+ * and [HubFileTransfers] on both Android and Desktop engines.
+ */
+public class EngineTransferRouteContinuityPort(
+    private val localDeviceId: () -> String,
+    private val coordinator: TransferRouteCoordinator,
+    private val transfersProvider: () -> HubFileTransfers?,
+    private val fileSystem: FileSystem = FileSystem.SYSTEM,
+) : TransferRouteContinuityPort {
+
+    private data class LanTrackedTransfer(
+        val fileId: String,
+        val transferId: String,
+        val epoch: Long,
+        val chunkSize: Int,
+        val localPath: String?,
+        val fileSha256Hex: String?,
+    )
+
+    private val trackLock = PlatformLock()
+    private val trackedByFileId = HashMap<String, LanTrackedTransfer>()
+
+    override fun tryAcquireLanRoute(
+        transferId: String,
+        fileId: String,
+        fileName: String,
+        plainBytes: Long,
+        peerDeviceId: String?,
+        isSending: Boolean,
+        chunkSize: Int,
+        localPath: String?,
+        fileSha256Hex: String?,
+    ): Boolean {
+        val normFileId = fileId.ifBlank { transferId }
+        val selfId = localDeviceId().ifBlank { "local" }
+        val remoteId = peerDeviceId?.takeIf { it.isNotBlank() } ?: "peer"
+        val identity = LogicalTransferIdentity(
+            logicalTransferId = normFileId,
+            senderDeviceId = if (isSending) selfId else remoteId,
+            recipientDeviceId = if (isSending) remoteId else selfId,
+            fileName = fileName,
+            plainBytes = plainBytes,
+            fileSha256Hex = fileSha256Hex,
+        )
+        val claim = coordinator.tryAcquireRoute(identity, RouteOwner.LAN) ?: return false
+        trackLock.withLock {
+            val prev = trackedByFileId[normFileId]
+            trackedByFileId[normFileId] = LanTrackedTransfer(
+                fileId = normFileId,
+                transferId = transferId,
+                epoch = claim.epoch,
+                chunkSize = if (chunkSize > 0) chunkSize else (prev?.chunkSize ?: 65_536),
+                localPath = localPath ?: prev?.localPath,
+                fileSha256Hex = fileSha256Hex ?: prev?.fileSha256Hex,
+            )
+        }
+        return true
+    }
+
+    override fun recordLanVerifiedChunks(
+        transferId: String,
+        fileId: String,
+        chunkIndexes: Collection<Int>,
+    ) {
+        if (chunkIndexes.isEmpty()) return
+        val normFileId = fileId.ifBlank { transferId }
+        val tracked = trackLock.withLock { trackedByFileId[normFileId] } ?: return
+        coordinator.recordVerifiedChunks(
+            logicalTransferId = normFileId,
+            expectedEpoch = tracked.epoch,
+            chunkIndexes = chunkIndexes.toSet(),
+            chunkSize = tracked.chunkSize,
+        )
+    }
+
+    override fun coveredLanChunksFromHub(
+        fileId: String,
+        fileName: String,
+        plainBytes: Long,
+        senderDeviceId: String?,
+        lanChunkSize: Int,
+    ): List<Int> {
+        if (fileId.isBlank() || plainBytes <= 0L || lanChunkSize <= 0) return emptyList()
+        val existing = coordinator.snapshot(fileId) ?: return emptyList()
+        val identity = LogicalTransferIdentity(
+            logicalTransferId = fileId,
+            senderDeviceId = senderDeviceId?.takeIf { it.isNotBlank() } ?: existing.identity.senderDeviceId,
+            recipientDeviceId = existing.identity.recipientDeviceId,
+            fileName = fileName,
+            plainBytes = plainBytes,
+        )
+        val plan = coordinator.planResume(identity, lanChunkSize)
+        return if (plan.compatible) plan.coveredTargetChunks.sorted() else emptyList()
+    }
+
+    override suspend fun adoptHubBytesIntoLanFile(
+        transferId: String,
+        fileId: String,
+        fileName: String,
+        plainBytes: Long,
+        senderDeviceId: String?,
+        lanChunkSize: Int,
+        destPath: String,
+    ): List<Int> {
+        val transfers = transfersProvider() ?: return emptyList()
+        if (fileId.isBlank() || plainBytes <= 0L || lanChunkSize <= 0 || destPath.isBlank()) return emptyList()
+        val existing = coordinator.snapshot(fileId) ?: return emptyList()
+        val selfId = localDeviceId().ifBlank { "local" }
+        val identity = LogicalTransferIdentity(
+            logicalTransferId = fileId,
+            senderDeviceId = senderDeviceId?.takeIf { it.isNotBlank() } ?: existing.identity.senderDeviceId,
+            recipientDeviceId = if (existing.identity.recipientDeviceId.isNotBlank()) existing.identity.recipientDeviceId else selfId,
+            fileName = fileName,
+            plainBytes = plainBytes,
+        )
+        var handle: okio.FileHandle? = null
+        return try {
+            val plan = coordinator.adoptHubToLan(
+                transfers = transfers,
+                fileId = fileId,
+                candidateIdentity = identity,
+                lanChunkSize = lanChunkSize,
+                writeLanChunk = { _, offset, bytes ->
+                    val opened = handle ?: fileSystem.openReadWrite(destPath.toPath()).also { handle = it }
+                    opened.write(offset, bytes, 0, bytes.size)
+                    true
+                },
+            )
+            handle?.flush()
+            if (plan.compatible) plan.coveredTargetChunks.sorted() else emptyList()
+        } catch (_: Throwable) {
+            emptyList()
+        } finally {
+            runCatching { handle?.close() }
+        }
+    }
+
+    /** Reads [length] bytes at [offset] from the tracked LAN partial file for LAN -> Hub resumption. */
+    public fun readLanPartialSpan(fileId: String, offset: Long, length: Int): ByteArray? {
+        if (fileId.isBlank() || offset < 0L || length <= 0) return null
+        val path = trackLock.withLock { trackedByFileId[fileId]?.localPath } ?: return null
+        return try {
+            val p = path.toPath()
+            if (!fileSystem.exists(p)) return null
+            fileSystem.openReadOnly(p).use { handle ->
+                val out = ByteArray(length)
+                var totalRead = 0
+                while (totalRead < length) {
+                    val read = handle.read(offset + totalRead, out, totalRead, length - totalRead)
+                    if (read <= 0) break
+                    totalRead += read
+                }
+                if (totalRead == length) out else null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    override fun releaseLanRoute(transferId: String, fileId: String) {
+        val normFileId = fileId.ifBlank { transferId }
+        val tracked = trackLock.withLock { trackedByFileId[normFileId] } ?: return
+        coordinator.releaseRoute(normFileId, tracked.epoch, RouteOwner.LAN)
+    }
+
+    override fun completeLanTransfer(
+        transferId: String,
+        fileId: String,
+        isSending: Boolean,
+        publishedPath: String?,
+        actualSha256Hex: String?,
+    ): Boolean {
+        val normFileId = fileId.ifBlank { transferId }
+        val tracked = trackLock.withLock { trackedByFileId[normFileId] } ?: return !isTerminalElsewhere(normFileId)
+        val won = if (isSending) {
+            coordinator.completeOutboundTransfer(normFileId, tracked.epoch, RouteOwner.LAN)
+        } else {
+            val resolvedPath = publishedPath?.takeIf { it.isNotBlank() } ?: tracked.localPath ?: return false
+            val resolvedDigest = actualSha256Hex?.takeIf { Sha256.isValidHex(it) } ?: computeSha256Hex(resolvedPath)
+                ?: return false
+            coordinator.completeTransfer(normFileId, tracked.epoch, RouteOwner.LAN, resolvedPath, resolvedDigest)
+        }
+        if (won) trackLock.withLock { trackedByFileId.remove(normFileId) }
+        return won
+    }
+
+    override fun failLanIntegrity(transferId: String, fileId: String) {
+        val normFileId = fileId.ifBlank { transferId }
+        coordinator.failIntegrity(normFileId)
+    }
+
+    override fun cancelLogicalTransfer(transferId: String, fileId: String?) {
+        val normFileId = fileId?.takeIf { it.isNotBlank() } ?: transferId
+        coordinator.cancelTransfer(normFileId)
+        trackLock.withLock { trackedByFileId.remove(normFileId) }
+    }
+
+    override fun isTerminalElsewhere(fileId: String): Boolean {
+        val status = coordinator.snapshot(fileId)?.status
+        return status == ContinuityStatus.COMPLETED || status == ContinuityStatus.CANCELLED
+    }
+
+    private fun computeSha256Hex(path: String): String? = try {
+        val acc = IncrementalSha256()
+        val buf = ByteArray(65_536)
+        fileSystem.source(path.toPath()).buffer().use { src ->
+            while (true) {
+                val read = src.read(buf)
+                if (read < 0) break
+                if (read > 0) acc.update(buf, 0, read)
+            }
+        }
+        acc.digestHex()
+    } catch (_: Throwable) {
+        null
     }
 }
