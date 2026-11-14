@@ -1,5 +1,95 @@
 # Progress Log
 
+## 2026-11-14 — Hub and local group invite links
+
+Hub enrollment links and console QR codes use the issuing Hub's public HTTPS origin. Android and desktop generate local group links with the configured Flash link host and share the same URL as an offline QR. The fragment carries the legacy invite so the fallback page receives no credential in its HTTP requests. Android App Links, browser Open in Flash and Download Flash, and the existing in-app paste and confirmation flows support both invite types. The desktop launcher forwards invites over authenticated single-instance IPC. See ADR-361 and [deployment instructions](../docs/deploy/INVITE-LINKS.md).
+
+The debug APK assembled with two synthetic verified-host declarations, confirmed in its manifest. Host XML reported 1,916 tests with 1,914 passing and two existing security-suite skips. All 676 Hub tests passed on the full server rerun after a sealed relay connection timeout in the combined gate. Browser checks covered the fallback at 320 px and 960 px, copy, download target, fragment privacy, and invalid-fragment handling in the same tab. Android lint reported zero errors. Both Windows installer formats built, and the MSI Registry tables from the standalone MSI and the MSI embedded in the EXE both contain the expected HKCU `flash` association and quoted launch command. Physical tap, QR, enrollment, Linux DEB packaging, and installed-desktop activation checks are tracked as INVITE-LINK-01 and INVITE-LINK-02.
+
+## 2026-11-14 — Implemented dev audit fixes and Nearby header correction
+
+Android transfer notifications use exact per-transfer tags and action data. Startup reconciles existing OS cards, completion has an OS timeout where supported, and history clearing targets completed notices. Desktop preserves eligible foreground alerts and live requests, binds call actions to the displayed call, opens pairing through the code-comparison dialog, and drops stale verification and retry cards. Receive finalization now refuses to publish after cancellation and cleans up read failures when a digest was supplied. Voice capture supports keyboard and accessibility activation with interrupted-hold cleanup. Restored readable Settings headings and adaptive options.
+
+The final native 320 dp Nearby render shows Scan network and Connect by IP beside the title and a full three-line paired-device name. Host XML reports 1,449 tests, zero failures or skips (41 focused desktop including the render, 261 transfer Android-host, 239 calling JVM, 790 chat JVM and 118 app unit). The two earlier runs caught a missing call-state import, a fixture race between two decline streams and stale desktop assertions for the revised notification behavior. The final locked Gradle run passed in 3m 56s and assembled both the debug APK and instrumentation APK. Live Android and desktop checks are recorded under NOTIF-01..04, DEV-AUDIT-01/02 and VOICE-BTN-01..06.
+
+## 2026-11-14 — Review of the uncommitted dev working tree
+
+Reviewed the Android and desktop notification paths, incoming transfer verification, voice capture, Nearby, and compact chat and Settings controls at `dev` base `0b162b80`. The focused desktop gate passed 40/40 and produced 27 native Nearby renders. The [working-tree review](../docs/audit/2026-11-14-dev-working-tree-review.md) records the action identity, alert delivery, session, and transfer finalization defects, plus the UI and accessibility follow-up. Candidate implementation was left untouched. Physical-device and live desktop interaction checks remain open.
+
+## 2026-11-14 — Flash Hub completion review
+
+Reviewed `agent/hub-readiness` at `256e140d` against the HR6–HR11 completion criteria. The console suite passed 87/87 in this review. The source review found gaps in replacement safety and role checks, first announcement notifications, sender route switching, calling credential renewal and replay validation, group-key rotation, and quarantine alerts across restart. The candidate code was inspected read-only. Reproduction steps, expected outcomes, and outstanding live acceptance are in [the Hub completion review](../docs/audit/2026-11-14-hub-completion-review.md). Resolve the findings and repeat acceptance against the corrected revision before signing off.
+
+## 2026-11-12 — UI/UX polish & regression fixes: network detection, settings performance tile, chat spacing, offline banner & voice button
+
+### Worked on
+Investigated, overhauled, and verified user-reported UI regressions and functional defects:
+1. **Network Detection & Inclusive Offline Banner (`MainActivity.kt`, `FlashNearbyScreen.kt`):**
+   - Fixed unflagged broadcast receiver registration on Android 14+ (API 34+) using `ContextCompat.registerReceiver` with `RECEIVER_EXPORTED`, resolving the silent `SecurityException` that caused turning on Wi-Fi to not update the UI.
+   - Expanded intent filter to listen for `WIFI_STATE_CHANGED_ACTION`, `CONNECTIVITY_ACTION`, and `"android.net.wifi.WIFI_AP_STATE_CHANGED"` so Hotspot, Wi-Fi, and Ethernet state changes trigger immediate re-evaluation.
+   - Accounted for Mobile Hotspot (SoftAP `ap0`) and Ethernet (`eth0`): `LocalNetworkAddresses.ipv4Addresses()` enumerates local interface addresses so `localLanAddresses.isNotEmpty()` marks `radiosAvailable` true for Hotspot and Ethernet users.
+   - Added a 2-second periodic polling tick on the Nearby screen while `!radiosAvailable` to instantly clear the offline panel upon enabling Wi-Fi or Hotspot.
+   - Updated `RadiosOffPanel` copy to "No local network" and subtitle to "Turn on Wi-Fi, enable Mobile Hotspot, or connect Ethernet so Flash can find nearby devices.", with button "Open Network Settings" targeting wireless settings.
+2. **Settings Performance Mode Tile (`FlashSettingsScreen.kt`):**
+   - Replaced multi-row `SettingsOptionChipGroup` wrapping with a single-row segmented track `Row` (`Modifier.weight(1f).fillMaxHeight()`) for all 5 tiers ("Auto", "Ultra Low", "Low", "Medium", "High") with subtitle below, eliminating the line-spill and oversized tile bug.
+   - Converted `DiscoveryModeSegmented` to the same single-row segmented pattern.
+3. **Chat Spacing & Header Separation (`FlashChatHeader.kt`, `FlashMessageBubble.kt`, `FlashMessageList.kt`):**
+   - Set tight vertical arrangement (`Arrangement.spacedBy(0.dp)`) in `FlashChatHeader.kt` for the title and status line Column, and sized `FlashEncryptionBadge(compact = true)` to `iconSm` (16dp), eliminating excessive separation between contact name and status.
+   - Replaced the bloated 48dp `defaultMinSize` on the 3-dot options button in `FlashMessageTimestampRow` with a compact 20dp button, eliminating ~28dp of dead vertical space at the bottom of every message tile.
+   - Reduced inter-group bubble spacing in `FlashMessageList.kt` from 16dp to 8dp while keeping tight 2dp intra-group spacing.
+4. **Offline Connection Banner Retry Button (`FlashNetworkStatusUi.kt`):**
+   - Replaced the bulky 48dp `defaultMinSize` retry button inside `FlashConnectionBanner` with a sleek 28dp pill button (`captionEmphasis`, 10dp horizontal padding) that maintains the compact 36dp banner height without dominating the row.
+5. **Voice Message Button Responsiveness (`FlashComposer.kt`, `FlashVoiceRecording.kt`, `FlashConversationScreen.kt`):**
+   - Expanded the trailing mic button hit target in `FlashComposer` to 48dp minimum (`defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)`) while keeping the visual bubble centered at 44dp, ensuring edge-of-screen thumb presses register reliably.
+   - Added touch slop guard on hold-drag in `FlashMicButton` (`viewConfiguration.touchSlop`) to prevent initial finger wobble from misidentifying as slide-to-cancel.
+   - In `FlashConversationScreen.kt`, cached `micPermissionGranted` so that upon granting microphone permission, subsequent clicks immediately start recording without delay.
+
+### Verification
+- **Command:** `tools\flash-gradle.cmd :core:transfer:jvmTest :core:transfer:testAndroidHostTest :app:testDebugUnitTest :desktop:jvmTest :desktop:compileKotlinJvm :app:lintDebug`
+- **Result:** `BUILD SUCCESSFUL in 9m 54s` (exit code `0`, 428 actionable tasks: 32 executed, 396 up-to-date).
+- **Suites/tests:**
+  - `:core:transfer:jvmTest`: 18 suites, 145 tests, 0 failures, 0 errors, 0 skipped
+  - `:core:transfer:testAndroidHostTest`: 27 suites, 260 tests, 0 failures, 0 errors, 0 skipped
+  - `:app:testDebugUnitTest`: 20 suites, 120 tests, 0 failures, 0 errors, 0 skipped
+  - `:desktop:jvmTest`: 52 suites, 308 tests, 0 failures, 0 errors, 2 opt-in render skips
+  - **Total:** 117 suites, 833 tests (831 passed, 2 skipped, 0 failures, 0 errors)
+  - `:desktop:compileKotlinJvm`: Clean compile (0 errors)
+  - `:app:lintDebug`: 0 errors, 0 fatal issues (156 informational baseline warnings)
+
+### Remaining / Next AI
+- Physical verification owed on Android device and Windows/Linux desktop for `NOTIF-01..04` in `docs/testing/TEST-BACKLOG.md`.
+
+## 2026-11-12 — Android & Desktop notification robustness, desktop dialog redesign & diff audit remediation
+
+### Worked on
+Investigated, overhauled, and verified notification robustness and state management across Android (`:app`, `:core:transfer`) and Desktop (`:desktop`). Fixed the 100% notification linger during checksum calculation, resolved the Android notification slot saturation and Intent hijacking leak, overhauled the desktop custom receiving dialog and button fit, and consolidated all desktop notifications into the rich custom Compose toast window while retiring native OS tray balloons.
+
+Following a comprehensive line-by-line diff audit of the implementation, remediated all 4 Must-Fix bugs and 5 Half-Baked implementations:
+1. **Desktop Auto-Dismissal Stale Closure:** Wrapped `cards` and `onDismiss` with `rememberUpdatedState` inside `DesktopTransferToastWindow.kt`, restoring auto-dismissal timers at runtime.
+2. **Off-EDT Swing Window Mutation:** Wrapped `onOpenConversation` in `javax.swing.SwingUtilities.invokeLater { ... }` in `DesktopMain.kt`, preventing cross-thread AWT window focus and state race conditions.
+3. **Design System Tokenized Colors:** Replaced hardcoded Tailwind hex literals `0xFFDC2626` / `0xFF16A34A` with theme tokens `colors.textError` and `colors.textSuccess` in `DesktopTransferToastWindow.kt`.
+4. **Premature Restored Notification Cancellation:** Scoped `FlashRestorationCleanupPolicy.shouldClearRestoredNotification` strictly to `if (prevState == null && transfer.restored)` in `FlashBackgroundService.kt`, preserving the 15s auto-dismissal window for retried restored transfers.
+5. **Wired Shell Navigation Destination:** Mirrored `FlashNotificationManager.currentDestination = nav.current.destination` in `MainActivity.kt`.
+6. **Eliminated 1,000 Synchronous Main-Thread IPC Calls:** Updated `clearAllTransfers(context)` in `FlashNotificationManager.kt` to cancel only active IDs from `transferNotificationIds`.
+7. **Window Focus Freshness Guard:** Added 60-second `DEFERRED_REPLAY_WINDOW_MS` in `DesktopNotificationManager.kt` to suppress stale phantom completion toasts when window focus is lost hours later.
+8. **Bounded Attachment Memory:** Pruned `recentAttachmentNotices` on entry in `handleInboundAttachment`.
+9. **Idle Ticker & Headroom Geometry:** Gated 250ms delay loop in `DesktopTransferToastWindow.kt` on active auto-dismiss deadlines, pruned local `dismissed` state set, and added `CARD_EXPANDED_HEIGHT_DP = 124` headroom in `DesktopTransferToastModel.kt`.
+
+### Verification
+- **Command:** `tools\flash-gradle.cmd :core:transfer:jvmTest :core:transfer:testAndroidHostTest :app:testDebugUnitTest :desktop:jvmTest :desktop:compileKotlinJvm :app:lintDebug`
+- **Result:** `BUILD SUCCESSFUL in 6m 9s` (exit code `0`, 428 actionable tasks: 22 executed, 406 up-to-date).
+- **Suites/tests:**
+  - `:core:transfer:jvmTest`: 18 suites, 145 tests, 0 failures, 0 errors, 0 skipped
+  - `:core:transfer:testAndroidHostTest`: 27 suites, 260 tests, 0 failures, 0 errors, 0 skipped
+  - `:app:testDebugUnitTest`: 20 suites, 120 tests, 0 failures, 0 errors, 0 skipped
+  - `:desktop:jvmTest`: 52 suites, 308 tests, 0 failures, 0 errors, 2 opt-in render skips
+  - **Total:** 117 suites, 833 tests (831 passed, 2 skipped, 0 failures, 0 errors)
+  - `:desktop:compileKotlinJvm`: Clean compile (0 errors)
+  - `:app:lintDebug`: 0 errors, 0 fatal issues (158 informational baseline warnings)
+
+### Remaining / Next AI
+- Physical verification owed on Android device and Windows/Linux desktop for `NOTIF-01..04` in `docs/testing/TEST-BACKLOG.md`.
+
 ## 2026-11-12 — Phase 7 UI/UX diff audit, bug remediation & final verification gate
 
 ### Worked on
