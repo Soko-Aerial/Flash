@@ -2342,6 +2342,7 @@ private fun FlashShell(
                 trustedPeers = FlashNearbyMath.withDeviceKinds(
                     trusted = trustedPeers,
                     discovered = discoveredRows,
+                    activeSessionPeerIds = activeSessions.keys.mapTo(HashSet()) { it.value },
                 ),
                 scan = sweepState.toNearbyScan(),
                 discoveryQuiet = FlashNearbyMath.discoveryQuiet(
@@ -2436,15 +2437,23 @@ private fun FlashShell(
     val selectedNearbyPeer = selectedNearbyPeerId?.let { id ->
         nearby.peers.firstOrNull { it.id == id }
             ?: nearby.trustedPeers.firstOrNull { it.id == id }?.let { trusted ->
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == trusted.id }
+                val session = activeSessions[FlashDeviceId(trusted.id)]
+                val isAvailableNearby = endpoint != null
+                val isOnline = isAvailableNearby || session != null || trusted.isOnline
                 val isColleague = engine.hasAuthenticatedOrgSession(trusted.id)
                 NearbyPeerUi(
                     id = trusted.id,
                     name = trusted.name,
-                    transport = FlashNetworkTransport.Lan,
+                    transport = endpoint?.transportType?.toUiTransport()
+                        ?: session?.transportType?.toUiTransport()
+                        ?: FlashNetworkTransport.Unknown,
                     isTrusted = true,
-                    deviceKind = trusted.deviceKind,
+                    deviceKind = endpoint?.deviceKind ?: trusted.deviceKind,
                     isColleague = isColleague,
                     orgName = if (isColleague) engine.enterpriseTrustStore?.getCredentials()?.hubName else null,
+                    isAvailableNearby = isAvailableNearby,
+                    isOnline = isOnline,
                 )
             }
     }

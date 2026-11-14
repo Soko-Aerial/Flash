@@ -174,6 +174,51 @@ class DesktopShellBehaviorTest {
         assertEquals("Acme", resolvedAfter.orgName)
         assertEquals(FlashNetworkTransport.Lan, resolvedAfter.transport)
         assertEquals(FlashDeviceKind.PHONE, resolvedAfter.deviceKind)
+        assertTrue(resolvedAfter.isAvailableNearby)
+        assertTrue(resolvedAfter.isOnline)
+
+        val offlineNearby = nearbyUiStateOf(
+            trusted = listOf(FlashTrustedPeer(id = "peer-1", name = "Pixel 9")),
+            discovered = emptyList(),
+            discoveryState = FlashDiscoveryState(isDiscovering = true, advertisedPort = 45822),
+            ui = null,
+            ready = true,
+            localFriendlyName = "Desktop",
+            localDeviceId = "local-desktop-1",
+            liveSessions = 0,
+            activeSessionPeerIds = emptySet(),
+        )
+        val resolvedOffline = resolveSelectedNearbyPeer(
+            peerId = "peer-1",
+            nearby = offlineNearby,
+            discovered = emptyList(),
+        )
+        assertNotNull(resolvedOffline)
+        assertTrue(resolvedOffline.isTrusted)
+        assertFalse(resolvedOffline.isAvailableNearby)
+        assertFalse(resolvedOffline.isOnline)
+        assertEquals(FlashNetworkTransport.Unknown, resolvedOffline.transport)
+        assertEquals(FlashDeviceKind.UNKNOWN, resolvedOffline.deviceKind)
+
+        val sessionOnlyNearby = nearbyUiStateOf(
+            trusted = listOf(FlashTrustedPeer(id = "peer-1", name = "Pixel 9")),
+            discovered = emptyList(),
+            discoveryState = FlashDiscoveryState(isDiscovering = true, advertisedPort = 45822),
+            ui = null,
+            ready = true,
+            localFriendlyName = "Desktop",
+            localDeviceId = "local-desktop-1",
+            liveSessions = 1,
+            activeSessionPeerIds = setOf("peer-1"),
+        )
+        val resolvedSessionOnly = resolveSelectedNearbyPeer(
+            peerId = "peer-1",
+            nearby = sessionOnlyNearby,
+            discovered = emptyList(),
+        )
+        assertNotNull(resolvedSessionOnly)
+        assertFalse(resolvedSessionOnly.isAvailableNearby)
+        assertTrue(resolvedSessionOnly.isOnline)
     }
 
     @Test
