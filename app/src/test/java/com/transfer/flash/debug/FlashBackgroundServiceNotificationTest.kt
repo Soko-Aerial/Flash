@@ -1,6 +1,10 @@
 package com.transfer.flash.debug
 
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
+import com.transfer.flash.core.transfer.model.FlashTransfer
+import com.transfer.flash.core.transfer.model.FlashTransferDirection
+import com.transfer.flash.core.transfer.model.FlashTransferId
+import com.transfer.flash.core.transfer.model.FlashTransferState
 import java.io.File
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -52,5 +56,82 @@ class FlashBackgroundServiceNotificationTest {
         assertFalse(notifMgr.contains("android.R.drawable.stat_sys_download"))
         assertFalse(notifMgr.contains("android.R.drawable.stat_sys_download_done"))
         assertFalse(notifMgr.contains("android.R.drawable.stat_notify_error"))
+    }
+
+    @Test
+    fun `restoration notification cleanup policy targets restored transfers in terminal states`() {
+        val restoredFailed = FlashTransfer(
+            id = FlashTransferId("tx-1"),
+            peerName = "Peer",
+            fileName = "file.zip",
+            direction = FlashTransferDirection.Receiving,
+            bytesDone = 0L,
+            bytesTotal = 100L,
+            state = FlashTransferState.Failed,
+            restored = true,
+        )
+        val restoredCompleted = restoredFailed.copy(state = FlashTransferState.Completed)
+        val restoredActive = restoredFailed.copy(state = FlashTransferState.Transferring)
+        val normalFailed = restoredFailed.copy(restored = false)
+        val normalCompleted = restoredFailed.copy(restored = false, state = FlashTransferState.Completed)
+
+        assertTrue(FlashRestorationCleanupPolicy.shouldClearRestoredNotification(restoredFailed))
+        assertTrue(FlashRestorationCleanupPolicy.shouldClearRestoredNotification(restoredCompleted))
+        assertFalse(FlashRestorationCleanupPolicy.shouldClearRestoredNotification(restoredActive))
+        assertFalse(FlashRestorationCleanupPolicy.shouldClearRestoredNotification(normalFailed))
+        assertFalse(FlashRestorationCleanupPolicy.shouldClearRestoredNotification(normalCompleted))
+    }
+
+    @Test
+    fun `background service cleans up foreground notifications in onDestroy and onTimeout`() {
+        val bgService = repoFile("app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt")
+
+        // onDestroy must stop foreground and cancel notification 41 + active transfers
+        val onDestroySection = bgService.substringAfter("override fun onDestroy()").substringBefore("super.onDestroy()")
+        assertTrue(onDestroySection.contains("stopForeground(STOP_FOREGROUND_REMOVE)"))
+        assertTrue(onDestroySection.contains("cancel(NOTIFICATION_ID)"))
+        assertTrue(onDestroySection.contains("FlashNotificationManager.clearAllTransfers(this)"))
+
+        // onTimeout must stop foreground and cancel notification 41 + active transfers
+        val onTimeoutSection = bgService.substringAfter("override fun onTimeout").substringBefore("super.onTimeout")
+        assertTrue(onTimeoutSection.contains("stopForeground(STOP_FOREGROUND_REMOVE)"))
+        assertTrue(onTimeoutSection.contains("cancel(NOTIFICATION_ID)"))
+        assertTrue(onTimeoutSection.contains("FlashNotificationManager.clearAllTransfers(this)"))
+    }
+
+    @Test
+    fun `restored transfer cleanup is strictly scoped to uninitialized transfers on startup`() {
+        val bgService = repoFile("app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt")
+
+        val loopSection = bgService.substringAfter("previousTransferStates[id] = transfer.state")
+            .substringBefore("else if (prevState != transfer.state)")
+        assertFalse(
+            "shouldClearRestoredNotification must not run unconditionally in transfer loop",
+            loopSection.substringBefore("if (prevState == null && transfer.restored)")
+                .contains("shouldClearRestoredNotification")
+        )
+        assertTrue(
+            "shouldClearRestoredNotification must be scoped inside prevState == null && transfer.restored block",
+            loopSection.substringAfter("if (prevState == null && transfer.restored)")
+                .substringBefore("else if (prevState == null)")
+                .contains("FlashRestorationCleanupPolicy.shouldClearRestoredNotification(transfer)")
+        )
+    }
+
+    @Test
+    fun `main activity wires current destination to notification manager`() {
+        val mainActivity = repoFile("app/src/main/java/com/transfer/flash/MainActivity.kt")
+        assertTrue(
+            mainActivity.contains("FlashNotificationManager.currentDestination = nav.current.destination")
+        )
+    }
+
+    @Test
+    fun `startup reconciles active Android notifications and removes legacy transfer slots`() {
+        val service = repoFile("app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt")
+        val manager = repoFile("app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt")
+        assertTrue(service.contains("FlashNotificationManager.reconcileTransferNotifications("))
+        assertTrue(manager.contains("manager.activeNotifications"))
+        assertTrue(manager.contains("manager.cancel(tag, notice.id)"))
     }
 }

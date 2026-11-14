@@ -30,7 +30,6 @@ import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashMotion
 import com.shepeliev.webrtckmp.WebRtc
 import dev.onvoid.webrtc.logging.Logging
-import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.rememberTrayState
 import com.transfer.flash.ui.navigation.FlashDestination
@@ -43,9 +42,6 @@ import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import java.io.BufferedWriter
 import java.io.FileWriter
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -147,55 +143,14 @@ public fun main(args: Array<String> = emptyArray()) {
         DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
     }
 
-    // OPT-O19-07: Downscale discovery to ECO when window is hidden in tray or minimized (guarded by active workloads).
-    LaunchedEffect(isWindowVisible, windowState.isMinimized) {
-        engine.setWindowActive(isWindowVisible && !windowState.isMinimized)
-    }
-
-    val trayState = rememberTrayState()
-    val ready by engine.ready.collectAsState()
-    val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
-    val desktopSettings by engine.settings.collectAsState()
-    val osReduceMotion by DesktopOsReduceMotion.preferences.collectAsState(initial = false)
     val nav = rememberFlashNavigationState()
-    var trayNavTick by remember { mutableStateOf(0) }
 
-    LaunchedEffect(ready, enterpriseCredentials != null) {
-        if (ready) nav.updateHubEnrolled(enterpriseCredentials != null)
-    }
-
-    // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
-    val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)) }
-
-    DisposableEffect(desktopSettings.windowsContextMenu) {
-        if (WindowsContextMenuManager.isSupported && desktopSettings.windowsContextMenu) {
-            WindowsContextMenuManager.setContextMenuEnabled(true)
-        }
-        onDispose {}
-    }
-
-    val linuxNotifier = remember {
-        if (System.getProperty("os.name", "").startsWith("Linux", ignoreCase = true)) {
-            com.transfer.flash.desktop.linux.LinuxNotifier()
-        } else {
-            null
-        }
-    }
-
-    // Desktop notification manager
+    // Phase 3: Desktop notification manager — native OS balloon dispatch retired in favor of rich custom toast window
     val notificationManager = remember {
         DesktopNotificationManager(
             engine = engine,
             scope = engine.scope,
-            sendNotification = { notification ->
-                // Linux: the desktop's own notification service (ADR-093); the tray popup only when it is absent.
-                val sentNatively = linuxNotifier?.send(
-                    notification.title,
-                    notification.message,
-                    critical = notification.type == Notification.Type.Error,
-                ) == true
-                if (!sentNatively) trayState.sendNotification(notification)
-            },
+            sendNotification = null,
             isWindowVisible = { isWindowVisible },
             activeConversationId = { nav.current.conversationId },
             isNotificationsEnabled = { engine.settings.value.showNotifications },
@@ -212,6 +167,36 @@ public fun main(args: Array<String> = emptyArray()) {
     DisposableEffect(notificationManager) {
         notificationManager.start()
         onDispose { notificationManager.stop() }
+    }
+
+    // OPT-O19-07: Downscale discovery to ECO when window is hidden in tray or minimized (guarded by active workloads).
+    LaunchedEffect(isWindowVisible, windowState.isMinimized) {
+        val active = isWindowVisible && !windowState.isMinimized
+        engine.setWindowActive(active)
+        notificationManager.onWindowVisibilityChanged(active)
+    }
+
+    val trayState = rememberTrayState()
+    val ready by engine.ready.collectAsState()
+    val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
+    val desktopSettings by engine.settings.collectAsState()
+    val toastCards by notificationManager.toastCards.collectAsState()
+    var toastActionError by remember { mutableStateOf<String?>(null) }
+    val osReduceMotion by DesktopOsReduceMotion.preferences.collectAsState(initial = false)
+    var trayNavTick by remember { mutableStateOf(0) }
+
+    LaunchedEffect(ready, enterpriseCredentials != null) {
+        if (ready) nav.updateHubEnrolled(enterpriseCredentials != null)
+    }
+
+    // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
+    val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)) }
+
+    DisposableEffect(desktopSettings.windowsContextMenu) {
+        if (WindowsContextMenuManager.isSupported && desktopSettings.windowsContextMenu) {
+            WindowsContextMenuManager.setContextMenuEnabled(true)
+        }
+        onDispose {}
     }
 
     // System Tray
@@ -320,10 +305,12 @@ public fun main(args: Array<String> = emptyArray()) {
                     isWindowFocused = true
                     backgroundUnreadCount = 0
                     DesktopTaskbarBadgeManager.clearBadge(window)
+                    notificationManager.onWindowFocusChanged(true)
                 }
 
                 override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
                     isWindowFocused = false
+                    notificationManager.onWindowFocusChanged(false)
                 }
             }
             window.addWindowFocusListener(focusListener)
@@ -395,6 +382,8 @@ public fun main(args: Array<String> = emptyArray()) {
                                     onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
                                     pendingHubRoute = pendingHubRoute,
                                     radioGatewayController = radioGatewayController,
+                                    notificationActionError = toastActionError,
+                                    onNotificationActionErrorShown = { toastActionError = null },
                                 )
                                 FlashLaunchSplashOverlay(
                                     gate = launchSplash,
@@ -409,38 +398,9 @@ public fun main(args: Array<String> = emptyArray()) {
     }
     }
 
-    // C-06: Accept / Decline (and Retry) on a card while Flash is not in front; the OS banner cannot carry buttons.
+    // Phase 3: Desktop Unified Custom Notification Center and OS Balloon Retirement.
+    // All notifications (offers, completions, failures, chat pings, calls, pairing) route into DesktopTransferToastWindow.
     run {
-        val toastReady by engine.ready.collectAsState()
-        val toastRepo = if (toastReady) engine.transfers else null
-        // OPT-O19-02: Observe a distinct, filtered flow of candidate transfers (Offered inbound or Failed retryable outbound)
-        // instead of the raw activeTransfers StateFlow. This eliminates 10-100 Hz EDT recompositions during active transfers.
-        val toastTransfersFlow = remember(toastRepo) {
-            val flow = toastRepo?.activeTransfers ?: flowOf(emptyList())
-            flow.map { list ->
-                list.filter {
-                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered &&
-                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Receiving) ||
-                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Failed &&
-                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Sending &&
-                        it.canRetry)
-                }
-            }.distinctUntilChanged { old, new ->
-                if (old.size != new.size) return@distinctUntilChanged false
-                old.indices.all { i ->
-                    val o = old[i]
-                    val n = new[i]
-                    o.id == n.id &&
-                        o.state == n.state &&
-                        o.fileName == n.fileName &&
-                        o.peerName == n.peerName &&
-                        o.direction == n.direction &&
-                        o.errorMessage == n.errorMessage &&
-                        o.canRetry == n.canRetry
-                }
-            }
-        }
-        val toastTransfers by toastTransfersFlow.collectAsState(initial = emptyList())
         val toastDark = FlashSettingsMath.resolveDarkTheme(mode = desktopSettings.themeMode, systemDark = isSystemInDarkTheme())
         val toastPerformance = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
         FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
@@ -453,18 +413,30 @@ public fun main(args: Array<String> = emptyArray()) {
                 motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
             ) {
                 DesktopTransferToastWindow(
-                    transfers = toastTransfers,
+                    cards = if (desktopSettings.showNotifications) toastCards else emptyList(),
                     appInForeground = isWindowVisible && isWindowFocused && !windowState.isMinimized,
-                    onAction = { action, id ->
-                        val repo = engine.transfers ?: return@DesktopTransferToastWindow
-                        engine.scope.launch {
-                            when (action) {
-                                ToastAction.Accept -> repo.acceptIncoming(id)
-                                ToastAction.Decline -> repo.declineIncoming(id)
-                                ToastAction.Retry -> repo.resumeTransfer(id)
-                                ToastAction.Dismiss -> Unit
-                            }
-                        }
+                    onAction = { action, card ->
+                        notificationManager.handleToastAction(
+                            action = action,
+                            card = card,
+                            onReviewPairing = { javax.swing.SwingUtilities.invokeLater { bringWindowToFront() } },
+                            onActionFailed = { error ->
+                                javax.swing.SwingUtilities.invokeLater {
+                                    toastActionError = error
+                                    bringWindowToFront()
+                                }
+                            },
+                            onOpenConversation = { convId ->
+                                javax.swing.SwingUtilities.invokeLater {
+                                    isWindowVisible = true
+                                    bringWindowToFront()
+                                    nav.navigate(FlashDestination.Conversation, conversationId = convId)
+                                }
+                            },
+                        )
+                    },
+                    onDismiss = { id ->
+                        notificationManager.dismissToast(id)
                     },
                 )
             }

@@ -3,24 +3,34 @@ package com.transfer.flash.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.semantics.Role
@@ -32,10 +42,58 @@ import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberWindowState
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferId
+import com.transfer.flash.ui.avatar.FlashAvatar
+import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashShapes
+import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 import java.awt.GraphicsEnvironment
+import java.awt.MouseInfo
+import java.awt.Point
 import java.awt.Rectangle
+import java.awt.Toolkit
 import kotlinx.coroutines.delay
+
+/**
+ * Resolves the usable display bounds of the screen where the pointer or window is located,
+ * subtracting taskbars and system docks. Falls back safely if headless or query fails.
+ */
+internal fun resolveActiveScreenBounds(anchorPoint: Point? = null): Rectangle {
+    return try {
+        val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
+        val devices = ge.screenDevices
+        val targetPoint = anchorPoint ?: try {
+            MouseInfo.getPointerInfo()?.location
+        } catch (_: Throwable) {
+            null
+        }
+        val targetDevice = if (targetPoint != null) {
+            devices.firstOrNull { it.defaultConfiguration.bounds.contains(targetPoint) }
+        } else {
+            null
+        } ?: ge.defaultScreenDevice
+
+        val config = targetDevice?.defaultConfiguration
+        if (config != null) {
+            val bounds = config.bounds
+            val insets = Toolkit.getDefaultToolkit().getScreenInsets(config)
+            Rectangle(
+                bounds.x + insets.left,
+                bounds.y + insets.top,
+                (bounds.width - insets.left - insets.right).coerceAtLeast(0),
+                (bounds.height - insets.top - insets.bottom).coerceAtLeast(0),
+            )
+        } else {
+            ge.maximumWindowBounds
+        }
+    } catch (_: Throwable) {
+        try {
+            GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+        } catch (_: Throwable) {
+            Rectangle(0, 0, 1920, 1080)
+        }
+    }
+}
 
 /**
  * Computes the bottom-right anchor position for the toast window inside [bounds],
@@ -52,40 +110,61 @@ internal fun toastWindowPosition(
 )
 
 /**
- * The actionable transfer toast (open-items tracker C-06): a small always-on-top, non-focus-stealing card in the
- * bottom-right corner with Accept / Decline for an offer and Retry / Dismiss for a failed send, shown only while Flash
- * is not in front. Must be called inside the app's theme.
+ * Unified custom toast window (Phase 3: Unified Custom Notification Center).
+ * Displays rich, actionable notifications for offers, completions, failures, chat pings, calls, and pairing.
+ * Employs individual per-card ticker-based auto-dismissal to prevent starvation of older toasts.
  */
 @Composable
 internal fun DesktopTransferToastWindow(
-    transfers: List<FlashTransfer>,
+    cards: List<DesktopToastCard>,
     appInForeground: Boolean,
-    onAction: (ToastAction, FlashTransferId) -> Unit,
+    onAction: (ToastAction, DesktopToastCard) -> Unit,
+    onDismiss: ((String) -> Unit)? = null,
 ) {
-    var dismissed by remember { mutableStateOf(emptySet<FlashTransferId>()) }
-    val cards = DesktopTransferToastModel.cards(transfers, dismissed, appInForeground)
+    var dismissed by remember { mutableStateOf(emptySet<String>()) }
+    val displayCards = remember(cards, dismissed, appInForeground) {
+        DesktopTransferToastModel.filterActiveCards(cards, dismissed, appInForeground)
+    }
 
-    // A failure card is a courtesy, not an obligation: it goes away by itself after a while. An offer stays until answered.
-    val failureIds = cards.filter { ToastAction.Retry in it.actions }.map { it.transferId }
-    LaunchedEffect(failureIds) {
-        if (failureIds.isNotEmpty()) {
-            delay(FAILURE_CARD_MS)
-            dismissed = dismissed + failureIds
+    val currentCards by rememberUpdatedState(cards)
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+
+    LaunchedEffect(cards) {
+        val activeIds = cards.map { it.id }.toSet()
+        if (dismissed.any { it !in activeIds }) {
+            dismissed = dismissed.filter { it in activeIds }.toSet()
         }
     }
 
-    if (cards.isEmpty()) return
+    // Individual ticker-based auto-dismissal: per-card deadline timestamps prevent timer restarts/starvation.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(250L)
+            if (currentCards.any { it.autoDismissAtMs != null }) {
+                val now = System.currentTimeMillis()
+                val expired = currentCards.filter { it.autoDismissAtMs != null && it.autoDismissAtMs <= now }.map { it.id }
+                if (expired.isNotEmpty()) {
+                    dismissed = dismissed + expired
+                    expired.forEach { currentOnDismiss?.invoke(it) }
+                }
+            }
+        }
+    }
 
-    val initialBounds = remember { GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds }
-    val height = DesktopTransferToastModel.windowHeightDp(cards.size)
+    if (displayCards.isEmpty()) return
+
+    val initialBounds = remember { resolveActiveScreenBounds() }
+    val height = DesktopTransferToastModel.windowHeightDp(displayCards)
     val width = DesktopTransferToastModel.WIDTH_DP
-    // On Java 9+ the AWT screen bounds are in logical (scaled) units, the same unit as dp, so no density conversion.
     val state = rememberWindowState(
         position = toastWindowPosition(initialBounds, width, height),
         size = DpSize(width.dp, height.dp),
     )
     LaunchedEffect(height) {
-        val currentBounds = GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+        val currentPosition = (state.position as? WindowPosition.Absolute)?.let {
+            Point(it.x.value.toInt(), it.y.value.toInt())
+        }
+        val currentBounds = resolveActiveScreenBounds(currentPosition)
         state.size = DpSize(width.dp, height.dp)
         state.position = toastWindowPosition(currentBounds, width, height)
     }
@@ -93,55 +172,193 @@ internal fun DesktopTransferToastWindow(
     Window(
         onCloseRequest = {},
         state = state,
-        title = "Flash",
+        title = "Flash Notifications",
         undecorated = true,
         transparent = true,
         resizable = false,
         alwaysOnTop = true,
-        focusable = false,
+        focusable = true,
     ) {
+        window.isAutoRequestFocus = false
         val colors = FlashTheme.colors
         val typography = FlashTheme.typography
         Column(
             modifier = Modifier.fillMaxSize().padding(DesktopTransferToastModel.MARGIN_DP.dp),
             verticalArrangement = Arrangement.spacedBy(DesktopTransferToastModel.GAP_DP.dp),
         ) {
-            cards.forEach { card ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(DesktopTransferToastModel.CARD_HEIGHT_DP.dp)
-                        .background(colors.sheetSurface, RoundedCornerShape(14.dp))
-                        .border(1.dp, colors.borderDefault, RoundedCornerShape(14.dp))
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Column {
-                        Text(card.title, style = typography.bodyEmphasis, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(card.detail, style = typography.captionDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), modifier = Modifier.fillMaxWidth()) {
-                        card.actions.forEachIndexed { index, action ->
-                            val primary = index == 0
-                            Box(
-                                modifier = Modifier
-                                    .background(
-                                        if (primary) colors.accentFill else colors.backgroundSurfaceStrong,
-                                        RoundedCornerShape(10.dp),
-                                    )
-                                    .pointerHoverIcon(PointerIcon.Hand)
-                                    .clickable(role = Role.Button) {
-                                        // Answered or dismissed: gone from the toast at once, whatever the repository does next.
-                                        dismissed = dismissed + card.transferId
-                                        if (action != ToastAction.Dismiss) onAction(action, card.transferId)
+            displayCards.forEach { card ->
+                key(card.id) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(
+                                min = DesktopTransferToastModel.CARD_HEIGHT_DP.dp,
+                                max = DesktopTransferToastModel.CARD_MAX_HEIGHT_DP.dp,
+                            )
+                            .background(colors.sheetSurface, RoundedCornerShape(FlashShapes.radius16))
+                            .border(FlashDimensions.borderHairline, colors.borderDefault, RoundedCornerShape(FlashShapes.radius16))
+                            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space14),
+                        verticalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        // Top row: 40x40 Avatar + Content Column
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            val displayInitial = card.peerInitial.ifBlank {
+                                card.fileType.take(2).ifBlank {
+                                    when (card.kind) {
+                                        ToastKind.IncomingCall -> "C"
+                                        ToastKind.PairingRequest -> "P"
+                                        ToastKind.ChatMessage -> "M"
+                                        else -> "F"
                                     }
-                                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                                }
+                            }
+                            Box(
+                                modifier = Modifier.size(40.dp),
+                                contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    action.label,
-                                    style = typography.bodyEmphasis,
-                                    color = if (primary) colors.onAccentFill else colors.textPrimary,
+                                FlashAvatar(
+                                    initials = displayInitial,
+                                    size = 40.dp,
+                                    seed = card.peerInitial.ifBlank { card.title },
                                 )
+                            }
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = card.title,
+                                        style = typography.headingSmall,
+                                        color = colors.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                    if (card.kind == ToastKind.IncomingCall) {
+                                        Box(
+                                            modifier = Modifier
+                                                .padding(start = 6.dp)
+                                                .background(colors.backgroundSurfaceStrong, RoundedCornerShape(FlashShapes.radius4))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        ) {
+                                            Text(
+                                                text = if (card.isVideoCall) "VIDEO" else "VOICE",
+                                                style = typography.captionDefault,
+                                                color = colors.textSecondary,
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = card.detail,
+                                    style = typography.bodyEmphasis,
+                                    color = colors.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                val metadataRow = listOf(card.formattedSize, card.transportLabel)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" • ")
+                                if (metadataRow.isNotBlank()) {
+                                    Text(
+                                        text = metadataRow,
+                                        style = typography.captionDefault,
+                                        color = colors.textTertiary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+
+                        if (card.isVerifying) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+                                color = colors.accentFill,
+                                trackColor = colors.backgroundSurfaceSubtle,
+                            )
+                        }
+
+                        // Bottom row: Action buttons aligned to the right in ergonomic order
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            card.actions.forEach { action ->
+                                val isPrimary = action.isPrimary
+                                val interactionSource = remember { MutableInteractionSource() }
+                                val isHovered by interactionSource.collectIsHoveredAsState()
+                                val isFocused by interactionSource.collectIsFocusedAsState()
+
+                                val backgroundColor: Color
+                                val contentColor: Color
+
+                                if (card.kind == ToastKind.IncomingCall) {
+                                    if (action == ToastAction.Decline) {
+                                        // [Decline] (red, left)
+                                        backgroundColor = if (isHovered) colors.textError.copy(alpha = 0.85f) else colors.textError
+                                        contentColor = Color.White
+                                    } else if (action == ToastAction.Accept) {
+                                        // [Accept] (green, right)
+                                        backgroundColor = if (isHovered) colors.textSuccess.copy(alpha = 0.85f) else colors.textSuccess
+                                        contentColor = Color.White
+                                    } else {
+                                        backgroundColor = if (isHovered) colors.backgroundSurfaceStrong else colors.backgroundSurfaceSubtle
+                                        contentColor = if (isHovered) colors.textPrimary else colors.textSecondary
+                                    }
+                                } else {
+                                    if (isPrimary) {
+                                        backgroundColor = if (isHovered) colors.accentFill.copy(alpha = 0.88f) else colors.accentFill
+                                        contentColor = colors.onAccentFill
+                                    } else {
+                                        backgroundColor = if (isHovered) colors.backgroundSurfaceStrong else colors.backgroundSurfaceSubtle
+                                        contentColor = if (isHovered) colors.textPrimary else colors.textSecondary
+                                    }
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .defaultMinSize(minHeight = 38.dp)
+                                        .clip(RoundedCornerShape(FlashShapes.radiusFull))
+                                        .background(backgroundColor, RoundedCornerShape(FlashShapes.radiusFull))
+                                        .border(
+                                            FlashDimensions.borderHairline,
+                                            if (isFocused) contentColor else Color.Transparent,
+                                            RoundedCornerShape(FlashShapes.radiusFull),
+                                        )
+                                        .pointerHoverIcon(PointerIcon.Hand)
+                                        .clickable(
+                                            interactionSource = interactionSource,
+                                            indication = null,
+                                            role = Role.Button,
+                                        ) {
+                                            if (action == ToastAction.Dismiss) {
+                                                dismissed = dismissed + card.id
+                                                currentOnDismiss?.invoke(card.id)
+                                            } else {
+                                                onAction(action, card)
+                                            }
+                                        }
+                                        .padding(horizontal = 18.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = action.label,
+                                        style = typography.bodyEmphasis,
+                                        color = contentColor,
+                                        maxLines = 1,
+                                    )
+                                }
                             }
                         }
                     }
@@ -151,5 +368,28 @@ internal fun DesktopTransferToastWindow(
     }
 }
 
+/**
+ * Backward compatibility overload accepting transfer lists directly.
+ */
+@Composable
+internal fun DesktopTransferToastWindow(
+    transfers: List<FlashTransfer>,
+    appInForeground: Boolean,
+    onAction: (ToastAction, FlashTransferId) -> Unit,
+) {
+    var dismissed by remember { mutableStateOf(emptySet<FlashTransferId>()) }
+    val cards = DesktopTransferToastModel.cards(transfers, dismissed, appInForeground)
+    DesktopTransferToastWindow(
+        cards = cards,
+        appInForeground = appInForeground,
+        onAction = { action, card ->
+            dismissed = dismissed + card.transferId
+            onAction(action, card.transferId)
+        },
+        onDismiss = { id ->
+            dismissed = dismissed + FlashTransferId(id)
+        },
+    )
+}
+
 private const val TOAST_EDGE_MARGIN_DP: Int = 12
-private const val FAILURE_CARD_MS: Long = 30_000L

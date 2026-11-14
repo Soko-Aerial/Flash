@@ -21,27 +21,37 @@ class DesktopTransferToastModelTest {
         peer: String = "Ada",
         file: String = "$id.bin",
         error: String? = null,
+        bytesTotal: Long = 10L,
+        viaHub: Boolean = false,
     ) = FlashTransfer(
         id = FlashTransferId(id),
         peerName = peer,
         fileName = file,
         direction = direction,
         bytesDone = 0L,
-        bytesTotal = 10L,
+        bytesTotal = bytesTotal,
         state = state,
         errorMessage = error,
+        viaHub = viaHub,
     )
 
     @Test
-    fun `an offer gets Accept and Decline while the app is behind`() {
+    fun `an offer gets Decline on left and Accept on right while the app is behind`() {
         val cards = DesktopTransferToastModel.cards(
             listOf(transfer("a", FlashTransferState.Offered, FlashTransferDirection.Receiving)),
             dismissed = emptySet(),
             appInForeground = false,
         )
         assertEquals(1, cards.size)
-        assertEquals(listOf(ToastAction.Accept, ToastAction.Decline), cards.single().actions)
-        assertEquals("Incoming file from Ada", cards.single().title)
+        val card = cards.single()
+        assertEquals(listOf(ToastAction.Decline, ToastAction.Accept), card.actions)
+        assertEquals("Incoming file from Ada", card.title)
+        assertEquals("a.bin", card.detail)
+        assertEquals(10L, card.bytesTotal)
+        assertEquals("10 B", card.formattedSize)
+        assertEquals("LAN", card.transportLabel)
+        assertEquals("A", card.peerInitial)
+        assertEquals("BIN", card.fileType)
     }
 
     @Test
@@ -65,7 +75,7 @@ class DesktopTransferToastModelTest {
     }
 
     @Test
-    fun `a failed send offers Retry and Dismiss but a failed receive gets no card`() {
+    fun `a failed send offers Dismiss on left and Retry on right but a failed receive gets no card`() {
         val cards = DesktopTransferToastModel.cards(
             listOf(
                 transfer("s", FlashTransferState.Failed, FlashTransferDirection.Sending),
@@ -75,7 +85,11 @@ class DesktopTransferToastModelTest {
             appInForeground = false,
         )
         assertEquals(listOf(FlashTransferId("s")), cards.map { it.transferId })
-        assertEquals(listOf(ToastAction.Retry, ToastAction.Dismiss), cards.single().actions)
+        val card = cards.single()
+        assertEquals(listOf(ToastAction.Dismiss, ToastAction.Retry), card.actions)
+        assertEquals(10L, card.bytesTotal)
+        assertEquals("10 B", card.formattedSize)
+        assertEquals("LAN", card.transportLabel)
     }
 
     @Test
@@ -105,10 +119,42 @@ class DesktopTransferToastModelTest {
     }
 
     @Test
-    fun `window height grows with the number of cards`() {
+    fun `toast width is 400 dp`() {
+        assertEquals(400, DesktopTransferToastModel.WIDTH_DP)
+    }
+
+    @Test
+    fun `window height grows with the number of cards using 116 dp baseline`() {
         assertEquals(0, DesktopTransferToastModel.windowHeightDp(0))
-        assertEquals(96 + 16, DesktopTransferToastModel.windowHeightDp(1))
-        assertEquals(2 * 96 + 8 + 16, DesktopTransferToastModel.windowHeightDp(2))
+        assertEquals(116 + 16, DesktopTransferToastModel.windowHeightDp(1))
+        assertEquals(2 * 116 + 8 + 16, DesktopTransferToastModel.windowHeightDp(2))
+        assertEquals(3 * 116 + 2 * 8 + 16, DesktopTransferToastModel.windowHeightDp(3))
+    }
+
+    @Test
+    fun `window height supports dynamic card height clamped to max 144 dp`() {
+        assertEquals(130 + 16, DesktopTransferToastModel.windowHeightDp(1, cardHeightDp = 130))
+        assertEquals(144 + 16, DesktopTransferToastModel.windowHeightDp(1, cardHeightDp = 200))
+    }
+
+    @Test
+    fun `hub transfer sets Hub transport label and formats size correctly`() {
+        val hubTransfer = transfer(
+            id = "hub1",
+            state = FlashTransferState.Offered,
+            direction = FlashTransferDirection.Receiving,
+            peer = "Grace Hopper",
+            file = "manual.pdf",
+            bytesTotal = 1536L,
+            viaHub = true,
+        )
+        val cards = DesktopTransferToastModel.cards(listOf(hubTransfer), emptySet(), appInForeground = false)
+        val card = cards.single()
+        assertEquals("Hub", card.transportLabel)
+        assertEquals("1.5 KB", card.formattedSize)
+        assertEquals("G", card.peerInitial)
+        assertEquals("PDF", card.fileType)
+        assertEquals(listOf(ToastAction.Decline, ToastAction.Accept), card.actions)
     }
 
     @Test
@@ -119,22 +165,123 @@ class DesktopTransferToastModelTest {
         val threeCardHeight = DesktopTransferToastModel.windowHeightDp(3)
 
         assertEquals(
-            WindowPosition.Absolute(x = 1548.dp, y = (1040 - oneCardHeight - 12).dp),
-            toastWindowPosition(bounds, windowWidthDp = 360, windowHeightDp = oneCardHeight),
+            WindowPosition.Absolute(x = 1508.dp, y = (1040 - oneCardHeight - 12).dp),
+            toastWindowPosition(bounds, windowWidthDp = 400, windowHeightDp = oneCardHeight),
         )
         assertEquals(
-            WindowPosition.Absolute(x = 1548.dp, y = (1040 - twoCardHeight - 12).dp),
-            toastWindowPosition(bounds, windowWidthDp = 360, windowHeightDp = twoCardHeight),
+            WindowPosition.Absolute(x = 1508.dp, y = (1040 - twoCardHeight - 12).dp),
+            toastWindowPosition(bounds, windowWidthDp = 400, windowHeightDp = twoCardHeight),
         )
         assertEquals(
-            WindowPosition.Absolute(x = 1548.dp, y = (1040 - threeCardHeight - 12).dp),
-            toastWindowPosition(bounds, windowWidthDp = 360, windowHeightDp = threeCardHeight),
+            WindowPosition.Absolute(x = 1508.dp, y = (1040 - threeCardHeight - 12).dp),
+            toastWindowPosition(bounds, windowWidthDp = 400, windowHeightDp = threeCardHeight),
         )
 
         val smallMonitor = Rectangle(100, 50, 300, 180)
         assertEquals(
             WindowPosition.Absolute(x = 100.dp, y = 50.dp),
-            toastWindowPosition(smallMonitor, windowWidthDp = 360, windowHeightDp = twoCardHeight),
+            toastWindowPosition(smallMonitor, windowWidthDp = 400, windowHeightDp = twoCardHeight),
         )
+    }
+
+    @Test
+    fun `filterActiveCards respects individual autoDismiss deadlines without starving older cards`() {
+        val now = 100_000L
+        val olderCard = DesktopToastCard(
+            id = "c1",
+            title = "Old",
+            detail = "8s auto-dismiss",
+            actions = listOf(ToastAction.Dismiss),
+            autoDismissAtMs = now + 8_000L,
+        )
+        val newerCard = DesktopToastCard(
+            id = "c2",
+            title = "New",
+            detail = "15s auto-dismiss",
+            actions = listOf(ToastAction.Dismiss),
+            autoDismissAtMs = now + 15_000L,
+        )
+        val persistentCard = DesktopToastCard(
+            id = "c3",
+            title = "Offer",
+            detail = "No auto-dismiss",
+            actions = listOf(ToastAction.Decline, ToastAction.Accept),
+            autoDismissAtMs = null,
+        )
+
+        // At t = 105_000L: both cards unexpired
+        val at5s = DesktopTransferToastModel.filterActiveCards(
+            listOf(olderCard, newerCard, persistentCard),
+            dismissed = emptySet(),
+            appInForeground = false,
+            nowMs = now + 5_000L,
+        )
+        assertEquals(3, at5s.size)
+
+        // At t = 109_000L: older card expired at 108_000L, newer card and persistent card survive
+        val at9s = DesktopTransferToastModel.filterActiveCards(
+            listOf(olderCard, newerCard, persistentCard),
+            dismissed = emptySet(),
+            appInForeground = false,
+            nowMs = now + 9_000L,
+        )
+        assertEquals(2, at9s.size)
+        assertEquals(listOf("c2", "c3"), at9s.map { it.id })
+
+        // At t = 116_000L: older card and newer card expired, persistent card survives
+        val at16s = DesktopTransferToastModel.filterActiveCards(
+            listOf(olderCard, newerCard, persistentCard),
+            dismissed = emptySet(),
+            appInForeground = false,
+            nowMs = now + 16_000L,
+        )
+        assertEquals(1, at16s.size)
+        assertEquals("c3", at16s.single().id)
+    }
+
+    @Test
+    fun `foreground shows eligible chat and refusal cards and background prioritizes incoming calls`() {
+        val message = DesktopToastCard("chat", "New message", "Message body", emptyList(), kind = ToastKind.ChatMessage)
+        val refusal = message.copy(id = "refusal", kind = ToastKind.Generic)
+        val offer = message.copy(id = "offer", kind = ToastKind.TransferOffer)
+        val call = message.copy(id = "call", kind = ToastKind.IncomingCall)
+        val cards = listOf(message, refusal, offer, call)
+
+        assertEquals(
+            listOf("chat", "refusal"),
+            DesktopTransferToastModel.filterActiveCards(cards, emptySet(), true).map { it.id },
+        )
+        assertEquals(
+            listOf("call", "offer", "chat"),
+            DesktopTransferToastModel.filterActiveCards(cards, emptySet(), false).map { it.id },
+        )
+    }
+
+    @Test
+    fun `cardHeightDp expands to max height when card is verifying`() {
+        val minimalCard = DesktopToastCard(
+            id = "c0",
+            title = "File",
+            detail = "",
+            actions = emptyList(),
+            formattedSize = "",
+            transportLabel = "",
+            isVerifying = false,
+        )
+        assertEquals(DesktopTransferToastModel.CARD_HEIGHT_DP, DesktopTransferToastModel.cardHeightDp(minimalCard))
+
+        val normalCard = DesktopToastCard(
+            id = "c1",
+            title = "File",
+            detail = "detail",
+            actions = listOf(ToastAction.Dismiss),
+            formattedSize = "",
+            transportLabel = "",
+            isVerifying = false,
+        )
+        assertEquals(DesktopTransferToastModel.CARD_EXPANDED_HEIGHT_DP, DesktopTransferToastModel.cardHeightDp(normalCard))
+
+        val verifyingCard = normalCard.copy(isVerifying = true)
+        assertEquals(DesktopTransferToastModel.CARD_MAX_HEIGHT_DP, DesktopTransferToastModel.cardHeightDp(verifyingCard))
     }
 }

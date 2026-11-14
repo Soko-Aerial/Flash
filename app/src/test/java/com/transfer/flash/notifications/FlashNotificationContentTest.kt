@@ -1,6 +1,10 @@
 package com.transfer.flash.notifications
 
+import com.transfer.flash.core.transfer.model.FlashTransferState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FlashNotificationContentTest {
@@ -245,10 +249,70 @@ class FlashNotificationContentTest {
             org.junit.Assert.assertTrue("Message ID $msgId must be in 2000..2999", msgId in 2000..2999)
             org.junit.Assert.assertFalse("Message ID $msgId must not collide with dedicated IDs", dedicatedIds.contains(msgId))
 
-            val xferId = "test-transfer-$i"
-            val transferId = FlashNotificationManager.notificationIdForTransfer(xferId)
-            org.junit.Assert.assertTrue("Transfer ID $transferId must be in 3000..3999", transferId in 3000..3999)
-            org.junit.Assert.assertFalse("Transfer ID $transferId must not collide with dedicated IDs", dedicatedIds.contains(transferId))
+            assertFalse(FlashNotificationManager.TRANSFER_NOTIFICATION_BASE in dedicatedIds)
+            assertNotEquals(msgId, FlashNotificationManager.TRANSFER_NOTIFICATION_BASE)
         }
+    }
+
+    @Test
+    fun `transfer progress verifying state formats title with ellipsis and integrity text`() {
+        val content = transferProgressNotificationContent(
+            fileName = "archive.tar.gz",
+            bytesDone = 500L * 1024L * 1024L,
+            bytesTotal = 500L * 1024L * 1024L,
+            speedBytesPerSec = 0L,
+            etaSeconds = 0L,
+            isReceiving = true,
+            state = FlashTransferState.Verifying,
+        )
+        assertEquals("Verifying archive.tar.gz…", content.title)
+        assertEquals("Checking file integrity…", content.body)
+    }
+
+    @Test
+    fun `calculateNotificationProgress returns indeterminate progress for Verifying state`() {
+        val progress = calculateNotificationProgress(
+            state = FlashTransferState.Verifying,
+            bytesDone = 1000L,
+            bytesTotal = 1000L,
+        )
+        assertEquals(0, progress.max)
+        assertEquals(0, progress.progress)
+        assertTrue(progress.indeterminate)
+
+        val activeProgress = calculateNotificationProgress(
+            state = FlashTransferState.Transferring,
+            bytesDone = 500L,
+            bytesTotal = 1000L,
+        )
+        assertEquals(100, activeProgress.max)
+        assertEquals(50, activeProgress.progress)
+        assertFalse(activeProgress.indeterminate)
+
+        val unknownTotalProgress = calculateNotificationProgress(
+            state = FlashTransferState.Transferring,
+            bytesDone = 500L,
+            bytesTotal = 0L,
+        )
+        assertEquals(100, unknownTotalProgress.max)
+        assertEquals(0, unknownTotalProgress.progress)
+        assertTrue(unknownTotalProgress.indeterminate)
+    }
+
+    @Test
+    fun `notification tags and action data distinguish Java hash collisions and encode delimiters`() {
+        assertEquals("Aa".hashCode(), "BB".hashCode())
+        assertNotEquals(
+            FlashNotificationManager.transferNotificationTag("Aa"),
+            FlashNotificationManager.transferNotificationTag("BB"),
+        )
+        assertNotEquals(
+            FlashNotificationManager.transferActionIdentity("Aa"),
+            FlashNotificationManager.transferActionIdentity("BB"),
+        )
+        assertNotEquals(
+            FlashNotificationManager.transferActionIdentity("file/1"),
+            FlashNotificationManager.transferActionIdentity("file%2F1"),
+        )
     }
 }

@@ -721,6 +721,7 @@ public object FlashInboundRouter {
             val wholeFile = host.transferRepository?.onIncomingFileAssembled(
                 transferId, path, expectedHex, chunksVerified,
             )
+            if (wholeFile == WholeFileCheck.ABANDONED) return
             // The extra clause covers a host without a transfer repository: a sink I/O failure that the
             // assembled file does not disprove must still be answered as unverified.
             val failed = wholeFile == WholeFileCheck.MISMATCH || (ioFailure != null && !chunksVerified)

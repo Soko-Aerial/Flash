@@ -6,6 +6,7 @@ import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallLogEntry
 import com.transfer.flash.core.calling.model.FlashCallReactionKind
+import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.OngoingGroupCallUi
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
@@ -489,6 +490,22 @@ public class CallCoordinator(
         }
         val session = currentSession ?: return false
         session.decline()
+        return true
+    }
+
+    /** An external action can only operate on the specific call it displayed. */
+    public suspend fun respondToRingingCall(callId: String, accept: Boolean): Boolean {
+        val group = currentGroupSession
+        if (group != null) {
+            if (group.callId != callId || group.state.value.state != FlashCallState.RINGING) return false
+            if (accept) return group.accept()
+            group.decline()
+            return true
+        }
+        val direct = currentSession ?: return false
+        if (direct.callId != callId || direct.state.value.state != FlashCallState.RINGING) return false
+        if (accept) return direct.accept()
+        direct.decline()
         return true
     }
 

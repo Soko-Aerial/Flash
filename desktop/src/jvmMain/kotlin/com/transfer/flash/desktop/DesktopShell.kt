@@ -184,6 +184,8 @@ public fun DesktopShell(
     /** UI-058 H9: a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`) to open, set at launch or by a notification. */
     pendingHubRoute: kotlinx.coroutines.flow.MutableStateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
     /** Application-owned in DesktopMain: a tab or tray transition must not recreate a stored-ON radio. */
+    notificationActionError: String? = null,
+    onNotificationActionErrorShown: () -> Unit = {},
     radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController = remember(engine) {
         com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
             scope = engine.scope,
@@ -201,6 +203,10 @@ public fun DesktopShell(
     // One snackbar surface for the whole window. Declared here, above the collectors that raise
     // messages, so nothing depends on declaration order.
     val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(notificationActionError) {
+        notificationActionError?.let { snackbarHostState.showSnackbar(it) }
+        onNotificationActionErrorShown()
+    }
 
     // ── Phase 22: window size + selection state for the two-pane layout ──
     val sizeClass = rememberFlashDesktopWindowSize(window)
@@ -399,16 +405,6 @@ public fun DesktopShell(
         val mapped = pairingPhaseOf(pairingUi?.phase)
         if (mapped != FlashPairingPhase.Failed) {
             lastPairingFailureMessage = null
-        }
-    }
-    LaunchedEffect(engine, snackbarHostState) {
-        engine.onJoinRequestNotification = { _, groupTitle, requesterName ->
-            scope.launch {
-                snackbarHostState.showSnackbar(
-                    message = "$requesterName wants to join $groupTitle",
-                    duration = SnackbarDuration.Short,
-                )
-            }
         }
     }
     // The pairing DIALOG is driven entirely by this one value, so when it fails to appear there is

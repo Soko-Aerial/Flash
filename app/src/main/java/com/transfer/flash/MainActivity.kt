@@ -1412,6 +1412,7 @@ private fun FlashShell(
     val openConversationEntry = nav.current.destination.let { dest ->
         if (dest == FlashDestination.Conversation) nav.current.conversationId else null
     }
+    FlashNotificationManager.currentDestination = nav.current.destination
     FlashNotificationManager.openConversationId = openConversationEntry
     val notifyContext = LocalContext.current
     LaunchedEffect(openConversationEntry) {
@@ -3187,8 +3188,14 @@ private fun FlashShell(
             // Plan 1.2: the screen only draws "Clear history" when a host passes this.
             onClearHistory = {
                 selectedTransferId = null
-                engine.transfers?.clearFinishedHistory()
-                FlashNotificationManager.clearAllTransfers(toastContext)
+                engine.transfers?.let { repository ->
+                    repository.activeTransfers.value.filter {
+                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Completed
+                    }.forEach {
+                        FlashNotificationManager.clearTransfer(toastContext, it.id.value)
+                    }
+                    repository.clearFinishedHistory()
+                }
             },
             // C-10: a Failed or Cancelled row can be dismissed one by one or all at once.
             onDismissItem = { item ->
