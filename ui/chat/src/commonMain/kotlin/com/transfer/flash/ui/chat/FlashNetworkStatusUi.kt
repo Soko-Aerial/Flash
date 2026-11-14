@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -218,7 +217,7 @@ fun FlashConnectionBanner(
         if (FlashNetworkStatusMath.isBlockingState(health)) {
             Box(
                 modifier = Modifier
-                    .defaultMinSize(minWidth = FlashDimensions.minTouchTarget, minHeight = FlashDimensions.minTouchTarget)
+                    .heightIn(min = 28.dp)
                     .clip(FlashShapes.chip)
                     .background(colors.accentFill)
                     .clickable(onClick = onRetry)

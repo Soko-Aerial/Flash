@@ -944,7 +944,7 @@ private fun TransferRow(
     }
 
     BoxWithConstraints(modifier.fillMaxWidth()) {
-        val stackActions = maxWidth < 340.dp || LocalDensity.current.fontScale >= 1.3f
+        val stackActions = maxWidth < 280.dp || LocalDensity.current.fontScale >= 1.3f
         Row(
             Modifier
                 .fillMaxWidth()
@@ -964,7 +964,7 @@ private fun TransferRow(
                         base
                     }
                 }
-                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
                 .semantics(mergeDescendants = true) {
                     contentDescription = buildString {
                         append(item.fileName)
@@ -987,20 +987,20 @@ private fun TransferRow(
             TransferBadge(
                 fileName = item.fileName,
             )
-            Spacer(Modifier.width(FlashSpacing.space12))
+            Spacer(Modifier.width(FlashSpacing.space8))
             Column(Modifier.weight(1f)) {
                 FlashText(
                     text = item.fileName,
-                    style = FlashTheme.typography.bodyDefault,
+                    style = FlashTheme.typography.captionEmphasis,
                     color = colors.textPrimary,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 FlashText(
                     text = "${FlashTransfersMath.directionLabel(item)} ${item.peerName}$subtitleSuffix",
-                    style = FlashTheme.typography.captionDefault,
+                    style = FlashTheme.typography.metadataDefault,
                     color = colors.textSecondary,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 TransferProgressBar(
@@ -1025,9 +1025,9 @@ private fun TransferRow(
                 }
                 FlashText(
                     text = FlashTransfersMath.statusLine(item),
-                    style = FlashTheme.typography.captionDefault,
+                    style = FlashTheme.typography.metadataDefault,
                     color = if (item.state == FlashTransferState.Failed) colors.textError else colors.textSecondary,
-                    maxLines = if (item.state == FlashTransferState.Failed) Int.MAX_VALUE else 2,
+                    maxLines = if (item.state == FlashTransferState.Failed && onRowClick == null) Int.MAX_VALUE else 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -1164,7 +1164,7 @@ private fun RowIcon(
 }
 
 /**
- * Static 48dp extension badge reusing UI-016's color language (fileCategoryColorFor) without
+ * Compact extension badge reusing UI-016's color language (fileCategoryColorFor) without
  * the in-bubble interactive overlays — row-level controls own the actions on this surface.
  */
 @Composable
@@ -1180,7 +1180,7 @@ private fun TransferBadge(fileName: String) {
 
     Box(
         Modifier
-            .size(FlashDimensions.avatarMd)
+            .size(FlashDimensions.avatarSm)
             .clip(CircleShape)
             .background(categoryColor.copy(alpha = 0.9f))
             .border(FlashDimensions.borderHairline, colors.borderSubtle.copy(alpha = 0.4f), CircleShape),

@@ -367,8 +367,10 @@ private fun FlashMessageBubbleUltraLow(
     ) {
         Column(
             modifier = Modifier.padding(
-                horizontal = FlashSpacing.space12,
-                vertical = FlashSpacing.space8,
+                start = FlashSpacing.space12,
+                end = FlashSpacing.space12,
+                top = FlashSpacing.space8,
+                bottom = FlashSpacing.space4,
             ),
         ) {
             message.replyTo?.let { reply ->
@@ -409,7 +411,7 @@ private fun FlashMessageBubbleUltraLow(
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
-                message.voiceAttachments.forEach { voice ->
+                message.voiceAttachments.forEachIndexed { index, voice ->
                     VoiceCardItem(
                         voice = voice,
                         isParentOutgoing = message.isMine,
@@ -420,7 +422,9 @@ private fun FlashMessageBubbleUltraLow(
                         onOpenActions = onOpenActions,
                         haptics = haptics,
                     )
-                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    if (index != message.voiceAttachments.lastIndex || message.text.isNotBlank() || message.callEvent != null) {
+                        Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    }
                 }
             }
             message.callEvent?.let { call ->
@@ -445,10 +449,10 @@ private fun FlashMessageBubbleUltraLow(
                         onJoinInvite = { onJoinInvite?.invoke(it) },
                     )
                 }
-                Spacer(modifier = Modifier.height(FlashSpacing.space4))
             }
             FlashMessageTimestampRowUltraLow(
                 message = message,
+                modifier = Modifier.padding(top = FlashSpacing.space2),
                 deliveryStatus = deliveryStatus,
                 onRetryMessage = onRetryMessage,
             )
@@ -618,8 +622,10 @@ private fun FlashBubbleSurface(
     ) {
         Column(
             modifier = Modifier.padding(
-                horizontal = FlashSpacing.space12,
-                vertical = FlashSpacing.space8,
+                start = FlashSpacing.space12,
+                end = FlashSpacing.space12,
+                top = FlashSpacing.space8,
+                bottom = FlashSpacing.space4,
             ),
         ) {
             message.replyTo?.let { reply ->
@@ -665,7 +671,7 @@ private fun FlashBubbleSurface(
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
-                message.voiceAttachments.forEach { voice ->
+                message.voiceAttachments.forEachIndexed { index, voice ->
                     VoiceCardItem(
                         voice = voice,
                         isParentOutgoing = message.isMine,
@@ -676,7 +682,9 @@ private fun FlashBubbleSurface(
                         onOpenActions = onOpenActions,
                         haptics = haptics,
                     )
-                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    if (index != message.voiceAttachments.lastIndex || message.text.isNotBlank() || message.callEvent != null) {
+                        Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    }
                 }
             }
             message.callEvent?.let { call ->
@@ -718,10 +726,10 @@ private fun FlashBubbleSurface(
                         onJoinInvite = { onJoinInvite?.invoke(it) },
                     )
                 }
-                Spacer(modifier = Modifier.height(FlashSpacing.space4))
             }
             FlashMessageTimestampRow(
                 message = message,
+                modifier = Modifier.padding(top = FlashSpacing.space2),
                 deliveryStatus = deliveryStatus,
                 onOpenActions = onOpenActions,
                 onOpenMessageInfo = onOpenMessageInfo,
@@ -898,10 +906,9 @@ private fun FlashMessageTimestampRow(
             Spacer(modifier = Modifier.width(FlashSpacing.space4))
             Box(
                 modifier = Modifier
-                    .defaultMinSize(
-                        minWidth = FlashDimensions.minTouchTarget,
-                        minHeight = FlashDimensions.minTouchTarget,
-                    )
+                    // Keep the width for touch, with a compact visual height for the timestamp.
+                    // Foundation expands the clickable height for touch input.
+                    .size(width = FlashDimensions.minTouchTarget, height = FlashSpacing.space20)
                     .clip(CircleShape)
                     .clickable(
                         onClick = {

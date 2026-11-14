@@ -176,10 +176,8 @@ fun FlashEncryptionBadge(
     if (compact) {
         Box(
             modifier = modifier
-                .defaultMinSize(
-                    minWidth = FlashDimensions.minTouchTarget,
-                    minHeight = FlashDimensions.minTouchTarget,
-                )
+                // Foundation expands the clickable icon's touch area beyond its visual size.
+                .size(FlashDimensions.iconSm)
                 .clip(CircleShape)
                 .clickable(onClick = onClick)
                 .semantics(mergeDescendants = true) {

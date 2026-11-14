@@ -404,7 +404,12 @@ fun FlashVoiceMessageCard(
                 contentDescription = a11yDescription
                 stateDescription = a11yState
             }
-            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+            .padding(
+                start = FlashSpacing.space12,
+                end = FlashSpacing.space12,
+                top = FlashSpacing.space8,
+                bottom = FlashSpacing.space4,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Left side: play/pause badge with speed pill beneath it.
@@ -638,9 +643,9 @@ private fun FlashVoiceWaveform(
             return@Canvas
         }
 
-        val gap = 2.dp.toPx()
-        val barWidth = 3.dp.toPx()
-        val slot = barWidth + gap
+        // Shrink the slots with the available width so the waveform never draws into the duration.
+        val slot = minOf(5.dp.toPx(), size.width / barCount)
+        val barWidth = slot * 0.6f
         val cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
 
         for (bar in 0 until barCount) {

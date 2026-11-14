@@ -269,8 +269,6 @@ fun FlashTransferDetailPane(
                         text = item.fileName,
                         style = FlashTheme.typography.bodyEmphasis,
                         color = colors.textPrimary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(FlashSpacing.space4))
                     FlashText(
