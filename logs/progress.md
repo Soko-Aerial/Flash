@@ -1,5 +1,73 @@
 # Progress Log
 
+## 2026-11-14 — Desktop Tray Icon & Voice Message Button UX Fixes
+
+Committed together with the four visual polish passes as `a21bf8f9` on `dev`. The pre-commit check confirmed the six affected test tasks were up to date with 2,189 passing tests and two opt-in render skips. Separate locked runs with the Android Studio JBR launcher and one worker passed `:app:assembleDebug` in 2m 26s and `:app:lintDebug` in 8m 18s (zero errors, 169 warnings, two hints). Device acceptance is UXPOL-18 and UXPOL-19.
+
+### Worked on
+Fixed the desktop system tray icon and three voice-message button UX issues across `:desktop` and `:ui:chat`:
+1. **Desktop Tray Icon (`desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopMain.kt`):**
+   - Replaced `painterResource(FlashIcons.Tray.drawableRes)` (which rendered the old inbox/tray outline) in `Tray(...)` with the shared `appIconPainter` rendered by `DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0)` (the redesigned dark slate squircle with Flash Pulse Teal lightning bolt and crisp white stroke), while keeping `FlashIcons.Tray` untouched for `HcGlyphs.MAILBOX`.
+2. **Voice Button Hit Target (`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashComposer.kt`):**
+   - Gated `FlashSendButton` composition behind `if (sendProgress > 0.01f)` so the `44.dp` send button is not mounted over `FlashMicButton` when the composer is in mic mode.
+3. **Voice Button Spring Effect (`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashVoiceRecording.kt`):**
+   - Emitted `PressInteraction.Press` / `Release` / `Cancel` to `interactionSource` inside `pointerInput` and added a zero-recomposition `Animatable(1f)` (`pressScale`) read inside `graphicsLayer` that compresses on press (`0.84f`) and springs back with a tactile bounce (`dampingRatio = 0.38f, stiffness = 520f`) on both Android and Desktop (including fast clicks/taps, while honoring `motion.reduceMotion`).
+4. **Short-Tap Hint Overlap (`FlashComposer.kt`, `FlashConversationScreen.kt`):**
+   - Removed the redundant `showMessage("Hold to record")` / `showMessage("Recording too short")` snackbar calls from `onVoiceTapTooShort` and `onVoiceRecordingTooShort` in `FlashConversationScreen.kt` because `FlashComposer` already shows `FlashVoiceHintPill` right above the composer without covering the text box; shortened `showShortTapHint` auto-dismiss delay from `2_000L` to `1_400L`.
+
+### Verification
+- `tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :desktop:jvmTest :app:testDebugUnitTest :app:assembleDebug --no-daemon --max-workers=2 "-Dorg.gradle.jvmargs=-Xmx4096m -Xss4m -XX:+UseG1GC -Dfile.encoding=UTF-8"` -> `BUILD SUCCESSFUL in 7m 21s` (`337 actionable tasks: 23 executed, 314 up-to-date`, exit code `0`).
+
+### Remaining / Next AI
+- Manual visual/interaction check on Windows Desktop (system tray icon + mic click spring) and Android device (mic full-area tap/hold spring + non-blocking `"Hold to record"` pill).
+
+## 2026-11-14 — Cross-screen visual polish across Android and Desktop (Passes 1–4)
+
+### Worked on
+Conducted a comprehensive visual polish review and implemented a 4-pass remediation across `:ui:theme`, `:ui:chat`, `:ui:callui`, `:desktop`, and `:app` (50 product files in the working tree atop `dev` at `54b84844`):
+1. **Pass 1 — Contrast, Font Scaling, Touch Targets & Core Cards:**
+   - Replaced hardcoded/unscaled elements and tightened accessibility contrast, touch targets (`48.dp` min), and card/chip padding across `FlashMessageBubble.kt`, `FlashBottomNav.kt`, `FlashAvatar.kt`, `FlashHubMotion.kt` (`HubMark`), `FlashVoiceMessageCard.kt`, `FlashFileMessageCard.kt`, `FlashTransfersScreen.kt`, `FlashNearbyScreen.kt`, and `FlashHubPlaceholderScreen.kt`.
+2. **Pass 2 — Navigation Rail/Sidebar Badges, Chat List, Search & Desktop Chrome:**
+   - Prevented badge clipping on rail/sidebar icons and added vertical scrolling to the primary desktop navigation column (`FlashNavigationRail.kt`, `DesktopSideBar.kt`).
+   - Kept desktop right-click context menu enabled alongside swipe actions and aligned selection-mode row dividers (`FlashChatListRow.kt`); wrapped `FlashPendingJoinRow` with an inset bottom divider (`FlashChatListScreen.kt`); switched top/selection bar titles to `FlashText` and added bottom hairline dividers (`FlashChatListTopBar.kt`, `FlashChatListSelectionBar.kt`); gave archived unread badges `20.dp` min dimensions and divider framing (`FlashArchivedChats.kt`).
+   - Improved search bar clear-button hit targets (`48.dp` / `36.dp` with inner circular backing), search-sheet height handling, and divider polish (`FlashChatListSearch.kt`, `FlashChatSearchBar.kt`, `FlashShareTargetSheet.kt`, `FlashCreateGroupSheet.kt`, `FlashBrowseOrgGroupsSheet.kt`, `FlashJoinGroupDialog.kt`).
+   - Added responsive fractional skeleton bars in `FlashStateViews.kt`.
+   - Applied `LocalDensity` UI scaling to `DesktopTransferToastWindow`, replaced Material3 `Text` with `FlashText` in toasts (`DesktopMain.kt`, `DesktopTransferToastWindow.kt`), and styled `SnackbarHost` with Flash theme tokens (`DesktopShell.kt`).
+3. **Pass 3 — Conversation, Sheets, Hub, Radio & Settings Polish:**
+   - Migrated header typing text to `FlashText` with ellipsis (`FlashTypingIndicator.kt`) and added typing-label spacing in group headers (`FlashChatHeader.kt`).
+   - Replaced 4-line caption truncation in `FlashMediaViewer.kt` with a `120.dp` max-height vertically scrollable container.
+   - Standardized `FlashSelectionToolbar.kt` title on `FlashText`, upgraded remaining `40.dp` icon buttons to `48.dp` (`minTouchTarget`), and added a bottom hairline divider.
+   - Wrapped the attachment button in a `48.dp` touch target and displayed attachment-type reply fallback labels (`Voice message`, `Photo`, attachment file name) in `FlashComposer.kt` and `FlashConversationScreen.kt`; expanded `FlashVoiceRecordingBar` height to `min = FlashDimensions.minTouchTarget` (`FlashVoiceRecording.kt`); tuned outgoing quoted-reply tint alpha to `0.10f` (`FlashQuotedReplyCard.kt`) after `0.14f` failed AA snippet contrast in `FlashReplyLogicTest`; enlarged quick/picker reaction buttons to `36.dp` and ranged context menu width `200.dp..260.dp` (`FlashMessageContextMenu.kt`).
+   - Rendered optional `dragHandle` centered on JVM sheets (`FlashSheetHost.jvm.kt`) and added vertical scroll to `FlashPeerDetailsSheet.kt`, `FlashEncryptionSheet`, and `FlashFingerprintSheet` (`FlashEncryptionIndicators.kt`).
+   - Added vertical padding on `FlashHubFilterChip` (`FlashHubPeople.kt`), trailing disclosure chevrons on `FlashHubDepartmentCard` (`FlashHubOrg.kt`), stacked CTA layout on `FlashRadioPermissionBanner` (`FlashRadioGatewayComponents.kt`), `destructive` styling and disclosure chevrons on clickable `ValueRow` items (`FlashSettingsScreen.kt`), vertical scroll in `FlashApprovalsDialog.kt`, and `fillMaxWidth()` on the `OutlinedTextField` in `FlashDisplayNameDialog.kt`.
+4. **Pass 4 — Calling, PTT & Android Home Widget:**
+   - Exposed `rememberRemoteVideoTracks` internally in `FlashGroupVideoGrid.kt` so `FlashCallPictureInPicture` renders active group remote video in PiP (`FlashCallScreen.kt`).
+   - Constrained audio group participant tiles to `88.dp` width so names ellipsize cleanly without displacing siblings, switched `FlashRemoteVideoPlaceholder` to `colors.mediaViewerBackdrop` + `colors.mediaViewerChromeText` so light-theme overlay headers stay legible, and added a `"Close"` caption underneath the `ENDED` call dismiss button (`FlashCallScreen.kt`).
+   - Padded `FlashGroupVideoStrip.kt` participant label rows (`space4` horizontal padding, `space2` gap).
+   - Set `DesktopPttButton` default size to `FlashDimensions.minTouchTarget` (`DesktopPttButton.kt`).
+   - Aligned Android Home Screen widget colors with Flash `graphite`/`pulse` tokens (`app/src/main/res/drawable/widget_background.xml`, `app/src/main/res/layout/widget_flash.xml`).
+
+### Verification
+- **Render PNG inspection:** Ran `$env:FLASH_TABS_RENDER_DIR=...; .\tools\flash-gradle.cmd :desktop:jvmTest --tests "com.transfer.flash.desktop.FlashWorkspaceTabsRenderTest" --rerun --no-daemon --max-workers=2 "-Dorg.gradle.jvmargs=-Xmx4096m -Xss4m -XX:+UseG1GC -Dfile.encoding=UTF-8"` (`BUILD SUCCESSFUL in 5m 16s`), generating 55 native PNGs (`transfers-*`, `nearby-*`, `chat-*`), and visually inspected 13 captures (`transfers-dark`, `transfers-phone`, `transfers-desktop`, `transfers-large-text`, `transfers-error`, `nearby-dark`, `nearby-phone`, `nearby-desktop`, `nearby-large-text`, `nearby-pair-requestreceived`, `chat-bubbles`, `chat-bubbles-large-text`, `chat-search`) with no clipping, overlap, or contrast regressions.
+- **Full verification gate (`tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon --max-workers=2 "-Dorg.gradle.jvmargs=-Xmx4096m -Xss4m -XX:+UseG1GC -Dfile.encoding=UTF-8"`):**
+  `BUILD SUCCESSFUL in 8m 28s` (`521 actionable tasks: 51 executed, 1 from cache, 469 up-to-date`, exit code `0`):
+  - `:ui:theme:jvmTest`: 8 suites, 69 tests — 69 passed, 0 failed, 0 skipped
+  - `:ui:chat:jvmTest`: 87 suites, 801 tests — 801 passed, 0 failed, 0 skipped
+  - `:ui:chat:testAndroidHostTest`: 81 suites, 776 tests — 776 passed, 0 failed, 0 skipped
+  - `:ui:callui:jvmTest`: 16 suites, 113 tests — 113 passed, 0 failed, 0 skipped
+  - `:desktop:jvmTest`: 52 suites, 313 tests — 311 passed, 0 failed, 2 skipped (opt-in `FlashWorkspaceTabsRenderTest` and `FlashHubWorkspaceRenderTest` without render env vars)
+  - `:app:testDebugUnitTest`: 20 suites, 119 tests — 119 passed, 0 failed, 0 skipped
+  - **Total test tasks:** 264 suites, 2,191 tests — **2,189 passed, 0 failed, 0 errors, 2 pre-existing opt-in render skips**
+  - `:app:lintDebug`: PASSED (0 errors; HTML & SARIF reports written)
+  - `:app:assembleDebug`: PASSED
+
+### Problems / Fixes
+- `:ui:chat:compileKotlinJvm` hit Windows JVM stack overflow (`-1073741571` / `ERROR-1027`) under default Gradle worker/stack settings; resolved for this host by running Gradle with `--no-daemon --max-workers=2` and `-Dorg.gradle.jvmargs="-Xmx4096m -Xss4m -XX:+UseG1GC -Dfile.encoding=UTF-8"`.
+- `FlashReplyLogicTest` caught that `0.14f` outgoing quoted-reply background alpha lowered `chatTextTimestampOutgoing` contrast below 4.5:1 in dark bubbles; adjusted to `0.10f` so AA contrast passes.
+
+### Remaining / Next AI
+- Physical Android phone and Desktop live visual/interactive acceptance for Passes 1–4 is tracked under `UXPOL-18` in `docs/testing/TEST-BACKLOG.md` (no phones were tested directly in this host session).
+
 ## 2026-11-14 — Branch inventory and compact Transfers and chat
 
 Checked 32 registered worktrees, local and remote refs, patch-equivalent commits, and detached release trees against `dev` at `1e8868d2`. `origin/linux` at `839e44ae` has eight commits outside `dev` (six non-merge), including live Bluetooth discovery, pairing and RFCOMM, XDG autostart, network band detection, and the `.deb` and portable release script with its packaged runtime fix. A merge simulation conflicts in `logs/errors.md`, `logs/handoff.md` and this file. The Linux branch also uses ERROR-1020 for a different issue, so preserve both entries when integrating. Remote `dev` at `31e1551c` lacks the 31 commits already on local `dev`.

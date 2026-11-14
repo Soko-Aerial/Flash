@@ -8675,3 +8675,23 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 - **Pass:** One receiver bubble and one saved file per photo or voice note, including after retry. Repeat selection in one draft creates one tray item and one sender transfer ID. Distinct photos are delivered once each, and the fresh draft creates one new transfer. If a duplicate appears, capture both logs and the corresponding transfer IDs and routes.
 - **Source:** ERROR-1024/1025 and [UI-012](../ui/attachment-button.md).
 - **Status:** TODO
+
+### UXPOL-18 — Cross-screen visual polish across Android & Desktop (Passes 1–4)
+
+- **Setup:** Physical Android phone(s) (light and dark themes, standard and large font scaling, narrow `<=360 dp` and foldable/tablet widths if available, plus home screen widget added) and Desktop app (custom UI scale e.g. `1.25x` and default `1.0x`, narrow short window height, light and dark themes).
+- **Steps:**
+  1. Check left navigation rail badges, desktop sidebar scroll in a short window with multiple tabs/badges, chat list dividers, archived chats badge, search bar/sheet clear targets, swipe + right-click row actions, and loading skeletons.
+  2. In a conversation, verify group typing status spacing, selection toolbar `48 dp` buttons and divider, full-screen media viewer long caption scrolling, attachment reply fallback labels (`Voice message`, `Photo`, file name), outgoing/incoming quoted reply legibility, `36 dp` reaction menu buttons, centered desktop sheet drag handle, and scrolling on Peer Details / Encryption / Fingerprint sheets.
+  3. Check Hub filter chips and department chevrons, Radio permission banner wrapping at narrow widths, Settings row chevrons, red destructive `"Disconnect from Organization"` row, scrollable approvals dialog, and full-width display name dialog field.
+  4. Exercise 1:1 & group audio/video calls (light & dark themes), active video PiP (including group calls), group strip badges, ended-call Close button label, Desktop `Flash` transfer toast window at non-`1.0x` UI scale, themed desktop snackbar, `48 dp` `DesktopPttButton`, and the Android home screen widget.
+- **Pass:** No clipped badges, overlapping labels, or truncated action pills; clear buttons, attachment triggers, voice bar, selection toolbar icons, and `DesktopPttButton` respond reliably to touch/mouse clicks; long captions/sheets/dialogs scroll smoothly; light-mode camera-off video call overlays remain readable on the dark placeholder backdrop; desktop toasts scale cleanly and the Android widget matches Flash `graphite`/`pulse` colors.
+- **Source:** Passes 1–4 visual polish remediation (`logs/progress.md`, `2026-11-14`).
+- **Status:** TODO
+
+### UXPOL-19 — Desktop tray icon and voice recording button
+
+- **Setup:** Windows desktop with the system tray available and an Android phone. Open a conversation with an empty composer. Repeat with reduced motion enabled.
+- **Steps:** Check the tray icon, then tap or click different parts of the mic button. On Android, verify a short tap shows the hold hint and a long press starts recording. On desktop, click to start and stop recording. Repeat after sending text so the composer switches back to the mic.
+- **Pass:** The desktop tray shows the Flash app icon. The mic responds across its target, the hint leaves the composer visible, and the press animation is suppressed with reduced motion.
+- **Source:** Desktop tray and voice message button fixes in `logs/progress.md`.
+- **Status:** TODO

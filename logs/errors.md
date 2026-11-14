@@ -2,6 +2,8 @@
 
 ## ERROR-1027 — Windows Gradle JVM stack overflow during the verification run
 
+**2026-11-14 follow-up.** The pre-commit verification for `a21bf8f9` confirmed all six test tasks were up to date, then exited `-1073741571` during lint. A single-worker retry also reported `EXCEPTION_IN_PAGE_ERROR (0xc0000006)` in the Gradle launcher JBR's `jimage.dll`. Separate APK assembly and lint runs passed with the installed Android Studio JBR as launcher, one worker, and `-Xss8m` for the Gradle daemon. The host error remains open.
+
 **2026-11-14 · Build host · Status: OPEN.** Two Gradle attempts exited `-1073741571`. Windows Application Error recorded `java.exe` in `ntdll.dll` with `0xc00000fd` (stack overflow). The first daemon connection also dropped before task execution. The final locked verification passed with `--no-daemon`, two workers and a per-invocation `-Xss4m` for the Gradle daemon. The underlying Windows failure was not isolated. There was also a compile failure in the first render fixture due to a missing import and a misplaced closing brace. Both were corrected and the fixture ran on the next compiling pass.
 
 ## ERROR-1026 — Desktop discovery ECO test timed out during chat verification
