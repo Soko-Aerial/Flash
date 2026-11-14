@@ -41,6 +41,7 @@ public object RelayFrameCodec {
         when (frame) {
             is RelayFrame.Send -> require(utf8Size(frame.payload) <= HubContract.MAX_PAYLOAD_BYTES) { "payload exceeds ${HubContract.MAX_PAYLOAD_BYTES} bytes" }
             is RelayFrame.Deliver -> require(utf8Size(frame.payload) <= HubContract.MAX_PAYLOAD_BYTES) { "payload exceeds ${HubContract.MAX_PAYLOAD_BYTES} bytes" }
+            is RelayFrame.CallSignal -> require(utf8Size(frame.payload) <= HubContract.MAX_PAYLOAD_BYTES) { "payload exceeds ${HubContract.MAX_PAYLOAD_BYTES} bytes" }
             else -> Unit
         }
         return text
@@ -139,6 +140,18 @@ public object RelayFrameCodec {
                 if (!id(frame.change)) return bad("change")
                 if (!id(frame.epoch)) return bad("epoch")
             }
+            is RelayFrame.CallSignal -> {
+                if (!id(frame.to)) return bad("to")
+                if (frame.from.isNotEmpty() && !id(frame.from)) return bad("from")
+                if (!id(frame.callId)) return bad("callId")
+                if (!id(frame.signalId)) return bad("signalId")
+                if (frame.seq < 0L) return bad("seq")
+                if (frame.issuedAt <= 0L) return bad("issuedAt")
+                if (frame.ttlMs !in 1L..HubContract.CALL_SIGNAL_MAX_TTL_MS) return bad("ttlMs")
+                if (frame.payload.isBlank()) return bad("payload")
+                if (utf8Size(frame.payload) > HubContract.MAX_PAYLOAD_BYTES) return Decoded.Rejected(RejectReason.PAYLOAD_TOO_LARGE)
+                if (frame.capabilities.size > 16 || frame.capabilities.any { !id(it) }) return bad("capabilities")
+            }
             is RelayFrame.Ping, is RelayFrame.Pong, is RelayFrame.Revoked, is RelayFrame.Kick -> Unit
         }
         return Decoded.Ok(frame)
@@ -197,7 +210,7 @@ public object RelayFrameCodec {
     private val KNOWN_TYPES: Set<String> = setOf(
         "FLASH_HUB_CHALLENGE", "FLASH_HUB_HELLO", "FLASH_HUB_WELCOME", "FLASH_ERROR", "FLASH_RELAY", "FLASH_DELIVER",
         "FLASH_RECV_ACK", "FLASH_ACK", "FLASH_QUEUE_STATE", "FLASH_META", "FLASH_PING", "FLASH_PONG", "FLASH_REVOKED", "FLASH_KICK",
-        "FLASH_ANNOUNCEMENT",
+        "FLASH_ANNOUNCEMENT", "FLASH_CALL_SIGNAL",
     )
 
 

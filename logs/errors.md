@@ -1,5 +1,9 @@
 # Error Log
 
+## ERROR-1023 — Hub integration abandoned a late LAN completion before duplicate cleanup
+
+**2026-11-14 · HR8 merge · RESOLVED.** `CrossRouteWiringIntegrationTest` found that a Hub takeover could retire the LAN transfer row before the LAN assembly callback. The cancellation guard then returned `ABANDONED` before checking the Hub's terminal route state or deleting the losing copy. The merged finalization path now uses the retained LAN file-ID mapping when the row was retired, checks continuity, and cleans the duplicate while preserving the user-cancelled path. The full engine rerun passed, including the regression, and the Android-host transfer suite remained green.
+
 ## ERROR-1022 — Desktop installer packaging retried over a read-only artifact
 
 **2026-11-14 · Desktop packaging · RESOLVED.** Windows `jpackage` returned `AccessDeniedException` while replacing the prior read-only `Flash-2.2.0.exe`. The package task now builds in a unique staging directory and moves the complete installer to the normal output path. It clears the read-only attribute on the exact previous artifact when required. An explicit Gradle skip predicate prevents the stock Compose package task from overwriting the invite-enabled output. The final EXE build replaced the previous artifact and its embedded MSI contains the expected `flash` Registry entries.

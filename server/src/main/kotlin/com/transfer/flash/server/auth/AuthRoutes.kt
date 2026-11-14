@@ -56,6 +56,8 @@ fun Route.authRoutes(
     principalResolver: HubPrincipalResolver = BearerPrincipalResolver(bearerTokens),
     /** The largest sealed file this hub accepts (ADR-215); 0 when the hub carries no files. */
     maxFileBytes: () -> Long = { 0L },
+    /** HR9: True when off-LAN call signaling and ICE/TURN configuration are enabled. */
+    offLanCallingSupported: () -> Boolean = { false },
 ) {
     // GET /enroll: the browser landing page. Always shows the CONFIGURED hub address (a `?server=` parameter is ignored:
     // it would let a link point a browser, and the app it opens, at an attacker's hub), and says the same thing for an
@@ -96,6 +98,7 @@ fun Route.authRoutes(
                     serverTime = clock(),
                     maxFileBytes = maxFileBytes(),
                     serverVersion = com.transfer.flash.server.ServerVersion.value,
+                    offLanCallingSupported = offLanCallingSupported(),
                 ),
             )
         }

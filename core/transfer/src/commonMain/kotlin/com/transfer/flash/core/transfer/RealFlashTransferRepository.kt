@@ -107,6 +107,8 @@ public class RealFlashTransferRepository(
     private val sourceIdentityProvider: SourceIdentityProvider? = null,
     /** Host placement for a finished receive. A failure retains the assembled file at its original path. */
     private val placeReceivedFile: ((path: String, fileName: String) -> String)? = null,
+    /** HR8: Cross-route continuity port shared between LAN and Hub transfer pipelines. */
+    private val routeContinuity: TransferRouteContinuityPort? = null,
 ) : FlashTransferRepository, AutoCloseable {
 
     override fun close() {
@@ -139,6 +141,15 @@ public class RealFlashTransferRepository(
      */
     @Volatile
     public var sendInterceptor: TransferSendInterceptor? = null
+
+    /**
+     * HR8: Asked on outbound Retry/resume when the direct LAN path cannot reach the peer and no
+     * live LAN sender is active, allowing the Hub binding to continue the same logical transfer.
+     */
+    @Volatile
+    public var routeFallback: TransferRouteFallback? = null
+
+    private fun newWireFileId(): String = UuidIdGenerator.newId().replace("-", "").lowercase()
 
     /**
      * Ids of completed rows the user cleared. External (swarm) rows are re-published whole on every emission, so
@@ -438,7 +449,7 @@ public class RealFlashTransferRepository(
             displayName = displayName,
             fileSize = fileSize,
             transferIdString = UuidIdGenerator.newId(),
-            fileId = wireFileId ?: UuidIdGenerator.newId(),
+            fileId = wireFileId ?: newWireFileId(),
         )
 
     override suspend fun sendFile(
@@ -680,6 +691,7 @@ public class RealFlashTransferRepository(
         val currentIdentity = sourceIdentityProvider?.let { provider ->
             runCatching { withContext(workerDispatcher) { provider.identity(fileUri) } }.getOrNull()
         }
+        val currentFingerprint = currentIdentity?.formatFingerprint()
         if (currentIdentity != null) {
             val storedIdentity = runCatching { store?.sourceIdentity(transferId) }.getOrNull()
             val check = checkSourceIdentity(storedIdentity, currentIdentity)
@@ -726,11 +738,43 @@ public class RealFlashTransferRepository(
                 FlashLog.w("TRANSFER", "source identity unavailable transferId=$transferId; resume is unverified")
             }
         }
+        if (routeContinuity != null && !routeContinuity.verifySenderSourceFingerprint(fileId, currentFingerprint)) {
+            refuseResume(
+                transferId,
+                peerDeviceId,
+                TransferFailureText.FILE_CHANGED,
+                "source fingerprint mismatch for fileId=$fileId",
+            )
+            return
+        }
 
         val source = ChunkSource { fileSourceOpener.open(fileUri) }
 
         val transferProfile = performanceMode().transfer
         val resolvedStreams = defaultStreams ?: transferProfile.streamCount
+        if (routeContinuity != null && !routeContinuity.tryAcquireLanRoute(
+                transferId = transferId,
+                fileId = fileId,
+                fileName = displayName,
+                plainBytes = fileSize,
+                peerDeviceId = peerDeviceId,
+                isSending = true,
+                chunkSize = transferProfile.chunkSizeBytes,
+                localPath = fileUri,
+                fileSha256Hex = fileSha256Hex,
+                sourceFingerprint = currentFingerprint,
+            )
+        ) {
+            failSendRow(
+                transferId,
+                if (routeContinuity.isTerminalElsewhere(fileId)) {
+                    "Transfer was already completed or cancelled on another route."
+                } else {
+                    "Transfer is already active or finished on another route."
+                },
+            )
+            return
+        }
         val dispatcher = MultiStreamDispatcher(
             chunker = chunker,
             meta = meta,
@@ -776,6 +820,9 @@ public class RealFlashTransferRepository(
                     // One write for chunks + counter (OPT-O06-07): two commits per progress tick
                     // doubled WAL frames on the hottest path of a send.
                     if (fresh.isNotEmpty() || progress.bytesDone != persistedBytesDone) {
+                        if (fresh.isNotEmpty()) {
+                            routeContinuity?.recordLanVerifiedChunks(transferId, fileId, fresh)
+                        }
                         store?.recordProgress(transferId, fresh, progress.bytesDone)
                         fresh.forEach { persistedChunks.markReceived(it) }
                         persistedBytesDone = progress.bytesDone
@@ -805,20 +852,41 @@ public class RealFlashTransferRepository(
                         }
                         store?.clearDoneChunks(transferId)
                         store?.setStatus(transferId, FlashTransferState.Failed.name)
+                        routeContinuity?.failLanIntegrity(transferId, fileId)
                     } else {
-                        updateTransferState(transferId) {
-                            it.copy(
-                                bytesDone = fileSize,
-                                state = FlashTransferState.Completed,
-                                speedBytesPerSec = 0L,
-                                etaSeconds = 0L,
-                            )
+                        val wonContinuity = routeContinuity?.completeLanTransfer(
+                            transferId = transferId,
+                            fileId = fileId,
+                            isSending = true,
+                            publishedPath = null,
+                            actualSha256Hex = fileSha256Hex,
+                        ) ?: true
+                        if (wonContinuity && !isCancelled(transferId)) {
+                            updateTransferState(transferId) {
+                                it.copy(
+                                    bytesDone = fileSize,
+                                    state = FlashTransferState.Completed,
+                                    speedBytesPerSec = 0L,
+                                    etaSeconds = 0L,
+                                )
+                            }
+                            store?.setStatus(transferId, FlashTransferState.Completed.name)
+                            store?.setBytesDone(transferId, fileSize)
+                            // R-01: a finished transfer keeps no chunk rows (they were never deleted, so the table grew
+                            // for ever and every start loaded all of it).
+                            store?.clearDoneChunks(transferId)
+                        } else if (!wonContinuity && !isCancelled(transferId)) {
+                            updateTransferState(transferId) {
+                                it.copy(
+                                    state = FlashTransferState.Cancelled,
+                                    speedBytesPerSec = 0L,
+                                    etaSeconds = 0L,
+                                    errorMessage = "stopped because another route completed or cancelled",
+                                )
+                            }
+                            store?.setStatus(transferId, FlashTransferState.Cancelled.name)
+                            store?.clearDoneChunks(transferId)
                         }
-                        store?.setStatus(transferId, FlashTransferState.Completed.name)
-                        store?.setBytesDone(transferId, fileSize)
-                        // R-01: a finished transfer keeps no chunk rows (they were never deleted, so the table grew
-                        // for ever and every start loaded all of it).
-                        store?.clearDoneChunks(transferId)
                     }
                 }
 
@@ -837,6 +905,7 @@ public class RealFlashTransferRepository(
                             )
                         }
                         store?.setStatus(transferId, FlashTransferState.Failed.name)
+                        routeContinuity?.releaseLanRoute(transferId, fileId)
                         notifyAttemptInterrupted(transferId, peerDeviceId)
                     }
                 }
@@ -847,10 +916,14 @@ public class RealFlashTransferRepository(
             // (media-downloader DownloadManager.handleCancellation pattern). Re-throw so
             // structured concurrency sees normal cancellation.
             progressJob.cancel()
+            if (!isCancelled(transferId)) {
+                routeContinuity?.releaseLanRoute(transferId, fileId)
+            }
             throw ce
         } catch (t: Throwable) {
             progressJob.cancel()
             if (!isCancelled(transferId)) {
+                routeContinuity?.releaseLanRoute(transferId, fileId)
                 val failureText = TransferFailureText.friendly(t.message ?: t::class.simpleName, transferId)
                 updateTransferState(transferId) {
                     it.copy(
@@ -1070,8 +1143,17 @@ public class RealFlashTransferRepository(
         }
 
         // Outbound with no live worker — a Failed or stalled transfer being retried, or a resume
-        // issued after executeSend already retired its registrations. Relaunch a fresh send job!
+        // issued after executeSend already retired its registrations.
         if (transfer.direction == FlashTransferDirection.Sending && !liveSender) {
+            if (!verifySendSourceBeforeResume(transfer)) {
+                return FlashResult.Success(Unit)
+            }
+            val oldJob = registryLock.withLock { runningJobs.remove(transferId.value) }
+            oldJob?.cancelAndJoin()
+            val fallback = routeFallback
+            if (fallback != null && fallback.tryHandoverToHub(transfer, transfer.bytesDone)) {
+                return FlashResult.Success(Unit)
+            }
             relaunchSend(transfer, notifyPeer = true)
             return FlashResult.Success(Unit)
         }
@@ -1137,7 +1219,7 @@ public class RealFlashTransferRepository(
      * @param notifyPeer false when the peer is the one that asked for the resume: echoing its own
      *   RESUME straight back is pointless churn.
      */
-    private fun relaunchSend(transfer: FlashTransfer, notifyPeer: Boolean) {
+    private fun relaunchSend(transfer: FlashTransfer, notifyPeer: Boolean, assumeZeroLanProgress: Boolean = false) {
         val transferId = transfer.id.value
         // Clear the pending-pause intent first so the fresh dispatcher does not register paused.
         registryLock.withLock { pauseIntents.remove(transferId) }
@@ -1148,7 +1230,8 @@ public class RealFlashTransferRepository(
         // transfer is also proof of acceptance: re-parking then deadlocks against a receiver whose session is
         // still open (its re-offer produces no SessionStarted event to accept again).
         val alreadyAccepted = registryLock.withLock { transferId in receiverAccepted }
-        val waitingForAcceptance = requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer && !alreadyAccepted
+        val effectiveLanBytes = if (assumeZeroLanProgress) 0L else transfer.bytesDone
+        val waitingForAcceptance = requireReceiverAcceptance && effectiveLanBytes == 0L && notifyPeer && !alreadyAccepted
         if (waitingForAcceptance) {
             registryLock.withLock { pauseIntents.add(transferId) }
         }
@@ -1184,7 +1267,7 @@ public class RealFlashTransferRepository(
                 transferId = transferId,
                 // Stable wire identity: the receiver's session is keyed on (transferId, fileId);
                 // a fresh fileId here would be rejected as SESSION_CONFLICT.
-                fileId = transfer.wireFileId ?: UuidIdGenerator.newId(),
+                fileId = transfer.wireFileId ?: newWireFileId(),
                 // Resume MUST re-read the original source, not the display name.
                 fileUri = sourceUri,
                 displayName = transfer.fileName,
@@ -1194,6 +1277,155 @@ public class RealFlashTransferRepository(
             )
         }
         registryLock.withLock { runningJobs[transferId] = job }
+    }
+
+    private fun SourceIdentity.formatFingerprint(): String =
+        "${sizeBytes ?: -1L}:${lastModifiedMs ?: -1L}:${prefixSha256Hex.orEmpty()}"
+
+    /**
+     * HR8: Computes the canonical source identity fingerprint for [fileUri] when [sourceIdentityProvider] is wired.
+     */
+    public suspend fun sourceFingerprintFor(fileUri: String): String? {
+        val provider = sourceIdentityProvider ?: return null
+        val current = runCatching { withContext(workerDispatcher) { provider.identity(fileUri) } }.getOrNull() ?: return null
+        return current.formatFingerprint()
+    }
+
+    private suspend fun verifySendSourceBeforeResume(transfer: FlashTransfer): Boolean {
+        val transferId = transfer.id.value
+        val sourceUri = transfer.sourceUri ?: return true
+        val fileId = transfer.wireFileId ?: transferId
+        val currentIdentity = sourceIdentityProvider?.let { provider ->
+            runCatching { withContext(workerDispatcher) { provider.identity(sourceUri) } }.getOrNull()
+        }
+        if (currentIdentity != null) {
+            val storedIdentity = runCatching { store?.sourceIdentity(transferId) }.getOrNull()
+            val check = checkSourceIdentity(storedIdentity, currentIdentity)
+            val confirmed = runCatching { store?.doneChunks(transferId) }.getOrNull().orEmpty()
+            val sizeDisagrees = transfer.bytesTotal > 0L &&
+                currentIdentity.sizeBytes != null &&
+                currentIdentity.sizeBytes != transfer.bytesTotal
+            val refuse = sizeDisagrees ||
+                check == SourceIdentityCheck.Changed ||
+                (confirmed.isNotEmpty() && check == SourceIdentityCheck.Unverifiable)
+            if (refuse) {
+                refuseResume(
+                    transferId = transferId,
+                    peerDeviceId = transfer.peerDeviceId,
+                    message = if (!sizeDisagrees && check == SourceIdentityCheck.Unverifiable) {
+                        TransferFailureText.SOURCE_UNVERIFIABLE
+                    } else {
+                        TransferFailureText.FILE_CHANGED
+                    },
+                    detail = "fallback resume source check=$check sizeDisagrees=$sizeDisagrees",
+                )
+                return false
+            }
+        }
+        val currentFp = currentIdentity?.formatFingerprint()
+        if (routeContinuity != null && !routeContinuity.verifySenderSourceFingerprint(fileId, currentFp)) {
+            refuseResume(
+                transferId = transferId,
+                peerDeviceId = transfer.peerDeviceId,
+                message = TransferFailureText.FILE_CHANGED,
+                detail = "continuity source fingerprint mismatch for fileId=$fileId",
+            )
+            return false
+        }
+        return true
+    }
+
+    /**
+     * HR8: Transfers ownership of an internal row to an external route owner (e.g., Hub) under the same
+     * logical `transferId`, ensuring only one row exists and internal persistence does not resurrect it.
+     */
+    public suspend fun adoptTransferExternally(transferId: String) {
+        val job = registryLock.withLock {
+            pauseIntents.remove(transferId)
+            runningDispatchers.remove(transferId)
+            runningJobs.remove(transferId)
+        }
+        job?.cancel()
+        updateInternalTransfers { list -> list.filterNot { it.id.value == transferId } }
+        dismissedFinishedIds.update { it - transferId }
+        updateMergedTransfers()
+        runCatching { store?.dismissStored(listOf(transferId)) }
+    }
+
+    /**
+     * HR8: Retires any superseded non-completed internal row sharing [wireFileId] when Hub wins or takes over.
+     */
+    public suspend fun retireInternalByWireFileId(wireFileId: String, keepTransferId: String? = null) {
+        if (wireFileId.isBlank()) return
+        val matching = _internalTransfers.value.filter {
+            it.wireFileId == wireFileId && it.id.value != keepTransferId && it.state != FlashTransferState.Completed
+        }
+        for (row in matching) {
+            val id = row.id.value
+            val job = registryLock.withLock {
+                runningDispatchers.remove(id)
+                runningJobs.remove(id)
+            }
+            job?.cancel()
+            runCatching { store?.dismissStored(listOf(id)) }
+            runCatching { store?.clearDoneChunks(id) }
+        }
+        if (matching.isNotEmpty()) {
+            val drop = matching.mapTo(HashSet(matching.size)) { it.id.value }
+            updateInternalTransfers { list -> list.filterNot { it.id.value in drop } }
+        }
+    }
+
+    /**
+     * HR8: Surfaces an explicit failure message on [transferId] when Hub fallback refuses the transfer.
+     */
+    public suspend fun failTransferFromFallback(transferId: String, message: String) {
+        failSendRow(transferId, message)
+    }
+
+    /**
+     * HR8: Accepts an outbound transfer back from Hub onto LAN under the exact same [transferId] and [wireFileId].
+     */
+    public suspend fun resumeHubSendOnLan(
+        transferId: String,
+        wireFileId: String,
+        peerId: String,
+        peerName: String,
+        fileUri: String,
+        fileName: String,
+        fileSize: Long,
+    ): Boolean {
+        val confirmedLanBytes = runCatching {
+            val done = store?.doneChunks(transferId).orEmpty()
+            if (done.isEmpty()) 0L else minOf(fileSize, done.size.toLong() * performanceMode().transfer.chunkSizeBytes)
+        }.getOrDefault(0L)
+        val measured = if (fileSize > 0L) fileSize else measureSourceBytes(fileUri) ?: return false
+        if (measured <= 0L) return false
+        val row = FlashTransfer(
+            id = FlashTransferId(transferId),
+            peerName = peerName,
+            fileName = fileName,
+            direction = FlashTransferDirection.Sending,
+            bytesDone = confirmedLanBytes,
+            bytesTotal = measured,
+            state = FlashTransferState.Queued,
+            sourceUri = fileUri,
+            wireFileId = wireFileId,
+            peerDeviceId = peerId,
+            isEncrypted = isPeerEncrypted(peerId),
+            viaHub = false,
+        )
+        dismissedFinishedIds.update { it - transferId }
+        updateInternalTransfers { list ->
+            val filtered = list.filterNot { it.id.value == transferId }
+            filtered + row
+        }
+        runCatching {
+            store?.insertTransfer(transferId, measured, FlashTransferState.Queued.name)
+            store?.saveIdentity(row.toStored())
+        }
+        relaunchSend(row, notifyPeer = true, assumeZeroLanProgress = confirmedLanBytes == 0L)
+        return true
     }
 
     override suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit> {
@@ -1228,6 +1460,8 @@ public class RealFlashTransferRepository(
             }
         }
         store?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
+        val cancelFileId = transfer?.wireFileId ?: receiverDoneLock.withLock { lanReceiveFileIds[transferId.value] }
+        routeContinuity?.cancelLogicalTransfer(transferId.value, cancelFileId)
         forgetChunks(transferId.value, null)
 
         // O23-04: Purge partial file and directory on explicit cancellation of an inbound transfer
@@ -1472,6 +1706,8 @@ public class RealFlashTransferRepository(
      */
     private val receiverDoneLock = PlatformLock()
     private val receiverDone = mutableMapOf<String, ResumeBitVector>()
+    private val lanReceiveChunkSizes = mutableMapOf<String, Int>()
+    private val lanReceiveFileIds = mutableMapOf<String, String>()
     private val receiverRateMetersLock = PlatformLock()
     private val receiverRateMeters = mutableMapOf<String, RollingRateMeter>()
 
@@ -1480,7 +1716,11 @@ public class RealFlashTransferRepository(
      * [status], when given, is written first so the startup purge can still find the row if the delete is lost.
      */
     private fun forgetChunks(transferId: String, status: FlashTransferState?) {
-        receiverDoneLock.withLock { receiverDone.remove(transferId) }
+        receiverDoneLock.withLock {
+            receiverDone.remove(transferId)
+            lanReceiveChunkSizes.remove(transferId)
+            lanReceiveFileIds.remove(transferId)
+        }
         val activeStore = store ?: return
         repositoryScope.launch(workerDispatcher) {
             if (status != null) activeStore.setStatus(transferId, status.name)
@@ -1533,13 +1773,86 @@ public class RealFlashTransferRepository(
         receiverDoneLock.withLock { receiverDone[transferId]?.doneIndexes() ?: emptyList() }
 
     /**
+     * HR8: Records inbound layout metadata for [transferId]/[fileId] and merges any verified chunks
+     * already completed on an interrupted Hub download so `ReceivePipeline` can skip re-sending them.
+     */
+    public fun prepareLanReceiveResume(
+        transferId: String,
+        fileId: String,
+        fileName: String,
+        totalBytes: Long,
+        senderDeviceId: String?,
+        chunkSize: Int,
+    ): List<Int> {
+        receiverDoneLock.withLock {
+            if (chunkSize > 0) lanReceiveChunkSizes[transferId] = chunkSize
+            if (fileId.isNotBlank()) lanReceiveFileIds[transferId] = fileId
+        }
+        val lanDone = receiverDoneIndexes(transferId)
+        val hubCovered = routeContinuity?.coveredLanChunksFromHub(
+            fileId = fileId,
+            fileName = fileName,
+            plainBytes = totalBytes,
+            senderDeviceId = senderDeviceId,
+            lanChunkSize = chunkSize,
+        ).orEmpty()
+        return if (hubCovered.isEmpty()) lanDone else (lanDone + hubCovered).distinct().sorted()
+    }
+
+    /**
+     * HR8: Copies verified plaintext spans from Hub partial storage into [destPath] before LAN chunks
+     * arrive, seeding [receiverDone] only for chunks actually written and verified on disk.
+     */
+    public suspend fun adoptHubPartialForLan(
+        transferId: String,
+        fileId: String,
+        fileName: String,
+        totalBytes: Long,
+        senderDeviceId: String?,
+        chunkSize: Int,
+        destPath: String,
+    ): List<Int> {
+        receiverDoneLock.withLock {
+            if (chunkSize > 0) lanReceiveChunkSizes[transferId] = chunkSize
+            if (fileId.isNotBlank()) lanReceiveFileIds[transferId] = fileId
+        }
+        val adopted = routeContinuity?.adoptHubBytesIntoLanFile(
+            transferId = transferId,
+            fileId = fileId,
+            fileName = fileName,
+            plainBytes = totalBytes,
+            senderDeviceId = senderDeviceId,
+            lanChunkSize = chunkSize,
+            destPath = destPath,
+        ).orEmpty()
+        if (adopted.isNotEmpty()) {
+            receiverDoneLock.withLock {
+                val requiredChunks = (adopted.maxOrNull() ?: 0) + 1
+                val existing = receiverDone[transferId]
+                val bits = if (existing == null || existing.totalChunks < requiredChunks) {
+                    val size = maxOf(requiredChunks, minOf((existing?.totalChunks ?: 0) * 2, ReceivePipeline.MAX_TOTAL_CHUNKS))
+                    ResumeBitVector(size).also { grown ->
+                        if (existing != null) grown.copyWordsFrom(existing)
+                        receiverDone[transferId] = grown
+                    }
+                } else {
+                    existing
+                }
+                adopted.forEach { if (it >= 0) bits.markReceived(it) }
+            }
+        }
+        return adopted
+    }
+
+    /**
      * Records receiver-confirmed chunks (#20): updates memory immediately and persists only indexes
      * not already known. Negative wire-derived indexes are ignored. A finished (Completed / Cancelled)
      * transfer records nothing: a late confirmation must not re-create rows that were just deleted (R-01).
      */
     public fun onIncomingChunkConfirmed(transferId: String, indexes: List<Int>) {
         if (indexes.isEmpty()) return
-        val state = _activeTransfers.value.find { it.id.value == transferId }?.state
+        val row = _activeTransfers.value.find { it.id.value == transferId }
+        val state = row?.state
         if (state == FlashTransferState.Completed || state == FlashTransferState.Cancelled) return
         val fresh = receiverDoneLock.withLock {
             val valid = indexes.filter { it >= 0 }
@@ -1559,6 +1872,8 @@ public class RealFlashTransferRepository(
             valid.filter { bits.markReceived(it) }
         }
         if (fresh.isEmpty()) return
+        val fileId = row?.wireFileId ?: receiverDoneLock.withLock { lanReceiveFileIds[transferId] } ?: transferId
+        routeContinuity?.recordLanVerifiedChunks(transferId, fileId, fresh)
         val activeStore = store ?: return
         repositoryScope.launch(workerDispatcher) {
             activeStore.markChunksDone(transferId, fresh)
@@ -1697,6 +2012,7 @@ public class RealFlashTransferRepository(
                 errorMessage = "declined",
             )
         }
+        routeContinuity?.cancelLogicalTransfer(id, transfer.wireFileId)
         forgetChunks(id, FlashTransferState.Cancelled)
         // Host drops the (never-materialized) pipeline session; sender abandons the parked send.
         emitIncoming(id, ACTION_DECLINE)
@@ -1713,6 +2029,20 @@ public class RealFlashTransferRepository(
         peerDeviceId: String?,
         localPath: String?,
     ) {
+        val trackedChunkSize = receiverDoneLock.withLock {
+            if (fileId.isNotBlank()) lanReceiveFileIds[transferId] = fileId
+            lanReceiveChunkSizes[transferId] ?: performanceMode().transfer.chunkSizeBytes
+        }
+        routeContinuity?.tryAcquireLanRoute(
+            transferId = transferId,
+            fileId = fileId.ifBlank { transferId },
+            fileName = fileName,
+            plainBytes = totalBytes,
+            peerDeviceId = peerDeviceId,
+            isSending = false,
+            chunkSize = trackedChunkSize,
+            localPath = localPath,
+        )
         receiverRateMetersLock.withLock {
             val meter = receiverRateMeters.getOrPut(transferId) {
                 RollingRateMeter(SystemTimeSource::nowMs)
@@ -1837,9 +2167,12 @@ public class RealFlashTransferRepository(
         chunksVerified: Boolean = true,
         fileSystem: FileSystem = FileSystem.SYSTEM,
     ): WholeFileCheck {
+        var terminalOnAnotherRoute = false
         val attempt = incomingFinalizationLock.withLock {
             val row = _internalTransfers.value.firstOrNull { it.id.value == transferId }
             if (row == null || row.state == FlashTransferState.Cancelled) {
+                terminalOnAnotherRoute = row == null && routeContinuity?.isTerminalElsewhere(lanReceiveFileId(transferId, null)) == true
+                if (terminalOnAnotherRoute) abandonDuplicateLanReceive(transferId, localPath, fileSystem)
                 return@withLock null
             }
             if (row.state == FlashTransferState.Completed) {
@@ -1849,7 +2182,7 @@ public class RealFlashTransferRepository(
             val verifying = row.copy(state = FlashTransferState.Verifying, speedBytesPerSec = 0L, etaSeconds = 0L)
             updateTransferState(transferId) { verifying }
             verifying
-        } ?: return WholeFileCheck.ABANDONED
+        } ?: return if (terminalOnAnotherRoute) WholeFileCheck.MISMATCH else WholeFileCheck.ABANDONED
         if (attempt.state == FlashTransferState.Completed) {
             return if (attempt.errorMessage == null) WholeFileCheck.MATCH else WholeFileCheck.UNVERIFIABLE
         }
@@ -1869,19 +2202,27 @@ public class RealFlashTransferRepository(
         return incomingFinalizationLock.withLock {
             val current = _internalTransfers.value.firstOrNull { it.id.value == transferId }
             if (current !== attempt) {
+                if (current == null && routeContinuity?.isTerminalElsewhere(lanReceiveFileId(transferId, attempt)) == true) {
+                    abandonDuplicateLanReceive(transferId, localPath, fileSystem)
+                    return@withLock WholeFileCheck.MISMATCH
+                }
                 // On Windows the Cancel path may have been unable to delete an open source.
                 if (current?.state == FlashTransferState.Cancelled && !localPath.isNullOrBlank()) {
                     runCatching { fileSystem.delete(localPath.toPath()) }
                 }
                 return@withLock WholeFileCheck.ABANDONED
             }
+            val resolvedFileId = lanReceiveFileId(transferId, attempt)
             when (check) {
                 WholeFileCheck.MATCH, WholeFileCheck.UNVERIFIABLE -> {
+                    if (routeContinuity?.isTerminalElsewhere(resolvedFileId) == true) {
+                        abandonDuplicateLanReceive(transferId, localPath, fileSystem)
+                        return@withLock WholeFileCheck.MISMATCH
+                    }
                     val finalPath = when {
                         localPath.isNullOrBlank() -> localPath
                         placeReceivedFile != null -> {
-                            val name = _internalTransfers.value.firstOrNull { it.id.value == transferId }?.fileName
-                                ?: localPath.toPath().name
+                            val name = attempt.fileName
                             try {
                                 placeReceivedFile.invoke(localPath, name)
                             } catch (_: okio.IOException) {
@@ -1900,10 +2241,22 @@ public class RealFlashTransferRepository(
                         }
                         else -> localPath
                     }
+                    val wonContinuity = routeContinuity?.completeLanTransfer(
+                        transferId = transferId,
+                        fileId = resolvedFileId,
+                        isSending = false,
+                        publishedPath = finalPath,
+                        actualSha256Hex = expectedSha256Hex,
+                    ) ?: true
+                    if (!wonContinuity) {
+                        abandonDuplicateLanReceive(transferId, finalPath, fileSystem)
+                        return@withLock WholeFileCheck.MISMATCH
+                    }
                     onIncomingCompleted(transferId, verified = check == WholeFileCheck.MATCH, localPath = finalPath)
                 }
                 WholeFileCheck.ABANDONED -> Unit
                 WholeFileCheck.MISMATCH -> {
+                    routeContinuity?.failLanIntegrity(transferId, resolvedFileId)
                     if (!localPath.isNullOrBlank()) {
                         try {
                             fileSystem.delete(localPath.toPath())
@@ -1918,7 +2271,30 @@ public class RealFlashTransferRepository(
         }
     }
 
+    private fun abandonDuplicateLanReceive(transferId: String, path: String?, fileSystem: FileSystem) {
+        if (!path.isNullOrBlank()) {
+            try {
+                fileSystem.delete(path.toPath())
+            } catch (_: okio.IOException) {
+                // Best effort cleanup of the copy from the route that lost completion.
+            }
+        }
+        updateTransferState(transferId) {
+            it.copy(
+                state = FlashTransferState.Cancelled,
+                speedBytesPerSec = 0L,
+                etaSeconds = 0L,
+                errorMessage = "already finished on another route",
+                localPath = null,
+            )
+        }
+        forgetChunks(transferId, FlashTransferState.Cancelled)
+    }
+
     private val incomingFinalizationLock = PlatformLock()
+
+    private fun lanReceiveFileId(transferId: String, row: FlashTransfer?): String =
+        row?.wireFileId ?: receiverDoneLock.withLock { lanReceiveFileIds[transferId] } ?: transferId
 
     private fun markReceiveCancelled(transferId: String, reason: String?): Boolean =
         incomingFinalizationLock.withLock {
@@ -1960,6 +2336,10 @@ public class RealFlashTransferRepository(
 
     override fun onIncomingFailed(transferId: String, reason: String) {
         receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }
+        val fileId = _activeTransfers.value.find { it.id.value == transferId }?.wireFileId
+            ?: receiverDoneLock.withLock { lanReceiveFileIds[transferId] }
+            ?: transferId
+        routeContinuity?.releaseLanRoute(transferId, fileId)
         val failureText = TransferFailureText.friendly(reason, transferId)
         updateTransferState(transferId) { transfer ->
             // Never clobber a terminal state: a declined/cancelled offer or an already-completed

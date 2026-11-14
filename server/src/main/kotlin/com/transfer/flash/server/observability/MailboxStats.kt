@@ -32,6 +32,9 @@ interface MailboxStats {
     /** Stored rows that could not be opened (data key lost or changed) and were quarantined since the process started (RLY-01). */
     fun quarantinedTotal(): Long = 0
 
+    /** Unexpired stored rows currently quarantined in the durable mailbox awaiting resolution or TTL expiry. */
+    fun quarantinedOutstanding(): Long = 0
+
     /** Stats of a hub that has no mailbox. */
     object Empty : MailboxStats {
         override fun queuedCount(): Long = 0

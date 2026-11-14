@@ -47,6 +47,7 @@ GET /api/v1/announcements
 GET /api/v1/announcements/{id}
 GET /api/v1/approvals
 GET /api/v1/auth/challenge
+GET /api/v1/calls/ice-config
 GET /api/v1/directory/departments
 GET /api/v1/directory/groups
 GET /api/v1/directory/me
@@ -87,6 +88,7 @@ POST /admin/api/v1/announcements/{id}/unpin
 POST /admin/api/v1/delegation
 POST /admin/api/v1/delegation/reload
 POST /admin/api/v1/departments
+POST /admin/api/v1/devices/{id}/replace
 POST /admin/api/v1/devices/{id}/revoke
 POST /admin/api/v1/devices/{id}/unrevoke
 POST /admin/api/v1/groups

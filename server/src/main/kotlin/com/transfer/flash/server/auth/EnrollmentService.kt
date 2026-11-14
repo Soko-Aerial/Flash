@@ -128,6 +128,16 @@ class EnrollmentService(
     val currentRemainingQuota: Int
         get() = (maxActiveDevices() - store.activeDeviceCount()).coerceAtLeast(0).toInt()
 
+    /**
+     * Devices still allowed if [releasingOneActiveSeat] (replacing an ACTIVE device)
+     * frees one active seat as part of replacement. Rejects replacement when ACTIVE count
+     * is already at or above the quota ceiling after freeing that seat.
+     */
+    fun remainingQuotaAssumingRevoked(releasingOneActiveSeat: Boolean): Int {
+        val effectiveActive = (store.activeDeviceCount() - if (releasingOneActiveSeat) 1 else 0).coerceAtLeast(0)
+        return (maxActiveDevices() - effectiveActive).coerceAtLeast(0).toInt()
+    }
+
     private fun maxActiveDevices(): Int = minOf(delegationCert.maxDevices, quotaCeiling)
 
     // ------------------------------------------------------------------------------------------------ invites
@@ -138,8 +148,8 @@ class EnrollmentService(
         return if (role == HubRoles.ADMIN) HubScopes.grantsExplicitly(delegationCert.scopes, needed) else delegationCert.hasScope(needed)
     }
 
-    /** Creates an invite and returns its token and deep link; the token can not be read back later. */
-    fun createInvite(serverUrl: String, scope: InviteScope, currentTimeMs: Long = System.currentTimeMillis()): CreatedInvite {
+    /** Validates [serverUrl] and [scope] before creating an invite or revoking a device being replaced. */
+    fun validateInviteScope(serverUrl: String, scope: InviteScope, currentTimeMs: Long = System.currentTimeMillis()) {
         require(HubRoles.isValid(scope.role)) { "Unknown role" }
         // DEFECT-017: refuse at creation what enrolment would refuse later, so the admin hears it here, in words, not the invitee as "forbidden".
         require(delegationCanIssue(scope.role)) { roleNotAllowedMessage(scope.role) }
@@ -150,6 +160,11 @@ class EnrollmentService(
                 "Refusing to create an invite for a non-HTTPS hub URL; configure FLASH_EXTERNAL_URL with https:// or run with FLASH_ALLOW_INSECURE=true (development only)"
             }
         }
+    }
+
+    /** Creates an invite and returns its token and deep link; the token can not be read back later. */
+    fun createInvite(serverUrl: String, scope: InviteScope, currentTimeMs: Long = System.currentTimeMillis()): CreatedInvite {
+        validateInviteScope(serverUrl, scope, currentTimeMs)
         val tokenBytes = ByteArray(TOKEN_BYTES).also(secureRandom::nextBytes)
         val token = Base64.getUrlEncoder().withoutPadding().encodeToString(tokenBytes)
         val record = store.createInvite(

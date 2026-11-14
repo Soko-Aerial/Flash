@@ -731,6 +731,15 @@ public fun DesktopShell(
                 fallback?.transport ?: base.header.transport
             }
             val isColleaguePeer = base.header.isColleague || (fallback?.isColleague == true)
+            val offLanCallReady = engine.enterpriseHub?.let { hub ->
+                val cfg = hub.validCallIceConfig()
+                hub.relay.state.value.canSend &&
+                    cfg != null &&
+                    cfg.offLanCallingSupported &&
+                    cfg.iceServers.isNotEmpty()
+            } == true
+            val canShowCallActions = base.header.showCallActions &&
+                (isDirectPeerOnline || (!isColleaguePeer && resolvedTransport != FlashNetworkTransport.Relay) || offLanCallReady)
             val header = base.header.copy(
                 title = resolvedTitle,
                 avatarInitials = resolvedInitials,
@@ -740,7 +749,7 @@ public fun DesktopShell(
                 transport = resolvedTransport,
                 typingMemberNames = base.header.typingMemberNames,
                 isEncrypted = isEncrypted,
-                showCallActions = true,
+                showCallActions = canShowCallActions,
                 isColleague = isColleaguePeer,
                 orgName = base.header.orgName ?: fallback?.orgName,
             )
@@ -3569,6 +3578,7 @@ private fun DesktopSettingsDestination(
             enterpriseRootFingerprint = enterpriseCredentials?.rootFingerprint.orEmpty(),
             hubStatus = hubStatus,
             hubContentViaHub = desktopSettings.hubContentViaHub,
+            announcementNotifications = desktopSettings.announcementNotifications,
             hubSealing = if (hubObject?.sealingKeys == null) null else com.transfer.flash.ui.settings.FlashHubSealingUi(
                 keyState = hubSealingKeyState,
                 unverified = hubDropped.unverified,
@@ -3724,6 +3734,7 @@ private fun DesktopSettingsDestination(
         onRetryHub = { engine.enterpriseHub?.retryNow() },
         onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
         onSetHubContentViaHub = { enabled -> engine.updateSettings { it.copy(hubContentViaHub = enabled) } },
+        onAnnouncementNotificationsChanged = { enabled -> engine.updateSettings { it.copy(announcementNotifications = enabled) } },
         onRestoreHubGroups = {
             scope.launch {
                 val restored = engine.enterpriseHub?.relinkPreviousGroups() ?: 0

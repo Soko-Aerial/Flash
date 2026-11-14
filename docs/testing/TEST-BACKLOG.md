@@ -8556,3 +8556,59 @@ Added after implementing Android notification state management, `Verifying` stat
 - **Setup:** Two assigned devices with a large synthetic file. Interrupt receive verification through a supported control or the sender.
 - **Pass:** The receive stays Cancelled, the sender receives no successful completion, no final copy is published, and no stale progress card remains. A read failure with a supplied digest becomes a retryable failure and cleans the partial file.
 - **Status:** TODO for the real two-device wire and storage path. The Android-host regression covers cancellation before hash commit and read failure.
+
+### HR6-DEV-01 / ORGT-14 — Secure device replacement on Android + Desktop against live Hub
+- **Setup:** Isolated test Hub, Android phone, and Desktop client enrolled in the Hub, plus console operator access.
+- **Steps:** Issue a scoped replacement grant for the lost phone binding, redeem on a fresh Android install, verify old binding + active sessions are rejected across Hub restart and LAN revocation sync, and repeat with Desktop replacement.
+- **Pass:** Replacement succeeds with explicit department/group selection and quota checks; old/stolen credentials fail across both Hub and LAN; audit log records old -> new binding without secrets.
+- **Status:** TODO (automated unit/server tests pass; physical device + isolated live Hub run owed).
+
+### HR7-DEV-01 — Title-only announcement notifications + cold start tap on Android & Desktop
+- **Setup:** Physical Android phone (Notification permission granted and denied runs) + Windows Desktop enrolled in isolated Hub.
+- **Steps:** Publish announcement via Hub console while target Android app is killed/cold, receive announcement catch-up, inspect notification shade, tap notification, and verify author/mute suppression, and on Desktop use Open Announcement from a toast while the app is foregrounded and while hidden to the tray.
+- **Pass:** Title-only notification appears (`ANN-01`/`ANN-10`/`ANN-11`/`HUBT-12` + cold start opens announcement); author suppression and mute silence notifications while feed remains readable; background OS constraints measured and matching docs.
+- **Status:** TODO (automated tests pass; physical device cold-start & Android permission/mute verification owed).
+
+### HR8-DEV-01 — Cross-route LAN <-> Hub large-file transfer continuity on physical devices
+- **Setup:** Android phone + Desktop sharing a large (>100 MB) file on LAN, toggling Wi-Fi off mid-transfer (forcing Hub resume) and on again in reverse direction.
+- **Steps:** Interrupt LAN transfer partway through, allow Hub continuation, repeat starting on Hub and finishing over LAN, verify final output file hash.
+- **Pass:** One logical transfer row, one completion row, one published file copy, byte-exact SHA-256 match across LAN -> Hub and Hub -> LAN.
+- **Status:** TODO (automated unit/integration tests including normal `sendFile`/`resumeTransfer` `LAN <-> Hub`, `FileContinuityCheckpointStore` restart persistence, and changed-source/oversized refusals pass; physical multi-hundred-MB phone <-> Desktop run owed).
+
+### HR9-DEV-01 — Off-LAN 1:1 and group voice/video calling across two independent networks + TURN relay
+- **Setup:** Android phone (cellular / separate AP) and Windows Desktop (home LAN) enrolled in isolated Hub configured with `FLASH_STUN_URLS`, `FLASH_TURN_URLS`, and `FLASH_TURN_SECRET` pointing at a disposable coturn instance (`RELAY_ONLY` and fallback runs).
+- **Steps:** Place outgoing and incoming audio and video calls from Android -> Desktop and Desktop -> Android; verify accept, decline, cancel, hang-up, direct candidate attempt, TURN relay fallback, bidirectional media playback, and existing LAN call path.
+- **Pass:** Audio and video both flow clearly on direct and relayed paths; late/replayed/revoked signaling is ignored; LAN calls still work with Hub disconnected.
+- **Status:** TODO (automated server + client + native `webrtc-java` smoke tests pass; two-network physical device + coturn run owed).
+
+### HR9-DEV-02 — Android background / Doze off-LAN call signaling measurement
+- **Setup:** Physical Android phone enrolled in isolated Hub, screen off for 5 minutes and in light Doze while app backgrounded with foreground sync vs standard idle.
+- **Steps:** Trigger `FLASH_CALL_SIGNAL` invite from Desktop to Android and record delivery latency / OS socket drop rate.
+- **Pass:** Observed background/Doze reachability matches the disclosure in `docs/protocol.md` (and documents whether foreground relay or OS push wake-up is required).
+- **Status:** TODO
+
+### HR10-DEV-01 — End-to-end encrypted group messaging on physical Android & Desktop against Hub
+- **Setup:** Physical Android phones (A, B, C) and Windows Desktop (D) enrolled in isolated Hub; a linked organisation group created with A, B, C; an older non-`hge1` or un-upgraded peer optional for legacy block check.
+- **Steps:**
+  1. Send messages across A, B, C, D in the linked group and inspect Hub `mailbox_envelopes` / server logs to verify only `GROUP_SEALED_V1` & `SEALED_V1` ciphertext traverse the Hub.
+  2. Remove C from the group; have A send post-removal messages and verify C never displays them.
+  3. Add D and rejoin C; verify new messages arrive and neither D nor C receives/decrypts pre-join or gap epochs.
+  4. Restart Android & Desktop apps offline, resume online, and verify stored epoch keys reload via Android Keystore / Desktop DPAPI vault and continue encrypting seamlessly.
+  5. Open `FlashGroupSettingsSheet` & conversation banner and verify truthful E2EE status (`Group messages are end-to-end encrypted` or fail-closed pause notice when a legacy member is present).
+- **Pass:** Plaintext never reaches the Hub database; removed members cannot read post-removal messages; new/rejoined members cannot decrypt pre-join/gap epochs; Keystore/vault survival works across process kill and reboot.
+- **Status:** TODO (automated unit/integration/server opacity + mutation tests pass; physical device run owed).
+
+### HR11-ENV-01 — HUBREADY-01..05 live VPS/isolated host deployment + restore rehearsal
+- **Setup:** Disposable VPS or isolated container host running the assembled Hub server binary with TLS leaf certificates (`tlsMode=self` or proxy ACME), backup snapshot (`flash-hub.db` + `data.key`), and Chrome Admin Console session.
+- **Steps:**
+  1. Execute `HUBREADY-01..05` end-to-end through the real TLS proxy and Chrome Admin UI (`https://<host>/admin`).
+  2. Rehearse filesystem snapshot backup and restore with matching, missing, and wrong `data.key`, plus offline `keytool delegate` rotation and `keytool revoke` signer revocation with enrolled Android & Desktop clients reconnecting live.
+  3. Trigger simulated disk pressure, quarantine alert, and expiring delegation/TLS alerts on the disposable host and verify operator scrape of `/health/detail` and `/metrics` matches `docs/deploy/HUB-SERVER-DEPLOYMENT.md`.
+- **Pass:** Live VPS health/metrics/console/restore match automated isolated drills; enrolled Android & Desktop reconnect without data loss on matching restore; missing/wrong key blocks startup.
+- **Status:** TODO (automated JVM Ktor `testApplication` & restore drills pass; disposable VPS + Chrome console + real TLS cert run owed).
+
+### HR11-ENV-02 — Production-profile PERF-H03 pilot load benchmark with target fleet & coturn
+- **Setup:** Production-sized Hub host + target fleet (or multi-host load generator matching intended tenant concurrency, network RTT, TLS termination, and disposable coturn TURN relay).
+- **Steps:** Measure steady-state and burst WebSocket relay throughput, p50/p99 frame latency, SQLite WAL checkpoint size, mailbox drain rate, heap/RSS growth, and TURN relay bandwidth under the documented production deployment profile.
+- **Pass:** Meets target pilot capacity without sustained queue backlog, `WAL` stall, or critical alert breach.
+- **Status:** TODO (synthetic 50-session / 500-frame JVM host benchmark recorded in `logs/experiments.md`; real multi-host + TLS + coturn pilot soak owed).

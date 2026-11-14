@@ -271,9 +271,11 @@ object DiscoveryEngineHolder {
     /** The one object for everything about the organisation hub (ADR-120); null while the engine is stopped. */
     @Volatile
     private var enterpriseHubRef: EnterpriseHub? = null
+    private val offLanCallSignalSeq = java.util.concurrent.atomic.AtomicLong(0L)
 
     /** User opt-in to let the hub carry readable chat content (ADR-121). Default OFF; stored in SharedPreferences. */
     private val hubContentViaHubFlag = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private val announcementNotificationsFlag = kotlinx.coroutines.flow.MutableStateFlow(true)
 
     /**
      * Live WebRTC calling engine (C7 / ADR-025). Constructed in [startEngineLocked], torn down in
@@ -683,6 +685,15 @@ object DiscoveryEngineHolder {
             ?.edit()?.putBoolean("content_via_hub", enabled)?.apply()
     }
 
+    fun announcementNotifications(): kotlinx.coroutines.flow.StateFlow<Boolean> = announcementNotificationsFlag
+
+    /** HR7: persists user mute preference for system announcement notifications. */
+    fun setAnnouncementNotifications(enabled: Boolean) {
+        announcementNotificationsFlag.value = enabled
+        appContextRef?.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+            ?.edit()?.putBoolean("announcement_notifications", enabled)?.apply()
+    }
+
     fun currentCrypto(): FlashCrypto? = cryptoRef
 
     fun currentPairing(): PairingCoordinator? = pairing
@@ -1019,6 +1030,17 @@ object DiscoveryEngineHolder {
                     "Path traversal escape detected for transferId=${start.transferId}, fileName=${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
+                kotlinx.coroutines.runBlocking {
+                    transferForResume?.adoptHubPartialForLan(
+                        transferId = start.transferId,
+                        fileId = start.fileId,
+                        fileName = start.fileName,
+                        totalBytes = start.totalBytes,
+                        senderDeviceId = null,
+                        chunkSize = start.chunkSize,
+                        destPath = dest.absolutePath,
+                    )
+                }
                 receivedPaths[start.transferId] = dest.absolutePath
                 val handle = FileRandomAccessSinkHandle(dest, start.totalBytes)
                 openHandles[start.transferId] = handle
@@ -1029,9 +1051,16 @@ object DiscoveryEngineHolder {
             // #5: hold every fresh inbound transfer as an OFFER — no destination file is created
             // and no chunk is written until the user accepts (acceptSession resolves the sink).
             requireAcceptance = true,
-            // #20: seed a resumed FILE_START's bit-vector from the persisted receiver done-set.
+            // #20 + HR8: seed a resumed FILE_START's bit-vector from persisted LAN chunks or verified Hub partial bytes.
             resumeIndexesProvider = { start ->
-                transferForResume?.receiverDoneIndexes(start.transferId) ?: emptyList()
+                transferForResume?.prepareLanReceiveResume(
+                    transferId = start.transferId,
+                    fileId = start.fileId,
+                    fileName = start.fileName,
+                    totalBytes = start.totalBytes,
+                    senderDeviceId = null,
+                    chunkSize = start.chunkSize,
+                ) ?: emptyList()
             },
         )
 
@@ -1064,7 +1093,19 @@ object DiscoveryEngineHolder {
         }
         if (dataPort > 0) Log.i(TAG_WS, "Real multistream data channels listening on port=$dataPort")
 
-        // Late-bound reference so the stream factory can route inbound ACKs before assignment.
+        // HR8: Single disk-backed cross-route continuity coordinator shared by LAN transferImpl and HubFileBinding.
+        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator(
+            com.transfer.flash.core.engine.hubfiles.FileContinuityCheckpointStore(
+                File(appContext.noBackupFilesDir, "transfer-continuity").path,
+            ),
+        )
+        var hubFileTransfersRef: com.transfer.flash.core.enterprise.files.HubFileTransfers? = null
+        val routeContinuityPort = com.transfer.flash.core.engine.hubfiles.EngineTransferRouteContinuityPort(
+            localDeviceId = { identity.deviceId.value },
+            coordinator = transferRouteCoordinator,
+            transfersProvider = { hubFileTransfersRef },
+        )
+
         var transferRef: RealFlashTransferRepository? = null
 
         val transferImpl = RealFlashTransferRepository(
@@ -1199,6 +1240,7 @@ object DiscoveryEngineHolder {
                 val placed = com.transfer.flash.core.engine.ReceivedFilePlacement.publish(path, root.path, name, preserveFolders = true)
                 placed
             },
+            routeContinuity = routeContinuityPort,
         )
 
         // PC4 (ADR-046): presence sharing. Built before the chat repository, whose Online set it
@@ -1280,8 +1322,9 @@ object DiscoveryEngineHolder {
         hubRevocations.load()
 
         val debuggable = (appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        hubContentViaHubFlag.value = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
-            .getBoolean("content_via_hub", false)
+        val hubPrefs = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+        hubContentViaHubFlag.value = hubPrefs.getBoolean("content_via_hub", false)
+        announcementNotificationsFlag.value = hubPrefs.getBoolean("announcement_notifications", true)
         appContextRef = appContext
         val hub = EnterpriseHub(
             deviceId = identity.deviceId.value,
@@ -1312,6 +1355,24 @@ object DiscoveryEngineHolder {
             },
             lookup = { hub.peers.lookup(it) },
         )
+        val hubGroupE2ee = com.transfer.flash.core.messaging.hub.HubGroupE2eeCoordinator(
+            localDeviceId = identity.deviceId.value,
+            crypto = crypto,
+            keyStore = com.transfer.flash.core.security.enterprise.AndroidHubGroupEpochKeyStore(appContext),
+        )
+        appScope.launch {
+            try {
+                hubGroupE2ee.load()
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                com.transfer.flash.core.common.logging.FlashLog.e(
+                    "SECURITY",
+                    "Failed to load persisted Hub group epoch keys: ${t.message}",
+                    t,
+                )
+            }
+        }
 
         val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
             dao = db.orgDirectoryDao(),
@@ -1336,6 +1397,20 @@ object DiscoveryEngineHolder {
         val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
             orgPeerResolver.onRevocationsChanged()
             hubRosterChat?.refreshHubGroupRosters()
+            val currentList = hubRevocations.current()
+            val revokedIds = currentList?.revokedDeviceIds.orEmpty()
+            val activePeerId = calling?.activeCall?.value?.peerId
+            val activePeerRevoked = activePeerId != null &&
+                (currentList?.revokesDevice(activePeerId) == true || !hubRevocations.permitsOrg())
+            if (revokedIds.isNotEmpty() || activePeerRevoked) {
+                appScope.launch {
+                    val coordinator = calling as? CallCoordinator ?: return@launch
+                    revokedIds.forEach { coordinator.terminateCallsForRevokedPeer(it) }
+                    if (activePeerId != null && activePeerRevoked) {
+                        coordinator.terminateCallsForRevokedPeer(activePeerId)
+                    }
+                }
+            }
         })
         val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
             dao = db.orgDirectoryDao(),
@@ -1529,6 +1604,18 @@ object DiscoveryEngineHolder {
                     groupTitle,
                 )
             },
+            onNewAnnouncementNotification = { announcementId, title, deptName ->
+                val prefs = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+                val enabled = prefs.getBoolean("announcement_notifications", true)
+                if (enabled) {
+                    FlashNotificationManager.showAnnouncement(
+                        appContext,
+                        announcementId,
+                        title,
+                        deptName,
+                    )
+                }
+            },
             transportSink = { targetDeviceId, wireFrame ->
                 // PC3 dial on demand: a message to a peer that is seen but not connected dials first
                 // (≤ 1 s) instead of waiting for the next sweep. Receipts and typing never wait.
@@ -1624,8 +1711,16 @@ object DiscoveryEngineHolder {
                 hubPresence = hub.hubOnlinePeerIds,
             ),
             hubSealing = hubSealingPort,
+            hubGroupE2ee = hubGroupE2ee,
             radioPort = radioPort,
             hubFileDao = db.hubFileDao(),
+            offLanCallSupported = {
+                val cfg = hub.validCallIceConfig()
+                hub.relay.state.value.canSend &&
+                    cfg != null &&
+                    cfg.offLanCallingSupported &&
+                    cfg.iceServers.isNotEmpty()
+            },
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             FlashNotificationManager.showJoinRequest(
@@ -1775,8 +1870,31 @@ object DiscoveryEngineHolder {
                 trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
                     ?: engine.discoveredEndpoints.value.firstOrNull { it.deviceId.value == peerId }?.friendlyName
             },
-            // G2: Ethernet or the connected Wi-Fi band, exchanged in group call announcements.
+            // G2: Ethernet or the connected Wi-Fi band, cached by AndroidNetworkBand.
             networkBand = { AndroidNetworkBand.read(appContext) },
+            iceConfigProvider = { peerId ->
+                if (networkImpl.activeSessions.value.containsKey(FlashDeviceId(peerId))) {
+                    emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+                } else {
+                    val cfg = hub.ensureFreshCallIceConfig() ?: hub.validCallIceConfig()
+                    if (cfg == null) {
+                        emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+                    } else {
+                        val servers = cfg.iceServers.map { s ->
+                            com.transfer.flash.core.calling.CallIceServerSpec(
+                                urls = s.urls,
+                                username = s.username ?: "",
+                                credential = s.credential ?: "",
+                            ).toWebRtcIceServer()
+                        }
+                        val policy = when (cfg.mediaPolicy.uppercase()) {
+                            "RELAY_ONLY" -> com.shepeliev.webrtckmp.IceTransportPolicy.Relay
+                            else -> com.shepeliev.webrtckmp.IceTransportPolicy.All
+                        }
+                        servers to policy
+                    }
+                }
+            },
             sendFrame = { frame, peerId ->
                 val encoded = CallFrameCodec.encode(frame)
                 var session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
@@ -1795,8 +1913,27 @@ object DiscoveryEngineHolder {
                     Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
                     true
                 } else {
-                    Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
-                    false
+                    val iceCfg = if (hub.relay.state.value.canSend) hub.ensureFreshCallIceConfig() else null
+                    if (hub.relay.state.value.canSend && iceCfg != null && iceCfg.offLanCallingSupported) {
+                        val sent = hub.relay.sendCallSignal(
+                            com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(
+                                to = peerId,
+                                from = identity.deviceId.value,
+                                callId = frame.callId,
+                                signalId = com.transfer.flash.core.common.id.UuidIdGenerator.newId(),
+                                seq = offLanCallSignalSeq.incrementAndGet(),
+                                issuedAt = com.transfer.flash.core.common.time.SystemTimeSource.nowMs(),
+                                ttlMs = com.transfer.flash.core.hubprotocol.HubContract.CALL_SIGNAL_DEFAULT_TTL_MS,
+                                payload = encoded,
+                                capabilities = listOf(com.transfer.flash.core.hubprotocol.HubContract.FEATURE_HUB_CALLING),
+                            ),
+                        )
+                        Log.i(TAG_WS, "Call sendFrame via Hub off-LAN action=${frame.javaClass.simpleName} peer=$peerId sent=$sent")
+                        sent
+                    } else {
+                        Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
+                        false
+                    }
                 }
             },
             // Every terminated call becomes a row in the peer's thread (UI-050). No wire frame is
@@ -2124,10 +2261,12 @@ object DiscoveryEngineHolder {
         }
         // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub. The engine's state lives in
         // no-backup app storage (excluded from Auto Backup); finished files land beside every other received file.
+        val hubFileTransfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(appContext.noBackupFilesDir, "hub-files").path))
+        hubFileTransfersRef = hubFileTransfers
         hubFileBindingRef = HubFileBinding(
             scope = appScope,
             dao = db.hubFileDao(),
-            transfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(appContext.noBackupFilesDir, "hub-files").path)),
+            transfers = hubFileTransfers,
             api = hub.files,
             transferRepository = transferImpl,
             hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
@@ -2153,6 +2292,9 @@ object DiscoveryEngineHolder {
                     else -> autoDownloadFile
                 }
             },
+            continuityCoordinator = transferRouteCoordinator,
+            continuityPort = routeContinuityPort,
+            localDeviceId = { identity.deviceId.value },
         ).also { it.start() }
         // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.
         chatImpl.onHubFileMessageDeleted = { transferId -> appScope.launch { hubFileBindingRef?.cancelOutgoing(transferId) } }
@@ -2168,6 +2310,22 @@ object DiscoveryEngineHolder {
             }
         }
         this.calling = callCoordinator
+        appScope.launch {
+            hub.relay.callSignals.collect { signal ->
+                callCoordinator.onInboundOffLanSignal(
+                    com.transfer.flash.core.calling.InboundOffLanCallSignal(
+                        signalId = signal.signalId,
+                        callId = signal.callId,
+                        fromPeerId = signal.from,
+                        seq = signal.seq,
+                        issuedAtMs = signal.issuedAt,
+                        ttlMs = signal.ttlMs,
+                        payloadText = signal.payload,
+                        senderCapabilities = signal.capabilities.toSet(),
+                    ),
+                )
+            }
+        }
         // PTT voice session (ADR-032 Phase 1): all transport access is lazy lambdas over
         // holder fields, so construction order within this function does not matter.
         val ptt = PttSessionEngine(

@@ -535,6 +535,17 @@ class MailboxQueue(
 
     override fun quarantinedTotal(): Long = quarantined.get()
 
+    override fun quarantinedOutstanding(): Long = database.withConnection { conn ->
+        val now = clock()
+        conn.prepareStatement(
+            "SELECT COUNT(*) FROM mailbox_envelopes WHERE expires_at > ? AND undeliverable_reason IS NOT NULL AND undeliverable_reason <> ?",
+        ).use { stmt ->
+            stmt.setLong(1, now)
+            stmt.setString(2, MailboxSchema.GROUP_MEMBER_REMOVED)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+        }
+    }
+
     private companion object {
         /** Pages of a single fetch spent skipping quarantined rows; the router simply asks again after that. */
         const val MAX_QUARANTINE_ROUNDS = 20

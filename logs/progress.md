@@ -1,5 +1,11 @@
 # Progress Log
 
+## 2026-11-14 — Merge Hub readiness into dev
+
+Merged `agent/hub-readiness` at `e3a64a24` with its individual HR6–HR11 commits intact. Committed notification identity/actions, receive finalization, accessible voice capture, Nearby and Settings polish, and deep links independently on `dev`. Recorded both audits in separate commits. The merge joins the cancellation guard with Hub continuity, cleans late LAN copies after the Hub wins, uses the existing desktop toast for title-only announcements, and preserves both invite and TURN configuration.
+
+Final locked Gradle run passed `:server:test`, calling/enterprise/engine JVM, Android-host transfer, chat and desktop JVM, Android unit tests, and `:app:assembleDebug`. XML records 2,905 cases across 331 suites, with zero failures or errors and two documented desktop skips. All 87 Node console tests passed. ERROR-1023 records the late LAN completion regression caught on the first run. Physical, hosted, and browser-to-installed-app acceptance remain in the backlog.
+
 ## 2026-11-14 — Hub and local group invite links
 
 Hub enrollment links and console QR codes use the issuing Hub's public HTTPS origin. Android and desktop generate local group links with the configured Flash link host and share the same URL as an offline QR. The fragment carries the legacy invite so the fallback page receives no credential in its HTTP requests. Android App Links, browser Open in Flash and Download Flash, and the existing in-app paste and confirmation flows support both invite types. The desktop launcher forwards invites over authenticated single-instance IPC. See ADR-361 and [deployment instructions](../docs/deploy/INVITE-LINKS.md).
@@ -89,6 +95,59 @@ Following a comprehensive line-by-line diff audit of the implementation, remedia
 
 ### Remaining / Next AI
 - Physical verification owed on Android device and Windows/Linux desktop for `NOTIF-01..04` in `docs/testing/TEST-BACKLOG.md`.
+
+## 2026-11-14 — Audit remediation for HR6–HR11 completion review (`agent/hub-readiness`)
+
+### Worked on
+Resolved all 8 findings (`6 P1 + 2 P2`) from `docs/audit/2026-11-14-hub-completion-review.md` plus independent re-verifier defects in isolated worktree `C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness` atop `256e140d`:
+- **HR6 (#1 & #2):** Added `hub_device_replacements` (`IdentityStore` Migration 4) + per-device lock in `AdminApi.kt` (`replaceLocks`) + `IdentityStore.beginDeviceReplacement`, validated scope/department/group membership/`remainingQuotaAssumingRevoked` and admin/approver/linked-admin rules before credential/revocation mutations, surfaced pending `replacementInviteId` via `409 Conflict` + `GET /admin/api/v1/devices/{id}` for operator revoke+reissue, and added startup/lease recovery (`IdentityStore.reconcileInterruptedReplacements` + `IN_PROGRESS_LEASE_MS`, `DeviceReplacementTest`).
+- **HR7 (#3):** Threaded `expectedEpoch` across `AnnouncementRoutes`, `AnnouncementStore.getChangesFeed`, `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, `FakeHubAnnouncementsApi`, and `RealFlashChatRepository.refreshHubAnnouncements` to force `fullResync = true` when Hub feed epochs reset (`AnnouncementClientContractTest`, `RealFlashChatRepositoryAnnouncementsTest`).
+- **HR8 (#4):** Added atomic disk persistence via `FileContinuityCheckpointStore`, 32-hex `wireFileId` generation (`RealFlashTransferRepository.newWireFileId`), normal UI `sendFile` / `resumeTransfer` `LAN <-> Hub` handover (`TransferRouteFallback`, `HubFileBinding`), `senderSourceFingerprint` validation, `hubfile.handover.*` probes, Android/Desktop wiring (`DiscoveryEngineHolder`, `DesktopEngine`), and deterministic end-to-end integration tests (`CrossRouteWiringIntegrationTest`).
+- **HR9 (#5 & #7):** Validated inner `FLASH_CALL` frame (`callId`, sender, non-terminal state) and monotonic `seq` prior to replay-cache recording (`CallCoordinator`, `HubOffLanCalling`, `OffLanCallSignalingTest`); added proactive `EnterpriseHub.ensureFreshCallIceConfig` renewal/retry plus `suspend iceConfigProvider` awaited during call session creation (`CallCoordinator`, `DiscoveryEngineHolder`, `DesktopEngine`, `DesktopShell`, `EnterpriseHubTest`).
+- **HR10 (#6):** Bounded `GroupRelaySealing.MAX_VALID_EPOCH` (`1_000_000_000L`) and unified `(rosterVersion, epoch, keyId)` canonical epoch tie-breaking (`HubGroupE2eeCoordinator`, `HubGroupE2eeTest`).
+- **HR11 (#8):** Added `MailboxStats.quarantinedOutstanding()` backed by `MailboxQueue`, wired into `OperationalMonitor.evaluate`, `/health/detail` (`mailbox.quarantinedOutstanding`), and Prometheus `flash_mailbox_quarantined_outstanding` (`FlashServerEngine`, `OperationsAndRolloutDrillsTest`).
+
+### Verification (after final code & doc edits)
+- **Node Admin UI tests (`node --no-warnings --test server/admin-ui-tests/*.test.mjs`):** `87 tests, 87 passed, 0 failed, 0 skipped`.
+- **Server (`tools\flash-gradle.cmd --max-workers=2 :server:test --rerun`):** `76 suites, 703 tests, 0 failures, 0 errors, 0 skipped`.
+- **Client / Protocol / Persistence / Network / UI / Desktop / Android (`--rerun-tasks`):** `tools\flash-gradle.cmd :core:common:jvmTest :core:hub-protocol:jvmTest :core:security:jvmTest :core:discovery:jvmTest :core:persistence:jvmTest :core:enterprise:jvmTest :core:network:jvmTest :core:transfer:jvmTest :core:messaging:jvmTest :core:calling:jvmTest :core:engine:jvmTest :ui:chat:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:assembleDebug --rerun-tasks` -> `394 suites, 3,311 tests, 0 failures, 0 errors, 4 pre-existing POSIX skips on Windows` (`:core:security:jvmTest` 2, `:desktop:jvmTest` 2) + `:app:assembleDebug` `BUILD SUCCESSFUL`.
+- **Total automated gate:** `4,101 tests, 0 failures, 0 errors, 4 skipped`.
+
+### Remaining / Next AI
+- Commit cleanly on `agent/hub-readiness` and pass an independent verifier re-review (`docs/plans/HUB-PLANS-PROMPTS.md` §2).
+- Three-way merge all 18 overlapping uncommitted `dev` files across `0b162b80..HEAD` in `C:\Users\KaliOxygen\Downloads\Flash` (listed in `logs/handoff.md` and `docs/plans/HUB-READINESS-REMEDIATION.md`).
+- Physical device, Chrome console, coturn, and isolated VPS items remain `TODO` in `docs/testing/TEST-BACKLOG.md` (`HR6-DEV-01 / ORGT-14` .. `HR11-ENV-02`).
+
+## 2026-11-13 — Hub readiness phases HR6–HR11 implemented, audit-remediated, and integration-verified (`agent/hub-readiness`)
+
+### Worked on
+Implemented and remediated Hub readiness phases **HR6–HR11** in isolated worktree `C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness` (branched from `0b162b80` on `agent/hub-readiness`, keeping main checkout `C:\Users\KaliOxygen\Downloads\Flash` on `dev` untouched):
+- **HR6 — Secure device replacement (`6dfce2b0`, `1c664631`):** Scoped, expiring, one-use replacement grants via `POST /admin/api/v1/devices/{id}/replace` (`AdminRoutePolicy.OWN`, `DeviceReplaceBody`, `DeviceReplaceResultDto`), explicit department/group selection + scope/`remainingQuotaAssumingRevoked` checks, separate admin/approver/signer privilege & step-up enforcement, `linkedDeviceId` guard and clearing, immediate old binding/bearer/directory revocation preserved across restart & offline LAN sync, Console Devices UI replace flow (`devices.js` group filtering, i18n, close control), Android/Desktop enrollment tests (`DeviceReplacementTest`, `devices-replace.test.mjs`), and live security mutation verified on `AdminApi.kt:552` (restored cleanly).
+- **HR7 — Announcement notifications and confidentiality disclosure (`8b1807c3`, `5904e545`):** Title-only system announcement notifications across Android & Desktop (`NotificationDecision`, `FlashNotificationManager`, `DesktopNotificationManager`), strict dept scope enforcement, `"Announcement notifications"` Settings toggle + permission/author/bounded duplicate suppression (512 IDs) across first sync/reconnect catch-up/replay/restart, cold-start & desktop route tap navigation (`ANN-01`/`ANN-10`/`ANN-11`/`HUBT-12`), usable in-app feed when muted/denied, `drainOutboxLoop` shutdown fix, and group relay confidentiality notice in UI (`FlashHubCopy`).
+- **HR8 — Cross-route LAN ↔ Hub file transfer continuity (`770afd09`, `125be430`):** Stable logical transfer identity (`LogicalTransferIdentity`), verified byte range compatibility (`TransferByteAlignment`), exclusive active-route ownership (`TransferRouteCoordinator`), production wiring into `RealFlashTransferRepository`, `HubFileTransfers`, `EngineTransferRouteContinuityPort`, `TransferRouteContinuityPort`, `DiscoveryEngineHolder`, and `DesktopEngine`, LAN ↔ Hub resume using only destination-verified bytes, fail-closed integrity on route races/changed source/incompatible layouts/tampered chunks/unavailable or older peers, and cross-route tests (`CrossRouteWiringIntegrationTest`).
+- **HR9 — Off-LAN voice and video calling (`ae2f74a9`, `5904e545`):** Authenticated short-lived signaling (`RelayFrame.CallSignal`), authorized participants, idempotent call transitions, group call revocation termination, capability negotiation & STUN/TURN policy (`GET /api/v1/calls/ice-config`, `CallIceService`, `HubIceConfigDto.offLanCallingSupported`, `ttlSeconds` `60..86400` default `3600`), conditional UI support check, preserved LAN calling, and documented ICE/TURN server deployment (`CallSignalingAndIceConfigTest`).
+- **HR10 — End-to-end encryption for Hub-relayed group messages (`e6ee5e1c`, `5904e545`):** Threat model & versioned `hge1` epoch compatibility design (`docs/security.md`, `docs/protocol.md`), authenticated group membership epochs & scoped key delivery (`GroupRelaySealing`, `HubGroupE2eeCoordinator`, `FileHubGroupEpochKeyStore` with fail-closed epoch keystore load), fail-closed blocking on legacy/unverified peers (`GROUP_ENCRYPTED` / `GROUP_E2EE_BLOCKED` notices in `HubNotice` & `FlashHubNotice`), server opacity verified (`GroupE2eeRelayOpacityTest`), removed/new/rejoined epoch confidentiality (`HubGroupE2eeTest`), and mutation-verified fail-closed guard.
+- **HR11 — Operational monitoring, restore drills & docs/test-fix alignment (`6105be0b`, `69ef31c0`, plus final alignment commit):** `OperationalMonitor` alerts (`unreadable_queue`, `oldest_queued_mail`, bounded `disk_pressure`, `delegation_expiring`, `tls_cert_expiring`) wired to `GET /health/detail` (`mailbox.quarantinedTotal`) and `GET /metrics` in `FlashServerEngine`, runbook thresholds in `docs/deploy/HUB-SERVER-DEPLOYMENT.md`, `docs/protocol-routes.txt` & `ConsoleScope.kt` updated for HR6/HR9 routes, restore/signer-rotation/revocation & isolated `HUBREADY-01..05` drills plus synthetic `PERF-H03` (`OperationsAndRolloutDrillsTest`, `EXP-143`), `RealFlashChatRepositoryHubFileTest` await ordering fix, `RelayFrameRouterTest.fetchPageDetailed` deterministic delay fix, and full `HUB-QUALITY-CONTRACT.md` §7 documentation/report alignment across `docs/plans/HUB-READINESS-REMEDIATION.md`, `docs/protocol.md`, `docs/security.md`, `docs/testing/PROBES.md`, `docs/testing/TEST-BACKLOG.md`, and `AGENTS.md`.
+
+### Verification
+- **Node Admin UI tests (`node --no-warnings --test server/admin-ui-tests/*.test.mjs`):** `87 tests, 87 passed, 0 failed, 0 skipped`.
+- **Client / Protocol / UI / Android / Desktop Gradle gate (`tools\flash-gradle.cmd` at `125be430`, XML tallies):**
+  - `:core:hub-protocol:jvmTest`: 126 tests, 0 failures, 0 errors, 0 skipped
+  - `:core:security:jvmTest`: 183 tests, 0 failures, 0 errors, 2 skipped (POSIX permission tests on Windows)
+  - `:core:enterprise:jvmTest`: 282 tests, 0 failures, 0 errors, 0 skipped
+  - `:core:messaging:jvmTest`: 391 tests, 0 failures, 0 errors, 0 skipped
+  - `:core:calling:jvmTest`: 244 tests, 0 failures, 0 errors, 0 skipped
+  - `:core:transfer:jvmTest`: 145 tests, 0 failures, 0 errors, 0 skipped
+  - `:core:engine:jvmTest`: 185 tests, 0 failures, 0 errors, 0 skipped (includes `CrossRouteWiringIntegrationTest` 3/3)
+  - `:ui:chat:jvmTest`: 790 tests, 0 failures, 0 errors, 0 skipped
+  - `:desktop:jvmTest`: 294 tests, 0 failures, 0 errors, 2 skipped (POSIX permission tests on Windows)
+  - `:app:testDebugUnitTest`: 111 tests, 0 failures, 0 errors, 0 skipped
+  - Sum: **2,751 tests, 4 skipped, 0 failures, 0 errors** + `:app:assembleDebug` `BUILD SUCCESSFUL`.
+- **Server suite (`tools\flash-gradle.cmd --max-workers=2 :server:test`):** `BUILD SUCCESSFUL`, **76 suites, 697 tests, 0 failures, 0 errors, 0 skipped** (including deterministic `RelayFrameRouterTest` 41/41 after overriding `fetchPageDetailed` delay in test delegator).
+
+### Remaining / Next AI
+- Independent verifier re-review (`docs/plans/HUB-PLANS-PROMPTS.md` §2) on clean committed `agent/hub-readiness` `HEAD`.
+- Physical device, Chrome Admin Console, two-network coturn, and isolated VPS acceptance items remain owed in `docs/testing/TEST-BACKLOG.md` (`HR6-DEV-01 / ORGT-14`, `HR7-DEV-01`, `HR8-DEV-01`, `HR9-DEV-01`, `HR9-DEV-02`, `HR10-DEV-01`, `HR11-ENV-01`, `HR11-ENV-02`).
 
 ## 2026-11-12 — Phase 7 UI/UX diff audit, bug remediation & final verification gate
 

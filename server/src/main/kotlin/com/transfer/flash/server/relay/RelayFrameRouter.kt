@@ -188,6 +188,7 @@ public class RelayFrameRouter(
             is RelayFrame.Send -> handleSend(originSession, frame)
             is RelayFrame.RecvAck -> handleRecvAck(originSession, frame)
             is RelayFrame.Meta -> handleInboundMeta(originSession, frame)
+            is RelayFrame.CallSignal -> handleInboundCallSignal(originSession, frame)
             else -> {
                 // SEC-02: a client may not send FLASH_ACK / FLASH_DELIVER / FLASH_QUEUE_STATE / FLASH_KICK ...
                 // (there is no peer-forwarded ack on this wire), so there is nothing to forward and nothing to spoof.
@@ -474,6 +475,53 @@ public class RelayFrameRouter(
         val target = connectionPool.get(deviceId) ?: return
         if (target.offer(text) == OfferResult.OK) {
             metrics.inc(RelayMetrics.FRAMES_OUT, 1, "kind" to "FLASH_META")
+        }
+    }
+
+    /**
+     * HR9: Ephemeral, short-lived, authenticated call signaling routing.
+     * Enforces TTL/clock-skew bounds, stamps authenticated [origin.deviceId], refuses revoked/offline peers
+     * immediately, and never persists call invitations to the offline mailbox.
+     */
+    private suspend fun handleInboundCallSignal(origin: RelaySession, signal: RelayFrame.CallSignal) {
+        val now = clock()
+        if (signal.ttlMs !in 1L..HubContract.CALL_SIGNAL_MAX_TTL_MS) {
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_BAD_REQUEST, "Call signal TTL out of range"))
+            noteRefusal(origin)
+            return
+        }
+        if (now - signal.issuedAt > signal.ttlMs + CALL_SIGNAL_CLOCK_GRACE_MS ||
+            signal.issuedAt - now > CALL_SIGNAL_FUTURE_SKEW_MS
+        ) {
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_EXPIRED, "Call signal expired"))
+            noteRefusal(origin)
+            return
+        }
+        if (signal.to == origin.deviceId) {
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_BAD_REQUEST, "Cannot signal own device"))
+            noteRefusal(origin)
+            return
+        }
+        if (isRevokedNow(null, signal.to)) {
+            connectionPool.get(signal.to)?.let { kickRevoked(it, "revoked") }
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_REVOKED, "Recipient device is revoked"))
+            return
+        }
+        val target = connectionPool.get(signal.to)
+        if (target == null || !target.isOpen) {
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_NOT_FOUND, "Peer is offline"))
+            return
+        }
+        if (isRevoked(target)) {
+            kickRevoked(target, "revoked")
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_REVOKED, "Recipient device is revoked"))
+            return
+        }
+        val forwarded = RelayFrameCodec.encode(signal.copy(from = origin.deviceId))
+        if (target.offer(forwarded) == OfferResult.OK) {
+            metrics.inc(RelayMetrics.FRAMES_OUT, 1, "kind" to "FLASH_CALL_SIGNAL")
+        } else {
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_RATE_LIMIT, "Recipient signaling queue full"))
         }
     }
 
@@ -943,6 +991,7 @@ public class RelayFrameRouter(
         is RelayFrame.Revoked -> "FLASH_REVOKED"
         is RelayFrame.Kick -> "FLASH_KICK"
         is RelayFrame.AnnouncementEvent -> "FLASH_ANNOUNCEMENT"
+        is RelayFrame.CallSignal -> "FLASH_CALL_SIGNAL"
     }
 
     private fun reasonLabel(reason: String): String = when (reason) {
@@ -985,6 +1034,8 @@ public class RelayFrameRouter(
 
         private const val MAX_DRAIN_RETRIES: Int = 5
         private const val DRAIN_RETRY_DELAY_MS: Long = 1_000L
+        private const val CALL_SIGNAL_CLOCK_GRACE_MS: Long = 5_000L
+        private const val CALL_SIGNAL_FUTURE_SKEW_MS: Long = 30_000L
     }
 }
 

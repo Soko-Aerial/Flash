@@ -321,6 +321,7 @@ public class DesktopEngine(
 
     @Volatile
     private var orgSnapshotCoordinatorRef: com.transfer.flash.core.enterprise.OrgSnapshotCoordinator? = null
+    private val offLanCallSignalSeq = java.util.concurrent.atomic.AtomicLong(0L)
 
     /** Pull-to-refresh and Hub tab opening: ask for a directory sync (honours the 60 s minimum unless [force]). */
     public fun requestOrgSync(reason: String, force: Boolean = false) {
@@ -679,6 +680,9 @@ public class DesktopEngine(
 
     /** Inbound group join request notification hook (for DesktopNotificationManager / shell). */
     public var onJoinRequestNotification: ((groupId: String, groupTitle: String, requesterName: String) -> Unit)? = null
+
+    /** Inbound announcement notification hook (Plan A3 §4.4 / HR7, for DesktopNotificationManager). */
+    public var onAnnouncementNotification: ((announcementId: String, title: String, departmentName: String?) -> Unit)? = null
 
     /** A member added this device to a group it cannot accept (not paired with the owner): the sentence to show (M-23). */
     public var onGroupOfferRefused: ((groupId: String, groupName: String, message: String) -> Unit)? = null
@@ -1418,6 +1422,18 @@ public class DesktopEngine(
             }
             FileSystem.SYSTEM.source(file.absolutePath.toPath())
         }
+        // HR8: Single disk-backed cross-route continuity coordinator shared by LAN transfer and HubFileBinding.
+        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator(
+            com.transfer.flash.core.engine.hubfiles.FileContinuityCheckpointStore(
+                File(stateDir, "transfer-continuity").path,
+            ),
+        )
+        var hubFileTransfersRef: com.transfer.flash.core.enterprise.files.HubFileTransfers? = null
+        val routeContinuityPort = com.transfer.flash.core.engine.hubfiles.EngineTransferRouteContinuityPort(
+            localDeviceId = { localId },
+            coordinator = transferRouteCoordinator,
+            transfersProvider = { hubFileTransfersRef },
+        )
         val transfer = RealFlashTransferRepository(
             streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
             fileSourceOpener = fileOpener,
@@ -1436,6 +1452,7 @@ public class DesktopEngine(
                 receivedManifest.recordFile(root, File(placed))
                 placed
             },
+            routeContinuity = routeContinuityPort,
         )
         transferImpl = transfer
 
@@ -1553,6 +1570,23 @@ public class DesktopEngine(
                 },
                 lookup = { hub.peers.lookup(it) },
             )
+            val hubGroupE2ee = com.transfer.flash.core.messaging.hub.HubGroupE2eeCoordinator(
+                localDeviceId = localId,
+                crypto = crypto,
+                keyStore = com.transfer.flash.core.security.enterprise.FileHubGroupEpochKeyStore(
+                    File(File(stateDir, "hub"), "group-keys.dat"),
+                    hubSealingVault,
+                ),
+            )
+            scope.launch {
+                try {
+                    hubGroupE2ee.load()
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    FlashLog.e("SECURITY", "Failed to load persisted Hub group epoch keys: ${t.message}", t)
+                }
+            }
 
             val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
                 dao = db.orgDirectoryDao(),
@@ -1577,6 +1611,20 @@ public class DesktopEngine(
             val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
                 orgPeerResolver.onRevocationsChanged()
                 hubRosterChat?.refreshHubGroupRosters()
+                val currentList = hubRevocations.current()
+                val revokedIds = currentList?.revokedDeviceIds.orEmpty()
+                val activePeerId = callsImpl?.activeCall?.value?.peerId
+                val activePeerRevoked = activePeerId != null &&
+                    (currentList?.revokesDevice(activePeerId) == true || !hubRevocations.permitsOrg())
+                if (revokedIds.isNotEmpty() || activePeerRevoked) {
+                    scope.launch {
+                        val c = callsImpl as? CallCoordinator ?: return@launch
+                        revokedIds.forEach { c.terminateCallsForRevokedPeer(it) }
+                        if (activePeerId != null && activePeerRevoked) {
+                            c.terminateCallsForRevokedPeer(activePeerId)
+                        }
+                    }
+                }
             })
             val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
                 dao = db.orgDirectoryDao(),
@@ -1805,6 +1853,10 @@ public class DesktopEngine(
                     FlashLog.i(TAG_WS, "Inbound attachment in $conversationId from ${senderName ?: "?"} (group $groupTitle): $fileName ($mimeType)")
                     onInboundAttachmentNotification?.invoke(conversationId, senderName, fileName, mimeType, groupTitle)
                 },
+                onNewAnnouncementNotification = { announcementId, title, deptName ->
+                    FlashLog.i(TAG_WS, "Inbound announcement notification: $announcementId")
+                    onAnnouncementNotification?.invoke(announcementId, title, deptName)
+                },
                 scope = scope,
                 enterpriseTrustStore = enterpriseTrustStore,
                 hubRelay = FlashRelayHubPort(hub.relay) { enterpriseTrustStore.isEnrolled },
@@ -1822,17 +1874,27 @@ public class DesktopEngine(
                     hubPresence = hub.hubOnlinePeerIds,
                 ),
                 hubSealing = hubSealingPort,
+                hubGroupE2ee = hubGroupE2ee,
                 radioPort = radioPort,
                 hubFileDao = db.hubFileDao(),
+                offLanCallSupported = {
+                    val cfg = hub.validCallIceConfig()
+                    hub.relay.state.value.canSend &&
+                        cfg != null &&
+                        cfg.offLanCallingSupported &&
+                        cfg.iceServers.isNotEmpty()
+                },
             )
             hubRosterChat = chatImpl
             // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub; the engine keeps its
             // state under the state directory, and finished files land in the receive folder like any other.
             chatImpl?.let { c ->
+                val hubFileTransfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(stateDir, "hub-files").path))
+                hubFileTransfersRef = hubFileTransfers
                 hubFileBindingRef = HubFileBinding(
                     scope = scope,
                     dao = db.hubFileDao(),
-                    transfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(stateDir, "hub-files").path)),
+                    transfers = hubFileTransfers,
                     api = hub.files,
                     transferRepository = transfer,
                     hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
@@ -1863,6 +1925,9 @@ public class DesktopEngine(
                         val voiceFromColleague = mime.startsWith("audio/") && s.autoDownloadVoice && orgPeerResolver.isOrgPeer(peerId)
                         voiceFromColleague || shouldAutoAcceptOffer(trustStoreImpl.isTrusted(FlashDeviceId(peerId)), perKind, autoAcceptIncoming)
                     },
+                    continuityCoordinator = transferRouteCoordinator,
+                    continuityPort = routeContinuityPort,
+                    localDeviceId = { localId },
                 ).also { it.start() }
                 // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.
                 c.onHubFileMessageDeleted = { transferId -> scope.launch { hubFileBindingRef?.cancelOutgoing(transferId) } }
@@ -1938,6 +2003,7 @@ public class DesktopEngine(
             // G2: Ethernet or the Wi-Fi band, cached (netsh is a process spawn) and never blocking.
             networkBand = DesktopNetworkBand(scope).also { it.start() }::current,
             sendFrame = { frame, peerId -> sendCallFrame(network, peerId, frame) },
+            iceConfigProvider = { peerId -> resolveIceConfigForPeer(network.activeSessions.value.containsKey(FlashDeviceId(peerId))) },
             // Every terminated call becomes a row in the peer's thread (UI-050), mirroring the
             // app host. Each side writes its own row — no wire frame involved. Fires on
             // whichever thread ended the call, so this only logs + launches into the repo.
@@ -1959,6 +2025,25 @@ public class DesktopEngine(
             },
         )
         boot("call coordinator built")
+        enterpriseHubRef?.let { activeHub ->
+            scope.launch {
+                activeHub.relay.callSignals.collect { signal ->
+                    val coordinator = callsImpl as? CallCoordinator ?: return@collect
+                    coordinator.onInboundOffLanSignal(
+                        com.transfer.flash.core.calling.InboundOffLanCallSignal(
+                            signalId = signal.signalId,
+                            callId = signal.callId,
+                            fromPeerId = signal.from,
+                            seq = signal.seq,
+                            issuedAtMs = signal.issuedAt,
+                            ttlMs = signal.ttlMs,
+                            payloadText = signal.payload,
+                            senderCapabilities = signal.capabilities.toSet(),
+                        ),
+                    )
+                }
+            }
+        }
 
         // PTT (ADR-032, ADR-058): built via attachPtt over this host's transport. Every
         // transport access is a lazy lambda, so it does not matter that sessions come and go after this point.
@@ -1993,6 +2078,17 @@ public class DesktopEngine(
                     "path traversal escape: ${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
+                runBlocking {
+                    transferImpl?.adoptHubPartialForLan(
+                        transferId = start.transferId,
+                        fileId = start.fileId,
+                        fileName = start.fileName,
+                        totalBytes = start.totalBytes,
+                        senderDeviceId = null,
+                        chunkSize = start.chunkSize,
+                        destPath = dest.absolutePath,
+                    )
+                }
                 receivedManifest.record(canonicalRoot, destDir)
                 receivedPaths[start.transferId] = dest.absolutePath
                 val handle = OkioRandomAccessSinkHandle(dest.absolutePath.toPath(), start.totalBytes)
@@ -2001,10 +2097,16 @@ public class DesktopEngine(
             },
             emitSessionStarted = true,
             requireAcceptance = true,
-            // #20 on the desktop too: the in-memory done-set survives a peer disconnect and lets a
-            // re-offer seed its vector instead of re-downloading chunks already in the .part file.
+            // #20 + HR8 on the desktop too: seed from LAN resume set or verified Hub partial bytes.
             resumeIndexesProvider = { start ->
-                transferImpl?.receiverDoneIndexes(start.transferId).orEmpty()
+                transferImpl?.prepareLanReceiveResume(
+                    transferId = start.transferId,
+                    fileId = start.fileId,
+                    fileName = start.fileName,
+                    totalBytes = start.totalBytes,
+                    senderDeviceId = null,
+                    chunkSize = start.chunkSize,
+                ).orEmpty()
             },
         )
 
@@ -2556,11 +2658,33 @@ public class DesktopEngine(
     private fun peerIdFor(transferId: String): String =
         transferImpl?.activeTransfers?.value?.firstOrNull { it.id.value == transferId }?.peerDeviceId.orEmpty()
 
+    private suspend fun resolveIceConfigForPeer(
+        hasLanSession: Boolean,
+    ): Pair<List<com.shepeliev.webrtckmp.IceServer>, com.shepeliev.webrtckmp.IceTransportPolicy> {
+        if (hasLanSession) {
+            return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+        }
+        val cfg = enterpriseHubRef?.let { it.ensureFreshCallIceConfig() ?: it.validCallIceConfig() }
+            ?: return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+        val servers = cfg.iceServers.map { server ->
+            com.transfer.flash.core.calling.CallIceServerSpec(
+                urls = server.urls,
+                username = server.username ?: "",
+                credential = server.credential ?: "",
+            ).toWebRtcIceServer()
+        }
+        val policy = when (cfg.mediaPolicy.uppercase()) {
+            "RELAY_ONLY" -> com.shepeliev.webrtckmp.IceTransportPolicy.Relay
+            else -> com.shepeliev.webrtckmp.IceTransportPolicy.All
+        }
+        return servers to policy
+    }
+
     /**
      * Outbound call signaling frame → text, mirroring the app host. An invite races session
      * establishment (the user taps Call on a discovered peer whose session is still coming
      * up), so invites wait up to 2 s for the session the way the holder does; anything else
-     * sends only on a live session. Blocking `sendTextAsync`, like the host.
+     * sends on a live LAN session first and falls back to authenticated Hub off-LAN signaling when configured.
      */
     private suspend fun sendCallFrame(
         network: JvmWsFlashNetwork,
@@ -2582,6 +2706,25 @@ public class DesktopEngine(
             session.connection.sendTextAsync(encoded)
             FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
             return true
+        }
+        val hub = enterpriseHubRef
+        val iceCfg = if (hub != null && hub.relay.state.value.canSend) hub.ensureFreshCallIceConfig() else null
+        if (hub != null && hub.relay.state.value.canSend && iceCfg != null && iceCfg.offLanCallingSupported) {
+            val sent = hub.relay.sendCallSignal(
+                com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(
+                    to = peerId,
+                    from = identity.deviceId.value,
+                    callId = frame.callId,
+                    signalId = com.transfer.flash.core.common.id.UuidIdGenerator.newId(),
+                    seq = offLanCallSignalSeq.incrementAndGet(),
+                    issuedAt = com.transfer.flash.core.common.time.SystemTimeSource.nowMs(),
+                    ttlMs = com.transfer.flash.core.hubprotocol.HubContract.CALL_SIGNAL_DEFAULT_TTL_MS,
+                    payload = encoded,
+                    capabilities = listOf(com.transfer.flash.core.hubprotocol.HubContract.FEATURE_HUB_CALLING),
+                ),
+            )
+            FlashLog.i(TAG_WS, "Call sendFrame via Hub off-LAN action=${frame.javaClass.simpleName} peer=$peerId sent=$sent")
+            return sent
         }
         FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
         return false

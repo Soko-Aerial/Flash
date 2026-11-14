@@ -11,9 +11,12 @@ import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import java.io.File
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -1014,5 +1017,101 @@ class DesktopNotificationManagerTest {
 
         // The second completion also produces a notification.
         assertEquals(4, notifications.size)
+    }
+
+    @Test
+    fun announcementNotificationDispatchesTitleOnly() {
+        val stateDir = tempFolder.newFolder("desktop_state_ann")
+        val engine = testDesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        val openedAnnouncementId = CompletableDeferred<String>()
+
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { false },
+            activeConversationId = { null },
+            isNotificationsEnabled = { true },
+        )
+        manager.onOpenAnnouncement = { openedAnnouncementId.complete(it) }
+
+        manager.handleAnnouncement(
+            announcementId = "ann-101",
+            title = "Company Town Hall at 3 PM",
+            departmentName = null,
+        )
+
+        assertEquals(1, notifications.size)
+        assertEquals("New announcement", notifications[0].title)
+        assertEquals("Company Town Hall at 3 PM", notifications[0].message)
+        val toast = manager.toastCards.value.single()
+        assertEquals("Company Town Hall at 3 PM", toast.detail)
+        assertFalse(openedAnnouncementId.isCompleted)
+        manager.handleToastAction(ToastAction.OpenAnnouncement, toast)
+        assertEquals("ann-101", runBlocking { withTimeout(5_000) { openedAnnouncementId.await() } })
+
+        // Department-scoped announcement
+        manager.handleAnnouncement(
+            announcementId = "ann-102",
+            title = "Deployment Frozen for Holiday",
+            departmentName = "Infrastructure",
+        )
+
+        assertEquals(2, notifications.size)
+        assertEquals("New announcement · Infrastructure", notifications[1].title)
+        assertEquals("Deployment Frozen for Holiday", notifications[1].message)
+    }
+
+    @Test
+    fun announcementNotificationSuppressedWhenNotificationsDisabled() {
+        val stateDir = tempFolder.newFolder("desktop_state_ann_suppressed")
+        val engine = testDesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { false },
+            activeConversationId = { null },
+            isNotificationsEnabled = { false },
+        )
+
+        manager.handleAnnouncement(
+            announcementId = "ann-103",
+            title = "Ignored Announcement",
+            departmentName = null,
+        )
+
+        assertEquals(0, notifications.size)
+    }
+
+    @Test
+    fun announcementNotificationSuppressedWhenAnnouncementSettingMutedAndPersisted() {
+        val stateDir = tempFolder.newFolder("desktop_state_ann_muted")
+        val store = DesktopSettingsStore(stateDir)
+        assertTrue(store.loadSettings().announcementNotifications)
+        store.saveSettings(store.loadSettings().copy(announcementNotifications = false))
+        assertEquals(false, store.loadSettings().announcementNotifications)
+
+        val engine = testDesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { false },
+            activeConversationId = { null },
+            isNotificationsEnabled = { true },
+            isAnnouncementNotificationsEnabled = { false },
+        )
+
+        manager.handleAnnouncement(
+            announcementId = "ann-104",
+            title = "Muted Announcement",
+            departmentName = "Sales",
+        )
+        assertEquals(0, notifications.size)
     }
 }

@@ -55,6 +55,8 @@ public data class DesktopSettings(
     val chatWallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
     /** ADR-121: let the organisation hub carry readable chat text to colleagues who are not reachable directly. Default FALSE. */
     val hubContentViaHub: Boolean = false,
+    /** HR7: whether new company/department announcement notifications are shown. Default TRUE. */
+    val announcementNotifications: Boolean = true,
 )
 
 /**
@@ -118,6 +120,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             chatWallpaperCustom = props.getProperty(KEY_CHAT_WALLPAPER_CUSTOM)
                 ?: FlashChatWallpaper.DefaultCustomColour,
             hubContentViaHub = props.getProperty(KEY_HUB_CONTENT_VIA_HUB, "false").toBoolean(),
+            announcementNotifications = props.getProperty(KEY_ANNOUNCEMENT_NOTIFICATIONS, "true").toBoolean(),
         )
     }
 
@@ -147,6 +150,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_CHAT_WALLPAPER, settings.chatWallpaper.storageKey)
         props.setProperty(KEY_CHAT_WALLPAPER_CUSTOM, settings.chatWallpaperCustom)
         props.setProperty(KEY_HUB_CONTENT_VIA_HUB, settings.hubContentViaHub.toString())
+        props.setProperty(KEY_ANNOUNCEMENT_NOTIFICATIONS, settings.announcementNotifications.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
         } else {
@@ -182,6 +186,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
     internal companion object {
         const val KEY_THEME_MODE: String = "theme_mode"
         const val KEY_HUB_CONTENT_VIA_HUB: String = "hub_content_via_hub"
+        const val KEY_ANNOUNCEMENT_NOTIFICATIONS: String = "announcement_notifications"
         const val KEY_DISCOVERY_MODE: String = "discovery_mode"
         const val KEY_SAVE_LOCATION: String = "save_location"
         const val KEY_AUTO_DOWNLOAD_VOICE: String = "auto_download_voice"

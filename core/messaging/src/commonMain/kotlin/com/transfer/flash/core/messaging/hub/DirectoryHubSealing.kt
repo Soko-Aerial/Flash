@@ -99,6 +99,11 @@ public class DirectoryHubSealing(
 
     override suspend fun openFailureMayClear(senderDeviceId: String): Boolean =
         runCatching { ownKey() == null || lookup(senderDeviceId)?.subjectPublicKey == null }.getOrDefault(true)
+
+    override suspend fun identityPublicKeyEncoded(deviceId: String): ByteArray? {
+        if (identityMismatch(deviceId)) return null
+        return lookup(deviceId)?.subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() }
+    }
 }
 
 private fun String.normalisedFingerprint(): String = filter { it.isLetterOrDigit() }.uppercase()

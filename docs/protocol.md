@@ -1375,8 +1375,9 @@ connection's cleanup never removes the new registration.
 mailbox, then closes. A client treats it like any disconnect.
 
 **Operational endpoints.** `GET /health` is public and returns only `{"status":"ok"|"degraded"|"down"}` (HTTP 503 when the database does not
-answer). `GET /health/detail` (JSON) and `GET /metrics` (Prometheus text) require the management bearer token or a loopback caller without
+answer; `"degraded"` when any critical operational alert fires or database latency is slow while still reachable). `GET /health/detail` (JSON) and `GET /metrics` (Prometheus text) require the management bearer token or a loopback caller without
 proxy headers; otherwise `403 ERR_FORBIDDEN`. Unhandled errors answer `500 ERR_INTERNAL` with a fixed sentence and a `correlationId`.
+`/health/detail` returns `{status, serverVersion, uptimeSeconds, sessions, openConnections, mailbox: {queuedRows, queuedBytes, oldestAgeSeconds, deliveredTotal, expiredTotal, droppedTotal, quarantinedTotal, quarantinedOutstanding}, database?: {ok, latencyMs, walPages?}, disk?: {totalBytes, usableBytes, usedPercent}, delegationDaysRemaining?, tlsDaysRemaining?, alerts: [{id, severity, summary, action}], memory: {usedBytes, maxBytes}}`.
 
 ### Hub REST contract (`/api/v1`)
 
@@ -1395,6 +1396,7 @@ JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDto
 | `POST /api/v1/enroll` | invite token + PoP | `EnrollRequest {token, deviceId, subjectPublicKey, friendlyName, proof}` | `EnrollResponse {status ENROLLED, serverId, rootFingerprint, rootPublicKey, deviceCert, delegationChain, hubName}` | served |
 | `POST /api/v1/enroll/renew` | signature | `RenewRequest {serverNonce, clientNonce, deviceId, deviceCert, delegationChain, signature}` | `EnrollResponse {status RENEWED, ...}` with a NEW serial | served (Phase 2 SERVER-A) |
 | `GET /api/v1/revocations` | none (rate limited per client address) | none | signed `RevocationList` (`version` only grows; signed by the hub's delegate key, which the client checks against the delegation certificate in its stored chain); `ERR_NOT_FOUND` until the first revocation has been signed. PUBLIC since ADR-124: a revoked device has no bearer and must still be able to confirm its own revocation | served (Phase 2 SERVER-A, ADR-113; public ADR-124) |
+| `GET /api/v1/calls/ice-config` | bearer | none | `HubIceConfigDto {offLanCallingSupported, mediaPolicy, ttlSeconds, iceServers: [HubIceServerDto]}` with short-lived RFC 5766 HMAC-SHA1 TURN credentials (`ttlSeconds` clamped to `60..86400`, default `3600`); returns `429 ERR_RATE_LIMIT` under excessive polling (`HubRateLimits`) | served (HR9) |
 | `POST /api/v1/device/unenroll` | bearer | none | the device revokes its own certificates and frees its id | served (Phase 2 SERVER-A) |
 | `GET /api/v1/directory/me` | bearer | none | the caller's own `MemberDto` and department | served |
 | `GET /api/v1/directory/sync` | bearer | `since` (or `sinceVersion`), `epoch` (or `directoryEpoch`), `limit` (or `pageSize`), `cursor` optional | `DirectorySyncDto`: synchronisation stream of departments, members with signed `OrgMemberStatement`, tombstones, and active delegation chain for offline organization trust; rate-limited per device to a burst of 60 pages then 1 per second (`429 ERR_RATE_LIMIT`; one 20,000-member full sync is 40 pages) | served (Plan B Phase B1) |
@@ -1467,7 +1469,7 @@ Announcements are stored and broadcast in **plain text** on the hub. Hub adminis
 
 | Method and path | Auth | Request | Response | State |
 |---|---|---|---|---|
-| `GET /api/v1/announcements?since=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned), or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
+| `GET /api/v1/announcements?since=&epoch=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned) plus optional `epoch` so post-empty `since=0` checks receive delta instead of full resync, or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
 | `GET /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` (404 if deleted or caller lacks access) | served (A3) |
 | `POST /api/v1/announcements` | bearer | `PostAnnouncementRequestDto` | `201 Created` with `AnnouncementItemDto` | served (A3) |
 | `PUT /api/v1/announcements/{id}` | bearer | `UpdateAnnouncementRequestDto` (expiry is tri-state, see below) | `AnnouncementItemDto` (409 if `expectedSeq` mismatch; 400 if `expiresAtMs` and `clearExpiry` are both set) | served (A3) |
@@ -1546,7 +1548,7 @@ Errors are `{"code": "...", "message": "<fixed sentence>", "correlationId": "...
 |---|---|---|
 | Setup and session | `GET setup/status`, `POST setup/begin`, `POST setup/complete`, `POST login`, `POST logout`, `GET session` | setup needs the setup token (file `<data>/setup-token.txt`) and a confirmed TOTP code; login is username + password + TOTP or a recovery code; attempts are reserved before verification |
 | Overview | `GET overview` | device counts and online devices, delegation status and days left, revocation version, mailbox figures |
-| Devices | `GET devices`, `GET devices/{id}`, `PUT devices/{id}` (rename, move to a department), `POST devices/{id}/revoke`, `POST devices/{id}/unrevoke` | revoke and unrevoke need step-up; revoke also kills the bearer, removes the directory entry and kicks the socket |
+| Devices | `GET devices`, `GET devices/{id}`, `PUT devices/{id}` (rename, move to a department), `POST devices/{id}/replace`, `POST devices/{id}/revoke`, `POST devices/{id}/unrevoke` | revoke and unrevoke need step-up; `replace` (`DeviceReplaceBody {department?, role?, allowedGroups, autoJoinGroups, reason?, ttlMinutes?, note?}` -> `DeviceReplaceResultDto {oldDevice, invite}`) requires step-up `device.replace`, checks quota `remainingQuotaAssumingRevoked`, enforces org/dept scope and org-admin-only rules for admin/approver/signer/linked devices, revokes the old binding/bearer/directory entry, clears admin bindings on the old device, and mints a one-use replacement invite; revoke also kills the bearer, removes the directory entry and kicks the socket |
 | Invites | `GET invites`, `POST invites`, `POST invites/bulk`, `POST invites/{id}/revoke` | real `EnrollmentService` registry; state `ACTIVE`, `USED`, `EXPIRED`, `REVOKED`; a non-member role needs step-up; the response carries the share link and its QR as one SVG path |
 | Revocations | `GET revocations`, `POST revocations/serial`, `POST revocations/install` | the signed list state and entries; revoking a bare serial needs step-up; `install` takes a root-signed list from `keytool revoke` (step-up `revocation.install`, REV-04) |
 | Delegation | `GET delegation`, `POST delegation/reload`, `POST delegation` | install takes a delegation certificate, accepted only under the pinned root, for this hub's key, with a higher serial; both need step-up |
@@ -1892,3 +1894,38 @@ delegation cutoffs. The signed list is saved atomically before it changes trust.
 directory lease. The LAN directory carries statement serials rather than the remote device's current certificate
 serial. Device-ID and delegation revocations apply remotely and certificate-serial revocations apply to the local
 enrolment credential. No manual pairing pin is changed.
+
+## Cross-Route LAN ↔ Hub File Transfer Continuity (HR8)
+
+- **Logical identity (`LogicalTransferIdentity`):** Binds `(logicalTransferId, senderDeviceId, recipientDeviceId, plainBytes, fileSha256Hex)`. New 1:1 LAN sends generate 32-lowercase-hex `wireFileId` values (`RealFlashTransferRepository.newWireFileId`), preserving the exact `transferId` and `wireFileId` across LAN and Hub routes (`RealFlashTransferRepository` / `HubFileBinding`).
+- **Route ownership & restart durability (`TransferRouteCoordinator` / `FileContinuityCheckpointStore` / `EngineTransferRouteContinuityPort`):** Serializes active route transitions (`RouteOwner.NONE | LAN | HUB`) under a monotonic `routeEpoch` persisted atomically to `<noBackupFilesDir>/transfer-continuity/*.chk` (Android) / `<stateDir>/transfer-continuity/*.chk` (Desktop) including verified spans, `lanPartialPath`, `senderSourceFingerprint`, and terminal cancel/complete fences. Restart normalization clears stale `activeRoute` ownership while bumping `routeEpoch` and preserving verified spans and terminal fences (`isTerminalElsewhere`).
+- **Bidirectional user handover & verified byte continuity (`TransferRouteFallback` / `HubFileBinding` / `TransferByteAlignment`):** When a direct `sendFile` fails or resumes offline, `RealFlashTransferRepository.resumeTransfer` invokes `TransferRouteFallback` (`HubFileBinding.tryHandoverFromLan`) to transition `LAN -> HUB` using the same `transferId`, `wireFileId`, and `senderSourceFingerprint`; conversely, resuming an incomplete `HUB` upload while the peer is directly reachable (`HubFileBinding.tryHandoverOutToLan`) stops/retires the `hub_file` row cleanly and resumes on LAN via `resumeHubSendOnLan`. Exports only cryptographically verified byte spans (`[offset, length)` from Hub `.part` + `HubChunkBitmap` or LAN `ReceivePipeline`) and marks a target chunk completed only when the verified span completely covers `[chunkStart, chunkEndExclusive)`. On completion or corruption, tampered partial bytes, oversized Hub limits, or source digest/fingerprint mismatches fail closed (`cancelled` / `FILE_CHANGED` / `INCOMPATIBLE`) without publishing or falling back silently.
+
+## Off-LAN Voice and Video Calling (HR9)
+
+- **Capability advertising:** `GET /api/v1/hub` (`HubInfo`) exposes `offLanCallingSupported: Boolean` (`true` only when the Hub has STUN or TURN URLs configured and is ready to mint ICE config). Clients show off-LAN call controls only when `offLanCallingSupported` is true, ICE servers are available, and the relay WebSocket is connected; LAN call controls continue to rely on direct LAN session availability.
+- **Short-lived ICE config:** `GET /api/v1/calls/ice-config` (device bearer, revocation-enforced, rate-limited) returns `HubIceConfigDto {offLanCallingSupported, mediaPolicy, ttlSeconds, iceServers: [HubIceServerDto]}` (`HubIceServerDto {urls, username, credential}`, default `ttlSeconds = 3600`, coerced to `60..86400`). When `FLASH_TURN_SECRET` is configured, each `turn:`/`turns:` entry receives RFC 5766 HMAC-SHA1 time-limited credentials (`username = "<expiryEpochSec>:<deviceId>"`, `credential = Base64(HMAC-SHA1(secret, username))`).
+- **Ephemeral relay frame `FLASH_CALL_SIGNAL` (`RelayFrame.CallSignal`):**
+  Fields: `to`, `from` (stamped by Hub from the authenticated device ID, never caller-trusted), `callId`, `signalId`, `seq` (monotonic per sender per call), `issuedAt` (Unix ms), `ttlMs` (`1..60_000`), `payload` (existing `FLASH_CALL` SDP/ICE/state frame), `capabilities` (optional set).
+  **Routing & security rules:**
+  1. Never stored in the offline mailbox. If the recipient has no live authenticated relay connection, the Hub answers immediately with `ERR_NOT_FOUND` (offline undeliverable).
+  2. Revoked senders or recipients, expired TTLs (`now - issuedAt > ttlMs`), and >30 s future skew are rejected (`ERR_REVOKED`, `ERR_EXPIRED`, `ERR_BAD_REQUEST`).
+  3. Receivers enforce `OffLanCallSignalGuard`: per-call `signalId` replay rejection, per-sender monotonic `seq`, terminal call locking (`hangup`/`decline`/`ended`), and immediate teardown (`terminateCallsForRevokedPeer`) on peer revocation.
+  4. Background / platform note: because off-LAN call signals are strictly ephemeral live WebSocket frames (no APNs/FCM push wake-up bridge yet), receiving an incoming off-LAN call requires the Flash foreground/background service or desktop app to hold an active relay session. Externally managed push wake-up remains a separate owner decision.
+
+## Hub-relayed Group End-to-End Encryption (HR10)
+
+- **Capability advertising:** Clients advertise `HubContract.FEATURE_GROUP_E2EE` (`"hge1"`) in relay `HELLO`. Pairwise identity and sealing keys come from the signed Organisation Directory (`EnterpriseDirectoryMember.sealingPublicKey` + `sealingSignature` + `subjectPublicKey` identity PIN).
+- **Group envelope (`GROUP_SEALED_V1`, `HubContract.GROUP_SEALED_ENVELOPE_TYPE`):**
+  `1.<b64url(groupId)>.<epoch>.<b64url(keyId)>.<b64url(senderId)>.<b64url(innerType)>.<b64url(nonce)>.<b64url(ciphertext)>.<b64url(signature)>`
+  - **AEAD:** 256-bit AES-GCM per `(groupId, epoch, keyId)`, fresh 96-bit CSPRNG nonce.
+  - **AAD (`flash-group-e2ee-v1`):** length-prefixed binary encoding of `(groupId, epoch, keyId, senderId, msgId, sentAt, innerType)`.
+  - **Author signature:** ECDSA P-256 (`crypto.sign(aad || nonce || ciphertext)`), verified against the directory-pinned identity public key of `senderId` so neither the Hub nor another group member can forge authorship.
+- **Pairwise epoch key distribution (`GROUP_KEY_DIST_V1` inside `SEALED_V1`):**
+  - `1|<groupId>|<epoch>|<keyId>|<b64url(keyBytes)>|<rosterVersion>|<sortedMemberCsv>|<creatorDeviceId>|<createdAtMs>`
+  - Distributed exclusively via `HubSealing.seal` (`SEALED_V1`) to active group members with valid sealing keys; never sent plaintext on the Hub or in `GROUP_SEALED_V1`.
+  - Only the key creator (`creatorDeviceId == localDeviceId`) distributes a `GROUP_KEY_DIST_V1` payload; receivers verify `dist.creatorDeviceId == fromDeviceId`.
+- **Epoch rotation & compatibility rules:**
+  - Any membership change (`add`, `remove`, `leave`, `rejoin`, or roster sync change) calls `onMembershipChanged`, marking prior epoch keys decrypt-only (`canSend = false`) and minting a fresh epoch key on the next send.
+  - Simultaneous creations at the same `rosterVersion` break ties deterministically by `(rosterVersion, epoch, keyId)`.
+  - Fail-closed policy: if any active member lacks a valid sealing key (`LEGACY_MEMBERS_PRESENT`), has an unconfirmed key change (`BLOCKED_KEY_CHANGED`), or fails identity pin verification (`BLOCKED_IDENTITY_MISMATCH`), sending fails closed (`HubChatBridge` refuses plaintext fallback) and surfaces an honest compatibility disclosure (`FlashHubNoticeKind.GROUP_E2EE_BLOCKED` / `GROUP_ENCRYPTED` in `FlashGroupSettingsSheet`). Unsealed inbound `GROUP_FRAME` / `LEGACY_GROUP` frames are rejected when group E2EE is active.

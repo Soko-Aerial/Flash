@@ -16,6 +16,7 @@ public enum class ToastAction(val label: String, val isPrimary: Boolean = false)
     ShowInFolder("Show in Folder", isPrimary = false),
     OpenFile("Open File", isPrimary = true),
     OpenChat("Open Chat", isPrimary = true),
+    OpenAnnouncement("Open Announcement", isPrimary = true),
     ReviewPairing("Review Pairing", isPrimary = true),
 }
 
@@ -25,6 +26,7 @@ public enum class ToastKind {
     TransferCompleted,
     TransferFailed,
     ChatMessage,
+    Announcement,
     IncomingCall,
     PairingRequest,
     Transfer,
@@ -50,6 +52,7 @@ public data class DesktopToastCard(
     val callId: String? = null,
     val isVideoCall: Boolean = false,
     val isVerifying: Boolean = false,
+    val announcementId: String? = null,
 ) {
     constructor(
         transferId: FlashTransferId,
@@ -164,7 +167,7 @@ public object DesktopTransferToastModel {
 
     /** Foreground messages and refusals have already passed the manager's delivery policy. */
     private fun showsOverFlash(card: DesktopToastCard): Boolean =
-        card.kind == ToastKind.ChatMessage || card.kind == ToastKind.Generic
+        card.kind == ToastKind.ChatMessage || card.kind == ToastKind.Announcement || card.kind == ToastKind.Generic
 
     /** Filters active unexpired cards not in the dismissed set. */
     fun filterActiveCards(

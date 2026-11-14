@@ -20,16 +20,19 @@ import com.transfer.flash.core.enterprise.files.HubFilesApi
 import com.transfer.flash.core.enterprise.files.HubTransferProgress
 import com.transfer.flash.core.enterprise.files.HubUploadOutcome
 import com.transfer.flash.core.enterprise.files.HubUploadRequest
+import com.transfer.flash.core.hubprotocol.rest.HubFileIds
 import com.transfer.flash.core.messaging.hub.HubFileRoute
 import com.transfer.flash.core.persistence.db.dao.HubFileDao
 import com.transfer.flash.core.persistence.db.entity.HubFileEntity
 import com.transfer.flash.core.persistence.db.entity.HubFileStates
 import com.transfer.flash.core.security.enterprise.HubFileKey
+import com.transfer.flash.core.security.enterprise.HubFileLayout
 import com.transfer.flash.core.security.enterprise.HubFileSealing
 import com.transfer.flash.core.transfer.ExternalTransferControl
 import com.transfer.flash.core.transfer.FileSourceOpener
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.TransferFailureText
+import com.transfer.flash.core.transfer.TransferRouteFallback
 import com.transfer.flash.core.transfer.TransferSendInterceptor
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferId
@@ -41,6 +44,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -120,6 +124,12 @@ public class HubFileBinding(
     private val retryDelayMs: Long = DEFAULT_RETRY_DELAY_MS,
     private val maxRetryDelayMs: Long = DEFAULT_MAX_RETRY_DELAY_MS,
     private val infoTtlMs: Long = DEFAULT_INFO_TTL_MS,
+    /** HR8: Cross-route logical transfer coordinator shared between LAN and Hub routes. */
+    public val continuityCoordinator: TransferRouteCoordinator = TransferRouteCoordinator(),
+    /** HR8: Adapter for adopting verified bytes across LAN partial files and Hub storage. */
+    private val continuityPort: EngineTransferRouteContinuityPort? = null,
+    /** HR8: Local device id provider for canonical logical transfer identity endpoints. */
+    private val localDeviceId: () -> String = { "local" },
 ) {
     private val bindingJob: Job = SupervisorJob(scope.coroutineContext[Job])
     private val bindingScope = CoroutineScope(
@@ -130,6 +140,7 @@ public class HubFileBinding(
 
     private val jobsLock = PlatformLock()
     private val jobs = HashMap<String, Job>()
+    private val adoptedIds = HashSet<String>()
     private val running = MutableStateFlow<Set<String>>(emptySet())
     private val live = MutableStateFlow<Map<String, HubFileLive>>(emptyMap())
 
@@ -149,7 +160,10 @@ public class HubFileBinding(
 
     private val control = object : ExternalTransferControl {
         override fun owns(transferId: String): Boolean =
-            transferId.startsWith(HubFileStates.TRANSFER_PREFIX_OUT) || transferId.startsWith(HubFileStates.TRANSFER_PREFIX_IN)
+            transferId.startsWith(HubFileStates.TRANSFER_PREFIX_OUT) ||
+                transferId.startsWith(HubFileStates.TRANSFER_PREFIX_IN) ||
+                jobsLock.withLock { transferId in adoptedIds } ||
+                rows.value.any { it.id.value == transferId }
 
         override suspend fun accept(transferId: String) = this@HubFileBinding.accept(transferId)
         override suspend fun decline(transferId: String) {
@@ -162,6 +176,7 @@ public class HubFileBinding(
         }
 
         override suspend fun resume(transferId: String) {
+            if (tryHandoverOutToLan(transferId)) return
             resumeFailed(transferId)
             dao.setPaused(transferId, false, timeSource.nowMs())
             launchRun(transferId)
@@ -177,9 +192,17 @@ public class HubFileBinding(
         intercept(target, fileUri, displayName, fileSize)
     }
 
+    private val routeFallback = TransferRouteFallback { transfer, verifiedBytes ->
+        tryHandoverFromLan(transfer, verifiedBytes)
+    }
+
     init {
         transferRepository.attachExternalRows(rows, control, source = EXTERNAL_SOURCE)
         transferRepository.sendInterceptor = interceptor
+        transferRepository.routeFallback = routeFallback
+        continuityPort?.onLanTerminal = { fileId, isSending, status ->
+            onLanTerminalEvent(fileId, isSending, status)
+        }
         // A ticket the chat stored arrives as a new OFFERED row; with automatic acceptance on it downloads at once.
         bindingScope.launch(workerDispatcher) {
             dao.observeRecent(ROW_LIMIT)
@@ -203,6 +226,8 @@ public class HubFileBinding(
     /** Stops every run (state stays on disk) and gives the send path back to the direct pipeline. */
     public fun detach() {
         if (transferRepository.sendInterceptor === interceptor) transferRepository.sendInterceptor = null
+        if (transferRepository.routeFallback === routeFallback) transferRepository.routeFallback = null
+        continuityPort?.onLanTerminal = null
         bindingJob.cancel()
     }
 
@@ -364,6 +389,210 @@ public class HubFileBinding(
         live.update { it - transferId }
     }
 
+    private suspend fun stopAndJoin(transferId: String) {
+        val job = jobsLock.withLock { jobs.remove(transferId) }
+        job?.cancelAndJoin()
+        running.update { it - transferId }
+        live.update { it - transferId }
+    }
+
+    private suspend fun tryHandoverFromLan(transfer: FlashTransfer, verifiedBytes: Long): Boolean {
+        val peerId = transfer.peerDeviceId?.takeIf { it.isNotBlank() } ?: return false
+        if (isDirectlyReachable(peerId)) return false
+        val hub = hubUrl()?.takeIf { it.isNotBlank() } ?: return false
+        val route = fileRoute(peerId)
+        if (route == HubFileRoute.UNAVAILABLE) return false
+        val fileId = transfer.wireFileId?.takeIf { HubFileIds.isFileId(it) } ?: return false
+        val sourceUri = transfer.sourceUri?.takeIf { it.isNotBlank() } ?: return false
+
+        val existing = continuityCoordinator.snapshot(fileId)
+        when (existing?.status) {
+            ContinuityStatus.CANCELLED, ContinuityStatus.COMPLETED -> return true
+            ContinuityStatus.INCOMPATIBLE -> {
+                transferRepository.failTransferFromFallback(transfer.id.value, TransferFailureText.FILE_CHANGED)
+                return true
+            }
+            else -> Unit
+        }
+        if (existing?.activeRoute == RouteOwner.HUB) return true
+        continuityCoordinator.releaseActiveRouteIfHeld(fileId, RouteOwner.LAN)
+
+        val size = if (transfer.bytesTotal > 0L) transfer.bytesTotal else withContext(workerDispatcher) {
+            runCatching { StreamingHubFileSource.measure(openSource, sourceUri) }.getOrDefault(0L)
+        }
+        if (size <= 0L) {
+            transferRepository.failTransferFromFallback(transfer.id.value, TransferFailureText.UNREADABLE_FILE)
+            return true
+        }
+        val sourceFp = transferRepository.sourceFingerprintFor(sourceUri)
+        if (!continuityCoordinator.verifySenderSourceFingerprint(fileId, sourceFp)) {
+            transferRepository.failTransferFromFallback(transfer.id.value, TransferFailureText.FILE_CHANGED)
+            return true
+        }
+        val label = peerName(peerId)?.ifBlank { null } ?: transfer.peerName.ifBlank { peerId.take(8) }
+        val refusal = if (route == HubFileRoute.NEEDS_SEALING) {
+            HubFileText.needsSealing(label)
+        } else {
+            val limit = maxFileBytes(hub)
+            when {
+                limit == 0L -> HubFileText.HUB_OLD
+                limit != null && size > limit -> HubFileText.tooLarge(
+                    TransferFailureText.formatSize(size),
+                    TransferFailureText.formatSize(limit),
+                )
+                else -> null
+            }
+        }
+        if (refusal != null) {
+            transferRepository.failTransferFromFallback(transfer.id.value, refusal)
+            return true
+        }
+
+        val now = timeSource.nowMs()
+        val sanitized = FlashPathSanitizer.sanitizeFileName(transfer.fileName)
+        jobsLock.withLock { adoptedIds.add(transfer.id.value) }
+        val inserted = dao.insert(
+            HubFileEntity(
+                transferId = transfer.id.value,
+                direction = HubFileStates.OUT,
+                fileId = fileId,
+                peerId = peerId,
+                hubUrl = hub,
+                fileName = sanitized,
+                mime = DEFAULT_MIME,
+                plainBytes = size,
+                sourceUri = sourceUri,
+                fileKey = null,
+                cipherSha256 = null,
+                cipherChunkBytes = 0,
+                chunkCount = 0,
+                expiresAtMs = 0L,
+                messageId = null,
+                state = HubFileStates.UPLOADING,
+                paused = false,
+                errorText = null,
+                bytesDone = verifiedBytes.coerceIn(0L, size),
+                localPath = null,
+                createdAtMs = now,
+                updatedAtMs = now,
+                groupId = null,
+                recipients = null,
+            ),
+        )
+        if (inserted == -1L) {
+            val existingRow = dao.get(transfer.id.value)
+            if (existingRow != null && existingRow.state == HubFileStates.FAILED) {
+                dao.moveState(transfer.id.value, HubFileStates.FAILED, HubFileStates.UPLOADING, null, now)
+            }
+            dao.setPaused(transfer.id.value, false, now)
+        }
+        transferRepository.adoptTransferExternally(transfer.id.value)
+        outgoingRetried(transfer.id.value)
+        launchRun(transfer.id.value)
+        FlashProbe.emit("hubfile.handover.lan_to_hub", "id" to FlashProbe.short(fileId), "bytes" to verifiedBytes)
+        return true
+    }
+
+    private suspend fun tryHandoverOutToLan(transferId: String): Boolean {
+        val row = dao.get(transferId) ?: return false
+        if (row.direction != HubFileStates.OUT || row.groupId != null) return false
+        if (row.state != HubFileStates.UPLOADING && row.state != HubFileStates.FAILED) return false
+        if (!isDirectlyReachable(row.peerId)) return false
+
+        val snap = continuityCoordinator.snapshot(row.fileId)
+        when (snap?.status) {
+            ContinuityStatus.CANCELLED -> {
+                stopAndJoin(transferId)
+                dao.moveState(transferId, row.state, HubFileStates.CANCELLED, null, timeSource.nowMs())
+                return true
+            }
+            ContinuityStatus.COMPLETED -> return true
+            ContinuityStatus.INCOMPATIBLE -> {
+                stopAndJoin(transferId)
+                dao.moveState(transferId, row.state, HubFileStates.FAILED, TransferFailureText.FILE_CHANGED, timeSource.nowMs())
+                return true
+            }
+            else -> Unit
+        }
+        val uri = row.sourceUri
+        val measured = if (uri != null) {
+            withContext(workerDispatcher) {
+                runCatching { StreamingHubFileSource.measure(openSource, uri) }.getOrNull()
+            }
+        } else {
+            null
+        }
+        if (uri == null || measured == null || measured <= 0L || (row.plainBytes > 0L && measured != row.plainBytes)) {
+            stopAndJoin(transferId)
+            val msg = if (measured != null && row.plainBytes > 0L && measured != row.plainBytes) {
+                TransferFailureText.FILE_CHANGED
+            } else {
+                TransferFailureText.UNREADABLE_FILE
+            }
+            dao.moveState(transferId, row.state, HubFileStates.FAILED, msg, timeSource.nowMs())
+            return true
+        }
+        val fp = transferRepository.sourceFingerprintFor(uri)
+        if (!continuityCoordinator.verifySenderSourceFingerprint(row.fileId, fp)) {
+            stopAndJoin(transferId)
+            dao.moveState(transferId, row.state, HubFileStates.FAILED, TransferFailureText.FILE_CHANGED, timeSource.nowMs())
+            return true
+        }
+
+        stopAndJoin(transferId)
+        continuityCoordinator.releaseActiveRouteIfHeld(row.fileId, RouteOwner.HUB)
+        if (row.state == HubFileStates.FAILED) {
+            outgoingRetried(transferId)
+        }
+        val label = peerName(row.peerId)?.ifBlank { null } ?: row.peerId.take(8)
+        jobsLock.withLock { adoptedIds.remove(transferId) }
+        dao.delete(transferId)
+        val launched = transferRepository.resumeHubSendOnLan(
+            transferId = row.transferId,
+            wireFileId = row.fileId,
+            peerId = row.peerId,
+            peerName = label,
+            fileUri = uri,
+            fileName = row.fileName,
+            fileSize = row.plainBytes,
+        )
+        if (launched) {
+            FlashProbe.emit("hubfile.handover.hub_to_lan", "id" to FlashProbe.short(row.fileId))
+        }
+        return launched
+    }
+
+    private fun onLanTerminalEvent(fileId: String, isSending: Boolean, status: ContinuityStatus) {
+        bindingScope.launch(workerDispatcher) {
+            when (status) {
+                ContinuityStatus.COMPLETED -> {
+                    val dir = if (isSending) HubFileStates.OUT else HubFileStates.IN
+                    val row = dao.byFileId(dir, fileId)
+                    if (row != null) {
+                        val hubDone = row.state == HubFileStates.READY ||
+                            row.state == HubFileStates.QUEUED ||
+                            row.state == HubFileStates.DONE
+                        if (!hubDone) {
+                            stopAndJoin(row.transferId)
+                            jobsLock.withLock { adoptedIds.remove(row.transferId) }
+                            dao.delete(row.transferId)
+                        }
+                    }
+                    if (isSending) transfers.releaseUpload(fileId) else transfers.discardDownload(fileId)
+                }
+                ContinuityStatus.CANCELLED -> {
+                    for (dir in listOf(HubFileStates.OUT, HubFileStates.IN)) {
+                        val row = dao.byFileId(dir, fileId) ?: continue
+                        if (row.state != HubFileStates.CANCELLED && row.state != HubFileStates.DONE) {
+                            cancel(row.transferId)
+                        }
+                    }
+                }
+                else -> Unit
+            }
+        }
+    }
+
     /** Runs [transferId] until it finishes, fails, is paused, or stops being runnable; retries interruptions with backoff. */
     private suspend fun runUntilSettled(transferId: String) {
         var wait = retryDelayMs
@@ -436,6 +665,36 @@ public class HubFileBinding(
     private suspend fun upload(row: HubFileEntity): Boolean {
         val id = row.transferId
         val uri = row.sourceUri ?: return failOutgoing(row, HubFileError.LocalStorage("source"))
+        val sourceFp = transferRepository.sourceFingerprintFor(uri)
+        val selfId = localDeviceId().ifBlank { "local" }
+        val identity = LogicalTransferIdentity(
+            logicalTransferId = row.fileId,
+            senderDeviceId = selfId,
+            recipientDeviceId = row.peerId,
+            fileName = row.fileName,
+            plainBytes = row.plainBytes,
+        )
+        val claim = continuityCoordinator.tryAcquireRoute(
+            identity = identity,
+            route = RouteOwner.HUB,
+            sourceFingerprint = sourceFp,
+        )
+        if (claim == null) {
+            val snap = continuityCoordinator.snapshot(row.fileId)
+            return when (snap?.status) {
+                ContinuityStatus.CANCELLED -> {
+                    dao.moveState(id, HubFileStates.UPLOADING, HubFileStates.CANCELLED, null, timeSource.nowMs())
+                    outgoingEnded(id)
+                    false
+                }
+                ContinuityStatus.COMPLETED -> {
+                    outgoingEnded(id)
+                    false
+                }
+                ContinuityStatus.INCOMPATIBLE -> failOutgoing(row, HubFileError.Conflict)
+                else -> true
+            }
+        }
         val source = StreamingHubFileSource(openSource, uri, row.plainBytes)
         val outcome = try {
             transfers.upload(
@@ -452,6 +711,9 @@ public class HubFileBinding(
                 ),
                 onProgress = progressSink(id),
             )
+        } catch (t: Throwable) {
+            continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+            throw t
         } finally {
             withContext(workerDispatcher) { runCatching { source.close() } }
         }
@@ -460,17 +722,24 @@ public class HubFileBinding(
             is HubUploadOutcome.Done -> {
                 val t = outcome.ticket
                 if (dao.markUploaded(id, t.key.encode(), t.cipherSha256, t.cipherChunkBytes, t.chunkCount, t.expiresAtMs, now) == 1) {
+                    continuityCoordinator.completeOutboundTransfer(row.fileId, claim.epoch, RouteOwner.HUB)
                     transfers.releaseUpload(row.fileId)
                     queueTicket(id)
+                } else {
+                    continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
                 }
                 false
             }
             is HubUploadOutcome.Interrupted -> {
+                continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
                 dao.setProgress(id, outcome.progress.bytesDone, now)
                 dao.setErrorText(id, HubFileText.reason(outcome.error), now)
                 true
             }
-            is HubUploadOutcome.Failed -> failOutgoing(row, outcome.error)
+            is HubUploadOutcome.Failed -> {
+                continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+                failOutgoing(row, outcome.error)
+            }
         }
     }
 
@@ -483,33 +752,116 @@ public class HubFileBinding(
 
     private suspend fun download(row: HubFileEntity): Boolean {
         val id = row.transferId
+        val existingContinuity = continuityCoordinator.snapshot(row.fileId)
+        if (existingContinuity?.status == ContinuityStatus.CANCELLED) {
+            dao.moveState(id, HubFileStates.DOWNLOADING, HubFileStates.CANCELLED, null, timeSource.nowMs())
+            transfers.discardDownload(row.fileId)
+            return false
+        }
+        if (existingContinuity?.status == ContinuityStatus.COMPLETED && existingContinuity.completedPath != null) {
+            dao.markDownloaded(id, existingContinuity.completedPath, timeSource.nowMs())
+            transfers.discardDownload(row.fileId)
+            return false
+        }
         val sender = peerName(row.peerId)
+        if (existingContinuity?.status == ContinuityStatus.INCOMPATIBLE) {
+            return failIncoming(row, HubFileError.Integrity, sender)
+        }
         val key = row.fileKey?.let(HubFileKey::decode)
         val sha = row.cipherSha256
         if (key == null || sha == null) return failIncoming(row, HubFileError.Integrity, sender)
+        val selfId = localDeviceId().ifBlank { "local" }
+        val identity = LogicalTransferIdentity(
+            logicalTransferId = row.fileId,
+            senderDeviceId = row.peerId,
+            recipientDeviceId = selfId,
+            fileName = row.fileName,
+            plainBytes = row.plainBytes,
+        )
+        val claim = continuityCoordinator.tryAcquireRoute(identity, RouteOwner.HUB)
+        if (claim == null) {
+            val latest = continuityCoordinator.snapshot(row.fileId)
+            return when {
+                latest?.status == ContinuityStatus.CANCELLED -> {
+                    dao.moveState(id, HubFileStates.DOWNLOADING, HubFileStates.CANCELLED, null, timeSource.nowMs())
+                    transfers.discardDownload(row.fileId)
+                    false
+                }
+                latest?.status == ContinuityStatus.COMPLETED && latest.completedPath != null -> {
+                    dao.markDownloaded(id, latest.completedPath, timeSource.nowMs())
+                    transfers.discardDownload(row.fileId)
+                    false
+                }
+                latest?.status == ContinuityStatus.INCOMPATIBLE -> failIncoming(row, HubFileError.Integrity, sender)
+                else -> true
+            }
+        }
         val ticket = HubFileTicket(row.fileId, key, sha, row.plainBytes, row.cipherChunkBytes, row.chunkCount, row.expiresAtMs)
         val hub = hubUrl()?.takeIf { it.isNotBlank() } ?: row.hubUrl
-        val outcome = transfers.download(HubDownloadRequest(hubUrl = hub, ticket = ticket, senderDeviceId = row.peerId), onProgress = progressSink(id))
+        val request = HubDownloadRequest(hubUrl = hub, ticket = ticket, senderDeviceId = row.peerId)
+        val hubLayout = HubFileLayout.of(row.plainBytes, row.cipherChunkBytes)
+        transferRepository.retireInternalByWireFileId(row.fileId, keepTransferId = id)
+        val outcome = try {
+            if (continuityPort != null) {
+                continuityCoordinator.adoptLanToHub(
+                    transfers = transfers,
+                    candidateIdentity = identity,
+                    request = request,
+                    readLanSpan = { offset, len -> continuityPort.readLanPartialSpan(row.fileId, offset, len) },
+                )
+            }
+            transfers.download(
+                request,
+                onProgress = progressSink(id),
+                onChunkVerified = { chunkIndex ->
+                    if (hubLayout != null) {
+                        continuityCoordinator.recordVerifiedChunks(
+                            logicalTransferId = row.fileId,
+                            expectedEpoch = claim.epoch,
+                            chunkIndexes = setOf(chunkIndex),
+                            chunkSize = hubLayout.plainChunkBytes,
+                        )
+                    }
+                },
+            )
+        } catch (t: Throwable) {
+            continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+            throw t
+        }
         val now = timeSource.nowMs()
         return when (outcome) {
             is HubDownloadOutcome.Done -> {
                 val placed = withContext(workerDispatcher) { runCatching { place(outcome.path, row) }.getOrNull() }
-                    ?: return failIncoming(row, HubFileError.LocalStorage("place"), sender)
-                if (dao.markDownloaded(id, placed, now) == 1) {
+                    ?: run {
+                        continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+                        return failIncoming(row, HubFileError.LocalStorage("place"), sender)
+                    }
+                val singleCopyWon = continuityCoordinator.completeTransfer(
+                    row.fileId,
+                    claim.epoch,
+                    RouteOwner.HUB,
+                    placed,
+                    outcome.plainSha256,
+                )
+                if (singleCopyWon && dao.markDownloaded(id, placed, now) == 1) {
                     runCatching { onPlaced(placed) }
                     FlashProbe.emit("hubfile.receive.done", "id" to FlashProbe.short(row.fileId), "bytes" to outcome.plainBytes)
                 } else {
-                    // Cancelled while the last chunk arrived: the cancel wins, and its file goes.
+                    // Cancelled or won on another route while the last chunk arrived: discard duplicate file.
                     withContext(workerDispatcher) { runCatching { fileSystem.delete(placed.toPath(), mustExist = false) } }
                 }
                 false
             }
             is HubDownloadOutcome.Interrupted -> {
+                continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
                 dao.setProgress(id, outcome.progress.bytesDone, now)
                 dao.setErrorText(id, HubFileText.reason(outcome.error), now)
                 true
             }
-            is HubDownloadOutcome.Failed -> failIncoming(row, outcome.error, sender)
+            is HubDownloadOutcome.Failed -> {
+                continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+                failIncoming(row, outcome.error, sender)
+            }
         }
     }
 
@@ -560,6 +912,7 @@ public class HubFileBinding(
     private suspend fun cancel(transferId: String) {
         val row = dao.get(transferId) ?: return
         val now = timeSource.nowMs()
+        continuityCoordinator.cancelTransfer(row.fileId)
         if (row.direction == HubFileStates.OUT) {
             val moved = OUT_CANCELLABLE.any { from -> dao.moveState(transferId, from, HubFileStates.CANCELLED, null, now) == 1 }
             stop(transferId)

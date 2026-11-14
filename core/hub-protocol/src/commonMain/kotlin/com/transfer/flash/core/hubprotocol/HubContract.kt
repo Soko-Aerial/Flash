@@ -99,6 +99,18 @@ public object HubContract {
     /** `GET`, Bearer: [com.transfer.flash.core.hubprotocol.rest.MeDto], the caller's own directory identity (hub-derived, never client-asserted). */
     public const val PATH_DIRECTORY_ME: String = "$PATH_API/directory/me"
 
+    /** `GET`, Bearer (HR9): [com.transfer.flash.core.hubprotocol.rest.HubIceConfigDto] short-lived ICE/TURN credentials and media policy. */
+    public const val PATH_CALL_ICE: String = "$PATH_API/calls/ice-config"
+
+    /** Relay HELLO/WELCOME feature flag advertising short-lived authenticated off-LAN call signaling. */
+    public const val FEATURE_HUB_CALLING: String = "hub_calling.v1"
+
+    /** Default lifetime of an ephemeral `FLASH_CALL_SIGNAL` frame. */
+    public const val CALL_SIGNAL_DEFAULT_TTL_MS: Long = 30_000L
+
+    /** Hard ceiling for `FLASH_CALL_SIGNAL.ttlMs`; longer signals are rejected as stale/oversized leases. */
+    public const val CALL_SIGNAL_MAX_TTL_MS: Long = 60_000L
+
     /**
      * `POST`, Bearer, organisation admin or the department's admin: [com.transfer.flash.core.hubprotocol.rest.CreateDepartmentBody] (create).
      * Departments and groups are also administered from the admin console (`/admin/api/v1`); these are the device-side equivalents.
@@ -119,6 +131,10 @@ public object HubContract {
 
     /** Feature capability for announcement push over WebSocket relay (Plan A3 §3.7). */
     public const val FEATURE_ANNOUNCEMENTS_V1: String = "ann1"
+
+    /** Feature capability & relay envelope type for E2EE Hub-relayed group messages (HR10). */
+    public const val FEATURE_GROUP_E2EE: String = "hge1"
+    public const val GROUP_SEALED_ENVELOPE_TYPE: String = "GROUP_SEALED_V1"
 
     // ---- sealed files (ADR-215) -----------------------------------------------------------------------------
 

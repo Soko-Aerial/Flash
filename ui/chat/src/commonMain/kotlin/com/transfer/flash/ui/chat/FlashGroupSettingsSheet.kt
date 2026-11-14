@@ -77,6 +77,7 @@ public fun FlashGroupSettingsSheet(
     isEnterpriseEnrolled: Boolean = false,
     isLinkedToHub: Boolean = false,
     onToggleLinkToHub: ((Boolean) -> Unit)? = null,
+    hubConfidentialityNotice: String? = null,
 ) {
     val colors = FlashTheme.colors
     val canEdit = remember(isOwner, isAdmin) { FlashGroupSettingsMath.canEditGroupRules(isOwner, isAdmin) }
@@ -451,6 +452,16 @@ public fun FlashGroupSettingsSheet(
                         onToggleLinkToHub?.invoke(checked)
                     },
                 )
+
+                if (isLinkedToHub) {
+                    Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                    FlashText(
+                        text = hubConfidentialityNotice ?: "End-to-end encrypted: Hub group messages are sealed with per-membership epoch keys so your organisation's hub cannot read them. Keys rotate when membership changes, and past history stays on member devices only.",
+                        style = FlashTheme.typography.metadataDefault,
+                        color = FlashTheme.colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = FlashSpacing.space16),
+                    )
+                }
             }
         }
     }

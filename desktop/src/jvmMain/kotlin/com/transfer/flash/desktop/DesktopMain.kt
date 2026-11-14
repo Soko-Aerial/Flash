@@ -145,6 +145,13 @@ public fun main(args: Array<String> = emptyArray()) {
 
     val nav = rememberFlashNavigationState()
 
+    // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
+    val pendingHubRoute = remember {
+        val route = if (args.firstOrNull() == SingleInstanceController.OPEN_INVITE_ARGUMENT) null else
+            com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)
+        kotlinx.coroutines.flow.MutableStateFlow(route)
+    }
+
     // Phase 3: Desktop notification manager — native OS balloon dispatch retired in favor of rich custom toast window
     val notificationManager = remember {
         DesktopNotificationManager(
@@ -156,10 +163,17 @@ public fun main(args: Array<String> = emptyArray()) {
             isNotificationsEnabled = { engine.settings.value.showNotifications },
             isWindowMinimized = { windowState.isMinimized },
             isWindowFocused = { isWindowFocused },
+            isAnnouncementNotificationsEnabled = { engine.settings.value.announcementNotifications },
         ).apply {
             onBackgroundMessageReceived = {
                 backgroundUnreadCount++
                 DesktopTaskbarBadgeManager.updateBadge(currentComposeWindow, backgroundUnreadCount)
+            }
+            onOpenAnnouncement = { announcementId ->
+                javax.swing.SwingUtilities.invokeLater {
+                    pendingHubRoute.value = "hub/announcement/$announcementId"
+                    bringWindowToFront()
+                }
             }
         }
     }
@@ -195,13 +209,6 @@ public fun main(args: Array<String> = emptyArray()) {
 
     LaunchedEffect(ready, enterpriseCredentials != null) {
         if (ready) nav.updateHubEnrolled(enterpriseCredentials != null)
-    }
-
-    // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
-    val pendingHubRoute = remember {
-        val route = if (args.firstOrNull() == SingleInstanceController.OPEN_INVITE_ARGUMENT) null else
-            com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)
-        kotlinx.coroutines.flow.MutableStateFlow(route)
     }
 
     DisposableEffect(desktopSettings.windowsContextMenu) {
