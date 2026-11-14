@@ -141,6 +141,12 @@ class FlashBackgroundService : Service() {
         if (activeInstance == this) {
             activeInstance = null
         }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.cancel(NOTIFICATION_ID)
+        }
+        FlashNotificationManager.clearAllTransfers(this)
         previousTransferStates.clear()
         lastProgressPostMs.clear()
         lastProgressPercent.clear()
@@ -171,6 +177,12 @@ class FlashBackgroundService : Service() {
             // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
             timeoutCleanupScope.launch { runCatching { transfers?.pauseForSystem(transfer.id, "SERVICE_TIMEOUT") } }
         }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.cancel(NOTIFICATION_ID)
+        }
+        FlashNotificationManager.clearAllTransfers(this)
         stopSelf()
         super.onTimeout(startId, fgsType)
     }
@@ -340,9 +352,19 @@ class FlashBackgroundService : Service() {
     private fun handleTransfersChanged(transfers: List<FlashTransfer>) {
         if (isFirstTransferCollection) {
             isFirstTransferCollection = false
+            FlashNotificationManager.reconcileTransferNotifications(
+                this,
+                transfers.filter {
+                    it.state == FlashTransferState.Transferring ||
+                        it.state == FlashTransferState.Verifying ||
+                        it.state == FlashTransferState.Offered
+                }.mapTo(HashSet()) { it.id.value },
+            )
             for (transfer in transfers) {
                 previousTransferStates[transfer.id.value] = transfer.state
-                if (transfer.state == FlashTransferState.Transferring || transfer.state == FlashTransferState.Verifying) {
+                if (FlashRestorationCleanupPolicy.shouldClearRestoredNotification(transfer)) {
+                    FlashNotificationManager.clearTransfer(this, transfer.id.value)
+                } else if (transfer.state == FlashTransferState.Transferring || transfer.state == FlashTransferState.Verifying) {
                     FlashNotificationManager.showTransferProgress(this, transfer)
                 } else if (transfer.state == FlashTransferState.Offered) {
                     FlashNotificationManager.showTransferOffered(this, transfer)
@@ -363,7 +385,9 @@ class FlashBackgroundService : Service() {
 
             if (prevState == null && transfer.restored) {
                 // Read back from the store after a restart (C-09): listed in Transfers, not announced again.
-                Unit
+                if (FlashRestorationCleanupPolicy.shouldClearRestoredNotification(transfer)) {
+                    FlashNotificationManager.clearTransfer(this, id)
+                }
             } else if (prevState == null) {
                 when (transfer.state) {
                     FlashTransferState.Completed -> {
@@ -593,5 +617,11 @@ internal object FlashBackgroundNotificationCopy {
             baseText
         }
         return FlashIdleNotificationContent(title = title, body = body)
+    }
+}
+
+internal object FlashRestorationCleanupPolicy {
+    fun shouldClearRestoredNotification(transfer: FlashTransfer): Boolean {
+        return transfer.restored && (transfer.state == FlashTransferState.Failed || transfer.state == FlashTransferState.Completed)
     }
 }

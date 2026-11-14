@@ -2892,6 +2892,7 @@ object DiscoveryEngineHolder {
                     // ADR-068: the shared completion path hashes the file; a mismatch fails the transfer, deletes
                     // the file and forgets the confirmed chunks, so the session goes too and the sender is told.
                     val wholeFile = transferImpl.onIncomingFileAssembled(transferId, path, expectedHex, chunksVerified)
+                    if (wholeFile == WholeFileCheck.ABANDONED) return
                     val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
                         receivePipeline.cancelSession(transferId)
                         ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)
