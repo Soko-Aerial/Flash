@@ -1,5 +1,15 @@
 # Android Platform Notes
 
+## 2026-11-14 — Verified invite links
+
+- Android App Links verify the HTTPS hosts declared by the app against `/.well-known/assetlinks.json` on each host. The file must be served directly over trusted HTTPS and identify the distributed app's package and signing certificate. Android 11 (API 30) and earlier require all declared App Links hosts to verify. Android 12 (API 31) and later verify hosts independently. Flash uses separate exact path filters for group and enrollment, with browser and paste flows for Hubs outside those filters. [Add Android App Links](https://developer.android.com/training/app-links/add-applinks) · [Configure website associations](https://developer.android.com/training/app-links/configure-assetlinks)
+
+## 2026-11-14 — Transfer notification identity and expiry
+
+- Android matches PendingIntents using the intent's action, data and component, among other matching fields. Extras do not distinguish otherwise equivalent intents. Flash includes the full transfer ID in intent data so colliding hash values cannot retarget actions. [PendingIntent reference](https://developer.android.com/reference/android/app/PendingIntent)
+- Active notification enumeration is available from API 23. Flash uses the returned tag and ID to reconcile stale transfer cards on startup and migrate the untagged slots used by older builds. The app minimum is API 24. [NotificationManager reference](https://developer.android.com/reference/android/app/NotificationManager#getActiveNotifications())
+- API 26+ supports system-side expiry for completed cards. On API 24–25 the process schedules expiry while it is alive and the next startup reconciles any remaining card. [Notification.Builder reference](https://developer.android.com/reference/android/app/Notification.Builder#setTimeoutAfter(long))
+
 ## 2026-11-08 — Permissions for SDK hosts using transfers or radio
 
 - **Android 14 (API 34) and later:** An app targeting API 34+ must declare the permission for

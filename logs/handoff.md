@@ -1,5 +1,33 @@
 # Current Handoff
 
+> **2026-11-14 — Hub and local group invite links on `dev` at `0b162b80` with working-tree changes.** Hub invites use the issuing Hub origin. Local group sharing and QR use the configurable Flash hostname. Android verified routes, browser fallback, paste, and desktop single-instance routing reuse existing confirmation and validation. The Android debug APK, lint, browser checks, and host tests passed, including all 676 Hub tests on rerun. The two Windows installer formats contain the expected `flash` registration. Linux DEB packaging and installed desktop activation remain in the backlog. To enable live verification, configure the actual public hosts and the distributed APK certificate per [invite deployment](../docs/deploy/INVITE-LINKS.md), then run INVITE-LINK-01 and INVITE-LINK-02.
+
+> **2026-11-14 — Dev working-tree audit fixes and compact Nearby header.** Based on `dev` at `0b162b80`. Android notification actions and cards now have exact transfer identity, with startup reconciliation. Desktop notices retain actionable requests, route pairing through its comparison dialog, and revalidate the displayed call. Receive cancellation and verification share a finalization guard. Nearby's two actions fit beside the title in the native 320 dp render, and long paired names can take a third line. Settings labels adapt, and the voice composer has an accessible hands-free start. See the audit's remediation entry and `DEV-AUDIT-01/02`, `NOTIF-01..04`, and `VOICE-BTN-01..06` for device and live desktop follow-up. Hub work remains in its separate branch.
+
+> **2026-11-12 — UI/UX polish & regression fixes: network detection, settings performance tile, chat spacing, offline banner & voice button PASSED (uncommitted on `dev`).**
+> Implementation and verification pass across `:ui:chat`, `:app`, and `:desktop`:
+> - **Network Detection & Inclusive Offline Banner (`MainActivity.kt`, `FlashNearbyScreen.kt`):**
+>   - Registered receiver via `ContextCompat.registerReceiver` with `RECEIVER_EXPORTED` on Android 14+ (API 34+), resolving the silent `SecurityException` where toggling Wi-Fi failed to update the UI.
+>   - Added broadcast actions `WIFI_STATE_CHANGED_ACTION`, `CONNECTIVITY_ACTION`, and `"android.net.wifi.WIFI_AP_STATE_CHANGED"` so Hotspot, Wi-Fi, and Ethernet toggles immediately increment `networkRefreshTick`.
+>   - Recognized Hotspot (`ap0`) and Ethernet (`eth0`): `LocalNetworkAddresses.ipv4Addresses()` interface enumeration populates `localLanAddresses`, correctly setting `radiosAvailable = true` for Hotspot and Ethernet users.
+>   - Added a 2-second periodic poll while on the Nearby screen with `!radiosAvailable` to instantly clear the offline panel upon turning on Wi-Fi or Hotspot.
+>   - Updated `RadiosOffPanel` copy to "No local network" and subtitle to "Turn on Wi-Fi, enable Mobile Hotspot, or connect Ethernet so Flash can find nearby devices.", with button "Open Network Settings".
+> - **Settings Performance Mode Tile (`FlashSettingsScreen.kt`):**
+>   - Replaced wrapping `FlowRow` chips with a clean single-row segmented track `Row(modifier = Modifier.fillMaxWidth().height(SegmentTrackHeight))` for all 5 tiers ("Auto", "Ultra Low", "Low", "Medium", "High") with subtitle below, completely resolving the line-spill and oversized card issue. Also unified `DiscoveryModeSegmented`.
+> - **Chat Spacing & Header Separation (`FlashChatHeader.kt`, `FlashMessageBubble.kt`, `FlashMessageList.kt`):**
+>   - Set tight vertical arrangement `Arrangement.spacedBy(0.dp)` on the chat header title and status Column, and constrained `FlashEncryptionBadge(compact = true)` to `iconSm` (16dp), removing excess vertical gap between contact name and status.
+>   - Removed bloated 48dp `defaultMinSize` on the 3-dot options button in `FlashMessageTimestampRow`, replacing it with a compact 20dp button that eliminates ~28dp of dead vertical space at the bottom of message tiles.
+>   - Reduced inter-group bubble spacing in `FlashMessageList.kt` from 16dp to 8dp while keeping tight 2dp intra-group spacing.
+> - **Offline Connection Banner Retry Button (`FlashNetworkStatusUi.kt`):**
+>   - Replaced the bulky 48dp `defaultMinSize` retry button inside `FlashConnectionBanner` with a sleek 28dp pill button (`captionEmphasis`, 10dp horizontal padding) that maintains an exact 36dp banner height without dominating the row.
+> - **Voice Message Button Responsiveness (`FlashComposer.kt`, `FlashVoiceRecording.kt`, `FlashConversationScreen.kt`):**
+>   - Expanded trailing mic button hit target in `FlashComposer` to 48dp minimum (`defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)`) while keeping the visual bubble centered at 44dp, ensuring edge-of-screen thumb presses register reliably.
+>   - Added touch slop guard on hold-drag in `FlashMicButton` (`viewConfiguration.touchSlop`) to prevent initial finger wobble from misidentifying as slide-to-cancel.
+>   - In `FlashConversationScreen.kt`, cached `micPermissionGranted` so that upon granting microphone permission, subsequent clicks immediately start recording without delay.
+> - **Verified Gate (`tools\flash-gradle.cmd :core:transfer:jvmTest :core:transfer:testAndroidHostTest :app:testDebugUnitTest :desktop:jvmTest :desktop:compileKotlinJvm :app:lintDebug`):**
+>   `BUILD SUCCESSFUL in 9m 54s` (exit code `0`, 428 actionable tasks: 32 executed, 396 up-to-date); **117 suites, 833 tests (831 passed, 2 opt-in render skips, 0 failures, 0 errors)**; `:desktop:compileKotlinJvm` clean (0 errors); `:app:lintDebug` passed with **0 errors, 0 fatal issues** (156 informational baseline warnings).
+> - **Owed on physical devices / desktop:** `NOTIF-01..04`, `UXPOL-01..11`, `XFER-RETRY-02`, and `VOICE-BTN-01..06` in `docs/testing/TEST-BACKLOG.md`.
+
 > **2026-11-12 — Phase 7 UI/UX diff audit & ERROR-1018 transfer retry committed on `dev` (`37c45602`, `58f9b236`).**
 > Seven-phase UI/UX overhaul, audit remediation pass, and transfer retry boundary re-announcements committed on `dev`
 > across `:core:transfer`, `:core:engine`, `:core:security`, `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`,

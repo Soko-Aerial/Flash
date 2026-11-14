@@ -1,5 +1,27 @@
 # Error Log
 
+## ERROR-1022 — Desktop installer packaging retried over a read-only artifact
+
+**2026-11-14 · Desktop packaging · RESOLVED.** Windows `jpackage` returned `AccessDeniedException` while replacing the prior read-only `Flash-2.2.0.exe`. The package task now builds in a unique staging directory and moves the complete installer to the normal output path. It clears the read-only attribute on the exact previous artifact when required. An explicit Gradle skip predicate prevents the stock Compose package task from overwriting the invite-enabled output. The final EXE build replaced the previous artifact and its embedded MSI contains the expected `flash` Registry entries.
+
+## ERROR-1021 — Browser invite fallback kept the preceding open action after the fragment changed
+
+**2026-11-14 · Invite fallback · RESOLVED.** A browser test loaded a valid invite and changed only the fragment to a malformed value. The page retained the previous invite's action because the document did not reload. The fallback now resets its actions on each render and listens for `hashchange`. The browser rerun verified that the Open in Flash and Copy invite link actions disappear and the invalid-link message replaces the prior state.
+
+## ERROR-1020 — dev audit notification identity, stale toast actions and receive verification race
+
+### Date
+2026-11-14
+
+### Symptoms and root cause
+Android transfer actions used a transfer ID hash and extras for PendingIntent identity. Stale cleanup guessed a notification slot. Desktop queued foreground alerts that its renderer hid and acted on current calling and pairing sessions from older cards. The receive completion path could publish after cancellation and treated a digest read failure like an absent digest. See the working-tree audit for reproductions and additional UI findings.
+
+### Fix
+Tag Android cards with the full transfer ID, put the ID in matching intent data and reconcile actual Android cards. Bind desktop call actions to the displayed call, open the existing pairing dialog, and reconcile toast state against live rows. Commit verification and receive cancellation under the same lock, with a recheck before publishing. Preserve legacy compatibility when no digest was supplied.
+
+### Verification and status
+Host regressions cover cancel during verification and an I/O failure with a supplied digest. The Android instrumented PendingIntent case, process restart and desktop interaction checks remain open under NOTIF-02/04 and DEV-AUDIT-02. See the latest progress entry for the final host gate.
+
 ## ERROR-868 — A hub test's fixed `sentAt` became "days old" once the age rule existed, and the fixture clock had to become the bridge clock (SEC-D15-02 fallout)
 
 ### Date

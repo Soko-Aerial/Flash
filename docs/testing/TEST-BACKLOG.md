@@ -8477,3 +8477,82 @@ Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`
   - Search auto-focuses, offers Clear (`X`), shows empty state instead of blank screen when empty, and keeps 2-row `FlashChatSearchBar` + drawer toggle clickable at 360 dp.
   - Group member sheets cap list height (`<= 280 dp`), offer `"Find devices"` when empty, scroll all `eligibleSuccessors` in Leave dialog, move per-member actions into `More` with confirmation on Promote/Demote, step max members cleanly (`2 ↔ 5 ↔ 10 ↔ 15 ↔ 20`) with `48 dp` buttons and plain-language labels, and use distinct icons (`Copy`, `Connection`, `Forward`).
 - **Status:** TODO
+
+## 2026-11-12 — Android & Desktop notification robustness, dialog redesign & custom notification center (`NOTIF-01..04`)
+
+Added after implementing Android notification state management, `Verifying` state indeterminate progress, desktop receiving dialog 400 dp dynamic redesign, and desktop unified custom notification center with OS balloon retirement.
+
+### NOTIF-01 — Android transfer 100% verification progress & auto-dismissal
+- **Setup:** Android phone paired with a second device; transfer a multi-hundred MB or multi-GB synthetic file while backgrounded and while viewing the Transfers screen.
+- **Steps:**
+  1. Send a 1 GB file from Peer to Android phone.
+  2. Put Flash in the background and pull down the notification shade as download reaches 100%.
+  3. Observe the transition between chunk streaming and SHA-256 integrity verification.
+  4. Wait for verification to complete; observe notification dismissal behavior.
+  5. Repeat another transfer while Flash is foregrounded on the Transfers tab.
+- **Pass:**
+  - Upon reaching 100% bytes, the ongoing notification transitions to title `"Verifying <file>…"` with subtitle `"Checking file integrity…"` and an active indeterminate progress bar (never sits frozen at raw 100%).
+  - When verification completes, the notification transitions to Completed and automatically dismisses after 15 seconds without user intervention.
+  - When foregrounded on the Transfers tab, the completed notification is suppressed immediately.
+- **Status:** TODO
+
+### NOTIF-02 — Android notification action identity & process restart cleanup
+- **Setup:** Assigned Android phone and a paired peer. Preserve app data.
+- **Steps:**
+  1. Run `TransferNotificationIdentityInstrumentedTest` on the phone. With two concurrent transfers, act on one notification and confirm only the named transfer changes.
+  2. Kill the app process during a large transfer, relaunch, and inspect Android's notification shade.
+  3. Clear completed transfer history with a separate incoming offer still waiting.
+  4. If a test device has legacy notifications from an earlier build, upgrade in place and repeat the relaunch check.
+- **Pass:**
+  - Colliding IDs retain distinct Android action tokens. Stale and legacy transfer notices disappear on startup, and live notices reflect the current rows.
+  - Clearing completed history preserves the pending offer and active transfer notifications.
+- **Status:** TODO
+
+### NOTIF-03 — Desktop custom receiving dialog 400 dp fit & action order
+- **Setup:** Windows / Linux desktop with display scaling at 100%, 125%, and 150%.
+- **Steps:**
+  1. Trigger an incoming file offer from a paired peer with a long name (>20 chars) and a multi-GB file.
+  2. Inspect the custom toast window card layout, text wrapping, and action buttons.
+  3. Trigger an outbound transfer failure.
+- **Pass:**
+  - Card renders at 400 dp width and expands height dynamically without clipping action buttons at any DPI scaling.
+  - File size and transport label are displayed in the metadata row.
+  - Action buttons are correctly ordered: **[Decline]** (left, secondary pill) and **[Accept]** (right, accent primary pill) for offers; **[Dismiss]** (left) and **[Retry]** (right) for failures.
+  - Buttons have comfortable >= 38 dp pointer targets with visible hover reactions.
+- **Status:** TODO
+
+### NOTIF-04 — Desktop unified custom notification center & OS balloon retirement
+- **Setup:** Windows / Linux desktop with Flash running minimized / in background.
+- **Steps:**
+  1. Send a chat message, initiate a voice call, and request pairing from a phone while Flash desktop is minimized.
+  2. Observe notification presentation.
+  3. Complete a transfer while desktop is focused, then minimize.
+- **Pass:**
+  - All notifications appear exclusively in our rich custom Compose toast window (zero generic OS balloons / tray messages).
+  - Incoming calls show peer name, Voice/Video badge, green Accept and red Decline buttons. Old cards cannot act on a replacement call.
+  - Pairing opens the full code-comparison dialog. The toast and diagnostic logs omit the verification code.
+  - A different chat can show its alert while Flash is focused. Message bursts do not displace a ringing call. Test keyboard access to desktop toast actions.
+  - Completed transfers with an available file show **[Show in Folder]** and **[Open File]**. If a file disappears before the action runs, Flash shows feedback. Completion and chat cards expire after 8 seconds, and failed-transfer cards expire after 15 seconds.
+  - Transfers completed while window was focused replay deferred notifications when the window is subsequently minimized.
+- **Status:** TODO
+
+### DEV-AUDIT-01 — Nearby mobile header, compact controls and voice accessibility
+- **Setup:** Assigned Android phone and Windows desktop. Exercise 320 dp and a typical phone width, 100% and 200% text, with TalkBack and keyboard as applicable.
+- **Pass:** Scan network and Connect by IP sit beside Nearby when the full labels fit. At larger text both remain readable and tappable. Scan shows its disabled in-progress state. Long paired-device names remain distinguishable. Performance and Discovery labels stay readable and the selected item is announced.
+- **Pass:** The lock, overflow and Retry actions remain individually targetable. TalkBack or keyboard starts a hands-free voice recording and can pause, cancel or send. An interrupted hold stops the capture and releases the mic lease. A permission denial gives feedback and another press checks current access.
+- **Status:** TODO for real input and device behavior.
+
+### INVITE-LINK-01 — Verified Android invite links and camera QR opening
+- **Setup:** Build with the actual public group and Hub link hostnames and serve the distributed APK signing association on both. Use an assigned phone with Flash installed and a browser profile or device without it.
+- **Pass:** Local group and Hub enrollment links and camera QRs open the appropriate confirmation on cold and warm launches. With no app or with a self-hosted Hub that is outside the manifest, the browser can download Flash, copy the original invite, or open the app using the fallback action. An invalid fragment removes open and copy actions, and an expired or used grant is refused on confirmation.
+- **Status:** TODO on real hostnames and Android camera.
+
+### INVITE-LINK-02 — Desktop invite protocol association
+- **Setup:** The Windows MSI and the EXE's embedded MSI contain the expected registry entries. Build the Linux DEB on a Linux host, then install each platform package in a disposable user environment.
+- **Pass:** Browser Open in Flash invokes the packaged app, opens the correct dialog at cold start and while Flash is already running, and leaves it available to paste manually. Uninstall removes the package-owned handler.
+- **Status:** TODO for live browser-to-installed-app activation.
+
+### DEV-AUDIT-02 — Cancel during receive verification
+- **Setup:** Two assigned devices with a large synthetic file. Interrupt receive verification through a supported control or the sender.
+- **Pass:** The receive stays Cancelled, the sender receives no successful completion, no final copy is published, and no stale progress card remains. A read failure with a supplied digest becomes a retryable failure and cleans the partial file.
+- **Status:** TODO for the real two-device wire and storage path. The Android-host regression covers cancellation before hash commit and read failure.
