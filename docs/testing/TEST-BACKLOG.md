@@ -8612,3 +8612,50 @@ Added after implementing Android notification state management, `Verifying` stat
 - **Steps:** Measure steady-state and burst WebSocket relay throughput, p50/p99 frame latency, SQLite WAL checkpoint size, mailbox drain rate, heap/RSS growth, and TURN relay bandwidth under the documented production deployment profile.
 - **Pass:** Meets target pilot capacity without sustained queue backlog, `WAL` stall, or critical alert breach.
 - **Status:** TODO (synthetic 50-session / 500-frame JVM host benchmark recorded in `logs/experiments.md`; real multi-host + TLS + coturn pilot soak owed).
+
+## 2026-11-14 — Nearby paired availability, detail actions, Relay/Nearby icons & BottomNav motion (`UXPOL-12..15`)
+
+Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit, wiring, lint, and debug APK builds pass; physical Android and Desktop visual/interactive checks remain owed.
+
+### UXPOL-12 — Nearby paired-device availability status & offline action gating
+- **Setup:** Android phone + Windows/Linux desktop with at least one paired device currently offline (powered off or on a different network) and one paired device discovered nearby / actively connected.
+- **Steps:**
+  1. Open `Nearby` and inspect the paired-devices list (`TrustedTile`) for both the offline peer and the nearby/connected peer.
+  2. Open `FlashNearbyDetailPane` (two-pane detail on wide/desktop or detail sheet/pane on phone) for the offline paired peer, then for the discovered/connected peer.
+  3. On the offline peer's details, inspect `Voice Call`, `Video Call`, `Open Chat`, and `Send File`, and tap `Open Chat` and `Send File`.
+- **Pass:**
+  - Offline paired peer shows `Offline` in the Nearby row and `Offline · Not nearby` (offline status dot, `Not connected` connection label) in Device details; `Voice Call` and `Video Call` are visibly disabled while `Open Chat` and queued `Send File` remain enabled and actionable.
+  - Discovered/connected peer shows `Nearby` / `Online` in the Nearby row and `Available nearby` / `Online` (green dot) in Device details with `Voice Call` and `Video Call` enabled.
+- **Status:** TODO
+
+### UXPOL-13 — Compact non-scrolling single-line quick actions in `FlashNearbyDetailPane`
+- **Setup:** Android phone at narrow phone width (`<= 360 dp`, e.g. `320 dp` and `360 dp`) and Desktop narrow pane, tested at `1.0x` normal font scale and `>= 1.3x` / `200%` large font scale.
+- **Steps:**
+  1. Open Device details (`FlashNearbyDetailPane`) for a paired peer on narrow phone and Desktop widths at `1.0x` font scale.
+  2. Repeat at `>= 1.3x` / `200%` large font scale (and `< 290 dp` effective content width if available).
+- **Pass:**
+  - Primary (`Open Chat`) and quick actions (`Voice Call`, `Video Call`, `Send File`) sit directly beneath the compact hero card above the fold without requiring scrolling.
+  - All action labels render cleanly on a single line without awkward mid-word wrapping or clipping; at `< 290 dp` or `>= 1.3x` font scale, quick-action tiles stack cleanly into full-width single-line buttons.
+- **Status:** TODO
+
+### UXPOL-14 — Redesigned `FlashIcons.Relay` (Hub Relay Bridge) & `FlashIcons.Nearby` (Discovery Compass) visual clarity
+- **Setup:** Android phone and Desktop app in Light and Dark themes (enrolled in Hub so Hub/Relay badges and Nearby tab are both visible).
+- **Steps:**
+  1. Inspect `FlashIcons.Nearby` on the bottom navigation bar, Medium/Expanded navigation rail, and Nearby headers alongside Wi-Fi / Wi-Fi Direct transport icons.
+  2. Inspect `FlashIcons.Relay` wherever Hub Relay transport/status appears alongside `FlashIcons.Wifi`, `FlashIcons.WifiDirect`, and `FlashIcons.Hub`.
+- **Pass:**
+  - `FlashIcons.Nearby` reads unmistakably as a Discovery Compass (outer ring + tilted 4-point diamond needle) with zero resemblance to Wi-Fi arcs.
+  - `FlashIcons.Relay` reads unmistakably as a Hub Relay Bridge (top server node with status dot + symmetric arms to two peer endpoints) and is visually distinct from `Wifi`, `WifiDirect`, and `Hub` in both Light and Dark modes at standard icon sizes.
+- **Status:** TODO
+
+### UXPOL-15 — Bottom navigation per-tab click & reselect animations + `reduceMotion` collapse
+- **Setup:** Android phone with OS animations enabled, and separately with system Reduced Motion enabled (`FlashTheme.motion.reduceMotion = true`) and an RTL locale (`ar`/`he` or forced RTL layout direction).
+- **Steps:**
+  1. Tap across all 5 bottom navigation destinations (`Chats`, `Transfers`, `Hub`, `Nearby`, `Settings`) and tap the already-active tab again (re-select), including rapid repeated taps on `Settings`.
+  2. Enable system Reduced Motion and repeat tab switches and re-selects.
+  3. Switch to RTL layout direction and tap `Chats`, `Transfers`, and `Nearby`.
+- **Pass:**
+  - Each tab plays its distinct click/re-select motion without disturbing the pill indicator slide/squash-stretch or `PulseRing`: `Settings` rotates `+90°` cumulatively per click (preserving in-flight angle on rapid taps and resting angle on deselect); `Chats` bounces + tilts; `Transfers` executes opposing send/receive nudges; `Hub` elevates upright; `Nearby` performs a sonar micro-tilt ping.
+  - Under RTL, lateral nudges/tilts (`Chats`, `Transfers`, `Nearby`) mirror naturally.
+  - With `reduceMotion` enabled, all icon transforms and gear rotation collapse cleanly to identity with no jarring jump or residual offset.
+- **Status:** TODO
