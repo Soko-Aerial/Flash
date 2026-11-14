@@ -14,4 +14,23 @@ class FlashIconsTest {
         assertNotEquals(FlashIcons.Share.drawableRes, FlashIcons.Copy.drawableRes)
         assertTrue(FlashIcons.Copy.contentDescription.isNotBlank())
     }
+
+    @Test
+    fun `relay nearby hub and wifi icons have distinct drawables and labels`() {
+        val networkAndNavIcons = listOf(
+            FlashIcons.Relay,
+            FlashIcons.Nearby,
+            FlashIcons.Hub,
+            FlashIcons.Wifi,
+            FlashIcons.WifiDirect,
+            FlashIcons.Connection,
+        )
+        assertEquals(networkAndNavIcons.size, networkAndNavIcons.map { it.drawableRes }.toSet().size)
+        networkAndNavIcons.forEach { spec ->
+            assertTrue(spec.contentDescription.isNotBlank())
+        }
+        assertEquals("Relay", FlashIcons.Relay.contentDescription)
+        assertEquals("Nearby", FlashIcons.Nearby.contentDescription)
+        assertEquals("Hub", FlashIcons.Hub.contentDescription)
+    }
 }
