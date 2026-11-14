@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -433,7 +434,10 @@ fun FlashComposer(
                 label = "composer_trailing_progress",
             )
             Box(
-                modifier = Modifier.size(FlashSpacing.space44),
+                modifier = Modifier.defaultMinSize(
+                    minWidth = FlashDimensions.minTouchTarget,
+                    minHeight = FlashDimensions.minTouchTarget,
+                ),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
@@ -454,6 +458,19 @@ fun FlashComposer(
                                 voiceCaptureStarted = true
                                 showShortTapHint = false
                                 recordingPhase = FlashRecordingPhase.Holding
+                            }
+                        },
+                        onInterrupted = {
+                            if (voiceCaptureStarted && !voiceLockedHandsFree) cancelRecording()
+                        },
+                        onStartHandsFree = {
+                            if (FlashVoiceRecordingMath.canStartCapture(recordingPhase, voiceCaptureStarted) &&
+                                onVoiceRecordStart()
+                            ) {
+                                voiceCaptureStarted = true
+                                showShortTapHint = false
+                                recordingPhase = FlashRecordingPhase.Locked
+                                voiceLockedHandsFree = true
                             }
                         },
                         onSlideUpdate = { totalDx, totalDy ->

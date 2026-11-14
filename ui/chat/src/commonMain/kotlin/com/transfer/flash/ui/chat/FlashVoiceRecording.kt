@@ -15,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -34,6 +36,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,10 +47,16 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -221,7 +230,13 @@ fun FlashMicButton(
     onRecordEnd: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    onInterrupted: () -> Unit = {},
+    onStartHandsFree: (() -> Unit)? = null,
 ) {
+    val startRecord by rememberUpdatedState(onStartRecord)
+    val slideUpdate by rememberUpdatedState(onSlideUpdate)
+    val recordEnd by rememberUpdatedState(onRecordEnd)
+    val interrupted by rememberUpdatedState(onInterrupted)
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
@@ -276,52 +291,103 @@ fun FlashMicButton(
 
     Box(
         modifier = modifier
-            .size(FlashSpacing.space44)
-            .graphicsLayer {
-                scaleX = scale.value
-                scaleY = scale.value
-                translationX = slideX
-                translationY = slideY
-            }
-            .clip(CircleShape)
-            .background(backgroundColor)
+            .defaultMinSize(
+                minWidth = FlashDimensions.minTouchTarget,
+                minHeight = FlashDimensions.minTouchTarget,
+            )
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
+                    dragOffsetX = 0f
+                    dragOffsetY = 0f
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
                     haptics(FlashHaptic.Confirm)
-                    onStartRecord()
+                    startRecord()
+                    val touchSlop = viewConfiguration.touchSlop
                     var totalDx = 0f
                     var totalDy = 0f
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.pressed } ?: break
-                        val delta = change.positionChange()
-                        totalDx += delta.x
-                        totalDy += delta.y
-                        dragOffsetX = totalDx
-                        dragOffsetY = totalDy
-                        onSlideUpdate(totalDx, totalDy)
-                        change.consume()
+                    var touchSlopPassed = false
+                    var released = false
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (change.isConsumed) break
+                            if (!change.pressed) {
+                                released = true
+                                change.consume()
+                                break
+                            }
+                            val delta = change.positionChange()
+                            totalDx += delta.x
+                            totalDy += delta.y
+                            if (!touchSlopPassed) {
+                                if (abs(totalDx) > touchSlop || abs(totalDy) > touchSlop) {
+                                    touchSlopPassed = true
+                                }
+                            }
+                            if (touchSlopPassed) {
+                                dragOffsetX = totalDx
+                                dragOffsetY = totalDy
+                                slideUpdate(totalDx, totalDy)
+                            } else {
+                                dragOffsetX = 0f
+                                dragOffsetY = 0f
+                                slideUpdate(0f, 0f)
+                            }
+                            change.consume()
+                        }
+                    } finally {
+                        dragOffsetX = 0f
+                        dragOffsetY = 0f
+                        if (!released) interrupted()
                     }
-                    dragOffsetX = 0f
-                    dragOffsetY = 0f
-                    onRecordEnd()
+                    if (released) recordEnd()
                 }
             }
+            .onKeyEvent { event ->
+                if (enabled && onStartHandsFree != null && event.type == KeyEventType.KeyUp &&
+                    (event.key == Key.Enter || event.key == Key.Spacebar)
+                ) {
+                    onStartHandsFree()
+                    true
+                } else false
+            }
+            .focusable(enabled && onStartHandsFree != null)
             .semantics {
                 role = Role.Button
-                contentDescription = "Hold to record voice message"
+                contentDescription = "Voice message"
+                stateDescription = if (isRecording) "Recording" else "Ready to record"
+                if (enabled && onStartHandsFree != null) {
+                    onClick(label = "Start hands-free recording") {
+                        onStartHandsFree()
+                        true
+                    }
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
-        FlashIcon(
-            icon = currentIcon,
-            contentDescription = null,
-            tint = iconTint,
-            modifier = Modifier.size(FlashSpacing.space20),
-        )
+        Box(
+            modifier = Modifier
+                .size(FlashSpacing.space44)
+                .graphicsLayer {
+                    scaleX = scale.value
+                    scaleY = scale.value
+                    translationX = slideX
+                    translationY = slideY
+                }
+                .clip(CircleShape)
+                .background(backgroundColor),
+            contentAlignment = Alignment.Center,
+        ) {
+            FlashIcon(
+                icon = currentIcon,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(FlashSpacing.space20),
+            )
+        }
     }
 }
 
