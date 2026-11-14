@@ -920,7 +920,6 @@ private fun FlashQuickActionTile(
                 color = fg,
                 style = FlashTheme.typography.metadataEmphasis,
                 maxLines = 1,
-                softWrap = false,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
             )
@@ -997,7 +996,6 @@ private fun FlashDetailButton(
                 color = fg,
                 style = FlashTheme.typography.captionEmphasis,
                 maxLines = 1,
-                softWrap = false,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
             )
