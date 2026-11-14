@@ -1,5 +1,36 @@
 # Progress Log
 
+## 2026-11-14 — Nearby paired-device availability, compact detail actions, Relay/Nearby icons & BottomNav animations
+
+### Worked on
+Completed three UI/UX workstreams on `dev` (`508dbee6`, `953cdeb6`, `4d53d5dc`, `26924567`) and ran the full cross-platform Gradle verification gate:
+1. **Relay & Nearby icon redesign (`508dbee6`):**
+   - Replaced the Wi-Fi-like `FlashIcons.Relay` (`flash_ic_relay.xml`) and `FlashIcons.Nearby` (`flash_ic_nearby.xml`) vector drawables using Flash's shared `24 × 24` / `1.75 dp` stroke grammar: `Relay` is now a Hub Relay Bridge (top server node with status dot + circuit arms to two peer endpoint circles) and `Nearby` is now a Discovery Compass (outer ring enclosing a tilted 4-point diamond needle).
+   - Retained `FlashIcons.Hub` (office building silhouette), updated `docs/ui/icon-system.md`, and added distinct-resource/label assertions in `FlashIconsTest.kt`.
+2. **Bottom-navigation per-tab click & reselect animations (`953cdeb6`):**
+   - Added destination-specific `Animatable` click/selection/re-selection transforms read inside `graphicsLayer` in `FlashBottomNav.kt` (`SettingsGear` cumulative `+90°` turn + scale pop, `ChatPop` bounce + directional tilt, `TransferNudge` opposing send/receive nudge with RTL mirroring, `HubElevate` upright lift, and `NearbySonar` radar tilt oscillation with RTL mirroring), collapsing cleanly to identity under `FlashTheme.motion.reduceMotion`.
+   - Updated `docs/ui/bottom-nav.md` and added 8 pure JVM motion spec tests in `FlashBottomNavLogicTest.kt`.
+3. **Nearby paired-device availability & compact detail actions (`4d53d5dc`, `26924567`):**
+   - Added `isAvailableNearby` and `isOnline` to `NearbyPeerUi` and `NearbyTrustedPeerUi` (`FlashNearbyMath.withDeviceKinds(..., activeSessionPeerIds)` and `trustedAvailabilityLabel` for `Nearby` / `Online` / `Offline`), and wired `MainActivity` + `DesktopShell` (`nearbyUiStateOf`, `resolveSelectedNearbyPeer`) against live `discoveredEndpoints` and `activeSessions` instead of hardcoding online/LAN status.
+   - Updated `FlashNearbyDetailPane` (`FlashDetailPanes.kt`) to display `Available nearby` / `Online` vs `Offline · Not nearby` (`Not connected` when offline), disable live `Voice Call` / `Video Call` while keeping `Open Chat` and queued `Send File` enabled, compact the hero/action stack above the fold without scrolling, and enforce single-line `FlashDetailButton` / `FlashQuickActionTile` labels (with `<290 dp` / `>=1.3x` font-scale stacking). Fixed unsupported `softWrap` argument on `FlashText` in `26924567`.
+   - Added unit/wiring tests in `FlashDetailPanesLogicTest.kt`, `FlashNearbyLogicTest.kt`, `DesktopShellBehaviorTest.kt`, and `AndroidEntryShellWiringTest.kt`.
+
+### Verification
+- **Command:** `tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :desktop:jvmTest :desktop:compileKotlinJvm :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`
+- **Result:** `BUILD SUCCESSFUL in 12m 14s` (exit code `0`, 513 tasks: 43 executed, 470 up-to-date) on `dev` at `26924567` (clean working tree):
+  - `:ui:theme:jvmTest`: 8 suites, 69 tests — 69 passed, 0 failed, 0 skipped (incl. `FlashIconsTest` 2/2)
+  - `:ui:chat:jvmTest`: 87 suites, 800 tests — 800 passed, 0 failed, 0 skipped
+  - `:ui:chat:testAndroidHostTest`: 81 suites, 775 tests — 775 passed, 0 failed, 0 skipped
+  - `:desktop:jvmTest`: 52 suites, 313 tests — 311 passed, 0 failed, 2 pre-existing skips (`FlashHubWorkspaceRenderTest.renderWorkspaceStates[jvm]`, `FlashWorkspaceTabsRenderTest.renderTabs[jvm]`)
+  - `:desktop:compileKotlinJvm`: PASSED
+  - `:app:testDebugUnitTest`: 20 suites, 119 tests — 119 passed, 0 failed, 0 skipped
+  - **Total test tasks:** 248 suites, 2,076 tests — **2,074 passed, 0 failed, 2 pre-existing skips**
+  - `:app:lintDebug`: PASSED — 0 errors (169 warnings, 2 hints)
+  - `:app:assembleDebug`: PASSED — built `app-arm64-v8a-debug.apk`, `app-armeabi-v7a-debug.apk`, `app-universal-debug.apk`, `app-x86_64-debug.apk` in `app/build/outputs/apk/debug/`
+
+### Remaining / Next AI
+- Physical Android phone and Windows/Linux desktop visual & interactive acceptance checks remain `TODO` in `docs/testing/TEST-BACKLOG.md` under `UXPOL-12..15` (plus existing `UXPOL-01..11`, `NOTIF-01..04`, `DEV-AUDIT-01..02`, `INVITE-LINK-01..02`, and `HR6-DEV-01`..`HR11-ENV-02`).
+
 ## 2026-11-14 — Merge Hub readiness into dev
 
 Merged `agent/hub-readiness` at `e3a64a24` with its individual HR6–HR11 commits intact. Committed notification identity/actions, receive finalization, accessible voice capture, Nearby and Settings polish, and deep links independently on `dev`. Recorded both audits in separate commits. The merge joins the cancellation guard with Hub continuity, cleans late LAN copies after the Hub wins, uses the existing desktop toast for title-only announcements, and preserves both invite and TURN configuration.

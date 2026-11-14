@@ -1,5 +1,15 @@
 # Current Handoff
 
+> **2026-11-14 — Nearby availability, compact detail actions, Relay/Nearby icons & BottomNav animations verified on `dev` at `26924567`.**
+> - **Commits on `dev`:**
+>   - `508dbee6`: `feat(icons): replace Wi-Fi-like Relay and Nearby vector icons` (`FlashIcons.Relay` Hub Relay Bridge + `FlashIcons.Nearby` Discovery Compass)
+>   - `953cdeb6`: `feat(ui): add signature click animations for each bottom-nav icon` (per-tab `Animatable` + `graphicsLayer` motions & `reduceMotion` collapse)
+>   - `4d53d5dc`: `fix(nearby): show truthful peer availability and compact detail actions` (`isAvailableNearby`/`isOnline` wiring + above-the-fold single-line `FlashNearbyDetailPane` actions)
+>   - `26924567`: `fix(nearby): remove unsupported softWrap arg on FlashText`
+> - **Verified Gate (`tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :desktop:jvmTest :desktop:compileKotlinJvm :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`):**
+>   `BUILD SUCCESSFUL in 12m 14s` (exit code `0`); **248 suites, 2,076 tests — 2,074 passed, 0 failed, 2 pre-existing skips** (`:ui:theme:jvmTest` 8/69, `:ui:chat:jvmTest` 87/800, `:ui:chat:testAndroidHostTest` 81/775, `:desktop:jvmTest` 52/313 with 2 skips, `:app:testDebugUnitTest` 20/119); `:desktop:compileKotlinJvm` clean; `:app:lintDebug` **0 errors** (169 warnings, 2 hints); `:app:assembleDebug` built all 4 debug APKs in `app/build/outputs/apk/debug/`.
+> - **Owed physical-device / desktop visual acceptance (`docs/testing/TEST-BACKLOG.md`):** `UXPOL-12..15` (alongside prior `UXPOL-01..11`, `NOTIF-01..04`, `DEV-AUDIT-01..02`, `INVITE-LINK-01..02`, and `HR6-DEV-01`..`HR11-ENV-02`).
+
 > **2026-11-14 — HR6–HR11 merged into `dev` from `agent/hub-readiness` at `e3a64a24`.** The Hub feature commits, two audits and `dev` fixes are in history. The merge preserves the local/Hub invite formats, routes desktop announcements through Flash toasts, and combines transfer cancellation with duplicate cleanup across routes. The final locked build passed, including the debug APK, 2,903 passing Gradle tests, two desktop skips and 87 passing console tests. Follow HR6–HR11 and INVITE-LINK-01/02 in the backlog for live acceptance.
 
 > **2026-11-14 — Hub and local group invite links on `dev` at `0b162b80` with working-tree changes.** Hub invites use the issuing Hub origin. Local group sharing and QR use the configurable Flash hostname. Android verified routes, browser fallback, paste, and desktop single-instance routing reuse existing confirmation and validation. The Android debug APK, lint, browser checks, and host tests passed, including all 676 Hub tests on rerun. The two Windows installer formats contain the expected `flash` registration. Linux DEB packaging and installed desktop activation remain in the backlog. To enable live verification, configure the actual public hosts and the distributed APK certificate per [invite deployment](../docs/deploy/INVITE-LINKS.md), then run INVITE-LINK-01 and INVITE-LINK-02.
