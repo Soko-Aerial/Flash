@@ -100,6 +100,32 @@ class FlashNearbyLogicTest {
             ),
         )
         assertEquals(FlashDeviceKind.PHONE, rows.single().deviceKind)
+        assertTrue(rows.single().isAvailableNearby)
+        assertTrue(rows.single().isOnline)
+    }
+
+    @Test
+    fun `trusted availability tracks discovered nearby vs active session vs offline`() {
+        val rows = FlashNearbyMath.withDeviceKinds(
+            trusted = listOf(
+                NearbyTrustedPeerUi("nearby-1", "Desk"),
+                NearbyTrustedPeerUi("session-1", "Manual Peer"),
+                NearbyTrustedPeerUi("offline-1", "Sleeping Phone"),
+            ),
+            discovered = listOf(
+                NearbyPeerUi("nearby-1", "Desk", transport(), deviceKind = FlashDeviceKind.DESKTOP),
+            ),
+            activeSessionPeerIds = setOf("session-1"),
+        )
+        assertEquals(
+            listOf("Nearby", "Online", "Offline"),
+            rows.map { FlashNearbyMath.trustedAvailabilityLabel(it) },
+        )
+        assertTrue(rows[0].isAvailableNearby && rows[0].isOnline)
+        assertFalse(rows[1].isAvailableNearby)
+        assertTrue(rows[1].isOnline)
+        assertFalse(rows[2].isAvailableNearby)
+        assertFalse(rows[2].isOnline)
     }
 
     /** DR3: the "Scan network" caption says what happened without naming hosts, ports or subnets. */

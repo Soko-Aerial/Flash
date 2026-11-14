@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -31,14 +32,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.transfer.flash.core.common.model.FlashDeviceKind
@@ -107,6 +111,22 @@ internal object FlashDetailPaneCopy {
         else -> "Pair with this device using a 6-digit code before sending files or messages."
     }
 
+    fun peerStatusLabel(isAvailableNearby: Boolean, isOnline: Boolean): String = when {
+        isAvailableNearby -> "Available nearby"
+        isOnline -> "Online"
+        else -> "Offline · Not nearby"
+    }
+
+    fun peerConnectionLabel(
+        transport: FlashNetworkTransport,
+        isAvailableNearby: Boolean,
+        isOnline: Boolean,
+    ): String {
+        if (!isAvailableNearby && !isOnline) return "Not connected"
+        if (transport == FlashNetworkTransport.Unknown && isOnline) return "Connected"
+        return peerTransportLabel(transport)
+    }
+
     fun peerTransportLabel(transport: FlashNetworkTransport): String = when (transport) {
         FlashNetworkTransport.Lan -> "Local network (Wi-Fi)"
         FlashNetworkTransport.WifiDirect -> "Wi-Fi Direct"
@@ -125,7 +145,9 @@ internal object FlashDetailPaneCopy {
         colors: FlashColors,
         isPrimary: Boolean,
         isDestructive: Boolean,
+        enabled: Boolean = true,
     ): Pair<Color, Color> = when {
+        !enabled -> colors.backgroundSurfaceSubtle to colors.textTertiary
         isDestructive -> colors.textError.copy(alpha = 0.12f) to colors.textError
         isPrimary -> colors.accentFill to colors.onAccentFill
         else -> colors.backgroundSurfaceStrong to colors.textPrimary
@@ -519,13 +541,15 @@ fun FlashNearbyDetailPane(
 ) {
     val colors = FlashTheme.colors
     val scrollState = rememberScrollState()
+    val isReachable = peer.isAvailableNearby || peer.isOnline
+    val statusText = FlashDetailPaneCopy.peerStatusLabel(peer.isAvailableNearby, peer.isOnline)
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
             .padding(FlashSpacing.space16),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
         // Top header with close button
         Row(
@@ -560,19 +584,18 @@ fun FlashNearbyDetailPane(
             }
         }
 
-        // Hero Peer Card
-        DetailCard {
+        // Compact Hero Peer Card
+        DetailCard(contentPadding = FlashSpacing.space12) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(Modifier.height(FlashSpacing.space8))
                 FlashAvatar(
                     initials = peer.name.take(2),
-                    size = 72.dp,
+                    size = 56.dp,
                     seed = peer.name,
                 )
-                Spacer(Modifier.height(FlashSpacing.space12))
+                Spacer(Modifier.height(FlashSpacing.space8))
                 FlashText(
                     text = peer.name,
                     style = FlashTheme.typography.headingSmall,
@@ -589,20 +612,121 @@ fun FlashNearbyDetailPane(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
-                            .background(colors.statusOnline),
+                            .background(if (isReachable) colors.statusOnline else colors.statusOffline),
                     )
                     FlashText(
-                        text = "Available nearby",
+                        text = statusText,
                         style = FlashTheme.typography.captionDefault,
+                        color = if (isReachable) colors.textSecondary else colors.textTertiary,
+                    )
+                }
+            }
+        }
+
+        // Primary & Quick Actions right below the hero so they are visible without scrolling.
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        ) {
+            if (!peer.isTrusted && onPair != null) {
+                if (peer.isColleague && onChat != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                    ) {
+                        FlashDetailButton(
+                            text = "Open Chat",
+                            onClick = onChat,
+                            modifier = Modifier.weight(1f),
+                            isPrimary = true,
+                            icon = FlashIcons.Chat,
+                        )
+                        FlashDetailButton(
+                            text = "Pair Device",
+                            onClick = onPair,
+                            modifier = Modifier.weight(1f),
+                            icon = FlashIcons.Connection,
+                        )
+                    }
+                } else {
+                    FlashDetailButton(
+                        text = "Pair Device",
+                        onClick = onPair,
+                        modifier = Modifier.fillMaxWidth(),
+                        isPrimary = true,
+                        icon = FlashIcons.Connection,
+                    )
+                }
+            } else if (onChat != null && (peer.isTrusted || peer.isColleague)) {
+                FlashDetailButton(
+                    text = "Open Chat",
+                    onClick = onChat,
+                    modifier = Modifier.fillMaxWidth(),
+                    isPrimary = true,
+                    icon = FlashIcons.Chat,
+                )
+            }
+
+            if (peer.isTrusted && (onVoiceCall != null || onVideoCall != null || onSendFile != null)) {
+                val quickActions = buildList {
+                    if (onVoiceCall != null) {
+                        add(Triple("Voice Call", FlashIcons.Call, Pair(peer.isOnline, onVoiceCall)))
+                    }
+                    if (onVideoCall != null) {
+                        add(Triple("Video Call", FlashIcons.VideoCall, Pair(peer.isOnline, onVideoCall)))
+                    }
+                    if (onSendFile != null) {
+                        add(Triple("Send File", FlashIcons.Attach, Pair(true, onSendFile)))
+                    }
+                }
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val stackButtons = maxWidth < 290.dp || LocalDensity.current.fontScale >= 1.3f
+                    if (stackButtons) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                        ) {
+                            quickActions.forEach { (label, icon, stateAndClick) ->
+                                val (enabled, action) = stateAndClick
+                                FlashDetailButton(
+                                    text = label,
+                                    onClick = action,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    icon = icon,
+                                    enabled = enabled,
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                        ) {
+                            quickActions.forEach { (label, icon, stateAndClick) ->
+                                val (enabled, action) = stateAndClick
+                                FlashQuickActionTile(
+                                    text = label,
+                                    icon = icon,
+                                    onClick = action,
+                                    modifier = Modifier.weight(1f),
+                                    enabled = enabled,
+                                )
+                            }
+                        }
+                    }
+                }
+                if (!peer.isOnline && (onVoiceCall != null || onVideoCall != null)) {
+                    FlashText(
+                        text = "Offline — messages and files queue until this device is reachable.",
+                        style = FlashTheme.typography.metadataDefault,
                         color = colors.textSecondary,
                     )
                 }
-                Spacer(Modifier.height(FlashSpacing.space8))
             }
         }
 
         // Security & Verification Card
-        DetailCard(title = "Trust & Pairing") {
+        DetailCard(title = "Trust & Pairing", contentPadding = FlashSpacing.space12) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -650,10 +774,14 @@ fun FlashNearbyDetailPane(
         }
 
         // Connection & Hardware Details
-        DetailCard(title = "Connection") {
+        DetailCard(title = "Connection", contentPadding = FlashSpacing.space12) {
             DetailMetricRow(
                 label = "Connection type",
-                value = FlashDetailPaneCopy.peerTransportLabel(peer.transport),
+                value = FlashDetailPaneCopy.peerConnectionLabel(
+                    transport = peer.transport,
+                    isAvailableNearby = peer.isAvailableNearby,
+                    isOnline = peer.isOnline,
+                ),
             )
             DetailMetricRow(
                 label = "Device code",
@@ -666,64 +794,6 @@ fun FlashNearbyDetailPane(
                 )
             }
         }
-
-        // Action Dock
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = FlashSpacing.space8),
-            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-        ) {
-            if (!peer.isTrusted && onPair != null) {
-                FlashDetailButton(
-                    text = "Pair Device",
-                    onClick = onPair,
-                    modifier = Modifier.fillMaxWidth(),
-                    isPrimary = !peer.isColleague || onChat == null,
-                    icon = FlashIcons.Connection,
-                )
-            }
-            if (onChat != null && (peer.isTrusted || peer.isColleague)) {
-                FlashDetailButton(
-                    text = "Open Chat",
-                    onClick = onChat,
-                    modifier = Modifier.fillMaxWidth(),
-                    isPrimary = true,
-                    icon = FlashIcons.Chat,
-                )
-            }
-            if (peer.isTrusted) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-                ) {
-                    if (onVoiceCall != null) {
-                        FlashDetailButton(
-                            text = "Voice Call",
-                            onClick = onVoiceCall,
-                            modifier = Modifier.weight(1f),
-                            icon = FlashIcons.Call,
-                        )
-                    }
-                    if (onVideoCall != null) {
-                        FlashDetailButton(
-                            text = "Video Call",
-                            onClick = onVideoCall,
-                            modifier = Modifier.weight(1f),
-                            icon = FlashIcons.VideoCall,
-                        )
-                    }
-                    if (onSendFile != null) {
-                        FlashDetailButton(
-                            text = "Send File",
-                            onClick = onSendFile,
-                            modifier = Modifier.weight(1f),
-                            icon = FlashIcons.Attach,
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -731,6 +801,7 @@ fun FlashNearbyDetailPane(
 private fun DetailCard(
     modifier: Modifier = Modifier,
     title: String? = null,
+    contentPadding: Dp = FlashSpacing.space16,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = FlashTheme.colors
@@ -744,7 +815,7 @@ private fun DetailCard(
                 color = colors.borderSubtle.copy(alpha = 0.5f),
                 shape = RoundedCornerShape(FlashShapes.radius12),
             )
-            .padding(FlashSpacing.space16),
+            .padding(contentPadding),
     ) {
         if (title != null) {
             FlashText(
@@ -752,7 +823,7 @@ private fun DetailCard(
                 style = FlashTheme.typography.captionEmphasis,
                 color = colors.textSecondary,
             )
-            Spacer(Modifier.height(FlashSpacing.space12))
+            Spacer(Modifier.height(FlashSpacing.space8))
         }
         content()
     }
@@ -791,6 +862,73 @@ private fun DetailMetricRow(
 }
 
 @Composable
+private fun FlashQuickActionTile(
+    text: String,
+    icon: FlashIconSpec,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val colors = FlashTheme.colors
+    val interactionSource = remember { MutableInteractionSource() }
+    val (bg, fg) = FlashDetailPaneCopy.buttonColors(
+        colors,
+        isPrimary = false,
+        isDestructive = false,
+        enabled = enabled,
+    )
+    val shape = RoundedCornerShape(FlashShapes.radius12)
+
+    Box(
+        modifier = modifier
+            .heightIn(min = 56.dp)
+            .then(if (enabled) Modifier.flashPressScale(interactionSource) else Modifier)
+            .clip(shape)
+            .background(bg)
+            .border(
+                width = FlashDimensions.borderHairline,
+                color = if (enabled) colors.borderSubtle else colors.borderSubtle.copy(alpha = 0.5f),
+                shape = shape,
+            )
+            .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                if (!enabled) disabled()
+            }
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space8),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        ) {
+            FlashIcon(
+                icon = icon,
+                contentDescription = null,
+                tint = fg,
+                size = FlashDimensions.iconSm,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+            FlashText(
+                text = text,
+                color = fg,
+                style = FlashTheme.typography.metadataEmphasis,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
 private fun FlashDetailButton(
     text: String,
     onClick: () -> Unit,
@@ -798,33 +936,47 @@ private fun FlashDetailButton(
     isDestructive: Boolean = false,
     isPrimary: Boolean = false,
     icon: FlashIconSpec? = null,
+    enabled: Boolean = true,
 ) {
     val colors = FlashTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
-    val (bg, fg) = FlashDetailPaneCopy.buttonColors(colors, isPrimary = isPrimary, isDestructive = isDestructive)
+    val (bg, fg) = FlashDetailPaneCopy.buttonColors(
+        colors,
+        isPrimary = isPrimary,
+        isDestructive = isDestructive,
+        enabled = enabled,
+    )
     val shape = RoundedCornerShape(FlashShapes.radius12)
 
     Box(
         modifier = modifier
             .heightIn(min = FlashDimensions.minTouchTarget)
-            .flashPressScale(interactionSource)
+            .then(if (enabled) Modifier.flashPressScale(interactionSource) else Modifier)
             .clip(shape)
             .background(bg)
             .then(
                 if (!isPrimary && !isDestructive) {
-                    Modifier.border(FlashDimensions.borderHairline, colors.borderSubtle, shape)
+                    Modifier.border(
+                        FlashDimensions.borderHairline,
+                        if (enabled) colors.borderSubtle else colors.borderSubtle.copy(alpha = 0.5f),
+                        shape,
+                    )
                 } else {
                     Modifier
                 },
             )
-            .pointerHoverIcon(PointerIcon.Hand)
+            .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
             .clickable(
+                enabled = enabled,
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick,
             )
-            .semantics { role = Role.Button }
-            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
+            .semantics {
+                role = Role.Button
+                if (!enabled) disabled()
+            }
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space10),
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -843,8 +995,9 @@ private fun FlashDetailButton(
             FlashText(
                 text = text,
                 color = fg,
-                style = FlashTheme.typography.bodyEmphasis,
-                maxLines = 2,
+                style = FlashTheme.typography.captionEmphasis,
+                maxLines = 1,
+                softWrap = false,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
             )

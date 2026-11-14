@@ -112,6 +112,10 @@ data class NearbyPeerUi(
     /** Plan B Phase B3: whether this peer is a verified organisation colleague. */
     val isColleague: Boolean = false,
     val orgName: String? = null,
+    /** True when this peer is currently discovered nearby on a local transport. */
+    val isAvailableNearby: Boolean = true,
+    /** True when this peer is currently reachable nearby or via an active session. */
+    val isOnline: Boolean = isAvailableNearby,
 )
 
 data class NearbyTrustedPeerUi(
@@ -131,6 +135,10 @@ data class NearbyTrustedPeerUi(
      * which runs a v2 pairing. Defaults to true so hosts that cannot tell never show a false warning.
      */
     val verified: Boolean = true,
+    /** True when this paired peer is currently discovered nearby on a local transport. */
+    val isAvailableNearby: Boolean = false,
+    /** True when this paired peer is discovered nearby or currently has an active session. */
+    val isOnline: Boolean = isAvailableNearby,
 )
 
 /** Why "Scan network" did nothing. The host maps the network layer's refusal onto these (DR3). */
@@ -263,11 +271,22 @@ object FlashNearbyMath {
     fun withDeviceKinds(
         trusted: List<NearbyTrustedPeerUi>,
         discovered: List<NearbyPeerUi>,
+        activeSessionPeerIds: Set<String> = emptySet(),
     ): List<NearbyTrustedPeerUi> = trusted.map { row ->
+        val match = discovered.firstOrNull { it.id == row.id }
+        val availableNearby = match != null
+        val online = availableNearby || row.id in activeSessionPeerIds
         row.copy(
-            deviceKind = discovered.firstOrNull { it.id == row.id }?.deviceKind
-                ?: FlashDeviceKind.UNKNOWN,
+            deviceKind = match?.deviceKind ?: FlashDeviceKind.UNKNOWN,
+            isAvailableNearby = availableNearby,
+            isOnline = online,
         )
+    }
+
+    fun trustedAvailabilityLabel(trusted: NearbyTrustedPeerUi): String = when {
+        trusted.isAvailableNearby -> "Nearby"
+        trusted.isOnline -> "Online"
+        else -> "Offline"
     }
 }
 
@@ -1003,6 +1022,7 @@ private fun TrustedTile(
                         FlashDeviceKind.PHONE -> "Phone"
                         FlashDeviceKind.UNKNOWN -> null
                     },
+                    FlashNearbyMath.trustedAvailabilityLabel(trusted),
                 ).joinToString(" · ")
                 if (detail.isNotEmpty()) {
                     FlashText(

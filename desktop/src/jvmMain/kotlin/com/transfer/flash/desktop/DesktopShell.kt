@@ -119,6 +119,7 @@ import com.transfer.flash.ui.nearby.NearbyScanBlock
 import com.transfer.flash.ui.nearby.NearbyPeerUi
 import com.transfer.flash.ui.nearby.NearbyTrustedPeerUi
 import com.transfer.flash.ui.nearby.NearbyUiState
+import com.transfer.flash.core.network.FlashSession
 import com.transfer.flash.core.network.sweep.SweepRefusal
 import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.ui.settings.FlashHubStatusMath
@@ -511,6 +512,7 @@ public fun DesktopShell(
                 localFriendlyName = localFriendlyName,
                 localDeviceId = engine.localDeviceId,
                 liveSessions = activeSessions.size,
+                activeSessionPeerIds = activeSessions.keys.mapTo(HashSet()) { it.value },
                 scan = sweepState.toNearbyScan(),
                 isOrgPeer = { peerId -> engine.hasAuthenticatedOrgSession(peerId) },
                 orgName = engine.enterpriseTrustStore.getCredentials()?.hubName,
@@ -2294,13 +2296,14 @@ public fun DesktopShell(
         }
     }
 
-    val selectedNearbyPeer = remember(selectedNearbyPeerId, nearby, discoveredEndpoints, enterpriseCredentials) {
+    val selectedNearbyPeer = remember(selectedNearbyPeerId, nearby, discoveredEndpoints, activeSessions, enterpriseCredentials) {
         resolveSelectedNearbyPeer(
             peerId = selectedNearbyPeerId,
             nearby = nearby,
             discovered = discoveredEndpoints,
             orgName = enterpriseCredentials?.hubName,
             isOrgPeer = { peerId -> engine.hasAuthenticatedOrgSession(peerId) },
+            activeSessions = activeSessions,
         )
     }
 
@@ -3177,6 +3180,7 @@ internal fun nearbyUiStateOf(
     localAddressLabel: String? = null,
     radiosAvailable: Boolean = true,
     failureReason: String? = null,
+    activeSessionPeerIds: Set<String> = emptySet(),
 ): NearbyUiState {
     val trustedIds = trusted.mapTo(HashSet()) { it.id }
     // Every discovered peer as a row, BEFORE the trusted filter — the join in `withDeviceKinds`
@@ -3208,6 +3212,7 @@ internal fun nearbyUiStateOf(
         trustedPeers = FlashNearbyMath.withDeviceKinds(
             trusted = trusted.map { NearbyTrustedPeerUi(id = it.id, name = it.name, verified = it.verified) },
             discovered = discoveredRows,
+            activeSessionPeerIds = activeSessionPeerIds,
         ),
         pairingRequest = ui?.let { u ->
             val resolvedTransport = (
@@ -3287,20 +3292,28 @@ internal fun resolveSelectedNearbyPeer(
     discovered: List<FlashDiscoveredEndpoint>,
     orgName: String? = null,
     isOrgPeer: (String) -> Boolean = { false },
+    activeSessions: Map<FlashDeviceId, FlashSession> = emptyMap(),
 ): NearbyPeerUi? {
     val targetId = peerId?.takeIf { it.isNotBlank() } ?: return null
     nearby.peers.firstOrNull { it.id == targetId }?.let { return it }
     val trusted = nearby.trustedPeers.firstOrNull { it.id == targetId } ?: return null
     val endpoint = discovered.firstOrNull { it.deviceId.value == targetId }
+    val session = activeSessions[FlashDeviceId(targetId)]
+    val isAvailableNearby = endpoint != null
+    val isOnline = isAvailableNearby || session != null || trusted.isOnline
     val isColleague = isOrgPeer(targetId)
     return NearbyPeerUi(
         id = trusted.id,
         name = trusted.name,
-        transport = endpoint?.transportType?.toDesktopTransport() ?: FlashNetworkTransport.Lan,
+        transport = endpoint?.transportType?.toDesktopTransport()
+            ?: session?.transportType?.toDesktopTransport()
+            ?: FlashNetworkTransport.Unknown,
         isTrusted = true,
         deviceKind = endpoint?.deviceKind ?: trusted.deviceKind,
         isColleague = isColleague,
         orgName = if (isColleague) orgName else null,
+        isAvailableNearby = isAvailableNearby,
+        isOnline = isOnline,
     )
 }
 

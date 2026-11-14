@@ -54,6 +54,48 @@ class FlashDetailPanesLogicTest {
     }
 
     @Test
+    fun `peer status and connection labels reflect live nearby vs offline state honestly`() {
+        assertEquals(
+            "Available nearby",
+            FlashDetailPaneCopy.peerStatusLabel(isAvailableNearby = true, isOnline = true),
+        )
+        assertEquals(
+            "Online",
+            FlashDetailPaneCopy.peerStatusLabel(isAvailableNearby = false, isOnline = true),
+        )
+        assertEquals(
+            "Offline · Not nearby",
+            FlashDetailPaneCopy.peerStatusLabel(isAvailableNearby = false, isOnline = false),
+        )
+
+        // Offline paired devices must report Not connected rather than claiming Wi-Fi/LAN.
+        assertEquals(
+            "Not connected",
+            FlashDetailPaneCopy.peerConnectionLabel(
+                transport = FlashNetworkTransport.Lan,
+                isAvailableNearby = false,
+                isOnline = false,
+            ),
+        )
+        assertEquals(
+            "Connected",
+            FlashDetailPaneCopy.peerConnectionLabel(
+                transport = FlashNetworkTransport.Unknown,
+                isAvailableNearby = false,
+                isOnline = true,
+            ),
+        )
+        assertEquals(
+            "Wi-Fi Direct",
+            FlashDetailPaneCopy.peerConnectionLabel(
+                transport = FlashNetworkTransport.WifiDirect,
+                isAvailableNearby = true,
+                isOnline = true,
+            ),
+        )
+    }
+
+    @Test
     fun `detail buttons meet WCAG AA contrast across light, dark, and dynamic accents`() {
         val themes = listOf(
             FlashColors.light(),
@@ -77,6 +119,16 @@ class FlashDetailPanesLogicTest {
             assertTrue(
                 contrastRatio(destructiveFg, effectiveDestructiveBg) >= 4.5f,
                 "Destructive detail button contrast below AA",
+            )
+            val (disabledBg, disabledFg) = FlashDetailPaneCopy.buttonColors(
+                colors,
+                isPrimary = false,
+                isDestructive = false,
+                enabled = false,
+            )
+            assertTrue(
+                contrastRatio(disabledFg, disabledBg) >= 4.5f,
+                "Disabled detail button contrast below AA",
             )
         }
     }
