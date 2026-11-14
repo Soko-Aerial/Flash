@@ -2,13 +2,18 @@ package com.transfer.flash.ui.shell
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.theme.FlashColors
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** JVM tests for UI-046 bottom-nav pure math helpers. */
@@ -117,6 +122,171 @@ class FlashBottomNavLogicTest {
                 contrastRatio(fg, bg) >= 4.5f,
                 "Bottom nav badge contrast below AA (bg=$bg, fg=$fg, ratio=${contrastRatio(fg, bg)})",
             )
+        }
+    }
+
+    @Test
+    fun `every bottom nav destination has a distinct signature icon motion style`() {
+        val navDestinations = listOf(
+            FlashDestination.ChatList,
+            FlashDestination.Transfers,
+            FlashDestination.Hub,
+            FlashDestination.NearbyDevices,
+            FlashDestination.Settings,
+        )
+        val styles = navDestinations.map { FlashBottomNavMath.iconMotionStyle(it) }
+        assertEquals(navDestinations.size, styles.toSet().size)
+        assertEquals(FlashNavIconMotionStyle.ChatPop, FlashBottomNavMath.iconMotionStyle(FlashDestination.ChatList))
+        assertEquals(FlashNavIconMotionStyle.TransferNudge, FlashBottomNavMath.iconMotionStyle(FlashDestination.Transfers))
+        assertEquals(FlashNavIconMotionStyle.HubElevate, FlashBottomNavMath.iconMotionStyle(FlashDestination.Hub))
+        assertEquals(FlashNavIconMotionStyle.NearbySonar, FlashBottomNavMath.iconMotionStyle(FlashDestination.NearbyDevices))
+        assertEquals(FlashNavIconMotionStyle.SettingsGear, FlashBottomNavMath.iconMotionStyle(FlashDestination.Settings))
+    }
+
+    @Test
+    fun `settings gear turns cumulatively by 90 degrees per click and preserves resting angle`() {
+        assertEquals(0f, FlashBottomNavMath.settingsGearAngleDeg(-1), 0.001f)
+        assertEquals(0f, FlashBottomNavMath.settingsGearAngleDeg(0), 0.001f)
+        assertEquals(90f, FlashBottomNavMath.settingsGearAngleDeg(1), 0.001f)
+        assertEquals(180f, FlashBottomNavMath.settingsGearAngleDeg(2), 0.001f)
+        assertEquals(360f, FlashBottomNavMath.settingsGearAngleDeg(4), 0.001f)
+
+        val firstClick = FlashBottomNavMath.iconMotionSpec(
+            destination = FlashDestination.Settings,
+            settingsTurnCount = 1,
+        )
+        val secondClick = FlashBottomNavMath.iconMotionSpec(
+            destination = FlashDestination.Settings,
+            settingsTurnCount = 2,
+        )
+        assertTrue(firstClick.preserveRotationOnStart)
+        val firstStart = assertNotNull(firstClick.startSnap)
+        assertTrue(firstStart.scale < 1f)
+        assertNull(firstClick.peak)
+        assertEquals(90f, firstClick.settle.rotationDeg, 0.001f)
+        assertEquals(1f, firstClick.settle.scale, 0.001f)
+        assertEquals(
+            FlashBottomNavMath.SETTINGS_GEAR_STEP_DEG,
+            secondClick.settle.rotationDeg - firstClick.settle.rotationDeg,
+            0.001f,
+        )
+
+        val restingAfterThree = FlashBottomNavMath.iconRestingTransform(
+            destination = FlashDestination.Settings,
+            settingsTurnCount = 3,
+        )
+        assertEquals(270f, restingAfterThree.rotationDeg, 0.001f)
+        assertEquals(1f, restingAfterThree.scale, 0.001f)
+    }
+
+    @Test
+    fun `chats plays playful message pop and tilt settle on select and reselect`() {
+        val reselect = FlashBottomNavMath.iconMotionSpec(
+            destination = FlashDestination.ChatList,
+            hopDirection = 0,
+        )
+        val peak = assertNotNull(reselect.peak)
+        val counter = assertNotNull(reselect.counter)
+        assertTrue(peak.scale > 1f)
+        assertTrue(peak.offsetYDp < 0f)
+        assertNotEquals(0f, peak.rotationDeg)
+        // Counter-tilt swings opposite to peak before settling at rest.
+        assertTrue(peak.rotationDeg * counter.rotationDeg < 0f)
+        assertEquals(FlashNavIconTransform(), reselect.settle)
+
+        val hopLeftPeak = assertNotNull(FlashBottomNavMath.iconMotionSpec(FlashDestination.ChatList, hopDirection = -1).peak)
+        val hopRightPeak = assertNotNull(FlashBottomNavMath.iconMotionSpec(FlashDestination.ChatList, hopDirection = 1).peak)
+        assertTrue(hopLeftPeak.rotationDeg * hopRightPeak.rotationDeg < 0f)
+    }
+
+    @Test
+    fun `transfers plays bidirectional send-receive nudge and mirrors laterally in RTL`() {
+        val ltr = FlashBottomNavMath.iconMotionSpec(FlashDestination.Transfers, isRtl = false)
+        val ltrPeak = assertNotNull(ltr.peak)
+        val ltrCounter = assertNotNull(ltr.counter)
+        assertTrue(ltrPeak.scale > 1f)
+        assertTrue(ltrPeak.offsetXDp > 0f && ltrPeak.offsetYDp < 0f)
+        assertTrue(ltrCounter.offsetXDp < 0f && ltrCounter.offsetYDp > 0f)
+        assertEquals(FlashNavIconTransform(), ltr.settle)
+
+        val rtl = FlashBottomNavMath.iconMotionSpec(FlashDestination.Transfers, isRtl = true)
+        val rtlPeak = assertNotNull(rtl.peak)
+        val rtlCounter = assertNotNull(rtl.counter)
+        assertEquals(-ltrPeak.offsetXDp, rtlPeak.offsetXDp, 0.001f)
+        assertEquals(-ltrCounter.offsetXDp, rtlCounter.offsetXDp, 0.001f)
+        assertEquals(ltrPeak.offsetYDp, rtlPeak.offsetYDp, 0.001f)
+    }
+
+    @Test
+    fun `hub plays calm upward elevation settle without tilt`() {
+        val hub = FlashBottomNavMath.iconMotionSpec(FlashDestination.Hub)
+        val start = assertNotNull(hub.startSnap)
+        val peak = assertNotNull(hub.peak)
+        assertTrue(start.offsetYDp > 0f)
+        assertTrue(peak.offsetYDp < 0f)
+        assertTrue(peak.scale > 1f)
+        assertEquals(0f, start.rotationDeg, 0.001f)
+        assertEquals(0f, peak.rotationDeg, 0.001f)
+        assertEquals(0f, peak.offsetXDp, 0.001f)
+        assertNull(hub.counter)
+        assertEquals(FlashNavIconTransform(), hub.settle)
+    }
+
+    @Test
+    fun `nearby plays radar sonar micro-tilt oscillation and scale pulse`() {
+        val ltr = FlashBottomNavMath.iconMotionSpec(FlashDestination.NearbyDevices, isRtl = false)
+        val peak = assertNotNull(ltr.peak)
+        val counter = assertNotNull(ltr.counter)
+        assertTrue(peak.scale > 1f)
+        assertNotEquals(0f, peak.rotationDeg)
+        assertTrue(peak.rotationDeg * counter.rotationDeg < 0f)
+        assertEquals(FlashNavIconTransform(), ltr.settle)
+
+        val rtl = FlashBottomNavMath.iconMotionSpec(FlashDestination.NearbyDevices, isRtl = true)
+        val rtlPeak = assertNotNull(rtl.peak)
+        val rtlCounter = assertNotNull(rtl.counter)
+        assertEquals(-peak.rotationDeg, rtlPeak.rotationDeg, 0.001f)
+        assertEquals(-counter.rotationDeg, rtlCounter.rotationDeg, 0.001f)
+    }
+
+    @Test
+    fun `reduce motion collapses every destination click and resting transform to identity`() {
+        for (destination in FlashDestination.entries) {
+            val spec = FlashBottomNavMath.iconMotionSpec(
+                destination = destination,
+                hopDirection = 1,
+                isRtl = false,
+                settingsTurnCount = 5,
+                reduceMotion = true,
+            )
+            assertNull(spec.startSnap)
+            assertNull(spec.peak)
+            assertNull(spec.counter)
+            assertFalse(spec.preserveRotationOnStart)
+            assertEquals(FlashNavIconTransform(), spec.settle)
+
+            val rest = FlashBottomNavMath.iconRestingTransform(
+                destination = destination,
+                settingsTurnCount = 5,
+                reduceMotion = true,
+            )
+            assertEquals(FlashNavIconTransform(), rest)
+        }
+    }
+
+    @Test
+    fun `icon transforms stay within safe capsule bounds without clipping`() {
+        for (destination in FlashDestination.entries) {
+            val spec = FlashBottomNavMath.iconMotionSpec(destination, hopDirection = 1, settingsTurnCount = 1)
+            val keyframes = listOfNotNull(spec.startSnap, spec.peak, spec.counter, spec.settle)
+            keyframes.forEach { frame ->
+                assertTrue(frame.scale in 0.80f..1.15f, "$destination scale out of bounds: ${frame.scale}")
+                assertTrue(abs(frame.offsetXDp) <= 4f, "$destination offsetX out of bounds: ${frame.offsetXDp}")
+                assertTrue(abs(frame.offsetYDp) <= 4f, "$destination offsetY out of bounds: ${frame.offsetYDp}")
+            }
+            if (destination != FlashDestination.Settings) {
+                assertEquals(FlashNavIconTransform(), FlashBottomNavMath.iconRestingTransform(destination))
+            }
         }
     }
 

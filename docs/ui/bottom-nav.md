@@ -175,13 +175,13 @@ All through `FlashTheme.motion` (reduce-motion collapses everything to snap()):
 |---|---|---|
 | Indicator slide | selection change | `animateFloatAsState(selectedIndex, springSnappySpec())` — 0.85 damping / 600 stiffness; fractional value → `graphicsLayer.translationX` |
 | Travel squash/stretch | selection change | `travel` pulse 0→amplitude (`fastMillis`, Decelerate) →0 (`normalMillis`, Standard); `scaleX = 1 + travel·0.30`, `scaleY = 1/√scaleX` |
-| Icon pop | own selection | scale 0.82→1 via `Animatable` + snappy spring; interruptible |
+| Icon click/selection motion | selection change & re-select | Destination-specific `Animatable` transforms read strictly inside `graphicsLayer`: **Chats** (`ChatPop`: scale 0.86→1.12→0.97→1, tilt +4°→−7°→+2.5°→0°, y +1→−2.5→+0.5→0dp); **Transfers** (`TransferNudge`: send/receive opposing nudge +2.2/−2.5dp → −1.6/+1.5dp → 0, scale 0.90→1.08→0.97→1); **Hub** (`HubElevate`: upright y +1.5→−3→0dp, scale 0.90→1.07→1 on `springDefaultSpec()`); **Nearby** (`NearbySonar`: radar sweep −9°→+5°→0°, scale 0.88→1.10→1.02→1); **Settings** (`SettingsGear`: cumulative +90° turn per click + 0.88→1 scale pop on `springSnappySpec()`, preserving in-flight rotation on rapid clicks). Lateral nudges/tilts mirror in RTL. |
 | Tint/label-weight crossfade | selection change | `animateColorAsState(tweenFastSpec())`; weight via `animateIntAsState(tweenFastSpec())` |
 | Pulse ring | re-select | radius 12→28dp, alpha .35→0, `emphasisMillis` Decelerate; drawn in Canvas, no recomposition churn |
 | Badge appear/clear | count crosses 0 | `AnimatedVisibility(badgePopEnter(), badgePopExit())` — fade + scale from 0.5 on the snappy spring; the last non-zero count is retained so the exit has something to render |
 | Scroll to top | re-select | host `animateScrollToItem(0)` on that tab's hoisted `LazyListState` |
 | Bar show/hide | tab root ↔ pushed screen | `motion.shellBarEnter()` / `shellBarExit()` (slide down + fade); page content keeps a constant inset, so nothing relayouts while the bar travels |
-| Reduce motion | system flag | slide spec becomes `snap()`; travel pulse, icon pop and ring suppressed; enter/exit `None`; scroll-to-top jumps instead of animating |
+| Reduce motion | system flag | slide spec becomes `snap()`; travel pulse, per-icon click/re-select motion (and Settings gear angle) collapse to identity `FlashNavIconTransform()` and ring suppressed; enter/exit `None`; scroll-to-top jumps instead of animating |
 
 ## Gesture specification
 
@@ -248,6 +248,7 @@ surface1; labels/textSecondary audited in UI-035.
 - [x] JVM: `FlashBottomNavMath` — centering, clamping, invalid geometry, badge format
 - [x] JVM: fractional slide interpolation + spring-overshoot clamping
 - [x] JVM: stretch ceiling, squash area conservation, travel amplitude by jump distance
+- [x] JVM: `FlashNavIconMotionSpec` — distinct styles for all 5 tabs, cumulative +90° Settings gear rotation, RTL lateral/tilt mirroring, reduce-motion identity collapse, and safe capsule bounds
 - [x] JVM: `selectTab` reset semantics + `isTabRoot` (extends FlashNavigationLogicTest)
 - [ ] Compose preview: light, dark, RTL, large-font
 - [ ] Physical device: tap each tab — indicator slides to the tapped tab with visible squash/stretch,
