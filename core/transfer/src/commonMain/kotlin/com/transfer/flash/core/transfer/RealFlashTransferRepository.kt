@@ -1202,6 +1202,9 @@ public class RealFlashTransferRepository(
             return FlashResult.Success(Unit)
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
+        if (transfer?.direction == FlashTransferDirection.Receiving &&
+            !markReceiveCancelled(transferId.value, null)
+        ) return FlashResult.Success(Unit)
         receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId.value) }
         val job = registryLock.withLock { runningJobs.remove(transferId.value) }
         // Drop the pause intent BEFORE unpausing: a dispatcher registering concurrently must not
@@ -1219,8 +1222,10 @@ public class RealFlashTransferRepository(
             runCatching { FlashLog.w("TRANSFER", "cancelTransfer on unknown row id=${transferId.value}: torn down locally, peer not told") }
         }
         // errorMessage is cleared: a stale "paused by receiver" must not outlive the cancel (B-12).
-        updateTransferState(transferId.value) {
-            it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L, errorMessage = null)
+        if (transfer?.direction != FlashTransferDirection.Receiving) {
+            updateTransferState(transferId.value) {
+                it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L, errorMessage = null)
+            }
         }
         store?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
         forgetChunks(transferId.value, null)
@@ -1389,6 +1394,7 @@ public class RealFlashTransferRepository(
                     forgetChunks(transferId, endState)
                 }
                 FlashTransferDirection.Receiving -> {
+                    if (!markReceiveCancelled(transferId, "cancelled by sender")) return
                     // Host tears down sink + pipeline session on this event.
                     emitIncoming(transferId, ACTION_CANCEL)
                     // O23-04: Purge partial file and directory when sender cancels inbound transfer
@@ -1401,14 +1407,6 @@ public class RealFlashTransferRepository(
                         } catch (_: Exception) {
                             // Best effort cleanup
                         }
-                    }
-                    updateTransferState(transferId) {
-                        it.copy(
-                            state = FlashTransferState.Cancelled,
-                            speedBytesPerSec = 0L,
-                            etaSeconds = 0L,
-                            errorMessage = "cancelled by sender",
-                        )
                     }
                     forgetChunks(transferId, FlashTransferState.Cancelled)
                 }
@@ -1823,7 +1821,8 @@ public class RealFlashTransferRepository(
      * digest the sender offered (ADR-068, ERROR-098). The one completion path for every host.
      *
      * - [WholeFileCheck.MATCH]: completed and verified.
-     * - [WholeFileCheck.UNVERIFIABLE] (no digest on record, unreadable file): completed, flagged unverified, as before.
+     * - [WholeFileCheck.UNVERIFIABLE] (no usable digest on record): completed and flagged unverified.
+     * - [WholeFileCheck.ABANDONED]: this attempt was cancelled or replaced. The host sends no completion.
      * - [WholeFileCheck.MISMATCH]: the file is deleted, the confirmed-chunk set is forgotten (memory and store) and the
      *   transfer is **Failed**, never Completed: the transfer list labels every Completed transfer "Verified", so a
      *   failed check that still completed would have been invisible. The host must also drop its pipeline session
@@ -1838,51 +1837,105 @@ public class RealFlashTransferRepository(
         chunksVerified: Boolean = true,
         fileSystem: FileSystem = FileSystem.SYSTEM,
     ): WholeFileCheck {
-        val check = if (chunksVerified) {
-            WholeFileVerifier.check(localPath, expectedSha256Hex, fileSystem)
-        } else {
+        val attempt = incomingFinalizationLock.withLock {
+            val row = _internalTransfers.value.firstOrNull { it.id.value == transferId }
+            if (row == null || row.state == FlashTransferState.Cancelled) {
+                return@withLock null
+            }
+            if (row.state == FlashTransferState.Completed) {
+                return@withLock row
+            }
+            if (row.state == FlashTransferState.Verifying) return@withLock null
+            val verifying = row.copy(state = FlashTransferState.Verifying, speedBytesPerSec = 0L, etaSeconds = 0L)
+            updateTransferState(transferId) { verifying }
+            verifying
+        } ?: return WholeFileCheck.ABANDONED
+        if (attempt.state == FlashTransferState.Completed) {
+            return if (attempt.errorMessage == null) WholeFileCheck.MATCH else WholeFileCheck.UNVERIFIABLE
+        }
+
+        val check = try {
+            if (chunksVerified) {
+                WholeFileVerifier.check(localPath, expectedSha256Hex, fileSystem, failOnUnreadable = true)
+            } else {
+                WholeFileCheck.MISMATCH
+            }
+        } catch (failure: Exception) {
+            if (failure is kotlinx.coroutines.CancellationException) throw failure
+            FlashLog.e("TRANSFER", "Integrity check failed for transferId=$transferId", failure)
             WholeFileCheck.MISMATCH
         }
-        when (check) {
-            WholeFileCheck.MATCH, WholeFileCheck.UNVERIFIABLE -> {
-                val finalPath = when {
-                    localPath.isNullOrBlank() -> localPath
-                    placeReceivedFile != null -> {
-                        val name = _internalTransfers.value.firstOrNull { it.id.value == transferId }?.fileName
-                            ?: localPath.toPath().name
+
+        return incomingFinalizationLock.withLock {
+            val current = _internalTransfers.value.firstOrNull { it.id.value == transferId }
+            if (current !== attempt) {
+                // On Windows the Cancel path may have been unable to delete an open source.
+                if (current?.state == FlashTransferState.Cancelled && !localPath.isNullOrBlank()) {
+                    runCatching { fileSystem.delete(localPath.toPath()) }
+                }
+                return@withLock WholeFileCheck.ABANDONED
+            }
+            when (check) {
+                WholeFileCheck.MATCH, WholeFileCheck.UNVERIFIABLE -> {
+                    val finalPath = when {
+                        localPath.isNullOrBlank() -> localPath
+                        placeReceivedFile != null -> {
+                            val name = _internalTransfers.value.firstOrNull { it.id.value == transferId }?.fileName
+                                ?: localPath.toPath().name
+                            try {
+                                placeReceivedFile.invoke(localPath, name)
+                            } catch (_: okio.IOException) {
+                                FlashLog.w("TRANSFER", "Could not organize completed receive for transferId=$transferId")
+                                localPath
+                            }
+                        }
+                        localPath.endsWith(".part") -> {
+                            val target = localPath.removeSuffix(".part")
+                            try {
+                                fileSystem.atomicMove(localPath.toPath(), target.toPath())
+                                target
+                            } catch (_: okio.IOException) {
+                                localPath
+                            }
+                        }
+                        else -> localPath
+                    }
+                    onIncomingCompleted(transferId, verified = check == WholeFileCheck.MATCH, localPath = finalPath)
+                }
+                WholeFileCheck.ABANDONED -> Unit
+                WholeFileCheck.MISMATCH -> {
+                    if (!localPath.isNullOrBlank()) {
                         try {
-                            placeReceivedFile.invoke(localPath, name)
+                            fileSystem.delete(localPath.toPath())
                         } catch (_: okio.IOException) {
-                            FlashLog.w("TRANSFER", "Could not organize completed receive for transferId=$transferId")
-                            localPath
+                            // Best effort: the transfer is failed either way and a retry rewrites the file.
                         }
                     }
-                    localPath.endsWith(".part") -> {
-                        val target = localPath.removeSuffix(".part")
-                        try {
-                            fileSystem.atomicMove(localPath.toPath(), target.toPath())
-                            target
-                        } catch (_: okio.IOException) {
-                            localPath
-                        }
-                    }
-                    else -> localPath
+                    onIncomingIntegrityFailed(transferId)
                 }
-                onIncomingCompleted(transferId, verified = check == WholeFileCheck.MATCH, localPath = finalPath)
             }
-            WholeFileCheck.MISMATCH -> {
-                if (!localPath.isNullOrBlank()) {
-                    try {
-                        fileSystem.delete(localPath.toPath())
-                    } catch (_: okio.IOException) {
-                        // Best effort: the transfer is failed either way and a retry rewrites the file.
-                    }
-                }
-                onIncomingIntegrityFailed(transferId)
-            }
+            check
         }
-        return check
     }
+
+    private val incomingFinalizationLock = PlatformLock()
+
+    private fun markReceiveCancelled(transferId: String, reason: String?): Boolean =
+        incomingFinalizationLock.withLock {
+            val row = _internalTransfers.value.firstOrNull { it.id.value == transferId }
+            if (row == null || row.state == FlashTransferState.Completed || row.state == FlashTransferState.Cancelled) {
+                return@withLock false
+            }
+            updateTransferState(transferId) {
+                it.copy(
+                    state = FlashTransferState.Cancelled,
+                    speedBytesPerSec = 0L,
+                    etaSeconds = 0L,
+                    errorMessage = reason,
+                )
+            }
+            true
+        }
 
     private fun onIncomingIntegrityFailed(transferId: String) {
         receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }

@@ -15,6 +15,9 @@ public enum class WholeFileCheck {
 
     /** No path, no (valid) offered digest, or the file could not be read: nothing can be said either way. */
     UNVERIFIABLE,
+
+    /** The receive attempt ended before its verification could be committed. */
+    ABANDONED,
 }
 
 /**
@@ -36,10 +39,13 @@ public object WholeFileVerifier {
         path: String?,
         expectedSha256Hex: String?,
         fileSystem: FileSystem = FileSystem.SYSTEM,
+        failOnUnreadable: Boolean = false,
     ): WholeFileCheck {
-        if (path.isNullOrBlank() || expectedSha256Hex.isNullOrBlank() || !Sha256.isValidHex(expectedSha256Hex)) {
+        if (expectedSha256Hex.isNullOrBlank() || !Sha256.isValidHex(expectedSha256Hex)) {
             return WholeFileCheck.UNVERIFIABLE
         }
+        val unreadable = if (failOnUnreadable) WholeFileCheck.MISMATCH else WholeFileCheck.UNVERIFIABLE
+        if (path.isNullOrBlank()) return unreadable
         val actual = try {
             val accumulator = IncrementalSha256()
             val source = fileSystem.source(path.toPath()).buffer()
@@ -56,7 +62,7 @@ public object WholeFileVerifier {
             }
             accumulator.digestHex()
         } catch (_: IOException) {
-            return WholeFileCheck.UNVERIFIABLE
+            return unreadable
         }
         return if (Sha256.hexEqualsConstantTime(actual, Sha256.normalizeHex(expectedSha256Hex))) {
             WholeFileCheck.MATCH

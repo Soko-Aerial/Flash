@@ -10,6 +10,7 @@ import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.chunked.WholeFileCheck
 import com.transfer.flash.core.transfer.chunked.WholeFileVerifier
 import com.transfer.flash.core.transfer.model.FlashTransfer
+import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
@@ -23,6 +24,9 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import okio.Buffer
+import okio.FileSystem
+import okio.ForwardingFileSystem
+import okio.Path
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -235,6 +239,73 @@ class IncomingIntegrityTest {
         assertEquals(FlashTransferState.Completed, row.state)
         assertEquals("completed without whole-file verification", row.errorMessage)
         assertTrue(file.exists())
+    }
+
+    @Test
+    fun `assembled inbound transfer transitions to Verifying before whole file verifier runs`() {
+        val file = fileWith(payload)
+        val repository = repo()
+        repository.startInbound("tx-verifying", file.path)
+
+        var observedVerifyingState = false
+        val inspectingFs = object : ForwardingFileSystem(FileSystem.SYSTEM) {
+            override fun onPathParameter(path: Path, functionName: String, parameterName: String): Path = path
+            override fun source(file: Path): okio.Source {
+                if (repository.row("tx-verifying").state == FlashTransferState.Verifying) {
+                    observedVerifyingState = true
+                }
+                return super.source(file)
+            }
+        }
+
+        val check = repository.onIncomingFileAssembled("tx-verifying", file.path, payloadHex, fileSystem = inspectingFs)
+        assertEquals(WholeFileCheck.MATCH, check)
+        assertTrue("Expected transfer state to be Verifying while verifier is checking file", observedVerifyingState)
+        assertEquals(FlashTransferState.Completed, repository.row("tx-verifying").state)
+    }
+
+    @Test
+    fun `read failure with a promised digest fails and removes the partial file`() {
+        val file = fileWith(payload)
+        val repository = repo()
+        repository.startInbound("tx-corrupt", file.path)
+
+        val failingFs = object : ForwardingFileSystem(FileSystem.SYSTEM) {
+            override fun onPathParameter(path: Path, functionName: String, parameterName: String): Path = path
+            override fun source(file: Path): okio.Source {
+                throw okio.IOException("Flash storage read failed")
+            }
+        }
+
+        val check = repository.onIncomingFileAssembled("tx-corrupt", file.path, payloadHex, fileSystem = failingFs)
+        assertEquals(WholeFileCheck.MISMATCH, check)
+        val row = repository.row("tx-corrupt")
+        assertEquals(FlashTransferState.Failed, row.state)
+        assertFalse(file.exists())
+        assertEquals(0L, row.bytesDone)
+        assertEquals(null, row.localPath)
+    }
+
+    @Test
+    fun `cancel during verification abandons completion and retains the cancelled row`() {
+        val file = fileWith(payload)
+        val repository = repo()
+        repository.startInbound("tx-cancel-verifying", file.path)
+        val cancellingFs = object : ForwardingFileSystem(FileSystem.SYSTEM) {
+            override fun source(file: Path): okio.Source {
+                val source = super.source(file)
+                kotlinx.coroutines.runBlocking {
+                    repository.cancelTransfer(FlashTransferId("tx-cancel-verifying"))
+                }
+                return source
+            }
+        }
+
+        val result = repository.onIncomingFileAssembled(
+            "tx-cancel-verifying", file.path, payloadHex, fileSystem = cancellingFs,
+        )
+        assertEquals(WholeFileCheck.ABANDONED, result)
+        assertEquals(FlashTransferState.Cancelled, repository.row("tx-cancel-verifying").state)
     }
 
     // ---------------------------------------------------------------- the sending repository
