@@ -121,32 +121,44 @@ fun FlashChatListRow(
     }
 
     // OPT-O04-05: Bypass SwipeToDismissBoxState on Desktop or when in selectionMode to eliminate per-row gesture state allocations
-    if (enableSwipe && !selectionMode) {
-        val currentItemId by rememberUpdatedState(item.id)
-        val currentOnArchive by rememberUpdatedState(onArchive)
-        val dismissState = rememberSwipeToDismissBoxState(
-            confirmValueChange = { value ->
-                if (value == SwipeToDismissBoxValue.EndToStart) {
-                    currentOnArchive(currentItemId)
-                }
-                false
-            },
-        )
-        val pressInset = remember(pressScale) { derivedStateOf { pressScale.value < 1f } }
+    Box(modifier = modifier.then(rightClickModifier)) {
+        if (enableSwipe && !selectionMode) {
+            val currentItemId by rememberUpdatedState(item.id)
+            val currentOnArchive by rememberUpdatedState(onArchive)
+            val dismissState = rememberSwipeToDismissBoxState(
+                confirmValueChange = { value ->
+                    if (value == SwipeToDismissBoxValue.EndToStart) {
+                        currentOnArchive(currentItemId)
+                    }
+                    false
+                },
+            )
+            val pressInset = remember(pressScale) { derivedStateOf { pressScale.value < 1f } }
 
-        SwipeToDismissBox(
-            state = dismissState,
-            enableDismissFromStartToEnd = false,
-            enableDismissFromEndToStart = true,
-            backgroundContent = {
-                FlashChatListSwipeBackground(
-                    dismissValue = dismissState.dismissDirection,
-                    showRestingFill = pressInset.value,
-                    actionLabel = swipeActionLabel,
+            SwipeToDismissBox(
+                state = dismissState,
+                enableDismissFromStartToEnd = false,
+                enableDismissFromEndToStart = true,
+                backgroundContent = {
+                    FlashChatListSwipeBackground(
+                        dismissValue = dismissState.dismissDirection,
+                        showRestingFill = pressInset.value,
+                        actionLabel = swipeActionLabel,
+                    )
+                },
+            ) {
+                FlashChatListRowContent(
+                    item = item,
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                    isSelected = isSelected,
+                    selectionMode = selectionMode,
+                    showDivider = showDivider,
+                    interactionSource = interactionSource,
+                    pressScale = pressScale,
                 )
-            },
-            modifier = modifier.then(rightClickModifier),
-        ) {
+            }
+        } else {
             FlashChatListRowContent(
                 item = item,
                 onClick = onClick,
@@ -158,36 +170,25 @@ fun FlashChatListRow(
                 pressScale = pressScale,
             )
         }
-    } else {
-        Box(modifier = modifier.then(rightClickModifier)) {
-            FlashChatListRowContent(
-                item = item,
-                onClick = onClick,
-                onLongClick = onLongClick,
-                isSelected = isSelected,
-                selectionMode = selectionMode,
-                showDivider = showDivider,
-                interactionSource = interactionSource,
-                pressScale = pressScale,
-            )
-            if (enableRightClickMenu && !selectionMode) {
-                val menuShape = RoundedCornerShape(FlashShapes.radius16)
-                DropdownMenu(
-                    expanded = contextMenuExpanded,
-                    onDismissRequest = { contextMenuExpanded = false },
-                    offset = DpOffset(x = FlashSpacing.space16, y = 0.dp),
-                    shape = menuShape,
-                    containerColor = colors.backgroundSurface,
-                    border = BorderStroke(FlashDimensions.borderHairline, colors.borderSubtle),
-                ) {
-                    if (onPinToggle != null) {
-                        DropdownMenuItem(
-                            text = {
-                                FlashText(
-                                    text = if (item.isPinned) "Unpin" else "Pin",
-                                    style = typography.bodyDefault,
-                                    color = colors.textPrimary,
-                                )
+
+        if (enableRightClickMenu && !selectionMode) {
+            val menuShape = RoundedCornerShape(FlashShapes.radius16)
+            DropdownMenu(
+                expanded = contextMenuExpanded,
+                onDismissRequest = { contextMenuExpanded = false },
+                offset = DpOffset(x = FlashSpacing.space16, y = 0.dp),
+                shape = menuShape,
+                containerColor = colors.backgroundSurface,
+                border = BorderStroke(FlashDimensions.borderHairline, colors.borderSubtle),
+            ) {
+                if (onPinToggle != null) {
+                    DropdownMenuItem(
+                        text = {
+                            FlashText(
+                                text = if (item.isPinned) "Unpin" else "Pin",
+                                style = typography.bodyDefault,
+                                color = colors.textPrimary,
+                            )
                             },
                             leadingIcon = {
                                 FlashIcon(
@@ -323,7 +324,6 @@ fun FlashChatListRow(
             }
         }
     }
-}
 
 @Composable
 private fun FlashChatListSwipeBackground(
@@ -521,7 +521,9 @@ private fun FlashChatListRowContent(
         if (showDivider) {
             HorizontalDivider(
                 modifier = Modifier.padding(
-                    start = FlashDimensions.avatarLg + FlashSpacing.space16 + FlashSpacing.space12,
+                    start = (if (selectionMode) FlashSpacing.space8 + 22.dp + FlashSpacing.space8 else FlashSpacing.space16) +
+                        FlashDimensions.avatarLg +
+                        FlashSpacing.space12,
                 ),
                 color = colors.borderSubtle,
                 thickness = FlashDimensions.borderHairline,

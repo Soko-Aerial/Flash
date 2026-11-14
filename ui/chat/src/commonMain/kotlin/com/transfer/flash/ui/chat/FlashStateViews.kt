@@ -305,9 +305,12 @@ fun FlashSkeletonChatList(
             ) {
                 FlashSkeletonCircle(size = 48.dp, alpha = alpha)
                 Spacer(modifier = Modifier.width(FlashSpacing.space12))
-                Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                    FlashSkeletonBar(width = 140.dp, height = 14.dp, alpha = alpha)
-                    FlashSkeletonBar(width = 220.dp, height = 12.dp, alpha = alpha)
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                ) {
+                    FlashSkeletonBar(height = 14.dp, alpha = alpha, modifier = Modifier.fillMaxWidth(0.45f))
+                    FlashSkeletonBar(height = 12.dp, alpha = alpha, modifier = Modifier.fillMaxWidth(0.75f))
                 }
             }
         }
@@ -391,13 +394,19 @@ private fun FlashSkeletonCircle(size: androidx.compose.ui.unit.Dp, alpha: State<
 
 @Composable
 private fun FlashSkeletonBar(
-    width: androidx.compose.ui.unit.Dp,
+    width: androidx.compose.ui.unit.Dp = androidx.compose.ui.unit.Dp.Unspecified,
     height: androidx.compose.ui.unit.Dp,
     alpha: State<Float>,
+    modifier: Modifier = Modifier,
 ) {
+    val sizedModifier = if (width != androidx.compose.ui.unit.Dp.Unspecified) {
+        modifier.width(width)
+    } else {
+        modifier
+    }
     Box(
-        modifier = Modifier
-            .size(width = width, height = height)
+        modifier = sizedModifier
+            .height(height)
             .graphicsLayerAlpha(alpha)
             .clip(FlashShapes.chip)
             .background(FlashTheme.colors.backgroundSurfaceSubtle)

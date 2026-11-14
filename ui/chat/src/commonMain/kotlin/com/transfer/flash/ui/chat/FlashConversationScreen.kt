@@ -1080,10 +1080,18 @@ fun FlashConversationScreen(
                                 text = text,
                                 isMine = true,
                                 replyTo = quoted?.let { q ->
+                                    val fallbackText = q.text.ifBlank {
+                                        when {
+                                            q.voiceAttachments.isNotEmpty() -> "Voice message"
+                                            q.images.isNotEmpty() -> "Photo"
+                                            q.fileAttachments.isNotEmpty() -> q.fileAttachments.first().name.ifBlank { "File" }
+                                            else -> "Attachment"
+                                        }
+                                    }
                                     com.transfer.flash.core.messaging.model.FlashQuotedReplyUi(
                                         messageId = q.id,
                                         senderName = q.senderName,
-                                        textSnippet = FlashPinnedMessageMath.previewSnippet(q.text, maxChars = 120),
+                                        textSnippet = FlashPinnedMessageMath.previewSnippet(fallbackText, maxChars = 120),
                                     )
                                 },
                                 deliveryStatus = com.transfer.flash.core.messaging.model.FlashMessageStatus.Pending,
@@ -1098,8 +1106,16 @@ fun FlashConversationScreen(
                             )
 
                             if (quoted != null) {
+                                val fallbackText = quoted.text.ifBlank {
+                                    when {
+                                        quoted.voiceAttachments.isNotEmpty() -> "Voice message"
+                                        quoted.images.isNotEmpty() -> "Photo"
+                                        quoted.fileAttachments.isNotEmpty() -> quoted.fileAttachments.first().name.ifBlank { "File" }
+                                        else -> "Attachment"
+                                    }
+                                }
                                 // #8: carry the quoted id + a trimmed preview so the peer renders the quote.
-                                onSendReply(text, quoted.id, FlashPinnedMessageMath.previewSnippet(quoted.text, maxChars = 120))
+                                onSendReply(text, quoted.id, FlashPinnedMessageMath.previewSnippet(fallbackText, maxChars = 120))
                             } else {
                                 onSendText(text)
                             }
@@ -1162,10 +1178,8 @@ fun FlashConversationScreen(
                     releaseVoiceRecordingLease()
                 },
                 voiceAmplitudeProvider = { voiceRecorder.maxAmplitude() },
-                onVoiceTapTooShort = {
-                    showMessage(if (isDesktopChatPlatform) "Recording too short" else "Hold to record")
-                },
-                onVoiceRecordingTooShort = { showMessage("Recording too short") },
+                onVoiceTapTooShort = {},
+                onVoiceRecordingTooShort = {},
             )
             }
         },

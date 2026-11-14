@@ -203,7 +203,7 @@ public fun FlashBrowseOrgGroupsSheet(
                 if (searchQuery.isNotEmpty()) {
                     Box(
                         modifier = Modifier
-                            .size(28.dp)
+                            .size(36.dp)
                             .clip(CircleShape)
                             .clickable { searchQuery = "" }
                             .semantics { role = Role.Button; contentDescription = "Clear search" },

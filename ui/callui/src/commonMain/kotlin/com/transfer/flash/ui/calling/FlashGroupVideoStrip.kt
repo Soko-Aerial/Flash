@@ -147,7 +147,11 @@ private fun FlashGroupVideoChip(
             }
         }
         Spacer(Modifier.height(FlashSpacing.space4))
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.padding(horizontal = FlashSpacing.space4),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
+        ) {
             if (pinned) {
                 FlashIcon(icon = FlashIcons.Pin, contentDescription = null, tint = Color.White, size = BADGE_ICON)
             }

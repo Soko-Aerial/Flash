@@ -347,13 +347,13 @@ fun FlashShareTargetSheet(
 
             // Search Bar
             Surface(
-                modifier = Modifier.fillMaxWidth().height(42.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp),
                 shape = RoundedCornerShape(FlashShapes.radius12),
                 color = colors.backgroundSurfaceSubtle,
                 border = BorderStroke(1.dp, colors.borderSubtle),
             ) {
                 Row(
-                    modifier = Modifier.fillMaxSize().padding(horizontal = FlashSpacing.space12),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                 ) {
@@ -383,7 +383,7 @@ fun FlashShareTargetSheet(
                     if (searchQuery.isNotEmpty()) {
                         Box(
                             modifier = Modifier
-                                .size(24.dp)
+                                .size(36.dp)
                                 .clip(CircleShape)
                                 .clickable { searchQuery = "" },
                             contentAlignment = Alignment.Center,

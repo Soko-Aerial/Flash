@@ -456,7 +456,7 @@ internal fun FlashParticipantVideo.hasPicture(): Boolean =
     this == FlashParticipantVideo.RECEIVING || this == FlashParticipantVideo.UNMANAGED
 
 @Composable
-private fun rememberRemoteVideoTracks(
+internal fun rememberRemoteVideoTracks(
     flow: StateFlow<Map<String, VideoStreamTrack>>?,
 ): Map<String, VideoStreamTrack> {
     val source = remember(flow) { flow ?: MutableStateFlow(emptyMap()) }

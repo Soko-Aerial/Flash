@@ -141,7 +141,7 @@ internal fun FlashHubFilterChip(label: String, selected: Boolean, onClick: () ->
             .background(bg)
             .border(FlashDimensions.borderHairline, if (selected) colors.accentFill else colors.borderSubtle, HubShapes.control)
             .hubClickable(role = Role.RadioButton, onClick = onClick)
-            .padding(horizontal = FlashSpacing.space12)
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4)
             .semantics { semanticsSelected = selected },
         contentAlignment = Alignment.Center,
     ) {

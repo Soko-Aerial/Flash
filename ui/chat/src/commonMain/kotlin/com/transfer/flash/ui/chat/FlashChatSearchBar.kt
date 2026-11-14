@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -230,18 +231,26 @@ fun FlashChatSearchBar(
                 if (query.isNotEmpty()) {
                     Box(
                         modifier = Modifier
-                            .size(28.dp)
+                            .size(36.dp)
                             .clip(CircleShape)
                             .clickable { onQueryChanged("") }
                             .semantics { role = Role.Button; contentDescription = "Clear search" },
                         contentAlignment = Alignment.Center,
                     ) {
-                        FlashIcon(
-                            icon = FlashIcons.Close,
-                            contentDescription = null,
-                            size = FlashDimensions.iconSm,
-                            tint = colors.textSecondary,
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(colors.backgroundSurfaceStrong),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashIcon(
+                                icon = FlashIcons.Close,
+                                contentDescription = null,
+                                size = FlashDimensions.iconSm,
+                                tint = colors.textSecondary,
+                            )
+                        }
                     }
                 }
             }
@@ -326,6 +335,10 @@ fun FlashChatSearchBar(
                 )
             }
         }
+        HorizontalDivider(
+            thickness = FlashDimensions.borderHairline,
+            color = colors.borderSubtle,
+        )
     }
 }
 

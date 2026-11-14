@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -378,6 +379,15 @@ private fun FlashCallPictureInPicture(state: FlashCallUiState, session: FlashCal
         if (isVideoActive && !state.isGroup && !state.dataSaver && !state.peerCameraOff) {
             val remoteTrack = rememberVideoStreamTrack(session?.remoteVideoStreamTrack)
             FlashCallVideoSurface(track = remoteTrack, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+        } else if (isVideoActive && state.isGroup && !state.dataSaver) {
+            val remoteTracks = rememberRemoteVideoTracks(session?.remoteVideoTracks)
+            val mainPeerId = groupVideoMainPeer(state)
+            val mainTrack = mainPeerId?.let { remoteTracks[it] }
+            if (mainTrack != null) {
+                FlashCallVideoSurface(track = mainTrack, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+            } else {
+                FlashAvatar(initials = state.peerName.take(2), seed = state.peerId, size = 64.dp)
+            }
         } else {
             FlashAvatar(initials = state.peerName.take(2), seed = state.peerId, size = 64.dp)
         }
@@ -537,6 +547,7 @@ private fun FlashGroupParticipantsGrid(
             ) {
                 rowParticipants.forEach { participant ->
                     Column(
+                        modifier = Modifier.width(88.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -738,7 +749,7 @@ private fun FlashCallVideoSurfaces(
 private fun FlashRemoteVideoPlaceholder(state: FlashCallUiState, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
     Column(
-        modifier = modifier.background(colors.backgroundApp),
+        modifier = modifier.background(colors.mediaViewerBackdrop),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -747,7 +758,7 @@ private fun FlashRemoteVideoPlaceholder(state: FlashCallUiState, modifier: Modif
         FlashText(
             text = if (state.dataSaver) "Video paused" else "${state.peerName}'s camera is off",
             style = FlashTheme.typography.bodyDefault,
-            color = colors.textSecondary,
+            color = colors.mediaViewerChromeText.copy(alpha = 0.8f),
         )
     }
 }
@@ -850,14 +861,24 @@ private fun FlashCallControls(
         }
         FlashCallState.ENDED -> {
             Row {
-                FlashCallControlButton(
-                    icon = FlashIcons.Close,
-                    background = FlashTheme.colors.backgroundSurfaceStrong,
-                    contentColor = FlashTheme.colors.textPrimary,
-                    onClick = onDismiss,
-                    size = 56.dp,
-                    iconSize = 26.dp,
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    FlashCallControlButton(
+                        icon = FlashIcons.Close,
+                        background = FlashTheme.colors.backgroundSurfaceStrong,
+                        contentColor = FlashTheme.colors.textPrimary,
+                        onClick = onDismiss,
+                        size = 56.dp,
+                        iconSize = 26.dp,
+                    )
+                    Spacer(Modifier.height(FlashSpacing.space8))
+                    FlashText(
+                        text = "Close",
+                        style = FlashTheme.typography.captionDefault,
+                        color = FlashTheme.colors.textSecondary,
+                    )
+                }
             }
         }
     }

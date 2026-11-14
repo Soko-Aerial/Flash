@@ -379,7 +379,7 @@ fun FlashVoiceMessageCard(
 
     Row(
         modifier = modifier
-            .defaultMinSize(minWidth = 220.dp)
+            .defaultMinSize(minWidth = 180.dp)
             .graphicsLayer {
                 scaleX = cardScale
                 scaleY = cardScale
@@ -405,10 +405,8 @@ fun FlashVoiceMessageCard(
                 stateDescription = a11yState
             }
             .padding(
-                start = FlashSpacing.space12,
-                end = FlashSpacing.space12,
-                top = FlashSpacing.space8,
-                bottom = FlashSpacing.space4,
+                horizontal = FlashSpacing.space4,
+                vertical = FlashSpacing.space4,
             ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -496,10 +494,10 @@ private fun FlashVoiceBadge(
         FlashFileTransferStatus.Downloaded -> colors.accentFill to colors.onAccentFill
         FlashFileTransferStatus.Transferring,
         FlashFileTransferStatus.Paused,
-        FlashFileTransferStatus.AwaitingAcceptance -> Color(0xFF475569) to Color.White
+        FlashFileTransferStatus.AwaitingAcceptance,
         FlashFileTransferStatus.NotDownloaded,
-        FlashFileTransferStatus.Cancelled -> Color(0xFF5A6472) to Color.White
-        FlashFileTransferStatus.Failed -> Color(0xFFC62828) to Color.White
+        FlashFileTransferStatus.Cancelled -> colors.backgroundSurfaceStrong to colors.textPrimary
+        FlashFileTransferStatus.Failed -> colors.textError to colors.onAccentFill
     }
 
     val (icon, description) = when (transferStatus) {

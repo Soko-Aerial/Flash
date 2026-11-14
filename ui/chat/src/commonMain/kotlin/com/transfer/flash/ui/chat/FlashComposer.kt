@@ -161,7 +161,7 @@ fun FlashComposer(
 
     LaunchedEffect(showShortTapHint) {
         if (showShortTapHint) {
-            kotlinx.coroutines.delay(2_000L)
+            kotlinx.coroutines.delay(1_400L)
             showShortTapHint = false
         }
     }
@@ -309,11 +309,19 @@ fun FlashComposer(
                             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                         ) {
                             // Tactile Flash Attachment Button (UI-012)
-                            FlashAttachmentButton(
-                                onClick = onAttachmentClick,
-                                isExpanded = isAttachmentExpanded,
-                                enabled = enabled,
-                            )
+                            Box(
+                                modifier = Modifier.defaultMinSize(
+                                    minWidth = FlashDimensions.minTouchTarget,
+                                    minHeight = FlashDimensions.minTouchTarget,
+                                ),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                FlashAttachmentButton(
+                                    onClick = onAttachmentClick,
+                                    isExpanded = isAttachmentExpanded,
+                                    enabled = enabled,
+                                )
+                            }
 
                             // Expanding Input Pill
                             Box(
@@ -520,21 +528,23 @@ fun FlashComposer(
                         },
                     )
                 }
-                Box(
-                    modifier = Modifier.then(
-                        if (sendProgress <= 0.5f) Modifier.clearAndSetSemantics {} else Modifier,
-                    ),
-                ) {
-                    FlashSendButton(
-                        canSend = canSend,
-                        onClick = onSend,
-                        enabled = enabled,
-                        modifier = Modifier.graphicsLayer {
-                            alpha = sendProgress
-                            scaleX = 0.7f + 0.3f * sendProgress
-                            scaleY = 0.7f + 0.3f * sendProgress
-                        },
-                    )
+                if (sendProgress > 0.01f) {
+                    Box(
+                        modifier = Modifier.then(
+                            if (sendProgress <= 0.5f) Modifier.clearAndSetSemantics {} else Modifier,
+                        ),
+                    ) {
+                        FlashSendButton(
+                            canSend = canSend,
+                            onClick = onSend,
+                            enabled = enabled,
+                            modifier = Modifier.graphicsLayer {
+                                alpha = sendProgress
+                                scaleX = 0.7f + 0.3f * sendProgress
+                                scaleY = 0.7f + 0.3f * sendProgress
+                            },
+                        )
+                    }
                 }
                 if (voiceSendVisible) {
                     FlashVoiceTrailingSendButton(
@@ -684,7 +694,14 @@ fun FlashReplyDock(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = replyingTo.text.ifBlank { "Attachment" },
+                text = replyingTo.text.ifBlank {
+                    when {
+                        replyingTo.voiceAttachments.isNotEmpty() -> "Voice message"
+                        replyingTo.images.isNotEmpty() -> "Photo"
+                        replyingTo.fileAttachments.isNotEmpty() -> replyingTo.fileAttachments.first().name.ifBlank { "File" }
+                        else -> "Attachment"
+                    }
+                },
                 style = typography.metadataDefault,
                 color = colors.textSecondary,
                 maxLines = 1,

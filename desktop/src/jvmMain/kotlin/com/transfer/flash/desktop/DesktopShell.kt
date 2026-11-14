@@ -2983,7 +2983,18 @@ public fun DesktopShell(
                 .padding(bottom = tabBottomInset),
             contentAlignment = Alignment.BottomCenter,
         ) {
-            SnackbarHost(hostState = snackbarHostState)
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(FlashSpacing.space16),
+            ) { data ->
+                androidx.compose.material3.Snackbar(
+                    snackbarData = data,
+                    containerColor = FlashTheme.colors.backgroundSurfaceStrong,
+                    contentColor = FlashTheme.colors.textPrimary,
+                    actionColor = FlashTheme.colors.accentPrimary,
+                    shape = RoundedCornerShape(FlashShapes.radius12),
+                )
+            }
         }
     }
 }

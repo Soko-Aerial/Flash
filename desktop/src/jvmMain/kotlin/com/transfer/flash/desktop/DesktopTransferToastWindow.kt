@@ -17,9 +17,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +45,7 @@ import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import java.awt.GraphicsEnvironment
 import java.awt.MouseInfo
@@ -235,7 +235,7 @@ internal fun DesktopTransferToastWindow(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    Text(
+                                    FlashText(
                                         text = card.title,
                                         style = typography.headingSmall,
                                         color = colors.textPrimary,
@@ -250,7 +250,7 @@ internal fun DesktopTransferToastWindow(
                                                 .background(colors.backgroundSurfaceStrong, RoundedCornerShape(FlashShapes.radius4))
                                                 .padding(horizontal = 6.dp, vertical = 2.dp),
                                         ) {
-                                            Text(
+                                            FlashText(
                                                 text = if (card.isVideoCall) "VIDEO" else "VOICE",
                                                 style = typography.captionDefault,
                                                 color = colors.textSecondary,
@@ -258,7 +258,7 @@ internal fun DesktopTransferToastWindow(
                                         }
                                     }
                                 }
-                                Text(
+                                FlashText(
                                     text = card.detail,
                                     style = typography.bodyEmphasis,
                                     color = colors.textSecondary,
@@ -269,7 +269,7 @@ internal fun DesktopTransferToastWindow(
                                     .filter { it.isNotBlank() }
                                     .joinToString(" • ")
                                 if (metadataRow.isNotBlank()) {
-                                    Text(
+                                    FlashText(
                                         text = metadataRow,
                                         style = typography.captionDefault,
                                         color = colors.textTertiary,
@@ -352,7 +352,7 @@ internal fun DesktopTransferToastWindow(
                                         .padding(horizontal = 18.dp, vertical = 8.dp),
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    Text(
+                                    FlashText(
                                         text = action.label,
                                         style = typography.bodyEmphasis,
                                         color = contentColor,

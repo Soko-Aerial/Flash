@@ -269,22 +269,25 @@ fun FlashNavigationRail(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
                                 ) {
-                                    // Icon button container
-                                    Box(
-                                        modifier = Modifier
-                                            .width(44.dp)
-                                            .height(32.dp)
-                                            .clip(RoundedCornerShape(FlashShapes.radius12))
-                                            .background(containerBg),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        FlashIcon(
-                                            icon = tab.icon,
-                                            contentDescription = null,
-                                            tint = iconTint,
-                                            size = 20.dp,
-                                            modifier = Modifier.clearAndSetSemantics {},
-                                        )
+                                    // Unclipped outer box so the unread badge overhang isn't clipped by radius12.
+                                    Box(contentAlignment = Alignment.Center) {
+                                        // Icon button container
+                                        Box(
+                                            modifier = Modifier
+                                                .width(44.dp)
+                                                .height(32.dp)
+                                                .clip(RoundedCornerShape(FlashShapes.radius12))
+                                                .background(containerBg),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            FlashIcon(
+                                                icon = tab.icon,
+                                                contentDescription = null,
+                                                tint = iconTint,
+                                                size = 20.dp,
+                                                modifier = Modifier.clearAndSetSemantics {},
+                                            )
+                                        }
 
                                         // Unread Badge Pill
                                         if (tab.badgeCount > 0) {

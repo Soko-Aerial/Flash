@@ -53,7 +53,7 @@ internal fun quotedReplyPalette(
     isParentOutgoing: Boolean,
 ): QuotedReplyPalette = if (isParentOutgoing) {
     QuotedReplyPalette(
-        cardBg = colors.chatTextOutgoing.copy(alpha = 0.08f),
+        cardBg = colors.chatTextOutgoing.copy(alpha = 0.10f),
         barColor = colors.chatTextOutgoing.copy(alpha = 0.65f),
         senderColor = colors.chatTextOutgoing,
         snippetColor = colors.chatTextTimestampOutgoing,

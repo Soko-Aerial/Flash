@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,7 +77,10 @@ internal fun FlashApprovalsDialog(
         containerColor = colors.backgroundSurface,
         title = { FlashText(text = "Approve admin requests", style = FlashTheme.typography.headingMedium, color = colors.textPrimary) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+            ) {
                 FlashText(
                     text = "Only approve a request you started yourself, and only when the six digits are the same as on the admin console.",
                     style = FlashTheme.typography.bodyDefault,
