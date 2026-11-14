@@ -9,7 +9,7 @@ import com.transfer.flash.core.security.group.GroupInviteCodec
  */
 public object FlashGroupInviteJoinMath {
 
-    private val INVITE_URI_REGEX = Regex("""flash://g/1/[A-Za-z0-9_-]+""")
+    private val INVITE_URI_REGEX = Regex("""(?:flash://g/1/|https://[A-Za-z0-9.-]+/invite/group#)[A-Za-z0-9_-]+""")
 
     /** Safely decodes an invite link into a [GroupInvite], or null if malformed or untrusted. */
     public fun parseInviteUrl(raw: String): GroupInvite? =

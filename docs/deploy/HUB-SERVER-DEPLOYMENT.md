@@ -204,6 +204,7 @@ tried to set. Every setting can be given as `--kebab-case` on the command line o
 | `FLASH_DATA_DIR` | `--data-dir` | `./data` | State directory (database, keys, delegation, setup token) |
 | `FLASH_TLS_MODE` | `--tls-mode` | `proxy` | `proxy` (TLS ends in front of the hub), `self` (the hub terminates TLS), `none` (plain HTTP, development only, needs `FLASH_ALLOW_INSECURE`) |
 | `FLASH_TRUSTED_PROXIES` | `--trusted-proxies` | empty | Comma-separated addresses/CIDRs of the proxies whose `X-Forwarded-Proto`/`For` headers are believed. **Required in practice for `tlsMode=proxy`** (see REV-10 below) |
+| `FLASH_INVITE_ANDROID_FINGERPRINTS` | `--invite-android-fingerprints` | unset | Comma-separated public APK signing certificate fingerprints for verified App Links on this Hub's hostname. See [Invite links](INVITE-LINKS.md) |
 | `FLASH_EXTERNAL_URL` | `--external-url` | guessed from host/port, else the detected LAN IPv4 | The public `https://` address devices enrol against. It is baked into invite links and QR codes |
 | `FLASH_ALLOW_INSECURE` | `--allow-insecure` | `false` | Permits `tlsMode=none`, an `http://` external URL and `--dev-embedded-root`. Development only |
 | `FLASH_DEV_EMBEDDED_ROOT` | `--dev-embedded-root` | `false` | **Development only**: the hub mints its own root key and delegation. Needs `FLASH_ALLOW_INSECURE` |

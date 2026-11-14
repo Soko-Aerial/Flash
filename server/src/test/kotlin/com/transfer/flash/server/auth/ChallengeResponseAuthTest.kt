@@ -262,12 +262,12 @@ class ChallengeResponseAuthTest {
             maxUses = 1,
         )
         val link = service.generateInviteLink("https://flash.mod.gov.gh", scope, now)
-        assertTrue(link.startsWith("flash://enroll?server="), "Link must use flash://enroll scheme")
-        assertTrue(link.contains("token="), "Link must contain token")
+        assertTrue(link.startsWith("https://") && link.contains("/invite/enroll#"), "Link must use the issuing Hub's HTTPS URL")
+        assertEquals("https://flash.mod.gov.gh/invite/enroll", link.substringBefore('#'))
         val expectedRootFp = FlashCrypto.sha256FingerprintHex(rootPublicKey)
-        assertTrue(link.contains("root=$expectedRootFp"), "Link must contain root fingerprint")
-
-        val token = link.substringAfter("token=").substringBefore("&")
+        val parsedInvite = checkNotNull(com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link))
+        assertEquals(expectedRootFp, parsedInvite.rootFingerprint)
+        val token = parsedInvite.token
 
         // 2. First enrollment with token: must succeed
         val enroll1 = service.enrollDevice(
@@ -300,7 +300,7 @@ class ChallengeResponseAuthTest {
 
         // 4. Enroll second device with fresh token: must succeed
         val link2 = service.generateInviteLink("https://flash.mod.gov.gh", scope, now)
-        val token2 = link2.substringAfter("token=").substringBefore("&")
+        val token2 = checkNotNull(com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link2)).token
         val enroll2 = service.enrollDevice(
             token = token2,
             deviceId = "phone-scout-02",
@@ -313,7 +313,7 @@ class ChallengeResponseAuthTest {
 
         // 5. Enroll third device when quota is exhausted: must FAIL
         val link3 = service.generateInviteLink("https://flash.mod.gov.gh", scope, now)
-        val token3 = link3.substringAfter("token=").substringBefore("&")
+        val token3 = checkNotNull(com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link3)).token
         val enroll3 = service.enrollDevice(
             token = token3,
             deviceId = "phone-scout-03",
@@ -334,7 +334,7 @@ class ChallengeResponseAuthTest {
         val now = System.currentTimeMillis()
         val service = EnrollmentService(rootPublicKey, serverKey.private, delegation, initialQuota = 5)
         val link = service.generateInviteLink("https://hub.example", InviteScope(expiry = now + 60_000), now)
-        val token = link.substringAfter("token=").substringBefore("&")
+        val token = checkNotNull(com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link)).token
 
         // A proof made by a different key than the one being enrolled must be refused (SEC-14 / CLI-10).
         val forged = service.enrollDevice(
@@ -360,7 +360,7 @@ class ChallengeResponseAuthTest {
 
         // A proof for another deviceId does not transfer.
         val link2 = service.generateInviteLink("https://hub.example", InviteScope(expiry = now + 60_000), now)
-        val token2 = link2.substringAfter("token=").substringBefore("&")
+        val token2 = checkNotNull(com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link2)).token
         val wrongDevice = service.enrollDevice(
             token = token2,
             deviceId = "dev-other",
@@ -389,8 +389,7 @@ class ChallengeResponseAuthTest {
             serial = 7L,
         )
         val service = EnrollmentService(rootKey.toBase64Spki(), serverKey.private, shortDelegation)
-        val token = service.generateInviteLink("https://hub.example", InviteScope(expiry = now + 60_000), now)
-            .substringAfter("token=").substringBefore("&")
+        val token = service.createInvite("https://hub.example", InviteScope(expiry = now + 60_000), now).token
         val result = service.enrollDevice(
             token = token,
             deviceId = "dev-clamp",
@@ -435,7 +434,7 @@ class ChallengeResponseAuthTest {
             scope = InviteScope(department = "HQ", expiry = now + 60_000),
             currentTimeMs = now,
         )
-        val token = inviteLink.substringAfter("token=").substringBefore("&")
+        val token = checkNotNull(com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(inviteLink)).token
 
         // 2a. No proof: refused with the contract error body, token untouched.
         val noProof = client.post("/api/v1/enroll") {

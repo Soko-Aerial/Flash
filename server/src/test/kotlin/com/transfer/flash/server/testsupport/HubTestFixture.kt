@@ -61,8 +61,8 @@ class HubTestFixture(
 
     fun enrol(deviceId: String): Device {
         val key = FlashCrypto.generateEcKeyPair()
-        val token = enrollment.generateInviteLink("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000), now)
-            .substringAfter("token=").substringBefore("&")
+        val token = enrollment.createInvite("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000), now)
+            .token
         val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), serverId))
         val result = enrollment.enrollDevice(token, deviceId, key.toBase64Spki(), proof, currentTimeMs = now).getOrThrow()
         return Device(deviceId, key, result.deviceCert, result.delegationChain)

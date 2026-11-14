@@ -547,7 +547,7 @@ class AdminApiTest {
         val created = client.postJson("/invites", s, InviteCreateBody(role = "member", maxUses = 2, ttlMinutes = 60, note = "Sgt Mensah"))
         assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
         val dto = HubRestCodec.decode<InviteCreatedDto>(created.bodyAsText())
-        assertTrue(dto.link.startsWith("flash://enroll?"))
+        assertEquals(dto.token, com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(dto.link)?.token)
         assertTrue(dto.qrSvg.contains("<svg"))
         assertEquals(2, dto.invite.maxUses)
 

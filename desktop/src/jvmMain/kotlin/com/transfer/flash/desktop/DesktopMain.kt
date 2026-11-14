@@ -178,6 +178,14 @@ public fun main(args: Array<String> = emptyArray()) {
 
     val trayState = rememberTrayState()
     val ready by engine.ready.collectAsState()
+    val activationInvite by SingleInstanceController.invites.collectAsState()
+    LaunchedEffect(activationInvite) {
+        if (activationInvite != null) {
+            launchSplash.skip()
+            launchSplash.finish()
+            bringWindowToFront()
+        }
+    }
     val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
     val desktopSettings by engine.settings.collectAsState()
     val toastCards by notificationManager.toastCards.collectAsState()
@@ -190,7 +198,11 @@ public fun main(args: Array<String> = emptyArray()) {
     }
 
     // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
-    val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)) }
+    val pendingHubRoute = remember {
+        val route = if (args.firstOrNull() == SingleInstanceController.OPEN_INVITE_ARGUMENT) null else
+            com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)
+        kotlinx.coroutines.flow.MutableStateFlow(route)
+    }
 
     DisposableEffect(desktopSettings.windowsContextMenu) {
         if (WindowsContextMenuManager.isSupported && desktopSettings.windowsContextMenu) {
@@ -363,7 +375,7 @@ public fun main(args: Array<String> = emptyArray()) {
                         val ready by engine.ready.collectAsState()
                         val startError by engine.startError.collectAsState()
                         Box(Modifier.fillMaxSize()) {
-                            if (args.contains("--radio-demo")) {
+                            if (args.firstOrNull() != SingleInstanceController.OPEN_INVITE_ARGUMENT && args.contains("--radio-demo")) {
                                 com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
                                     controller = remember { com.transfer.flash.ui.radio.FakeRadioGatewayController().apply { setEnabled(true) } },
                                     onBack = { exitApplication() },

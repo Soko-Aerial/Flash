@@ -1,5 +1,9 @@
 # Decisions
 
+## ADR-361 — Invite links carry the credential in the HTTPS fragment
+
+Hub enrollment invitations use the issuing Hub's public HTTPS origin. Local group invitations use the Flash link origin configured into the app build. Both carry the original invite in an unpadded base64url fragment so the public landing server serves a static page without receiving an invitation credential. The clients reuse the existing parsers, trust checks and confirmation screens. Android can verify the configured hostnames, and other Hub origins use the browser's explicit Open in Flash action. Existing custom-scheme links remain supported. See [invite deployment](deploy/INVITE-LINKS.md).
+
 ## ADR-022 - Transfer profile tiering: FlashTransferProfile in FlashPerformanceMode, bounded buffer queues, and single-stream low mode
 
 ### Decision

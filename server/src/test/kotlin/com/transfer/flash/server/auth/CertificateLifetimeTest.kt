@@ -51,8 +51,8 @@ class CertificateLifetimeTest {
 
     private fun enrol(service: EnrollmentService, deviceId: String = "dev-a"): DeviceCert {
         val key = FlashCrypto.generateEcKeyPair()
-        val token = service.generateInviteLink("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000), now)
-            .substringAfter("token=").substringBefore("&")
+        val token = service.createInvite("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000), now)
+            .token
         val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), service.serverId))
         return service.enrollDevice(token, deviceId, key.toBase64Spki(), proof, currentTimeMs = now).getOrThrow().deviceCert
     }

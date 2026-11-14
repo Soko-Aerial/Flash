@@ -19,7 +19,7 @@ object QrCodeGenerator {
     fun generateSvg(
         text: String,
         sizePx: Int = 200,
-        margin: Int = 2,
+        margin: Int = 4,
         darkColor: String = "#0F172A",
         lightColor: String = "#FFFFFF",
         /** Adds an inline `style` attribute (blocked by the console's CSP anyway); the console and landing page style the SVG with CSS classes instead. */

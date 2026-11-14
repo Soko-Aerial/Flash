@@ -59,7 +59,8 @@ object AdminSecurityHeaders {
 
     /** True for the paths this policy covers: the console, and the public enrolment landing page with its assets. */
     fun covers(path: String): Boolean =
-        path == "/admin" || path.startsWith("/admin/") || path == "/enroll" || path.startsWith("/enroll-assets/")
+        path == "/admin" || path.startsWith("/admin/") || path == "/enroll" || path.startsWith("/enroll-assets/") ||
+            path.startsWith("/invite/")
 }
 
 /**

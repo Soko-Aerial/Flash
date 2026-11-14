@@ -65,9 +65,20 @@ public data class ServerConfig(
     /** Refuse the first delegation unless [rootFingerprint] is set: no trust on first use of whatever file appears (REV-16). */
     val requireRootPin: Boolean = false,
     val managementToken: String? = null,
+    /** Public SHA-256 signing certificate fingerprints served for this Hub's App Links. */
+    val inviteSigningFingerprints: List<String> = emptyList(),
 ) {
 
     init {
+        require(inviteSigningFingerprints.all { it.matches(Regex("(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}")) }) {
+            "FLASH_INVITE_ANDROID_FINGERPRINTS must contain comma-separated SHA-256 certificate fingerprints"
+        }
+        if (inviteSigningFingerprints.isNotEmpty()) {
+            val origin = URI(externalUrl)
+            require(origin.scheme == "https" && origin.host != null && origin.port in listOf(-1, 443)) {
+                "Serving Android association requires a public HTTPS hostname on port 443"
+            }
+        }
         require(port in 1..65535) { "port must be between 1 and 65535, was: $port" }
         require(adminPort in 1..65535) { "adminPort must be between 1 and 65535, was: $adminPort" }
         require(host.isNotBlank()) { "host must not be blank" }
@@ -206,6 +217,8 @@ public data class ServerConfig(
                 challengeTimeoutMs = long("challenge-timeout-ms", "challengeTimeoutMs", envName = "FLASH_CHALLENGE_TIMEOUT_MS", default = DEFAULT_CHALLENGE_TIMEOUT_MS),
                 mailboxTtlDays = int("mailbox-ttl-days", "mailboxTtlDays", envName = "FLASH_MAILBOX_TTL_DAYS", default = DEFAULT_MAILBOX_TTL_DAYS),
                 externalUrl = externalUrl,
+                inviteSigningFingerprints = text("invite-android-fingerprints", envName = "FLASH_INVITE_ANDROID_FINGERPRINTS")
+                    .orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() },
                 adminHost = text("admin-host", "adminHost", envName = "FLASH_ADMIN_HOST") ?: DEFAULT_ADMIN_HOST,
                 adminOnPublicPort = bool("admin-on-public-port", "adminOnPublicPort", envName = "FLASH_ADMIN_ON_PUBLIC_PORT"),
                 allowInsecure = allowInsecure,

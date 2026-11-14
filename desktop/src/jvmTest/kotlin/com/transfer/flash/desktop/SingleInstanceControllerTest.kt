@@ -1,6 +1,7 @@
 package com.transfer.flash.desktop
 
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -128,6 +129,20 @@ class SingleInstanceControllerTest {
         org.junit.Assert.assertEquals(testFile.absolutePath, receivedFiles?.first()?.absolutePath)
 
         SingleInstanceController.release()
+    }
+
+    @Test
+    fun inviteOpensInThePrimaryInstanceAtLaunchAndThroughLocalActivation() {
+        val state = tempFolder.newFolder()
+        val group = "flash://g/1/example"
+        val enroll = "flash://enroll?server=https%3A%2F%2Fhub.example.org&token=synthetic"
+
+        assertTrue(SingleInstanceController.acquireOrActivate(state, arrayOf(group)))
+        assertEquals(group, SingleInstanceController.invites.value)
+        SingleInstanceController.consumeInvite(group)
+        assertEquals(null, SingleInstanceController.invites.value)
+        assertFalse(SingleInstanceController.acquireOrActivate(state, arrayOf("--open-invite", enroll)))
+        assertEquals(enroll, SingleInstanceController.invites.value)
     }
 
     @Test

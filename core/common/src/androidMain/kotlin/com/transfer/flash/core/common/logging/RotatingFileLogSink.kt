@@ -240,6 +240,7 @@ public class RotatingFileLogSink(
             """(?i)\b(secret|passphrase|password|privatekey|private_key|token|authkey|invite)\s*[=:]\s*\S+""",
         )
         private val INVITE_LINK = Regex("""flash://g/\S+""")
+        private val HTTPS_INVITE_LINK = Regex("""https://[A-Za-z0-9.:-]+/invite/(group|enroll)#[A-Za-z0-9_-]+""")
         private val BASE64_BLOB = Regex("[A-Za-z0-9_-]{64,}={0,2}")
 
         /**
@@ -248,6 +249,7 @@ public class RotatingFileLogSink(
          */
         public fun redact(text: String): String =
             text.replace(INVITE_LINK, "flash://g/<redacted>")
+                .replace(HTTPS_INVITE_LINK, "<redacted-invite>")
                 .replace(SECRET_ASSIGN, "\$1=<redacted>")
                 .replace(BASE64_BLOB, "<redacted-blob>")
 

@@ -516,6 +516,8 @@ class MainActivity : ComponentActivity() {
 
     private fun shouldSkipLaunchSplashForIntent(intent: Intent?): Boolean =
         FlashLaunchSplashProcess.isTimeCriticalLaunch(intent) ||
+            (intent?.action == Intent.ACTION_VIEW &&
+                parseWebInvite(intent.data) != null) ||
             LaunchEntryPolicy.shouldSkipLaunchSplash(
                 action = intent?.action,
                 dataScheme = intent?.data?.scheme,
@@ -600,15 +602,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun parseWebInvite(uri: Uri?): String? {
+        if (uri?.scheme != "https" || uri.port != -1) return null
+        val links = com.transfer.flash.core.common.protocol.InviteAppLink
+        val host = when (uri.path) {
+            links.GROUP_PATH -> BuildConfig.INVITE_LINK_HOST
+            links.ENROLL_PATH -> BuildConfig.HUB_INVITE_LINK_HOST
+            else -> return null
+        }
+        return links.unwrap(uri.toString(), host)
+    }
+
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
         when (intent.action) {
             Intent.ACTION_VIEW -> {
                 val data = intent.data
-                if (data != null && data.scheme == "flash") {
-                    when (data.host) {
-                        "g" -> pendingJoinLink.value = data.toString()
-                        "enroll" -> pendingEnrollLink.value = data.toString()
+                if (data != null) {
+                    val invite = if (data.scheme == "flash") data else parseWebInvite(data)?.let(Uri::parse)
+                    when (invite?.host) {
+                        "g" -> pendingJoinLink.value = invite.toString()
+                        "enroll" -> pendingEnrollLink.value = invite.toString()
                     }
                 }
             }
@@ -3106,6 +3120,11 @@ private fun FlashShell(
             },
             onRequestInviteLink = { gid ->
                 (chatRepository.inviteFor(gid) as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
+                    ?.let { invite ->
+                        val host = BuildConfig.INVITE_LINK_HOST
+                        if (host == "invite.flash.invalid") invite else
+                            com.transfer.flash.core.common.protocol.InviteAppLink.wrap(host, invite) ?: invite
+                    }
             },
             onJoinInviteGroup = { inviteUrl ->
                 activeJoinLink = inviteUrl

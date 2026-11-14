@@ -64,6 +64,10 @@ GET /enroll-assets/{...}
 GET /flash-relay
 GET /health
 GET /health/detail
+GET /invite/assets/invite.css
+GET /invite/assets/invite.js
+GET /invite/enroll
+GET /invite/group
 GET /metrics
 POST /admin/api/v1/admins
 POST /admin/api/v1/admins/me/approver
