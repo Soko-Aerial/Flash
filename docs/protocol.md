@@ -1921,5 +1921,5 @@ enrolment credential. No manual pairing pin is changed.
   - Only the key creator (`creatorDeviceId == localDeviceId`) distributes a `GROUP_KEY_DIST_V1` payload; receivers verify `dist.creatorDeviceId == fromDeviceId`.
 - **Epoch rotation & compatibility rules:**
   - Any membership change (`add`, `remove`, `leave`, `rejoin`, or roster sync change) calls `onMembershipChanged`, marking prior epoch keys decrypt-only (`canSend = false`) and minting a fresh epoch key on the next send.
-  - Simultaneous creations at the same `rosterVersion` break ties deterministically by `(epoch, rosterVersion, keyId)`.
+  - Simultaneous creations at the same `rosterVersion` break ties deterministically by `(rosterVersion, epoch, keyId)`.
   - Fail-closed policy: if any active member lacks a valid sealing key (`LEGACY_MEMBERS_PRESENT`), has an unconfirmed key change (`BLOCKED_KEY_CHANGED`), or fails identity pin verification (`BLOCKED_IDENTITY_MISMATCH`), sending fails closed (`HubChatBridge` refuses plaintext fallback) and surfaces an honest compatibility disclosure (`FlashHubNoticeKind.GROUP_E2EE_BLOCKED` / `GROUP_ENCRYPTED` in `FlashGroupSettingsSheet`). Unsealed inbound `GROUP_FRAME` / `LEGACY_GROUP` frames are rejected when group E2EE is active.

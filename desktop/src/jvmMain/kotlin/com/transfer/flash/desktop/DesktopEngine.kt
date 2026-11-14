@@ -2658,13 +2658,13 @@ public class DesktopEngine(
     private fun peerIdFor(transferId: String): String =
         transferImpl?.activeTransfers?.value?.firstOrNull { it.id.value == transferId }?.peerDeviceId.orEmpty()
 
-    private fun resolveIceConfigForPeer(
+    private suspend fun resolveIceConfigForPeer(
         hasLanSession: Boolean,
     ): Pair<List<com.shepeliev.webrtckmp.IceServer>, com.shepeliev.webrtckmp.IceTransportPolicy> {
         if (hasLanSession) {
             return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
         }
-        val cfg = enterpriseHubRef?.validCallIceConfig()
+        val cfg = enterpriseHubRef?.let { it.ensureFreshCallIceConfig() ?: it.validCallIceConfig() }
             ?: return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
         val servers = cfg.iceServers.map { server ->
             com.transfer.flash.core.calling.CallIceServerSpec(

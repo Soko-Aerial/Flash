@@ -26,6 +26,7 @@ import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.MemberRole
 import com.transfer.flash.server.directory.OrganizationDirectory
+import com.transfer.flash.server.identity.BeginReplacementOutcome
 import com.transfer.flash.server.identity.DeviceReplacementState
 import com.transfer.flash.server.identity.DeviceStatus
 import com.transfer.flash.server.identity.EnrollRefusal
@@ -950,5 +951,54 @@ class DeviceReplacementTest {
         assertEquals(1, concResponses.count { it.status == HttpStatusCode.OK }, concResponses.map { it.status }.toString())
         assertEquals(3, concResponses.count { it.status == HttpStatusCode.Conflict })
         assertEquals(1, r.identities.listInvites(state = InviteState.PENDING, nowMs = r.now).size)
+    }
+
+    @Test
+    fun crashedInProgressReplacementRecoversOnStartupAndLeaseExpiry() = testApplication {
+        val r = Realm()
+        val invA = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-crash-1", invA.token, dept = "sales")
+        val invB = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-crash-2", invB.token, dept = "sales")
+
+        // Crash stage 1: IN_PROGRESS left behind with no inviteId -> startup reconcile recovers to FAILED
+        assertTrue(
+            r.identities.beginDeviceReplacement("dev-crash-1", "sales", "member", emptySet(), emptySet(), 60L, null, "Lost", "admin", r.now)
+                is BeginReplacementOutcome.Acquired,
+        )
+        // Crash stage 2: IN_PROGRESS with draft invite recorded while old device is still ACTIVE -> startup revokes draft invite & fails safely
+        val claim2 = r.identities.beginDeviceReplacement("dev-crash-2", "sales", "member", emptySet(), emptySet(), 60L, null, "Lost", "admin", r.now)
+            as BeginReplacementOutcome.Acquired
+        val draftInvite = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.identities.recordReplacementInvite("dev-crash-2", claim2.replacementId, draftInvite.record.inviteId, r.now)
+
+        // Simulate server restart opening the same database
+        val reopened = IdentityStore.open(r.db)
+        assertEquals(DeviceReplacementState.FAILED, reopened.getDeviceReplacement("dev-crash-1")?.state)
+        assertEquals(DeviceReplacementState.FAILED, reopened.getDeviceReplacement("dev-crash-2")?.state)
+        assertEquals(0, reopened.listInvites(state = InviteState.PENDING, nowMs = r.now + 100L).count { it.inviteId == draftInvite.record.inviteId })
+        assertTrue(
+            reopened.beginDeviceReplacement("dev-crash-1", "sales", "member", emptySet(), emptySet(), 60L, null, "Retry", "admin", r.now + 100L)
+                is BeginReplacementOutcome.Acquired,
+        )
+        // Fresh IN_PROGRESS within lease refuses duplicate, while expired lease without restart reclaims automatically
+        assertTrue(
+            reopened.beginDeviceReplacement("dev-crash-1", "sales", "member", emptySet(), emptySet(), 60L, null, "Dup", "admin", r.now + 10_000L)
+                is BeginReplacementOutcome.AlreadyInProgress,
+        )
+        assertTrue(
+            reopened.beginDeviceReplacement(
+                "dev-crash-1",
+                "sales",
+                "member",
+                emptySet(),
+                emptySet(),
+                60L,
+                null,
+                "Lease reclaimed",
+                "admin",
+                r.now + 100L + IdentityStore.IN_PROGRESS_LEASE_MS + 1L,
+            ) is BeginReplacementOutcome.Acquired,
+        )
     }
 }

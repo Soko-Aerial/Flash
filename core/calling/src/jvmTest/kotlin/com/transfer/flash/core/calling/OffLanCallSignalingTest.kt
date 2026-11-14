@@ -380,4 +380,47 @@ class OffLanCallSignalingTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `call setup awaits suspending iceConfigProvider before initializing session`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var fetchedForPeers = mutableListOf<String>()
+        val coordinator = CallCoordinator(
+            localDeviceId = "alice",
+            localName = "Alice",
+            scope = scope,
+            sendFrame = { _, _ -> true },
+            isTrustedPeer = { true },
+            peerNameResolver = { "Bob" },
+            iceConfigProvider = { peerId ->
+                kotlinx.coroutines.delay(15L)
+                fetchedForPeers += peerId
+                listOf(
+                    CallIceServerSpec(
+                        urls = listOf("stun:stun.flash.local:3478"),
+                    ).toWebRtcIceServer(),
+                ) to IceTransportPolicy.Relay
+            },
+        )
+        try {
+            val now = 2_000_000L
+            val inboundInvite = CallFrameCodec.encode(
+                CallWireFrame.Invite(callId = "call-ice-suspend", from = "bob", callerName = "Bob", video = false),
+            )
+            assertTrue(
+                coordinator.onInboundOffLanSignal(
+                    InboundOffLanCallSignal("sig-ice-1", "call-ice-suspend", "bob", seq = 1L, issuedAtMs = now, ttlMs = 30_000L, payloadText = inboundInvite),
+                    nowMs = now,
+                ),
+            )
+            val ringing = withTimeout(2_000L) {
+                coordinator.activeCall.first { it?.callId == "call-ice-suspend" && it.state == FlashCallState.RINGING }
+            }
+            assertEquals("call-ice-suspend", ringing?.callId)
+            assertEquals(listOf("bob"), fetchedForPeers)
+            assertTrue(coordinator.decline())
+        } finally {
+            scope.cancel()
+        }
+    }
 }

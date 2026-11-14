@@ -145,7 +145,7 @@ public class CallCoordinator(
     /** ADR-102: what a session presents the screen with. The default is the platform's capturer (desktop only today). */
     private val screenCapture: ScreenCaptureProvider = defaultScreenCaptureProvider(),
     /** HR9: resolves ICE servers and transport policy for off-LAN/relayed calls (empty = host/LAN candidates). */
-    private val iceConfigProvider: (peerId: String) -> Pair<List<IceServer>, IceTransportPolicy> = {
+    private val iceConfigProvider: suspend (peerId: String) -> Pair<List<IceServer>, IceTransportPolicy> = {
         emptyList<IceServer>() to IceTransportPolicy.All
     },
     /** HR9: stateful guard for Hub-relayed ephemeral signaling (TTL, replay, sequence, terminal calls, revocations). */
@@ -661,7 +661,7 @@ public class CallCoordinator(
         currentGroupSession?.onSignalingRestored(peerId)
     }
 
-    private fun newSession(
+    private suspend fun newSession(
         callId: String,
         peerId: String,
         peerName: String,
@@ -786,7 +786,7 @@ public class CallCoordinator(
         }
     }
 
-    private fun startIncoming(peerId: String, frame: CallWireFrame.Invite) {
+    private suspend fun startIncoming(peerId: String, frame: CallWireFrame.Invite) {
         val resolvedName = peerNameResolver(peerId)?.ifBlank { null }
             ?: frame.callerName.takeIf { it.isNotBlank() && it != peerId }
             ?: peerId
