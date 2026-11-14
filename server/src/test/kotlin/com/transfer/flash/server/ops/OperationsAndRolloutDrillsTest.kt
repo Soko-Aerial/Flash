@@ -226,6 +226,7 @@ class OperationsAndRolloutDrillsTest {
         val detail = client.get("/health/detail") { header("Authorization", "Bearer mgmt-secret") }.bodyAsText()
         assertTrue("\"status\":\"degraded\"" in detail, detail)
         assertTrue("\"quarantinedTotal\":12" in detail, detail)
+        assertTrue("\"quarantinedOutstanding\":12" in detail, detail)
         assertTrue(OperationalMonitor.ALERT_UNREADABLE_QUEUE in detail, detail)
         assertTrue(OperationalMonitor.ALERT_OLDEST_QUEUED_MAIL in detail, detail)
         assertTrue(OperationalMonitor.ALERT_DISK_PRESSURE in detail, detail)
@@ -234,6 +235,7 @@ class OperationsAndRolloutDrillsTest {
 
         val metrics = client.get("/metrics") { header("Authorization", "Bearer mgmt-secret") }.bodyAsText()
         assertTrue("flash_mailbox_quarantined_total 12" in metrics, metrics)
+        assertTrue("flash_mailbox_quarantined_outstanding 12" in metrics, metrics)
         assertTrue("flash_alert_unreadable_queue 2" in metrics, metrics)
         assertTrue("flash_alert_oldest_mail 2" in metrics, metrics)
         assertTrue("flash_alert_disk_pressure 2" in metrics, metrics)
@@ -242,20 +244,53 @@ class OperationsAndRolloutDrillsTest {
         assertTrue("flash_alerts_critical 4" in metrics, metrics)
         assertTrue("flash_alerts_warning 1" in metrics, metrics)
 
-        // Operator recovery: acknowledge aged mail, expand disk, rotate delegation & TLS certs, restart queue stats cleanly
+        // Acknowledge aged mail, expand disk, rotate delegation & TLS certs, then RESTART on the same DB with quarantined rows still unexpired
         runBlocking { liveQueue.acknowledge("bob", "aged-good") }
         diskRef.set(DiskUsage(totalBytes = 10_000_000_000L, usableBytes = 8_000_000_000L))
         delegationDaysRef.set(60L)
         tlsDaysRef.set(60L)
-        val recoveredQueue = MailboxQueue(db, MailboxLimits(), clock = { nowMs.get() }, registry = DeviceRegistry.AcceptAll, secrets = liveKey)
-        val cleanAlerts = OperationalMonitor.evaluate(
-            quarantinedRows = recoveredQueue.quarantinedTotal(),
-            oldestMailAgeSeconds = (recoveredQueue.oldestAgesMs(1).values.maxOrNull() ?: 0L) / 1000L,
-            disk = diskRef.get(),
-            delegationDaysRemaining = delegationDaysRef.get(),
-            tlsDaysRemaining = tlsDaysRef.get(),
-        )
-        assertTrue(cleanAlerts.isEmpty(), "Expected alerts cleared after recovery: $cleanAlerts")
+
+        val restartedQueue = MailboxQueue(db, MailboxLimits(), clock = { nowMs.get() }, registry = DeviceRegistry.AcceptAll, secrets = liveKey)
+        assertEquals(0L, restartedQueue.quarantinedTotal(), "Process-lifetime quarantinedTotal resets on restart")
+        assertEquals(12L, restartedQueue.quarantinedOutstanding(), "Unexpired quarantined rows remain outstanding across restart")
+
+        testApplication {
+            val restartedEngine = FlashServerEngine(
+                config = proxyConfig(dir),
+                mailboxQueue = restartedQueue,
+                mailboxStats = restartedQueue,
+                database = db,
+                managementGuard = DefaultManagementGuard(token = "mgmt-secret"),
+                delegationDaysRemaining = { delegationDaysRef.get() },
+                tlsDaysRemaining = { tlsDaysRef.get() },
+                diskUsageProvider = { diskRef.get() },
+                clock = { nowMs.get() },
+            )
+            application { restartedEngine.configureApplication(this) }
+            val restartDetail = client.get("/health/detail") { header("Authorization", "Bearer mgmt-secret") }.bodyAsText()
+            assertTrue("\"quarantinedTotal\":0" in restartDetail, restartDetail)
+            assertTrue("\"quarantinedOutstanding\":12" in restartDetail, restartDetail)
+            assertTrue(OperationalMonitor.ALERT_UNREADABLE_QUEUE in restartDetail, restartDetail)
+            assertTrue("\"status\":\"degraded\"" in restartDetail, restartDetail)
+
+            val restartMetrics = client.get("/metrics") { header("Authorization", "Bearer mgmt-secret") }.bodyAsText()
+            assertTrue("flash_mailbox_quarantined_total 0" in restartMetrics, restartMetrics)
+            assertTrue("flash_mailbox_quarantined_outstanding 12" in restartMetrics, restartMetrics)
+            assertTrue("flash_alert_unreadable_queue 2" in restartMetrics, restartMetrics)
+
+            // Recovery: expire & sweep the unresolved quarantined rows under the documented TTL policy
+            nowMs.addAndGet(30L * 3600L * 1000L) // total > 7d default TTL
+            runBlocking { restartedQueue.deleteExpired() }
+            assertEquals(0L, restartedQueue.quarantinedOutstanding())
+
+            val recoveredDetail = client.get("/health/detail") { header("Authorization", "Bearer mgmt-secret") }.bodyAsText()
+            assertTrue("\"status\":\"ok\"" in recoveredDetail, recoveredDetail)
+            assertTrue(OperationalMonitor.ALERT_UNREADABLE_QUEUE !in recoveredDetail, recoveredDetail)
+
+            val recoveredMetrics = client.get("/metrics") { header("Authorization", "Bearer mgmt-secret") }.bodyAsText()
+            assertTrue("flash_mailbox_quarantined_outstanding 0" in recoveredMetrics, recoveredMetrics)
+            assertTrue("flash_alert_unreadable_queue 0" in recoveredMetrics, recoveredMetrics)
+        }
     }
 
     @Test

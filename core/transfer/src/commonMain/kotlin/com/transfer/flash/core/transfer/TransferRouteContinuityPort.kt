@@ -22,7 +22,11 @@ public interface TransferRouteContinuityPort {
         chunkSize: Int,
         localPath: String? = null,
         fileSha256Hex: String? = null,
+        sourceFingerprint: String? = null,
     ): Boolean
+
+    /** Verifies whether the current sender source [sourceFingerprint] still matches what [fileId] started with. */
+    public fun verifySenderSourceFingerprint(fileId: String, sourceFingerprint: String?): Boolean = true
 
     /** Records chunk indices cryptographically verified over LAN against [fileId] / [transferId]. */
     public fun recordLanVerifiedChunks(

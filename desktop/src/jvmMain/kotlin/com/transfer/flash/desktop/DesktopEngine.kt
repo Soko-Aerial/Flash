@@ -1422,8 +1422,12 @@ public class DesktopEngine(
             }
             FileSystem.SYSTEM.source(file.absolutePath.toPath())
         }
-        // HR8: Single cross-route continuity coordinator shared by LAN transfer and HubFileBinding.
-        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator()
+        // HR8: Single disk-backed cross-route continuity coordinator shared by LAN transfer and HubFileBinding.
+        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator(
+            com.transfer.flash.core.engine.hubfiles.FileContinuityCheckpointStore(
+                File(stateDir, "transfer-continuity").path,
+            ),
+        )
         var hubFileTransfersRef: com.transfer.flash.core.enterprise.files.HubFileTransfers? = null
         val routeContinuityPort = com.transfer.flash.core.engine.hubfiles.EngineTransferRouteContinuityPort(
             localDeviceId = { localId },
@@ -1874,7 +1878,7 @@ public class DesktopEngine(
                 radioPort = radioPort,
                 hubFileDao = db.hubFileDao(),
                 offLanCallSupported = {
-                    val cfg = hub.callIceConfig.value
+                    val cfg = hub.validCallIceConfig()
                     hub.relay.state.value.canSend &&
                         cfg != null &&
                         cfg.offLanCallingSupported &&
@@ -2660,7 +2664,7 @@ public class DesktopEngine(
         if (hasLanSession) {
             return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
         }
-        val cfg = enterpriseHubRef?.callIceConfig?.value
+        val cfg = enterpriseHubRef?.validCallIceConfig()
             ?: return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
         val servers = cfg.iceServers.map { server ->
             com.transfer.flash.core.calling.CallIceServerSpec(
@@ -2704,7 +2708,7 @@ public class DesktopEngine(
             return true
         }
         val hub = enterpriseHubRef
-        val iceCfg = hub?.callIceConfig?.value
+        val iceCfg = if (hub != null && hub.relay.state.value.canSend) hub.ensureFreshCallIceConfig() else null
         if (hub != null && hub.relay.state.value.canSend && iceCfg != null && iceCfg.offLanCallingSupported) {
             val sent = hub.relay.sendCallSignal(
                 com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(

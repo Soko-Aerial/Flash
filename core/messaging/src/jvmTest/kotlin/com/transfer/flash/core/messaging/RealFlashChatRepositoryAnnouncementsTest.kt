@@ -738,4 +738,107 @@ class RealFlashChatRepositoryAnnouncementsTest {
             db.close()
         }
     }
+
+    @Test
+    fun `HR7 empty initial sync then restart notifies once on first new announcement while brand-new client stays quiet`(): Unit = runBlocking {
+        val api = FakeHubAnnouncementsApi()
+
+        // Step 1: First sync on empty hub persists seq=0 and currentEpoch without notifications
+        val notificationsRun1 = mutableListOf<Triple<String, String, String?>>()
+        val db1 = openEncryptedFlashDatabase(dbFile, encryptionKey)
+        val repo1 = RealFlashChatRepository(
+            localDeviceId = "dev-reader",
+            localDisplayName = "Reader",
+            messageDao = db1.messageDao(),
+            conversationDao = db1.conversationDao(),
+            outboxDao = db1.outboxDao(),
+            receiptDao = db1.receiptDao(),
+            draftDao = db1.draftDao(),
+            recentSearchDao = db1.recentSearchDao(),
+            reactionDao = db1.reactionDao(),
+            runInTransaction = { block -> db1.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(sampleCredentials(department = "Finance")),
+            hubAnnouncementDao = db1.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
+            onNewAnnouncementNotification = { id, title, dept -> notificationsRun1.add(Triple(id, title, dept)) },
+        )
+        try {
+            repo1.refreshHubAnnouncements()
+            assertTrue(notificationsRun1.isEmpty())
+            val savedState = db1.hubAnnouncementDao().getState()
+            assertNotNull(savedState)
+            assertEquals(0L, savedState.seq)
+            assertEquals(api.currentEpoch, savedState.epoch)
+        } finally {
+            repo1.close()
+            db1.close()
+        }
+
+        // Step 2: Another user publishes the first announcement; client restarts on same DB
+        api.items["a-first"] = sampleItem("a-first", seq = 1L, title = "First Real Announcement", authorRef = "dev-admin", scope = "org")
+        val notificationsRun2 = mutableListOf<Triple<String, String, String?>>()
+        val db2 = openEncryptedFlashDatabase(dbFile, encryptionKey)
+        val repo2 = RealFlashChatRepository(
+            localDeviceId = "dev-reader",
+            localDisplayName = "Reader",
+            messageDao = db2.messageDao(),
+            conversationDao = db2.conversationDao(),
+            outboxDao = db2.outboxDao(),
+            receiptDao = db2.receiptDao(),
+            draftDao = db2.draftDao(),
+            recentSearchDao = db2.recentSearchDao(),
+            reactionDao = db2.reactionDao(),
+            runInTransaction = { block -> db2.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(sampleCredentials(department = "Finance")),
+            hubAnnouncementDao = db2.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
+            onNewAnnouncementNotification = { id, title, dept -> notificationsRun2.add(Triple(id, title, dept)) },
+        )
+        try {
+            repo2.refreshHubAnnouncements()
+            assertEquals(1, repo2.hubAnnouncements.first().size)
+            assertEquals("First Real Announcement", repo2.hubAnnouncements.first().single().title)
+            assertEquals(listOf(Triple("a-first", "First Real Announcement", null as String?)), notificationsRun2)
+
+            // Refreshing again must not duplicate the notification
+            repo2.refreshHubAnnouncements()
+            assertEquals(1, notificationsRun2.size)
+        } finally {
+            repo2.close()
+            db2.close()
+        }
+
+        // Step 3: Newly enrolled client syncing existing posts still bootstraps quietly (0 notifications)
+        val freshDbFile = Files.createTempFile("flash-fresh-ann", ".db").toFile()
+        val freshDb = openEncryptedFlashDatabase(freshDbFile, encryptionKey)
+        val freshNotifications = mutableListOf<Triple<String, String, String?>>()
+        val freshRepo = RealFlashChatRepository(
+            localDeviceId = "dev-new-joiner",
+            localDisplayName = "New",
+            messageDao = freshDb.messageDao(),
+            conversationDao = freshDb.conversationDao(),
+            outboxDao = freshDb.outboxDao(),
+            receiptDao = freshDb.receiptDao(),
+            draftDao = freshDb.draftDao(),
+            recentSearchDao = freshDb.recentSearchDao(),
+            reactionDao = freshDb.reactionDao(),
+            runInTransaction = { block -> freshDb.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(sampleCredentials(department = "Finance")),
+            hubAnnouncementDao = freshDb.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
+            onNewAnnouncementNotification = { id, title, dept -> freshNotifications.add(Triple(id, title, dept)) },
+        )
+        try {
+            freshRepo.refreshHubAnnouncements()
+            assertEquals(1, freshRepo.hubAnnouncements.first().size)
+            assertTrue(freshNotifications.isEmpty(), "Brand-new client must bootstrap quietly")
+        } finally {
+            freshRepo.close()
+            freshDb.close()
+            freshDbFile.delete()
+        }
+    }
 }

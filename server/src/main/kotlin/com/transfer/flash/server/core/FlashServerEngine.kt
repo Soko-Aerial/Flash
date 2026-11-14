@@ -333,8 +333,9 @@ public class FlashServerEngine(
         disk: DiskUsage? = diskUsageProvider?.invoke(),
         delegationDays: Long? = delegationDaysRemaining?.invoke(),
         tlsDays: Long? = tlsDaysRemaining?.invoke(),
+        quarantinedOutstanding: Long = mailboxStats.quarantinedOutstanding(),
     ): List<OperationalAlert> = OperationalMonitor.evaluate(
-        quarantinedRows = mailboxStats.quarantinedTotal(),
+        quarantinedRows = quarantinedOutstanding,
         oldestMailAgeSeconds = oldestAgeSec,
         disk = disk,
         delegationDaysRemaining = delegationDays,
@@ -359,7 +360,8 @@ public class FlashServerEngine(
         val disk = diskUsageProvider?.invoke()
         val delegationDays = delegationDaysRemaining?.invoke()
         val tlsDays = tlsDaysRemaining?.invoke()
-        val alerts = currentAlerts(oldestSec, disk, delegationDays, tlsDays)
+        val quarantinedOutstanding = mailboxStats.quarantinedOutstanding()
+        val alerts = currentAlerts(oldestSec, disk, delegationDays, tlsDays, quarantinedOutstanding)
         val alertSeverityById = alerts.associate { it.id to it.severity.levelValue }
         val used = Runtime.getRuntime().let { it.totalMemory() - it.freeMemory() }
         val list = mutableListOf(
@@ -373,6 +375,7 @@ public class FlashServerEngine(
             RelayMetrics.Gauge("flash_mailbox_expired_total", "Mailbox rows removed by the TTL sweeper.", mailboxStats.expiredTotal()),
             RelayMetrics.Gauge("flash_mailbox_dropped_total", "Messages the mailbox refused or lost.", mailboxStats.droppedTotal()),
             RelayMetrics.Gauge("flash_mailbox_quarantined_total", "Unreadable mailbox rows quarantined since startup.", mailboxStats.quarantinedTotal()),
+            RelayMetrics.Gauge("flash_mailbox_quarantined_outstanding", "Unexpired unreadable mailbox rows currently quarantined.", quarantinedOutstanding),
             RelayMetrics.Gauge("flash_jvm_memory_used_bytes", "JVM heap in use.", used),
             RelayMetrics.Gauge("flash_alerts_warning", "Number of active operational warning alerts.", alerts.count { it.severity == AlertSeverity.WARN }),
             RelayMetrics.Gauge("flash_alerts_critical", "Number of active operational critical alerts.", alerts.count { it.severity == AlertSeverity.CRITICAL }),
@@ -408,7 +411,8 @@ public class FlashServerEngine(
         val disk = diskUsageProvider?.invoke()
         val delegationDays = delegationDaysRemaining?.invoke()
         val tlsDays = tlsDaysRemaining?.invoke()
-        val alerts = currentAlerts(oldestSec, disk, delegationDays, tlsDays)
+        val quarantinedOutstanding = mailboxStats.quarantinedOutstanding()
+        val alerts = currentAlerts(oldestSec, disk, delegationDays, tlsDays, quarantinedOutstanding)
         val level = if (probe != null && !probe.ok) HealthLevel.DOWN
         else if ((probe != null && probe.latencyMs > SLOW_DB_MS) || alerts.any { it.severity == AlertSeverity.CRITICAL }) HealthLevel.DEGRADED
         else HealthLevel.OK
@@ -428,6 +432,7 @@ public class FlashServerEngine(
         b.append(",\"expiredTotal\":").append(mailboxStats.expiredTotal())
         b.append(",\"droppedTotal\":").append(mailboxStats.droppedTotal())
         b.append(",\"quarantinedTotal\":").append(mailboxStats.quarantinedTotal())
+        b.append(",\"quarantinedOutstanding\":").append(quarantinedOutstanding)
         b.append('}')
         if (probe != null) {
             b.append(",\"database\":{\"ok\":").append(probe.ok)

@@ -497,6 +497,19 @@ public class CallCoordinator(
         signal: InboundOffLanCallSignal,
         nowMs: Long = SystemTimeSource.nowMs(),
     ): Boolean {
+        val innerFrame = CallFrameCodec.decode(signal.payloadText)
+        if (
+            innerFrame == null ||
+            innerFrame.callId != signal.callId ||
+            innerFrame.from != signal.fromPeerId ||
+            offLanSignalGuard.isCallTerminal(innerFrame.callId)
+        ) {
+            FlashLog.w(
+                "CALL_OFFLAN",
+                "Dropped off-LAN signal callId=${signal.callId} from=${signal.fromPeerId} innerCallId=${innerFrame?.callId}: envelope mismatch or terminal call",
+            )
+            return false
+        }
         val verdict = offLanSignalGuard.validateInbound(signal, nowMs)
         if (verdict is OffLanSignalVerdict.Rejected) {
             FlashLog.w("CALL_OFFLAN", "Dropped off-LAN signal callId=${signal.callId} from=${signal.fromPeerId} seq=${signal.seq}: ${verdict.reason}")

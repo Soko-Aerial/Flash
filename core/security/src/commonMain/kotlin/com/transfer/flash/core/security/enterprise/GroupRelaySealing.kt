@@ -154,6 +154,7 @@ public object GroupRelaySealing {
     public const val KEY_BYTES: Int = 32
     public const val NONCE_BYTES: Int = 12
     public const val MAX_MEMBERS: Int = 512
+    public const val MAX_VALID_EPOCH: Long = 1_000_000_000L
 
     private val AAD_DOMAIN: ByteArray = "flash-group-e2ee-v1".encodeToByteArray()
 
@@ -172,7 +173,7 @@ public object GroupRelaySealing {
         val keyId = decodeString(parts[3]) ?: return null
         val senderId = decodeString(parts[4]) ?: return null
         val innerType = decodeString(parts[5]) ?: return null
-        if (groupId.isBlank() || epoch < 1L || keyId.isBlank() || senderId.isBlank() || innerType.isBlank()) {
+        if (groupId.isBlank() || epoch !in 1L..MAX_VALID_EPOCH || keyId.isBlank() || senderId.isBlank() || innerType.isBlank()) {
             return null
         }
         return GroupEnvelopeMeta(
@@ -196,7 +197,7 @@ public object GroupRelaySealing {
         body: String,
     ): String? {
         if (!epochKey.canSend) return null
-        if (epochKey.groupId.isBlank() || epochKey.epoch < 1L || epochKey.keyId.isBlank()) return null
+        if (epochKey.groupId.isBlank() || epochKey.epoch !in 1L..MAX_VALID_EPOCH || epochKey.keyId.isBlank()) return null
         if (senderDeviceId.isBlank() || msgId.isBlank() || innerType.isBlank()) return null
         if (senderDeviceId !in epochKey.memberDeviceIds) return null
         val rawKey = epochKey.keyBytes.copyOf()
@@ -345,7 +346,7 @@ public object GroupRelaySealing {
         }
         val creatorDeviceId = decodeString(parts[7]) ?: return null
         val createdAtMs = parts[8].toLongOrNull() ?: return null
-        if (groupId.isBlank() || epoch < 1L || keyId.isBlank() || keyBytes.size != KEY_BYTES) return null
+        if (groupId.isBlank() || epoch !in 1L..MAX_VALID_EPOCH || keyId.isBlank() || keyBytes.size != KEY_BYTES) return null
         if (rosterVersion < 0L || creatorDeviceId.isBlank() || creatorDeviceId !in members) return null
         return GroupKeyDistPayload(
             version = version,

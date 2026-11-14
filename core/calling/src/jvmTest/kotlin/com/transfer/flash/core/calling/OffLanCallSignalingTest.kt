@@ -293,4 +293,91 @@ class OffLanCallSignalingTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `captured invite for ended call wrapped in different envelope callId is rejected before replay state or dispatch while matching and LAN frames work`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val sentFrames = mutableListOf<Pair<String, CallWireFrame>>()
+        val coordinator = CallCoordinator(
+            localDeviceId = "alice",
+            localName = "Alice",
+            scope = scope,
+            sendFrame = { frame, peerId ->
+                sentFrames += peerId to frame
+                true
+            },
+        )
+        try {
+            val now = 1_700_000_000_000L
+            val capturedInvite = CallFrameCodec.encode(
+                CallWireFrame.Invite(
+                    callId = "call-ended-1",
+                    from = "bob",
+                    callerName = "Bob",
+                    video = false,
+                ),
+            )
+            // Deliver initial call cleanly and terminate it via decline
+            assertTrue(
+                coordinator.onInboundOffLanSignal(
+                    InboundOffLanCallSignal("sig-1", "call-ended-1", "bob", seq = 1L, issuedAtMs = now, ttlMs = 15_000L, payloadText = capturedInvite),
+                    nowMs = now,
+                ),
+            )
+            withTimeout(2_000L) {
+                coordinator.activeCall.first { it?.state == FlashCallState.RINGING }
+            }
+            assertTrue(coordinator.decline())
+            withTimeout(2_000L) {
+                coordinator.activeCall.first { it == null || it.state == FlashCallState.ENDED }
+            }
+
+            // Attacker wraps the captured invite for terminal call-ended-1 in a brand-new envelope callId ("call-fresh-env")
+            assertFalse(
+                coordinator.onInboundOffLanSignal(
+                    InboundOffLanCallSignal("sig-new-env", "call-fresh-env", "bob", seq = 1L, issuedAtMs = now + 100L, ttlMs = 15_000L, payloadText = capturedInvite),
+                    nowMs = now + 100L,
+                ),
+            )
+            assertFalse(coordinator.activeCall.value?.callId == "call-ended-1" && coordinator.activeCall.value?.state == FlashCallState.RINGING)
+
+            // Prove replay state (sig-new-env, seq=1) was NOT recorded for call-fresh-env: a valid matching invite still succeeds
+            val matchingInvite = CallFrameCodec.encode(
+                CallWireFrame.Invite(
+                    callId = "call-fresh-env",
+                    from = "bob",
+                    callerName = "Bob",
+                    video = false,
+                ),
+            )
+            assertTrue(
+                coordinator.onInboundOffLanSignal(
+                    InboundOffLanCallSignal("sig-new-env", "call-fresh-env", "bob", seq = 1L, issuedAtMs = now + 120L, ttlMs = 15_000L, payloadText = matchingInvite),
+                    nowMs = now + 120L,
+                ),
+            )
+            val ringing = withTimeout(2_000L) {
+                coordinator.activeCall.first { it?.callId == "call-fresh-env" && it.state == FlashCallState.RINGING }
+            }
+            assertEquals("call-fresh-env", ringing?.callId)
+            assertTrue(coordinator.decline())
+
+            // Direct LAN signaling continues working normally
+            val lanInvite = CallFrameCodec.encode(
+                CallWireFrame.Invite(
+                    callId = "lan-call-1",
+                    from = "carol",
+                    callerName = "Carol",
+                    video = false,
+                ),
+            )
+            assertTrue(coordinator.onInboundText("carol", lanInvite))
+            val lanRinging = withTimeout(2_000L) {
+                coordinator.activeCall.first { it?.callId == "lan-call-1" && it.state == FlashCallState.RINGING }
+            }
+            assertEquals("lan-call-1", lanRinging?.callId)
+        } finally {
+            scope.cancel()
+        }
+    }
 }

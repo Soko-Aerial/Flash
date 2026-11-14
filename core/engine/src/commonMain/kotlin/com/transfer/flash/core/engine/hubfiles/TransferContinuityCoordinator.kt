@@ -9,6 +9,8 @@ import com.transfer.flash.core.security.enterprise.HubFileLayout
 import com.transfer.flash.core.transfer.TransferRouteContinuityPort
 import com.transfer.flash.core.transfer.chunked.IncrementalSha256
 import com.transfer.flash.core.transfer.chunked.Sha256
+import okio.ByteString.Companion.decodeHex
+import okio.ByteString.Companion.encodeUtf8
 import okio.FileSystem
 import okio.Path.Companion.toPath
 import okio.buffer
@@ -90,9 +92,145 @@ public data class ContinuityCheckpoint(
     public val status: ContinuityStatus,
     public val completedPath: String? = null,
     public val finalDigestHex: String? = null,
+    public val lanPartialPath: String? = null,
+    public val senderSourceFingerprint: String? = null,
 ) {
     public val verifiedBytes: Long
         get() = verifiedSpans.sumOf { it.length }
+}
+
+/**
+ * Durable store for [ContinuityCheckpoint]s so route ownership fences, verified partial byte spans,
+ * source identity fingerprints, and terminal states survive process restarts.
+ */
+public interface ContinuityCheckpointStore {
+    public fun loadAll(): List<ContinuityCheckpoint>
+    public fun save(checkpoint: ContinuityCheckpoint)
+    public fun delete(logicalTransferId: String)
+}
+
+/**
+ * Atomic file-per-transfer checkpoint store backed by [FileSystem] in a dedicated host state directory.
+ */
+public class FileContinuityCheckpointStore(
+    private val directory: String,
+    private val fileSystem: FileSystem = FileSystem.SYSTEM,
+) : ContinuityCheckpointStore {
+    private val dirPath = directory.toPath()
+
+    override fun loadAll(): List<ContinuityCheckpoint> {
+        if (!fileSystem.exists(dirPath)) return emptyList()
+        return runCatching {
+            fileSystem.list(dirPath)
+                .filter { it.name.endsWith(EXT) }
+                .mapNotNull { path -> runCatching { decode(fileSystem.read(path) { readUtf8() }) }.getOrNull() }
+        }.getOrDefault(emptyList())
+    }
+
+    override fun save(checkpoint: ContinuityCheckpoint) {
+        val target = pathFor(checkpoint.identity.logicalTransferId)
+        val tmp = "$target.tmp".toPath()
+        fileSystem.createDirectories(dirPath)
+        fileSystem.write(tmp) {
+            writeUtf8(encode(checkpoint))
+        }
+        try {
+            fileSystem.atomicMove(tmp, target)
+        } catch (_: okio.IOException) {
+            if (fileSystem.exists(target)) fileSystem.delete(target, mustExist = false)
+            fileSystem.atomicMove(tmp, target)
+        }
+    }
+
+    override fun delete(logicalTransferId: String) {
+        val target = pathFor(logicalTransferId)
+        runCatching { fileSystem.delete(target, mustExist = false) }
+    }
+
+    private fun pathFor(logicalTransferId: String) =
+        (dirPath / "${Sha256.digest(logicalTransferId.encodeToByteArray()).toLowerHex()}$EXT")
+
+    private fun ByteArray.toLowerHex(): String {
+        val hex = CharArray(size * 2)
+        val digits = "0123456789abcdef"
+        for (i in indices) {
+            val v = this[i].toInt() and 0xff
+            hex[i * 2] = digits[v ushr 4]
+            hex[i * 2 + 1] = digits[v and 0x0f]
+        }
+        return hex.concatToString()
+    }
+
+    private fun encode(c: ContinuityCheckpoint): String {
+        val spans = c.verifiedSpans.joinToString(",") { "${it.offset}:${it.length}" }
+        return buildString {
+            append("v=1\n")
+            append("id=").append(c.identity.logicalTransferId.encodeUtf8().hex()).append('\n')
+            append("sender=").append(c.identity.senderDeviceId.encodeUtf8().hex()).append('\n')
+            append("recipient=").append(c.identity.recipientDeviceId.encodeUtf8().hex()).append('\n')
+            append("name=").append(c.identity.fileName.encodeUtf8().hex()).append('\n')
+            append("bytes=").append(c.identity.plainBytes).append('\n')
+            append("sha=").append(c.identity.fileSha256Hex.orEmpty()).append('\n')
+            append("spans=").append(spans).append('\n')
+            append("route=").append(c.activeRoute.name).append('\n')
+            append("epoch=").append(c.routeEpoch).append('\n')
+            append("status=").append(c.status.name).append('\n')
+            append("completedPath=").append(c.completedPath.orEmpty().encodeUtf8().hex()).append('\n')
+            append("finalDigest=").append(c.finalDigestHex.orEmpty()).append('\n')
+            append("lanPartialPath=").append(c.lanPartialPath.orEmpty().encodeUtf8().hex()).append('\n')
+            append("sourceFp=").append(c.senderSourceFingerprint.orEmpty().encodeUtf8().hex()).append('\n')
+        }
+    }
+
+    private fun decode(raw: String): ContinuityCheckpoint? {
+        val map = HashMap<String, String>()
+        for (line in raw.lineSequence()) {
+            val eq = line.indexOf('=')
+            if (eq <= 0) continue
+            map[line.substring(0, eq)] = line.substring(eq + 1)
+        }
+        if (map["v"] != "1") return null
+        val id = map["id"]?.decodeHex()?.utf8() ?: return null
+        val sender = map["sender"]?.decodeHex()?.utf8() ?: return null
+        val recipient = map["recipient"]?.decodeHex()?.utf8() ?: return null
+        val name = map["name"]?.decodeHex()?.utf8() ?: return null
+        val bytes = map["bytes"]?.toLongOrNull() ?: return null
+        val sha = map["sha"]?.takeIf { it.isNotBlank() }
+        val identity = LogicalTransferIdentity(id, sender, recipient, name, bytes, sha)
+        if (!identity.isValid()) return null
+        val spans = map["spans"].orEmpty()
+            .split(',')
+            .filter { it.isNotBlank() }
+            .mapNotNull { part ->
+                val colon = part.indexOf(':')
+                if (colon <= 0) return@mapNotNull null
+                val off = part.substring(0, colon).toLongOrNull() ?: return@mapNotNull null
+                val len = part.substring(colon + 1).toLongOrNull() ?: return@mapNotNull null
+                if (len <= 0L) null else VerifiedByteSpan(off, len)
+            }
+        val route = RouteOwner.entries.firstOrNull { it.name == map["route"] } ?: RouteOwner.NONE
+        val epoch = map["epoch"]?.toLongOrNull() ?: return null
+        val status = ContinuityStatus.entries.firstOrNull { it.name == map["status"] } ?: return null
+        val completedPath = map["completedPath"]?.takeIf { it.isNotBlank() }?.decodeHex()?.utf8()
+        val finalDigest = map["finalDigest"]?.takeIf { it.isNotBlank() }
+        val lanPartialPath = map["lanPartialPath"]?.takeIf { it.isNotBlank() }?.decodeHex()?.utf8()
+        val sourceFp = map["sourceFp"]?.takeIf { it.isNotBlank() }?.decodeHex()?.utf8()
+        return ContinuityCheckpoint(
+            identity = identity,
+            verifiedSpans = TransferByteAlignment.normalizeSpans(spans, bytes),
+            activeRoute = route,
+            routeEpoch = epoch,
+            status = status,
+            completedPath = completedPath,
+            finalDigestHex = finalDigest,
+            lanPartialPath = lanPartialPath,
+            senderSourceFingerprint = sourceFp,
+        )
+    }
+
+    private companion object {
+        private const val EXT = ".chk"
+    }
 }
 
 public data class ResumePlan(
@@ -201,9 +339,31 @@ public object TransferByteAlignment {
  * Coordinates single active-route ownership, monotonic fencing epochs, verified byte adoption across
  * LAN <-> Hub routes, and atomic single-completion guarantees for a logical transfer.
  */
-public class TransferRouteCoordinator {
+public class TransferRouteCoordinator(
+    private val checkpointStore: ContinuityCheckpointStore? = null,
+) {
     private val lock = PlatformLock()
     private val checkpoints = HashMap<String, ContinuityCheckpoint>()
+
+    init {
+        checkpointStore?.loadAll()?.forEach { loaded ->
+            val normalized = if (loaded.status == ContinuityStatus.ACTIVE && loaded.activeRoute != RouteOwner.NONE) {
+                loaded.copy(
+                    activeRoute = RouteOwner.NONE,
+                    routeEpoch = loaded.routeEpoch + 1L,
+                )
+            } else {
+                loaded
+            }
+            checkpoints[normalized.identity.logicalTransferId] = normalized
+        }
+    }
+
+    private fun putLocked(checkpoint: ContinuityCheckpoint): ContinuityCheckpoint {
+        checkpoints[checkpoint.identity.logicalTransferId] = checkpoint
+        checkpointStore?.save(checkpoint)
+        return checkpoint
+    }
 
     public fun registerOrGet(identity: LogicalTransferIdentity): ContinuityCheckpoint? {
         val norm = identity.normalized()
@@ -211,21 +371,22 @@ public class TransferRouteCoordinator {
         return lock.withLock {
             val existing = checkpoints[norm.logicalTransferId]
             if (existing == null) {
-                val created = ContinuityCheckpoint(
-                    identity = norm,
-                    verifiedSpans = emptyList(),
-                    activeRoute = RouteOwner.NONE,
-                    routeEpoch = 0L,
-                    status = ContinuityStatus.ACTIVE,
+                putLocked(
+                    ContinuityCheckpoint(
+                        identity = norm,
+                        verifiedSpans = emptyList(),
+                        activeRoute = RouteOwner.NONE,
+                        routeEpoch = 0L,
+                        status = ContinuityStatus.ACTIVE,
+                    ),
                 )
-                checkpoints[norm.logicalTransferId] = created
-                created
             } else if (!existing.identity.matches(norm)) {
-                val incompatible = existing.copy(
-                    status = ContinuityStatus.INCOMPATIBLE,
-                    activeRoute = RouteOwner.NONE,
+                putLocked(
+                    existing.copy(
+                        status = ContinuityStatus.INCOMPATIBLE,
+                        activeRoute = RouteOwner.NONE,
+                    ),
                 )
-                checkpoints[norm.logicalTransferId] = incompatible
                 null
             } else {
                 existing
@@ -239,6 +400,13 @@ public class TransferRouteCoordinator {
     public fun tryAcquireRoute(
         identity: LogicalTransferIdentity,
         route: RouteOwner,
+    ): RouteOwnershipClaim? = tryAcquireRoute(identity, route, lanPartialPath = null, sourceFingerprint = null)
+
+    public fun tryAcquireRoute(
+        identity: LogicalTransferIdentity,
+        route: RouteOwner,
+        lanPartialPath: String? = null,
+        sourceFingerprint: String? = null,
     ): RouteOwnershipClaim? {
         if (route == RouteOwner.NONE) return null
         val norm = identity.normalized()
@@ -251,30 +419,75 @@ public class TransferRouteCoordinator {
                 routeEpoch = 0L,
                 status = ContinuityStatus.ACTIVE,
             )
+            if (current.status == ContinuityStatus.COMPLETED || current.status == ContinuityStatus.CANCELLED) {
+                return@withLock null
+            }
             if (!current.identity.matches(norm)) {
-                checkpoints[norm.logicalTransferId] = current.copy(
-                    status = ContinuityStatus.INCOMPATIBLE,
-                    activeRoute = RouteOwner.NONE,
+                putLocked(
+                    current.copy(
+                        status = ContinuityStatus.INCOMPATIBLE,
+                        activeRoute = RouteOwner.NONE,
+                    ),
                 )
                 return@withLock null
             }
             if (current.status != ContinuityStatus.ACTIVE) return@withLock null
+            if (current.senderSourceFingerprint != null &&
+                sourceFingerprint != null &&
+                current.senderSourceFingerprint != sourceFingerprint
+            ) {
+                putLocked(
+                    current.copy(
+                        status = ContinuityStatus.INCOMPATIBLE,
+                        activeRoute = RouteOwner.NONE,
+                    ),
+                )
+                return@withLock null
+            }
             if (current.activeRoute != RouteOwner.NONE && current.activeRoute != route) {
                 return@withLock null
             }
-            // Promote known digest if previous state did not have one yet.
+            // Promote known digest, partial path, and source fingerprint when newly observed.
             val mergedIdentity = if (current.identity.fileSha256Hex == null && norm.fileSha256Hex != null) {
                 current.identity.copy(fileSha256Hex = norm.fileSha256Hex)
             } else {
                 current.identity
             }
             val nextEpoch = current.routeEpoch + 1L
-            checkpoints[norm.logicalTransferId] = current.copy(
-                identity = mergedIdentity,
-                activeRoute = route,
-                routeEpoch = nextEpoch,
+            putLocked(
+                current.copy(
+                    identity = mergedIdentity,
+                    activeRoute = route,
+                    routeEpoch = nextEpoch,
+                    lanPartialPath = lanPartialPath?.takeIf { it.isNotBlank() } ?: current.lanPartialPath,
+                    senderSourceFingerprint = sourceFingerprint?.takeIf { it.isNotBlank() }
+                        ?: current.senderSourceFingerprint,
+                ),
             )
             RouteOwnershipClaim(route = route, epoch = nextEpoch)
+        }
+    }
+
+    /**
+     * Checks that a resumed sender's current source file fingerprint matches any previously recorded
+     * fingerprint for [logicalTransferId]; marks `INCOMPATIBLE` and returns `false` on divergence.
+     */
+    public fun verifySenderSourceFingerprint(
+        logicalTransferId: String,
+        sourceFingerprint: String?,
+    ): Boolean {
+        if (sourceFingerprint.isNullOrBlank()) return true
+        return lock.withLock {
+            val current = checkpoints[logicalTransferId] ?: return@withLock true
+            val existingFp = current.senderSourceFingerprint ?: return@withLock true
+            if (existingFp == sourceFingerprint) return@withLock true
+            putLocked(
+                current.copy(
+                    status = ContinuityStatus.INCOMPATIBLE,
+                    activeRoute = RouteOwner.NONE,
+                ),
+            )
+            false
         }
     }
 
@@ -290,9 +503,11 @@ public class TransferRouteCoordinator {
             if (current.status != ContinuityStatus.ACTIVE) return@withLock null
             if (current.activeRoute != fromRoute || current.routeEpoch != expectedEpoch) return@withLock null
             val nextEpoch = current.routeEpoch + 1L
-            checkpoints[logicalTransferId] = current.copy(
-                activeRoute = toRoute,
-                routeEpoch = nextEpoch,
+            putLocked(
+                current.copy(
+                    activeRoute = toRoute,
+                    routeEpoch = nextEpoch,
+                ),
             )
             RouteOwnershipClaim(route = toRoute, epoch = nextEpoch)
         }
@@ -306,7 +521,17 @@ public class TransferRouteCoordinator {
         return lock.withLock {
             val current = checkpoints[logicalTransferId] ?: return@withLock false
             if (current.activeRoute != route || current.routeEpoch != expectedEpoch) return@withLock false
-            checkpoints[logicalTransferId] = current.copy(activeRoute = RouteOwner.NONE)
+            putLocked(current.copy(activeRoute = RouteOwner.NONE))
+            true
+        }
+    }
+
+    public fun releaseActiveRouteIfHeld(logicalTransferId: String, route: RouteOwner): Boolean {
+        if (route == RouteOwner.NONE) return false
+        return lock.withLock {
+            val current = checkpoints[logicalTransferId] ?: return@withLock false
+            if (current.activeRoute != route) return@withLock false
+            putLocked(current.copy(activeRoute = RouteOwner.NONE))
             true
         }
     }
@@ -324,7 +549,9 @@ public class TransferRouteCoordinator {
                 current.verifiedSpans + span,
                 current.identity.plainBytes,
             )
-            checkpoints[logicalTransferId] = current.copy(verifiedSpans = updated)
+            if (updated != current.verifiedSpans) {
+                putLocked(current.copy(verifiedSpans = updated))
+            }
             true
         }
     }
@@ -344,7 +571,9 @@ public class TransferRouteCoordinator {
                 current.verifiedSpans + spans,
                 current.identity.plainBytes,
             )
-            checkpoints[logicalTransferId] = current.copy(verifiedSpans = updated)
+            if (updated != current.verifiedSpans) {
+                putLocked(current.copy(verifiedSpans = updated))
+            }
             true
         }
     }
@@ -456,10 +685,12 @@ public class TransferRouteCoordinator {
         lock.withLock {
             val latest = checkpoints[norm.logicalTransferId]
             if (latest != null && latest.status == ContinuityStatus.ACTIVE && latest.identity.matches(norm)) {
-                checkpoints[norm.logicalTransferId] = latest.copy(
-                    verifiedSpans = TransferByteAlignment.normalizeSpans(
-                        latest.verifiedSpans + finalSpans,
-                        norm.plainBytes,
+                putLocked(
+                    latest.copy(
+                        verifiedSpans = TransferByteAlignment.normalizeSpans(
+                            latest.verifiedSpans + finalSpans,
+                            norm.plainBytes,
+                        ),
                     ),
                 )
             }
@@ -588,24 +819,45 @@ public class TransferRouteCoordinator {
             if (expectedDigest != null && !Sha256.hexEqualsConstantTime(expectedDigest, normalizedDigest)) {
                 return@withLock false
             }
-            checkpoints[logicalTransferId] = current.copy(
-                activeRoute = RouteOwner.NONE,
-                status = ContinuityStatus.COMPLETED,
-                completedPath = publishedPath,
-                finalDigestHex = normalizedDigest,
-                verifiedSpans = listOf(VerifiedByteSpan(0L, current.identity.plainBytes)),
+            putLocked(
+                current.copy(
+                    activeRoute = RouteOwner.NONE,
+                    status = ContinuityStatus.COMPLETED,
+                    completedPath = publishedPath,
+                    finalDigestHex = normalizedDigest,
+                    verifiedSpans = listOf(VerifiedByteSpan(0L, current.identity.plainBytes)),
+                ),
             )
             true
         }
     }
 
-    public fun cancelTransfer(logicalTransferId: String): Boolean {
+    public fun cancelTransfer(
+        logicalTransferId: String,
+        identityHint: LogicalTransferIdentity? = null,
+    ): Boolean {
         return lock.withLock {
-            val current = checkpoints[logicalTransferId] ?: return@withLock false
+            val current = checkpoints[logicalTransferId]
+            if (current == null) {
+                val hint = identityHint?.normalized() ?: return@withLock false
+                if (!hint.isValid()) return@withLock false
+                putLocked(
+                    ContinuityCheckpoint(
+                        identity = hint,
+                        verifiedSpans = emptyList(),
+                        activeRoute = RouteOwner.NONE,
+                        routeEpoch = 1L,
+                        status = ContinuityStatus.CANCELLED,
+                    ),
+                )
+                return@withLock true
+            }
             if (current.status == ContinuityStatus.COMPLETED) return@withLock false
-            checkpoints[logicalTransferId] = current.copy(
-                activeRoute = RouteOwner.NONE,
-                status = ContinuityStatus.CANCELLED,
+            putLocked(
+                current.copy(
+                    activeRoute = RouteOwner.NONE,
+                    status = ContinuityStatus.CANCELLED,
+                ),
             )
             true
         }
@@ -623,10 +875,12 @@ public class TransferRouteCoordinator {
             val current = checkpoints[logicalTransferId] ?: return@withLock false
             if (current.status != ContinuityStatus.ACTIVE) return@withLock false
             if (current.activeRoute != route || current.routeEpoch != expectedEpoch) return@withLock false
-            checkpoints[logicalTransferId] = current.copy(
-                activeRoute = RouteOwner.NONE,
-                status = ContinuityStatus.COMPLETED,
-                verifiedSpans = listOf(VerifiedByteSpan(0L, current.identity.plainBytes)),
+            putLocked(
+                current.copy(
+                    activeRoute = RouteOwner.NONE,
+                    status = ContinuityStatus.COMPLETED,
+                    verifiedSpans = listOf(VerifiedByteSpan(0L, current.identity.plainBytes)),
+                ),
             )
             true
         }
@@ -639,9 +893,11 @@ public class TransferRouteCoordinator {
         lock.withLock {
             val current = checkpoints[logicalTransferId] ?: return@withLock
             if (current.status != ContinuityStatus.ACTIVE) return@withLock
-            checkpoints[logicalTransferId] = current.copy(
-                activeRoute = RouteOwner.NONE,
-                verifiedSpans = emptyList(),
+            putLocked(
+                current.copy(
+                    activeRoute = RouteOwner.NONE,
+                    verifiedSpans = emptyList(),
+                ),
             )
         }
     }
@@ -656,6 +912,8 @@ public class EngineTransferRouteContinuityPort(
     private val coordinator: TransferRouteCoordinator,
     private val transfersProvider: () -> HubFileTransfers?,
     private val fileSystem: FileSystem = FileSystem.SYSTEM,
+    @Volatile
+    internal var onLanTerminal: ((fileId: String, isSending: Boolean, status: ContinuityStatus) -> Unit)? = null,
 ) : TransferRouteContinuityPort {
 
     private data class LanTrackedTransfer(
@@ -680,6 +938,7 @@ public class EngineTransferRouteContinuityPort(
         chunkSize: Int,
         localPath: String?,
         fileSha256Hex: String?,
+        sourceFingerprint: String?,
     ): Boolean {
         val normFileId = fileId.ifBlank { transferId }
         val selfId = localDeviceId().ifBlank { "local" }
@@ -692,7 +951,12 @@ public class EngineTransferRouteContinuityPort(
             plainBytes = plainBytes,
             fileSha256Hex = fileSha256Hex,
         )
-        val claim = coordinator.tryAcquireRoute(identity, RouteOwner.LAN) ?: return false
+        val claim = coordinator.tryAcquireRoute(
+            identity = identity,
+            route = RouteOwner.LAN,
+            lanPartialPath = if (!isSending) localPath else null,
+            sourceFingerprint = if (isSending) sourceFingerprint else null,
+        ) ?: return false
         trackLock.withLock {
             val prev = trackedByFileId[normFileId]
             trackedByFileId[normFileId] = LanTrackedTransfer(
@@ -705,6 +969,11 @@ public class EngineTransferRouteContinuityPort(
             )
         }
         return true
+    }
+
+    override fun verifySenderSourceFingerprint(fileId: String, sourceFingerprint: String?): Boolean {
+        if (fileId.isBlank()) return true
+        return coordinator.verifySenderSourceFingerprint(fileId, sourceFingerprint)
     }
 
     override fun recordLanVerifiedChunks(
@@ -785,10 +1054,12 @@ public class EngineTransferRouteContinuityPort(
         }
     }
 
-    /** Reads [length] bytes at [offset] from the tracked LAN partial file for LAN -> Hub resumption. */
+    /** Reads [length] bytes at [offset] from the tracked or checkpointed LAN partial file for LAN -> Hub resumption. */
     public fun readLanPartialSpan(fileId: String, offset: Long, length: Int): ByteArray? {
         if (fileId.isBlank() || offset < 0L || length <= 0) return null
-        val path = trackLock.withLock { trackedByFileId[fileId]?.localPath } ?: return null
+        val path = trackLock.withLock { trackedByFileId[fileId]?.localPath }
+            ?: coordinator.snapshot(fileId)?.lanPartialPath
+            ?: return null
         return try {
             val p = path.toPath()
             if (!fileSystem.exists(p)) return null
@@ -830,7 +1101,10 @@ public class EngineTransferRouteContinuityPort(
                 ?: return false
             coordinator.completeTransfer(normFileId, tracked.epoch, RouteOwner.LAN, resolvedPath, resolvedDigest)
         }
-        if (won) trackLock.withLock { trackedByFileId.remove(normFileId) }
+        if (won) {
+            trackLock.withLock { trackedByFileId.remove(normFileId) }
+            onLanTerminal?.invoke(normFileId, isSending, ContinuityStatus.COMPLETED)
+        }
         return won
     }
 
@@ -843,6 +1117,7 @@ public class EngineTransferRouteContinuityPort(
         val normFileId = fileId?.takeIf { it.isNotBlank() } ?: transferId
         coordinator.cancelTransfer(normFileId)
         trackLock.withLock { trackedByFileId.remove(normFileId) }
+        onLanTerminal?.invoke(normFileId, false, ContinuityStatus.CANCELLED)
     }
 
     override fun isTerminalElsewhere(fileId: String): Boolean {
