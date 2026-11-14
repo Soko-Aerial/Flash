@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -520,11 +521,16 @@ fun FlashBottomNav(
         if (delta > 0) 1 else if (delta < 0) -1 else 0
     }
 
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val extraBarHeight = ((fontScale - 1f) * 22f).dp
+    val effectiveBarHeight = FlashBottomNavDefaults.barHeight + extraBarHeight
+    val effectiveChipHeight = ChipHeight + extraBarHeight
+
     Box(
         modifier = modifier
             .fillMaxWidth()
             .graphicsLayer {
-                val hideDistance = (FlashBottomNavDefaults.barHeight + FlashBottomNavDefaults.bottomMargin + 32.dp).toPx()
+                val hideDistance = (effectiveBarHeight + FlashBottomNavDefaults.bottomMargin + 32.dp).toPx()
                 translationY = (1f - navVisibleFraction.value) * hideDistance
                 alpha = navVisibleFraction.value.coerceIn(0f, 1f)
             }
@@ -554,6 +560,7 @@ fun FlashBottomNav(
                                 isSelected = index == selectedIndex,
                                 hopDirection = if (index == selectedIndex) hopDirection else 0,
                                 isRtl = isRtl,
+                                barHeight = effectiveBarHeight,
                                 onClick = {
                                     haptics(FlashHaptic.Tick)
                                     onTabSelected(item.destination)
@@ -572,7 +579,7 @@ fun FlashBottomNav(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(FlashBottomNavDefaults.barHeight)
+                .height(effectiveBarHeight)
                 .shadow(elevation, FlashShapes.navBar, clip = false)
                 .clip(FlashShapes.navBar)
                 .background(colors.backgroundSurface)
@@ -585,7 +592,7 @@ fun FlashBottomNav(
             val tabWidthPx = if (itemCount > 0) innerWidth.toFloat() / itemCount else 0f
             val chipGapPx = ChipGap.toPx()
             val chipWidthPx = (tabWidthPx - chipGapPx).coerceAtLeast(0f)
-            val chipHeightPx = ChipHeight.roundToPx().coerceAtMost(constraints.maxHeight)
+            val chipHeightPx = effectiveChipHeight.roundToPx().coerceAtMost(constraints.maxHeight)
 
             val chipPlaceable = measurables[0].measure(
                 Constraints.fixed(
@@ -652,6 +659,7 @@ private fun FlashBottomNavItemCell(
     isSelected: Boolean,
     hopDirection: Int = 0,
     isRtl: Boolean = false,
+    barHeight: Dp = FlashBottomNavDefaults.barHeight,
     onClick: () -> Unit,
     onReselect: () -> Unit,
     modifier: Modifier = Modifier,
@@ -802,7 +810,7 @@ private fun FlashBottomNavItemCell(
 
     Box(
         modifier = modifier
-            .height(FlashBottomNavDefaults.barHeight)
+            .height(barHeight)
             .pointerHoverIcon(PointerIcon.Hand)
             .selectable(
                 selected = isSelected,

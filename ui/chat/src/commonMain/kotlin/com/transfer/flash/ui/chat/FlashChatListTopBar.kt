@@ -15,8 +15,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,7 +84,7 @@ fun FlashChatListTopBar(
                 .padding(horizontal = FlashSpacing.space4),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
+            FlashText(
                 text = title,
                 modifier = Modifier
                     .weight(1f)
@@ -105,7 +105,7 @@ fun FlashChatListTopBar(
                         )
                     }
                     if (badge != null) {
-                        Text(
+                        FlashText(
                             text = badge,
                             modifier = Modifier
                                 .padding(top = FlashSpacing.space4, end = FlashSpacing.space4)
@@ -260,6 +260,10 @@ fun FlashChatListTopBar(
                 }
             }
         }
+        HorizontalDivider(
+            thickness = FlashDimensions.borderHairline,
+            color = colors.borderSubtle,
+        )
     }
 }
 

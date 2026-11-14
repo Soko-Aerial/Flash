@@ -23,14 +23,17 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -487,12 +490,17 @@ fun FlashMediaViewer(
             ) {
                 val caption = currentItem.image.caption?.trim()
                 if (!caption.isNullOrEmpty()) {
-                    FlashText(
-                        text = caption,
-                        style = FlashTheme.typography.bodyDefault,
-                        color = colors.mediaViewerChromeText,
-                        maxLines = 4,
-                    )
+                    Box(
+                        modifier = Modifier
+                            .heightIn(max = 120.dp)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        FlashText(
+                            text = caption,
+                            style = FlashTheme.typography.bodyDefault,
+                            color = colors.mediaViewerChromeText,
+                        )
+                    }
                     Spacer(modifier = Modifier.height(FlashSpacing.space8))
                 }
                 FlashText(

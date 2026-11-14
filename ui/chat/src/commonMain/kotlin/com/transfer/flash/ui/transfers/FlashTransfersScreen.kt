@@ -376,7 +376,9 @@ fun FlashTransfersScreen(
     ) { page ->
         when (page) {
             TransfersPageState.Error -> Box(
-                modifier = surface.verticalScroll(rememberScrollState()).padding(vertical = FlashSpacing.space24),
+                modifier = surface
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = FlashSpacing.space24, bottom = FlashSpacing.space24 + bottomInset),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashErrorState(
@@ -385,8 +387,8 @@ fun FlashTransfersScreen(
                     onRetry = { onRetryLoad?.invoke() },
                 )
             }
-            TransfersPageState.Loading -> LoadingRows(surface)
-            TransfersPageState.Empty -> Column(modifier = surface) {
+            TransfersPageState.Loading -> LoadingRows(surface.padding(bottom = bottomInset))
+            TransfersPageState.Empty -> Column(modifier = surface.padding(bottom = bottomInset)) {
                 // The empty state is still the Transfers page: keep the same page heading the
                 // populated list shows (one shared composable, so the two cannot drift apart),
                 // then let the empty panel take the remaining height.
@@ -608,7 +610,7 @@ private fun PopulatedSections(
                         text = "ACTIVE",
                         modifier = Modifier.weight(1f).semantics { heading() },
                         style = FlashTheme.typography.captionEmphasis,
-                        color = colors.textTertiary,
+                        color = colors.textSecondary,
                     )
                     if (pausableItems.size > 1) {
                         val anyActiveRunning = pausableItems.any { it.state == FlashTransferState.Active }
@@ -736,7 +738,7 @@ private fun PopulatedSections(
                         text = "HISTORY",
                         modifier = Modifier.weight(1f).semantics { heading() },
                         style = FlashTheme.typography.captionEmphasis,
-                        color = colors.textTertiary,
+                        color = colors.textSecondary,
                     )
                     if (onClearHistory != null) {
                         Box(
@@ -1003,14 +1005,16 @@ private fun TransferRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                TransferProgressBar(
-                    fraction = fraction,
-                    fillTint = fillTint,
-                    isActive = item.state == FlashTransferState.Active && !item.isVerifying,
-                    speedBytesPerSec = item.speedBytesPerSec,
-                    reduceMotion = FlashTheme.motion.reduceMotion,
-                    modifier = Modifier.padding(top = FlashSpacing.space4),
-                )
+                if (item.state != FlashTransferState.Offered) {
+                    TransferProgressBar(
+                        fraction = fraction,
+                        fillTint = fillTint,
+                        isActive = item.state == FlashTransferState.Active && !item.isVerifying,
+                        speedBytesPerSec = item.speedBytesPerSec,
+                        reduceMotion = FlashTheme.motion.reduceMotion,
+                        modifier = Modifier.padding(top = FlashSpacing.space4),
+                    )
+                }
                 if (progressSummary != null &&
                     item.state != FlashTransferState.Completed &&
                     item.state != FlashTransferState.Offered

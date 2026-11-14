@@ -37,6 +37,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.sp
@@ -305,13 +306,17 @@ internal fun Modifier.hubRuleBelow(inset: Dp = 0.dp): Modifier {
 @Composable
 internal fun HubMark(initials: String, seed: String, size: Dp, modifier: Modifier = Modifier) {
     val (bg, fg) = com.transfer.flash.ui.avatar.flashAvatarColorsFor(seed)
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val badgeTextScale = fontScale.coerceAtMost(1.2f) / fontScale
+    val baseStyle = if (size >= 48.dp) FlashTheme.typography.headingSmall else FlashTheme.typography.bodyEmphasis
+    val scaledSize = baseStyle.fontSize * badgeTextScale
     Box(
         modifier = modifier.size(size).clip(HubShapes.mark(size)).background(bg),
         contentAlignment = Alignment.Center,
     ) {
         com.transfer.flash.ui.theme.FlashText(
             initials.take(2).uppercase(),
-            style = if (size >= 48.dp) FlashTheme.typography.headingSmall else FlashTheme.typography.bodyEmphasis,
+            style = baseStyle.copy(fontSize = scaledSize, lineHeight = scaledSize),
             color = fg,
             maxLines = 1,
         )

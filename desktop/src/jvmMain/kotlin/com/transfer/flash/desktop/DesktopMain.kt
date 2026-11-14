@@ -218,6 +218,10 @@ public fun main(args: Array<String> = emptyArray()) {
         onDispose {}
     }
 
+    val appIconPainter = remember {
+        BitmapPainter(DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0).toComposeImageBitmap())
+    }
+
     // System Tray
     if (SystemTray.isSupported()) {
         val currentMode by engine.discoveryMode.collectAsState()
@@ -226,7 +230,7 @@ public fun main(args: Array<String> = emptyArray()) {
         val trayNavItems = desktopTrayNavItems(nav.hubEnrolled)
 
         Tray(
-            icon = painterResource(FlashIcons.Tray.drawableRes),
+            icon = appIconPainter,
             state = trayState,
             tooltip = trayTooltip,
             onAction = {
@@ -287,10 +291,6 @@ public fun main(args: Array<String> = emptyArray()) {
                 )
             },
         )
-    }
-
-    val appIconPainter = remember {
-        BitmapPainter(DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0).toComposeImageBitmap())
     }
 
     if (isWindowVisible) {
@@ -422,42 +422,53 @@ public fun main(args: Array<String> = emptyArray()) {
     run {
         val toastDark = FlashSettingsMath.resolveDarkTheme(mode = desktopSettings.themeMode, systemDark = isSystemInDarkTheme())
         val toastPerformance = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
-        FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
-            FlashTheme(
-                darkTheme = toastDark,
-                dynamicAccent = desktopSettings.dynamicAccent,
-                hapticsEnabled = false,
-                minimalChrome = toastPerformance.minimalChrome,
-                ultraLowUi = toastPerformance.ultraLowUi,
-                motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
-            ) {
-                DesktopTransferToastWindow(
-                    cards = if (desktopSettings.showNotifications) toastCards else emptyList(),
-                    appInForeground = isWindowVisible && isWindowFocused && !windowState.isMinimized,
-                    onAction = { action, card ->
-                        notificationManager.handleToastAction(
-                            action = action,
-                            card = card,
-                            onReviewPairing = { javax.swing.SwingUtilities.invokeLater { bringWindowToFront() } },
-                            onActionFailed = { error ->
-                                javax.swing.SwingUtilities.invokeLater {
-                                    toastActionError = error
-                                    bringWindowToFront()
-                                }
-                            },
-                            onOpenConversation = { convId ->
-                                javax.swing.SwingUtilities.invokeLater {
-                                    isWindowVisible = true
-                                    bringWindowToFront()
-                                    nav.navigate(FlashDestination.Conversation, conversationId = convId)
-                                }
-                            },
-                        )
-                    },
-                    onDismiss = { id ->
-                        notificationManager.dismissToast(id)
-                    },
-                )
+        val toastBaseDensity = androidx.compose.ui.platform.LocalDensity.current
+        val toastEffectiveDensity = remember(toastBaseDensity, desktopSettings.uiScale) {
+            androidx.compose.ui.unit.Density(
+                density = toastBaseDensity.density * desktopSettings.uiScale.coerceIn(0.75f, 1.5f),
+                fontScale = toastBaseDensity.fontScale,
+            )
+        }
+        CompositionLocalProvider(
+            androidx.compose.ui.platform.LocalDensity provides toastEffectiveDensity,
+        ) {
+            FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
+                FlashTheme(
+                    darkTheme = toastDark,
+                    dynamicAccent = desktopSettings.dynamicAccent,
+                    hapticsEnabled = false,
+                    minimalChrome = toastPerformance.minimalChrome,
+                    ultraLowUi = toastPerformance.ultraLowUi,
+                    motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
+                ) {
+                    DesktopTransferToastWindow(
+                        cards = if (desktopSettings.showNotifications) toastCards else emptyList(),
+                        appInForeground = isWindowVisible && isWindowFocused && !windowState.isMinimized,
+                        onAction = { action, card ->
+                            notificationManager.handleToastAction(
+                                action = action,
+                                card = card,
+                                onReviewPairing = { javax.swing.SwingUtilities.invokeLater { bringWindowToFront() } },
+                                onActionFailed = { error ->
+                                    javax.swing.SwingUtilities.invokeLater {
+                                        toastActionError = error
+                                        bringWindowToFront()
+                                    }
+                                },
+                                onOpenConversation = { convId ->
+                                    javax.swing.SwingUtilities.invokeLater {
+                                        isWindowVisible = true
+                                        bringWindowToFront()
+                                        nav.navigate(FlashDestination.Conversation, conversationId = convId)
+                                    }
+                                },
+                            )
+                        },
+                        onDismiss = { id ->
+                            notificationManager.dismissToast(id)
+                        },
+                    )
+                }
             }
         }
     }

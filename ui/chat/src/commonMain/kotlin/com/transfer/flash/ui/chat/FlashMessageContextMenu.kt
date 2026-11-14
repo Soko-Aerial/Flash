@@ -291,7 +291,7 @@ fun FlashQuickReactionsBar(
 
             Box(
                 modifier = Modifier
-                    .size(FlashSpacing.space32)
+                    .size(36.dp)
                     .graphicsLayer {
                         scaleX = scale * pressScale
                         scaleY = scale * pressScale
@@ -335,7 +335,7 @@ fun FlashQuickReactionsBar(
 
         Box(
             modifier = Modifier
-                .size(FlashSpacing.space32)
+                .size(36.dp)
                 .graphicsLayer {
                     scaleX = pickerScale
                     scaleY = pickerScale
@@ -446,7 +446,7 @@ fun FlashContextMenuCard(
 
     Column(
         modifier = modifier
-            .width(220.dp)
+            .widthIn(min = 200.dp, max = 260.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(colors.backgroundSurface)
             .border(FlashDimensions.borderHairline, colors.borderSubtle, RoundedCornerShape(16.dp))

@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -22,10 +21,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 
 /** Copy of the shell-only Hub screen (UI-058 H3/H4). The real sections arrive in H7. */
@@ -51,6 +53,7 @@ fun FlashHubPlaceholderScreen(
     onBrowseGroups: (() -> Unit)? = null,
     onRefresh: (() -> Unit)? = null,
     isRefreshing: Boolean = false,
+    bottomInset: Dp = 0.dp,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -62,10 +65,11 @@ fun FlashHubPlaceholderScreen(
                 .background(colors.backgroundApp)
                 .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = FlashSpacing.space16),
+                .padding(horizontal = FlashSpacing.space16)
+                .padding(bottom = bottomInset),
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         ) {
-            Text(
+            FlashText(
                 text = FlashHubPlaceholderCopy.TITLE,
                 modifier = Modifier
                     .heightIn(min = FlashDimensions.headerHeight)
@@ -74,7 +78,7 @@ fun FlashHubPlaceholderScreen(
                 style = typography.headingMedium,
                 color = colors.textPrimary,
             )
-            Text(
+            FlashText(
                 text = FlashHubPlaceholderCopy.BODY,
                 modifier = Modifier.padding(horizontal = FlashSpacing.space12),
                 style = typography.bodyDefault,
@@ -91,7 +95,7 @@ fun FlashHubPlaceholderScreen(
                     horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
                 ) {
                     FlashIcon(icon = FlashIcons.Relay, contentDescription = null)
-                    Text(
+                    FlashText(
                         text = FlashHubPlaceholderCopy.BROWSE_GROUPS,
                         style = typography.bodyEmphasis,
                         color = colors.textPrimary,
@@ -109,7 +113,7 @@ fun FlashHubPlaceholderScreen(
                     horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
                 ) {
                     FlashIcon(icon = FlashIcons.Retry, contentDescription = null)
-                    Text(
+                    FlashText(
                         text = FlashHubPlaceholderCopy.REFRESH,
                         style = typography.bodyEmphasis,
                         color = colors.textPrimary,

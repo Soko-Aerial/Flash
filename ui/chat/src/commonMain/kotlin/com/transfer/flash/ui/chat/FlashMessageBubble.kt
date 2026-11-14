@@ -452,15 +452,20 @@ private fun FlashMessageBubbleUltraLow(
             }
             FlashMessageTimestampRowUltraLow(
                 message = message,
-                modifier = Modifier.padding(top = FlashSpacing.space2),
+                modifier = Modifier.align(Alignment.End).padding(top = FlashSpacing.space2),
                 deliveryStatus = deliveryStatus,
                 onRetryMessage = onRetryMessage,
             )
             FlashMessageFailedRetryRow(
                 message = message,
                 onRetryMessage = onRetryMessage,
+                modifier = Modifier.align(Alignment.End),
             )
-            FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
+            FlashRadioDeliveryLine(
+                message = message,
+                modifier = Modifier.align(Alignment.End),
+                onStopRadioRetry = onStopRadioRetry,
+            )
         }
     }
 }
@@ -478,7 +483,7 @@ private fun FlashMessageTimestampRowUltraLow(
     val timestampColor = if (message.isMine) colors.chatTextTimestampOutgoing else colors.chatTextTimestamp
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -489,6 +494,7 @@ private fun FlashMessageTimestampRowUltraLow(
                 lineHeight = 14.sp,
             ),
             color = timestampColor,
+            maxLines = 1,
         )
         if (message.isMine) {
             Spacer(modifier = Modifier.width(FlashSpacing.space4))
@@ -498,9 +504,8 @@ private fun FlashMessageTimestampRowUltraLow(
                 val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
                 FlashDeliveryStatusIcon(
                     status = status,
-                    onRetry = if (status == com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed && onRetryMessage != null) {
-                        { onRetryMessage(message.id) }
-                    } else null,
+                    // FlashMessageFailedRetryRow immediately below owns the 48dp retry target.
+                    onRetry = null,
                 )
             }
         }
@@ -729,7 +734,7 @@ private fun FlashBubbleSurface(
             }
             FlashMessageTimestampRow(
                 message = message,
-                modifier = Modifier.padding(top = FlashSpacing.space2),
+                modifier = Modifier.align(Alignment.End).padding(top = FlashSpacing.space2),
                 deliveryStatus = deliveryStatus,
                 onOpenActions = onOpenActions,
                 onOpenMessageInfo = onOpenMessageInfo,
@@ -738,8 +743,13 @@ private fun FlashBubbleSurface(
             FlashMessageFailedRetryRow(
                 message = message,
                 onRetryMessage = onRetryMessage,
+                modifier = Modifier.align(Alignment.End),
             )
-            FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
+            FlashRadioDeliveryLine(
+                message = message,
+                modifier = Modifier.align(Alignment.End),
+                onStopRadioRetry = onStopRadioRetry,
+            )
         }
     }
 }
@@ -761,7 +771,6 @@ private fun FlashRadioDeliveryLine(
     val typography = FlashTheme.typography
     Row(
         modifier = modifier
-            .fillMaxWidth()
             .padding(top = FlashSpacing.space4),
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
@@ -841,7 +850,7 @@ private fun FlashMessageTimestampRow(
     }
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -852,6 +861,7 @@ private fun FlashMessageTimestampRow(
                 lineHeight = 14.sp,
             ),
             color = timestampColor,
+            maxLines = 1,
         )
         if (message.isMine) {
             Spacer(modifier = Modifier.padding(start = FlashSpacing.space4))
@@ -895,9 +905,8 @@ private fun FlashMessageTimestampRow(
                     val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
                     FlashDeliveryStatusIcon(
                         status = status,
-                        onRetry = if (status == com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed && onRetryMessage != null) {
-                            { onRetryMessage(message.id) }
-                        } else null,
+                        // FlashMessageFailedRetryRow immediately below owns the 48dp retry target.
+                        onRetry = null,
                     )
                 }
             }
@@ -906,9 +915,7 @@ private fun FlashMessageTimestampRow(
             Spacer(modifier = Modifier.width(FlashSpacing.space4))
             Box(
                 modifier = Modifier
-                    // Keep the width for touch, with a compact visual height for the timestamp.
-                    // Foundation expands the clickable height for touch input.
-                    .size(width = FlashDimensions.minTouchTarget, height = FlashSpacing.space20)
+                    .size(width = 24.dp, height = FlashSpacing.space20)
                     .clip(CircleShape)
                     .clickable(
                         onClick = {
@@ -947,7 +954,6 @@ private fun FlashMessageFailedRetryRow(
     val haptics = rememberFlashHaptics()
     Row(
         modifier = modifier
-            .fillMaxWidth()
             .padding(top = FlashSpacing.space2),
         horizontalArrangement = Arrangement.End,
     ) {

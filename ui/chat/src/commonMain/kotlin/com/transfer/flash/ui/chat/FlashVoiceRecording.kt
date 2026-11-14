@@ -2,11 +2,12 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -19,7 +20,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -36,8 +38,10 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -245,7 +249,7 @@ fun FlashMicButton(
     val lockThresholdPx = with(density) { FlashVoiceRecordingMath.LOCK_SLIDE_DP.dp.toPx() }
 
     val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
+    val scope = rememberCoroutineScope()
 
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
@@ -255,15 +259,10 @@ fun FlashMicButton(
     val isNearCancel = isRecording && -dragOffsetX >= cancelThresholdPx * 0.75f
     val isNearLock = isRecording && -dragOffsetY >= lockThresholdPx * 0.75f
 
-    // `scale` stays a State and is read inside `graphicsLayer` (EXP-013): the spring settles over
-    // ~400ms, and only the two colour animations below genuinely need composition (they feed
-    // `background()` and a tint parameter), so unwrapping this one would extend the recomposition
-    // window to the whole spring tail for no reason. Do not "simplify" it to match them.
-    val scale = animateFloatAsState(
-        targetValue = if ((isPressed || isRecording) && !motion.reduceMotion) 0.90f else 1.0f,
-        animationSpec = motion.springSnappySpec(),
-        label = "mic_button_press_scale",
-    )
+    // `pressScale` stays an Animatable and is read inside `graphicsLayer` (EXP-013) so the spring
+    // never recomposes the button. Fast taps/clicks still dip briefly before springing back so both
+    // Desktop clicks and Android taps feel responsive.
+    val pressScale = remember { Animatable(1f) }
     val backgroundColor by animateColorAsState(
         targetValue = when {
             isNearCancel -> colors.textError.copy(alpha = 0.25f)
@@ -295,13 +294,25 @@ fun FlashMicButton(
                 minWidth = FlashDimensions.minTouchTarget,
                 minHeight = FlashDimensions.minTouchTarget,
             )
-            .pointerInput(enabled) {
+            .pointerInput(enabled, motion.reduceMotion) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     dragOffsetX = 0f
                     dragOffsetY = 0f
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
+                    val pressInteraction = PressInteraction.Press(down.position)
+                    scope.launch {
+                        interactionSource.emit(pressInteraction)
+                    }
+                    if (!motion.reduceMotion) {
+                        scope.launch {
+                            pressScale.animateTo(
+                                targetValue = 0.84f,
+                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 900f),
+                            )
+                        }
+                    }
                     haptics(FlashHaptic.Confirm)
                     startRecord()
                     val touchSlop = viewConfiguration.touchSlop
@@ -341,6 +352,31 @@ fun FlashMicButton(
                     } finally {
                         dragOffsetX = 0f
                         dragOffsetY = 0f
+                        scope.launch {
+                            interactionSource.emit(
+                                if (released) {
+                                    PressInteraction.Release(pressInteraction)
+                                } else {
+                                    PressInteraction.Cancel(pressInteraction)
+                                },
+                            )
+                        }
+                        if (motion.reduceMotion) {
+                            scope.launch { pressScale.snapTo(1f) }
+                        } else {
+                            scope.launch {
+                                if (pressScale.value > 0.90f) {
+                                    pressScale.animateTo(
+                                        targetValue = 0.86f,
+                                        animationSpec = spring(dampingRatio = 0.7f, stiffness = 1200f),
+                                    )
+                                }
+                                pressScale.animateTo(
+                                    targetValue = 1.0f,
+                                    animationSpec = spring(dampingRatio = 0.38f, stiffness = 520f),
+                                )
+                            }
+                        }
                         if (!released) interrupted()
                     }
                     if (released) recordEnd()
@@ -372,8 +408,8 @@ fun FlashMicButton(
             modifier = Modifier
                 .size(FlashSpacing.space44)
                 .graphicsLayer {
-                    scaleX = scale.value
-                    scaleY = scale.value
+                    scaleX = pressScale.value
+                    scaleY = pressScale.value
                     translationX = slideX
                     translationY = slideY
                 }
@@ -441,7 +477,7 @@ fun FlashVoiceRecordingBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(40.dp)
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .clip(FlashShapes.composerInput)
             .background(if (isCancelArmed) colors.textError.copy(alpha = 0.12f) else colors.composerInputBackground)
             .border(

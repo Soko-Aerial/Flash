@@ -540,41 +540,48 @@ public fun FlashRadioPermissionBanner(
     val colors = FlashTheme.colors
     val washTint = colors.accentSecondary
     val iconTint = radioStatusTint(HubTone.WARNING)
-    Row(
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(RadioCardShape)
             .background(washTint.copy(alpha = 0.10f))
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
             .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
-        FlashIcon(
-            icon = FlashIcons.Bluetooth,
-            contentDescription = null,
-            tint = iconTint,
-            size = FlashDimensions.iconSm,
-        )
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
-            FlashText(
-                text = FlashRadioCopy.PERMISSION_CARD_TITLE,
-                style = FlashTheme.typography.bodyEmphasis,
-                color = colors.textPrimary,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            FlashIcon(
+                icon = FlashIcons.Bluetooth,
+                contentDescription = null,
+                tint = iconTint,
+                size = FlashDimensions.iconSm,
             )
-            FlashText(
-                text = FlashRadioCopy.PERMISSION_REASON_TEXT,
-                style = FlashTheme.typography.metadataDefault,
-                color = colors.textSecondary,
-            )
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
+                FlashText(
+                    text = FlashRadioCopy.PERMISSION_CARD_TITLE,
+                    style = FlashTheme.typography.bodyEmphasis,
+                    color = colors.textPrimary,
+                )
+                FlashText(
+                    text = FlashRadioCopy.PERMISSION_REASON_TEXT,
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textSecondary,
+                )
+            }
         }
-        if (isDenied) {
-            FlashHubTextAction(FlashRadioCopy.ACTION_OPEN_BT_SETTINGS, onOpenSettings)
-        } else {
-            FlashHubButton(
-                label = FlashRadioCopy.ACTION_GRANT_PERMISSION,
-                onClick = onRequestPermission,
-            )
+        Box(modifier = Modifier.align(Alignment.End)) {
+            if (isDenied) {
+                FlashHubTextAction(FlashRadioCopy.ACTION_OPEN_BT_SETTINGS, onOpenSettings)
+            } else {
+                FlashHubButton(
+                    label = FlashRadioCopy.ACTION_GRANT_PERMISSION,
+                    onClick = onRequestPermission,
+                )
+            }
         }
     }
 }

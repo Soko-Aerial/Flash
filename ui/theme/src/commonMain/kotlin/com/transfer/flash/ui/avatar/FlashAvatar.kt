@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -34,7 +35,9 @@ fun FlashAvatar(
     val paletteIndex = seed.hashCode().absoluteValue % colors.avatarPaletteBackgrounds.size
     val resolvedBackground = background ?: colors.avatarPaletteBackgrounds[paletteIndex]
     val resolvedForeground = foreground ?: colors.avatarPaletteForegrounds[paletteIndex]
-    val fontSize = flashAvatarInitialFontSize(size)
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val badgeTextScale = fontScale.coerceAtMost(1.2f) / fontScale
+    val fontSize = flashAvatarInitialFontSize(size) * badgeTextScale
     val initialStyle = remember(typography, fontSize) {
         typography.copy(
             fontSize = fontSize,

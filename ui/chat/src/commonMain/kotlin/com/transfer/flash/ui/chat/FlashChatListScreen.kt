@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -532,27 +533,36 @@ fun FlashChatListScreen(
 @Composable
 private fun FlashPendingJoinRow(groupName: String) {
     val colors = FlashTheme.colors
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
-            .semantics(mergeDescendants = true) { contentDescription = "$groupName, waiting for approval" },
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-    ) {
-        FlashAvatar(
-            initials = groupName.take(2).uppercase(),
-            seed = groupName,
-            size = FlashDimensions.avatarLg,
-        )
-        Column(Modifier.weight(1f)) {
-            FlashText(text = groupName, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary, maxLines = 1)
-            FlashText(
-                text = "Waiting for approval",
-                style = FlashTheme.typography.metadataDefault,
-                color = colors.textSecondary,
+    Column(modifier = Modifier.fillMaxWidth().background(colors.backgroundSurface)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
+                .semantics(mergeDescendants = true) { contentDescription = "$groupName, waiting for approval" },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            FlashAvatar(
+                initials = groupName.take(2).uppercase(),
+                seed = groupName,
+                size = FlashDimensions.avatarLg,
             )
+            Column(Modifier.weight(1f)) {
+                FlashText(text = groupName, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary, maxLines = 1)
+                FlashText(
+                    text = "Waiting for approval",
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textSecondary,
+                )
+            }
         }
+        HorizontalDivider(
+            modifier = Modifier.padding(
+                start = FlashSpacing.space16 + FlashDimensions.avatarLg + FlashSpacing.space12,
+            ),
+            thickness = FlashDimensions.borderHairline,
+            color = colors.borderSubtle,
+        )
     }
 }
 

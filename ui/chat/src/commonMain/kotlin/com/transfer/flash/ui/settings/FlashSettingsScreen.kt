@@ -57,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -1279,6 +1280,7 @@ fun FlashSettingsScreen(
                             subtitle = "Remove corporate certificates and stop hub relay",
                             value = "Disconnect",
                             onClick = { showDisconnectEnterpriseConfirmation = true },
+                            destructive = true,
                         )
                     } else {
                         val unenrolledHubTerms = FlashSettingsMath.enterpriseHubRowTerms(enrolled = false)
@@ -1807,6 +1809,7 @@ private fun ValueRow(
     subtitle: String,
     value: String?,
     onClick: (() -> Unit)? = null,
+    destructive: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
@@ -1838,13 +1841,17 @@ private fun ValueRow(
     ) {
         FlashIcon(
             icon = iconSpec,
-            tint = colors.textSecondary,
+            tint = if (destructive) colors.textError else colors.textSecondary,
             size = FlashDimensions.iconMd,
             contentDescription = null,
         )
         Spacer(Modifier.width(FlashSpacing.space12))
         Column(Modifier.weight(1f)) {
-            FlashText(text = title, style = FlashTheme.typography.bodyDefault, color = colors.textPrimary)
+            FlashText(
+                text = title,
+                style = FlashTheme.typography.bodyDefault,
+                color = if (destructive) colors.textError else colors.textPrimary,
+            )
             FlashText(
                 text = subtitle,
                 style = FlashTheme.typography.metadataDefault,
@@ -1857,6 +1864,16 @@ private fun ValueRow(
                 text = value,
                 style = FlashTheme.typography.metadataDefault,
                 color = colors.textSecondary,
+            )
+        }
+        if (onClick != null) {
+            Spacer(Modifier.width(FlashSpacing.space4))
+            FlashIcon(
+                icon = FlashIcons.ChevronDown,
+                tint = if (destructive) colors.textError else colors.textTertiary,
+                size = FlashDimensions.iconSm,
+                contentDescription = null,
+                modifier = Modifier.rotate(-90f),
             )
         }
     }

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -108,7 +109,7 @@ fun FlashArchivedChatsRow(
             if (unreadCount > 0) {
                 Box(
                     modifier = Modifier
-                        .height(20.dp)
+                        .defaultMinSize(minWidth = 20.dp, minHeight = 20.dp)
                         .clip(CircleShape)
                         .background(colors.accentFill)
                         .padding(horizontal = FlashSpacing.space8),
@@ -116,7 +117,7 @@ fun FlashArchivedChatsRow(
                 ) {
                     FlashText(
                         text = if (unreadCount > 99) "99+" else unreadCount.toString(),
-                        style = typography.captionEmphasis,
+                        style = typography.metadataEmphasis,
                         color = colors.onAccentFill,
                     )
                 }
@@ -191,6 +192,10 @@ fun FlashArchivedChatsTopBar(
                 }
             }
         }
+        HorizontalDivider(
+            thickness = FlashDimensions.borderHairline,
+            color = colors.borderSubtle,
+        )
     }
 }
 

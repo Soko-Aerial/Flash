@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -25,6 +24,7 @@ import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
@@ -63,7 +63,7 @@ fun FlashSelectionToolbar(
         IconButton(
             onClick = onClose,
             modifier = Modifier
-                .size(FlashSpacing.space40)
+                .size(FlashDimensions.minTouchTarget)
                 .semantics { contentDescription = "Exit selection mode" },
         ) {
             FlashIcon(
@@ -75,7 +75,7 @@ fun FlashSelectionToolbar(
 
         Spacer(modifier = Modifier.width(FlashSpacing.space8))
 
-        Text(
+        FlashText(
             text = "$selectedCount selected",
             style = typography.headingSmall.copy(fontWeight = FontWeight.SemiBold),
             color = colors.textPrimary,
@@ -87,7 +87,7 @@ fun FlashSelectionToolbar(
             IconButton(
                 onClick = onReply,
                 modifier = Modifier
-                    .size(FlashSpacing.space40)
+                    .size(FlashDimensions.minTouchTarget)
                     .semantics { contentDescription = "Reply to selected message" },
             ) {
                 FlashIcon(
@@ -114,7 +114,7 @@ fun FlashSelectionToolbar(
         IconButton(
             onClick = onForward,
             modifier = Modifier
-                .size(FlashSpacing.space40)
+                .size(FlashDimensions.minTouchTarget)
                 .semantics { contentDescription = "Forward selected messages" },
         ) {
             FlashIcon(
@@ -127,7 +127,7 @@ fun FlashSelectionToolbar(
         IconButton(
             onClick = onDelete,
             modifier = Modifier
-                .size(FlashSpacing.space40)
+                .size(FlashDimensions.minTouchTarget)
                 .semantics { contentDescription = "Delete selected messages" },
         ) {
             FlashIcon(
@@ -137,6 +137,10 @@ fun FlashSelectionToolbar(
             )
         }
     }
+        HorizontalDivider(
+            color = colors.borderSubtle,
+            thickness = FlashDimensions.borderHairline,
+        )
 }
 }
 

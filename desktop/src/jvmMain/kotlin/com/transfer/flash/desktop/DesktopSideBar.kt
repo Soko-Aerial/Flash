@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -152,6 +154,8 @@ public fun DesktopSideBar(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
                     .selectableGroup(),
             ) {
                 tabs.forEach { tab ->
@@ -204,19 +208,21 @@ public fun DesktopSideBar(
                                 )
                             }
 
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(RoundedCornerShape(FlashShapes.radius12))
-                                    .background(containerBg),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                FlashIcon(
-                                    icon = tab.icon,
-                                    contentDescription = null,
-                                    tint = iconTint,
-                                    size = FlashDimensions.iconMd,
-                                )
+                            Box(contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(RoundedCornerShape(FlashShapes.radius12))
+                                        .background(containerBg),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    FlashIcon(
+                                        icon = tab.icon,
+                                        contentDescription = null,
+                                        tint = iconTint,
+                                        size = FlashDimensions.iconMd,
+                                    )
+                                }
 
                                 if (badgeCount > 0) {
                                     val badgeText = if (badgeCount > 99) "99+" else badgeCount.toString()

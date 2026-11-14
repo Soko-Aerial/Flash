@@ -352,13 +352,13 @@ fun FlashNearbyScreen(
             ) { page ->
                 when (page) {
                     NearbyPageState.RadiosOff -> RadiosOffPanel(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().padding(bottom = bottomInset),
                         onOpenWifiSettings = onOpenWifiSettings,
                     )
-                    NearbyPageState.Loading -> LoadingRows(Modifier.fillMaxSize())
+                    NearbyPageState.Loading -> LoadingRows(Modifier.fillMaxSize().padding(bottom = bottomInset))
                     NearbyPageState.Empty ->
                         ScanningEmptyPanel(
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxSize().padding(bottom = bottomInset),
                             active = state.isScanning,
                             scan = state.scan,
                             scanDismissed = scanDismissed,

@@ -179,7 +179,7 @@ public fun FlashJoinGroupDialog(
                         if (inputUrl.isNotEmpty()) {
                             Box(
                                 modifier = Modifier
-                                    .size(28.dp)
+                                    .size(36.dp)
                                     .clip(CircleShape)
                                     .clickable { inputUrl = "" }
                                     .semantics { role = Role.Button; contentDescription = "Clear invite link" },

@@ -14,8 +14,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,7 +86,7 @@ fun FlashChatListSelectionBar(
                 ) {
                     FlashIcon(icon = FlashIcons.Close, contentDescription = "Exit selection")
                 }
-                Text(
+                FlashText(
                     text = "$selectedCount selected",
                     modifier = Modifier
                         .weight(1f)
@@ -211,6 +211,10 @@ fun FlashChatListSelectionBar(
                 }
             }
         }
+        HorizontalDivider(
+            thickness = FlashDimensions.borderHairline,
+            color = colors.borderSubtle,
+        )
     }
 }
 

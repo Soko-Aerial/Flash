@@ -156,7 +156,7 @@ public fun FlashCreateGroupSheet(
                     if (title.isNotEmpty()) {
                         Box(
                             modifier = Modifier
-                                .size(28.dp)
+                                .size(36.dp)
                                 .clip(CircleShape)
                                 .clickable { title = "" }
                                 .semantics { role = Role.Button; contentDescription = "Clear group name" },

@@ -215,7 +215,7 @@ fun FlashFileMessageCard(
                     if (!isAwaiting) role = Role.Button
                     contentDescription = a11yDesc
                 }
-                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                .padding(horizontal = FlashSpacing.space4, vertical = FlashSpacing.space4),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Leading action badge / progress ring
@@ -293,7 +293,7 @@ fun FlashFileMessageCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+                    .padding(horizontal = FlashSpacing.space4, vertical = FlashSpacing.space4),
             ) {
                 Row(
                     modifier = Modifier
@@ -337,7 +337,7 @@ fun FlashFileMessageCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+                    .padding(horizontal = FlashSpacing.space4, vertical = FlashSpacing.space4),
             ) {
                 Row(
                     modifier = Modifier

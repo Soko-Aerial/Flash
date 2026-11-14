@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.settings
 
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -7,6 +8,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import com.transfer.flash.ui.chat.FlashConfirmHost
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashText
@@ -43,6 +45,7 @@ fun FlashDisplayNameDialog(
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
                 shape = FlashShapes.attachment,
