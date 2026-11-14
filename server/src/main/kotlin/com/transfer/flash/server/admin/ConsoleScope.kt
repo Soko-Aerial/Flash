@@ -99,6 +99,7 @@ object AdminRoutePolicies {
         "GET /admin/api/v1/devices" to AdminRoutePolicy.OWN,
         "GET /admin/api/v1/devices/{id}" to AdminRoutePolicy.OWN,
         "PUT /admin/api/v1/devices/{id}" to AdminRoutePolicy.OWN,
+        "POST /admin/api/v1/devices/{id}/replace" to AdminRoutePolicy.OWN,
         "POST /admin/api/v1/devices/{id}/revoke" to AdminRoutePolicy.ORG,
         "POST /admin/api/v1/devices/{id}/unrevoke" to AdminRoutePolicy.ORG,
         "GET /admin/api/v1/invites" to AdminRoutePolicy.OWN,

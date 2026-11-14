@@ -71,7 +71,7 @@ public class FileHubSealingPinStore(
 }
 
 /** Writes [bytes] to a private temp file next to [target] and moves it over [target]. */
-private fun writeOwnerOnly(target: File, bytes: ByteArray) {
+internal fun writeOwnerOnly(target: File, bytes: ByteArray) {
     target.parentFile?.mkdirs()
     val path = target.toPath()
     val tmp = path.resolveSibling(target.name + "." + UUID.randomUUID() + ".tmp")

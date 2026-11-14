@@ -15,6 +15,7 @@ import com.transfer.flash.core.hubprotocol.rest.AuthVerifyRequest
 import com.transfer.flash.core.hubprotocol.rest.AuthVerifyResponse
 import com.transfer.flash.core.hubprotocol.rest.EnrollResponse
 import com.transfer.flash.core.hubprotocol.rest.ErrorBody
+import com.transfer.flash.core.hubprotocol.rest.HubIceConfigDto
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.hubprotocol.rest.OkResponse
 import com.transfer.flash.core.hubprotocol.rest.RenewRequest
@@ -390,6 +391,24 @@ public class HubSession(
         // that key, from the chain stored at enrolment, must be offered to the trust check (ADR-124 contract test).
         val delegation = creds.delegationChain.firstOrNull { it.delegatePublicKey == list.issuerPublicKey }
         list.takeIf { it.verifyTrusted(creds.rootPublicKey, FlashCryptoEcdsaVerifier(crypto), clock(), delegation) }
+    }
+
+    /**
+     * HR9: Fetches short-lived ICE/STUN/TURN credentials and media path policy from `/api/v1/calls/ice-config`.
+     * Returns null if unauthenticated, offline, revoked, or when the hub does not support off-LAN calling.
+     */
+    public suspend fun fetchCallIceConfig(): HubIceConfigDto? = withContext(ioDispatcher) {
+        val creds = credentials() ?: return@withContext null
+        val base = baseUrlFor(creds) ?: return@withContext null
+        val token = bearer(forceRefresh = false) ?: return@withContext null
+        val reply = runSuspendCatching {
+            val response = httpClient.get("$base${HubContract.PATH_CALL_ICE}") {
+                header("Authorization", "Bearer $token")
+            }
+            response.status to response.boundedText()
+        }.getOrNull() ?: return@withContext null
+        if (reply.first != HttpStatusCode.OK) return@withContext null
+        HubRestCodec.decodeOrNull<HubIceConfigDto>(reply.second)
     }
 
     private fun baseUrlFor(creds: EnrollmentCredentials): String? =

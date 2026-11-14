@@ -11,6 +11,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite
+import com.transfer.flash.core.hubprotocol.rest.HubIceConfigDto
 import com.transfer.flash.core.enterprise.announcements.HubAnnouncementsApi
 import com.transfer.flash.core.enterprise.announcements.RealHubAnnouncementsApi
 import com.transfer.flash.core.enterprise.relay.FlashRelayClient
@@ -42,6 +43,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.concurrent.Volatile
 
 /** How an unenrol ended on this device. The device is always signed out locally unless it is [STORAGE_FAILED]. */
 @FlashInternalApi
@@ -107,6 +109,10 @@ public class EnterpriseHub(
     private val maintenanceEveryMs: Long = 5L * 60L * 1000L,
     /** Jitter before the first re-authentication after a refused token ([HubSession]); tests pass `{ 0L }`. */
     reauthJitterMs: (() -> Long)? = null,
+    /** Initial retry backoff when `/api/v1/calls/ice-config` fails transiently while the Hub session is ready. */
+    private val callIceRetryInitialMs: Long = 2_000L,
+    /** Maximum retry backoff when `/api/v1/calls/ice-config` stays unavailable or disabled. */
+    private val callIceRetryMaxMs: Long = 60_000L,
 ) {
     public val session: HubSession = if (reauthJitterMs == null) {
         HubSession(httpClient, { trustStore.credentials.value }, crypto, trustStore, ioDispatcher, clock, allowCleartext)
@@ -176,6 +182,53 @@ public class EnterpriseHub(
     private var jobs: List<Job> = emptyList()
 
     private val hubOnline = MutableStateFlow<Set<String>>(emptySet())
+    private val _callIceConfig = MutableStateFlow<HubIceConfigDto?>(null)
+    private val callIceRefreshLock = Mutex()
+    @Volatile private var callIceFetchedAtMs: Long = 0L
+
+    /** HR9: Last Hub-provided STUN/TURN configuration fetched for off-LAN calling (null when unconfigured or offline). */
+    public val callIceConfig: StateFlow<HubIceConfigDto?> = _callIceConfig.asStateFlow()
+
+    /** Returns the cached ICE config only while within its TTL, or null if absent or expired. */
+    public fun validCallIceConfig(nowMs: Long = clock()): HubIceConfigDto? {
+        val cfg = _callIceConfig.value ?: return null
+        val fetchedAt = callIceFetchedAtMs
+        if (fetchedAt <= 0L) return null
+        val ttlMs = cfg.ttlSeconds * 1000L
+        if (ttlMs > 0L && (nowMs - fetchedAt) >= ttlMs) return null
+        return cfg
+    }
+
+    /** Returns an unexpired ICE config, proactively refreshing when past 75% of TTL or when missing. */
+    public suspend fun ensureFreshCallIceConfig(): HubIceConfigDto? {
+        val now = clock()
+        val current = _callIceConfig.value
+        val fetchedAt = callIceFetchedAtMs
+        val ttlMs = (current?.ttlSeconds ?: 0L) * 1000L
+        val needsRefresh = current == null ||
+            !current.offLanCallingSupported ||
+            current.iceServers.isEmpty() ||
+            fetchedAt <= 0L ||
+            (ttlMs > 0L && (now - fetchedAt) >= (ttlMs * 3L) / 4L)
+        if (!needsRefresh) return current
+        refreshCallIceConfig()
+        return validCallIceConfig(clock())
+    }
+
+    /** HR9: Refreshes [callIceConfig] from `/api/v1/calls/ice-config`. */
+    public suspend fun refreshCallIceConfig(): HubIceConfigDto? = callIceRefreshLock.withLock {
+        val fetched = runSuspendCatching { session.fetchCallIceConfig() }.getOrNull()
+        if (fetched != null) {
+            callIceFetchedAtMs = clock()
+            _callIceConfig.value = fetched
+            return@withLock fetched
+        }
+        if (validCallIceConfig(clock()) == null) {
+            callIceFetchedAtMs = 0L
+            _callIceConfig.value = null
+        }
+        null
+    }
 
     /**
      * Device ids the hub reports as **online** for the listing this device may see — i.e. colleagues that currently hold
@@ -217,8 +270,40 @@ public class EnterpriseHub(
             }
         }
         val sealingJob = sealingKeys?.let { keys -> scope.launch { keepSealingKeyPublished(keys) } }
+        val iceJob = scope.launch {
+            combine(trustStore.credentials, relay.state.map { it.canSend }.distinctUntilChanged()) { creds, canSend ->
+                creds != null && canSend
+            }.distinctUntilChanged().collectLatest { ready ->
+                if (!ready) {
+                    callIceFetchedAtMs = 0L
+                    _callIceConfig.value = null
+                    return@collectLatest
+                }
+                var retryDelayMs = callIceRetryInitialMs.coerceAtLeast(10L)
+                while (currentCoroutineContext().isActive) {
+                    val cfg = refreshCallIceConfig()
+                    val waitMs = when {
+                        cfg == null -> {
+                            val currentDelay = retryDelayMs
+                            retryDelayMs = (retryDelayMs * 2L).coerceAtMost(callIceRetryMaxMs.coerceAtLeast(currentDelay))
+                            currentDelay
+                        }
+                        !cfg.offLanCallingSupported || cfg.iceServers.isEmpty() -> {
+                            retryDelayMs = callIceRetryInitialMs.coerceAtLeast(10L)
+                            callIceRetryMaxMs.coerceAtLeast(100L)
+                        }
+                        else -> {
+                            retryDelayMs = callIceRetryInitialMs.coerceAtLeast(10L)
+                            val ttlMs = cfg.ttlSeconds * 1000L
+                            if (ttlMs > 0L) (ttlMs / 2L).coerceAtLeast(50L) else callIceRetryMaxMs.coerceAtLeast(100L)
+                        }
+                    }
+                    delay(waitMs)
+                }
+            }
+        }
         val presenceJob = if (hubPresencePollMs > 0) scope.launch { pollHubPresence() } else null
-        jobs = listOfNotNull(credentialJob, statusJob, revokeJob, tickJob, sealingJob, presenceJob)
+        jobs = listOfNotNull(credentialJob, statusJob, revokeJob, tickJob, sealingJob, iceJob, presenceJob)
     }
 
     /**
@@ -283,6 +368,8 @@ public class EnterpriseHub(
         if (creds == null) {
             addressRefused.value = false
             hubOnline.value = emptySet()
+            callIceFetchedAtMs = 0L
+            _callIceConfig.value = null
             relay.stop()
             return
         }

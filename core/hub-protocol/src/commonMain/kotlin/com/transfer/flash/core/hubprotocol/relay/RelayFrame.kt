@@ -248,6 +248,25 @@ public sealed interface RelayFrame {
         public val change: String,
         public val epoch: String,
     ) : RelayFrame
+
+    /**
+     * `FLASH_CALL_SIGNAL` (HR9): ephemeral, authenticated, short-lived call signaling frame over `/flash-relay`.
+     * Never persisted to the offline mailbox: if the recipient is not online right now, the hub refuses immediately.
+     * [from] is always overwritten by the hub from the authenticated session handshake (SEC-02).
+     */
+    @Serializable
+    @SerialName("FLASH_CALL_SIGNAL")
+    public data class CallSignal(
+        public val to: String = "",
+        public val from: String = "",
+        public val callId: String,
+        public val signalId: String,
+        public val seq: Long = 0L,
+        public val issuedAt: Long = 0L,
+        public val ttlMs: Long = HubContract.CALL_SIGNAL_DEFAULT_TTL_MS,
+        public val payload: String,
+        public val capabilities: List<String> = emptyList(),
+    ) : RelayFrame
 }
 
 

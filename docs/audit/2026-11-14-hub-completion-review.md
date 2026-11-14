@@ -80,6 +80,10 @@ Source: `server/.../mailbox/MailboxQueue.kt:53,291,536`, `server/.../core/FlashS
 | HR10 | If a trusted member claims a huge or future epoch, then is removed, can remaining members rotate and send? If a legacy client joins or a member rejoins, are downgrade and history rules enforced? | **Fail for epoch promotion and rotation.** Ciphertext opacity and fail-closed legacy fixtures exist. Confirm removal, rejoin, old/new mixes and history on actual clients with `HR10-DEV-01`. |
 | HR11 | If the operator restarts with unreadable rows, or the public reverse-proxy certificate is about to expire, do alerts show the issue through recovery? Can an operator restore a real backup and complete the pilot with coturn? | **Fail for quarantine across restart.** The Hub's certificate check covers direct TLS. Verify external expiry monitoring for proxy deployments, browser recovery and restore with `HR11-ENV-01`. The in-process 50-device/500-frame run leaves the production-style soak in `HR11-ENV-02`. |
 
+## Remediation and integration
+
+The verdicts above describe the reviewed revision `256e140d`. Hub commits `a1ba69ca` and `e3a64a24` record remediation and the independent verifier follow-up. The integration combines the Hub's route-completion checks with the `dev` cancellation guard and sends desktop announcements through the title-only toast and its Open Announcement action. Physical and hosted acceptance remains in the HR6–HR11 test backlog.
+
 ## Re-review gate
 
 Fix the findings in the candidate branch and add regression cases that fail on this revision. Run the affected host suites and have a fresh reviewer trace the production entry points, including failure injection for replacement and real sender-driven route changes for transfers. Keep the live acceptance rows open until the corresponding phone, desktop, browser, isolated VPS and coturn evidence is recorded. Integrate with the current `dev` transfer and notification work before running the final release gate.

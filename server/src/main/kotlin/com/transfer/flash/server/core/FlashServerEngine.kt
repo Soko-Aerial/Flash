@@ -28,12 +28,19 @@ import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.directory.directoryRoutes
 import com.transfer.flash.server.mailbox.MailboxStore
 import com.transfer.flash.server.mailbox.TtlSweeper
+import com.transfer.flash.server.observability.AlertSeverity
 import com.transfer.flash.server.observability.DefaultManagementGuard
+import com.transfer.flash.server.observability.DiskUsage
 import com.transfer.flash.server.observability.LogSanitizer
 import com.transfer.flash.server.observability.MailboxStats
 import com.transfer.flash.server.observability.ManagementGuard
+import com.transfer.flash.server.observability.OperationalAlert
+import com.transfer.flash.server.observability.OperationalMonitor
+import com.transfer.flash.server.observability.OperationalThresholds
 import com.transfer.flash.server.observability.RelayMetrics
+import com.transfer.flash.server.relay.CallIceService
 import com.transfer.flash.server.relay.CertChainRelayAuthenticator
+import com.transfer.flash.server.relay.callConfigRoutes
 import com.transfer.flash.server.relay.DirectoryGroupMembership
 import com.transfer.flash.server.relay.GroupMembershipView
 import com.transfer.flash.server.relay.RelayAuthenticator
@@ -128,6 +135,16 @@ public class FlashServerEngine(
     public val hubRoutes: (Route.() -> Unit)? = null,
     /** Resolves the client address behind the configured trusted proxies; the relay's per-IP cap counts against it (REV-01). */
     public val clientAddresses: com.transfer.flash.server.auth.ClientAddressResolver = com.transfer.flash.server.auth.ClientAddressResolver(),
+    /** Days until the TLS server certificate expires, or null when managed by an upstream proxy / unconfigured. */
+    public val tlsDaysRemaining: (() -> Long?)? = tls?.let { material ->
+        { Math.floorDiv(material.notAfter - clock(), 24L * 60L * 60L * 1000L) }
+    },
+    /** Filesystem disk usage snapshot for the Hub data directory (HR11), or null when unavailable. */
+    public val diskUsageProvider: (() -> DiskUsage?)? = {
+        config.dataDir.takeIf { it.isNotBlank() }?.let { OperationalMonitor.probeDirectory(java.io.File(it)) }
+    },
+    /** Alerting thresholds evaluated in `/metrics` and `/health/detail` (HR11). */
+    public val operationalThresholds: OperationalThresholds = OperationalThresholds(),
 ) {
 
     private val logger = LoggerFactory.getLogger(FlashServerEngine::class.java)
@@ -266,10 +283,24 @@ public class FlashServerEngine(
             adminConsoleRoutes(AdminWeb(adminAuthService, externalUrl = config.externalUrl))
 
             // Organization Directory REST routes (/api/v1/directory/*)
+            val resolver = BearerPrincipalResolver(bearerTokens)
             directoryRoutes(
                 directory = directory,
-                principalResolver = BearerPrincipalResolver(bearerTokens),
+                principalResolver = resolver,
                 isOnline = connectionPool::isConnected,
+            )
+            val callIce = CallIceService(
+                stunUrls = config.stunUrls,
+                turnUrls = config.turnUrls,
+                turnSharedSecret = config.turnSharedSecret,
+                ttlSeconds = config.callIceTtlSeconds,
+                mediaPolicy = config.callMediaPolicy,
+                clockMs = clock,
+            )
+            callConfigRoutes(
+                iceService = callIce,
+                principalResolver = resolver,
+                revocations = revocationService,
             )
 
             // Organization Announcements REST routes (/api/v1/announcements/*)
@@ -299,11 +330,26 @@ public class FlashServerEngine(
 
     private enum class HealthLevel(val wire: String) { OK("ok"), DEGRADED("degraded"), DOWN("down") }
 
-    private fun healthLevel(): HealthLevel {
-        val probe = database?.probe() ?: return HealthLevel.OK
+    private fun currentAlerts(
+        oldestAgeSec: Long = oldestAgeSeconds(),
+        disk: DiskUsage? = diskUsageProvider?.invoke(),
+        delegationDays: Long? = delegationDaysRemaining?.invoke(),
+        tlsDays: Long? = tlsDaysRemaining?.invoke(),
+        quarantinedOutstanding: Long = mailboxStats.quarantinedOutstanding(),
+    ): List<OperationalAlert> = OperationalMonitor.evaluate(
+        quarantinedRows = quarantinedOutstanding,
+        oldestMailAgeSeconds = oldestAgeSec,
+        disk = disk,
+        delegationDaysRemaining = delegationDays,
+        tlsDaysRemaining = tlsDays,
+        thresholds = operationalThresholds,
+    )
+
+    private fun healthLevel(alerts: List<OperationalAlert> = currentAlerts()): HealthLevel {
+        val probe = database?.probe()
         return when {
-            !probe.ok -> HealthLevel.DOWN
-            probe.latencyMs > SLOW_DB_MS -> HealthLevel.DEGRADED
+            probe != null && !probe.ok -> HealthLevel.DOWN
+            (probe != null && probe.latencyMs > SLOW_DB_MS) || alerts.any { it.severity == AlertSeverity.CRITICAL } -> HealthLevel.DEGRADED
             else -> HealthLevel.OK
         }
     }
@@ -312,6 +358,13 @@ public class FlashServerEngine(
 
     private fun gauges(): List<RelayMetrics.Gauge> {
         val probe = database?.probe()
+        val oldestSec = oldestAgeSeconds()
+        val disk = diskUsageProvider?.invoke()
+        val delegationDays = delegationDaysRemaining?.invoke()
+        val tlsDays = tlsDaysRemaining?.invoke()
+        val quarantinedOutstanding = mailboxStats.quarantinedOutstanding()
+        val alerts = currentAlerts(oldestSec, disk, delegationDays, tlsDays, quarantinedOutstanding)
+        val alertSeverityById = alerts.associate { it.id to it.severity.levelValue }
         val used = Runtime.getRuntime().let { it.totalMemory() - it.freeMemory() }
         val list = mutableListOf(
             RelayMetrics.Gauge("flash_hub_uptime_seconds", "Seconds since the engine was created.", (clock() - serverStartTime) / 1000),
@@ -319,40 +372,69 @@ public class FlashServerEngine(
             RelayMetrics.Gauge("flash_relay_open_connections", "Open WebSockets (handshaking or established).", relayFrameRouter.openConnections),
             RelayMetrics.Gauge("flash_mailbox_queued_rows", "Messages waiting in the mailbox.", mailboxStats.queuedCount()),
             RelayMetrics.Gauge("flash_mailbox_queued_bytes", "Payload bytes waiting in the mailbox.", mailboxStats.queuedBytes()),
-            RelayMetrics.Gauge("flash_mailbox_oldest_age_seconds", "Age of the oldest queued message.", oldestAgeSeconds()),
+            RelayMetrics.Gauge("flash_mailbox_oldest_age_seconds", "Age of the oldest queued message.", oldestSec),
             RelayMetrics.Gauge("flash_mailbox_delivered_total", "Mailbox rows removed because the recipient acknowledged them.", mailboxStats.deliveredTotal()),
             RelayMetrics.Gauge("flash_mailbox_expired_total", "Mailbox rows removed by the TTL sweeper.", mailboxStats.expiredTotal()),
             RelayMetrics.Gauge("flash_mailbox_dropped_total", "Messages the mailbox refused or lost.", mailboxStats.droppedTotal()),
+            RelayMetrics.Gauge("flash_mailbox_quarantined_total", "Unreadable mailbox rows quarantined since startup.", mailboxStats.quarantinedTotal()),
+            RelayMetrics.Gauge("flash_mailbox_quarantined_outstanding", "Unexpired unreadable mailbox rows currently quarantined.", quarantinedOutstanding),
             RelayMetrics.Gauge("flash_jvm_memory_used_bytes", "JVM heap in use.", used),
+            RelayMetrics.Gauge("flash_alerts_warning", "Number of active operational warning alerts.", alerts.count { it.severity == AlertSeverity.WARN }),
+            RelayMetrics.Gauge("flash_alerts_critical", "Number of active operational critical alerts.", alerts.count { it.severity == AlertSeverity.CRITICAL }),
+            RelayMetrics.Gauge("flash_alert_unreadable_queue", "Unreadable queue alert level (0=ok, 1=warn, 2=critical).", alertSeverityById[OperationalMonitor.ALERT_UNREADABLE_QUEUE] ?: 0),
+            RelayMetrics.Gauge("flash_alert_oldest_mail", "Oldest queued mail alert level (0=ok, 1=warn, 2=critical).", alertSeverityById[OperationalMonitor.ALERT_OLDEST_QUEUED_MAIL] ?: 0),
+            RelayMetrics.Gauge("flash_alert_disk_pressure", "Disk pressure alert level (0=ok, 1=warn, 2=critical).", alertSeverityById[OperationalMonitor.ALERT_DISK_PRESSURE] ?: 0),
+            RelayMetrics.Gauge("flash_alert_delegation_expiry", "Delegation expiry alert level (0=ok, 1=warn, 2=critical).", alertSeverityById[OperationalMonitor.ALERT_DELEGATION_EXPIRY] ?: 0),
+            RelayMetrics.Gauge("flash_alert_tls_expiry", "TLS certificate expiry alert level (0=ok, 1=warn, 2=critical).", alertSeverityById[OperationalMonitor.ALERT_TLS_CERT_EXPIRY] ?: 0),
         )
         if (probe != null) {
             list += RelayMetrics.Gauge("flash_db_up", "1 when the database answers.", if (probe.ok) 1 else 0)
             list += RelayMetrics.Gauge("flash_db_probe_latency_ms", "Database probe latency.", probe.latencyMs)
             probe.walPages?.let { list += RelayMetrics.Gauge("flash_db_wal_pages", "Pages in the WAL file.", it) }
         }
+        if (disk != null) {
+            list += RelayMetrics.Gauge("flash_disk_total_bytes", "Total capacity of Hub data filesystem.", disk.totalBytes)
+            list += RelayMetrics.Gauge("flash_disk_usable_bytes", "Usable capacity of Hub data filesystem.", disk.usableBytes)
+            list += RelayMetrics.Gauge("flash_disk_used_ratio", "Used ratio (0..1) of Hub data filesystem.", disk.usedRatio)
+        }
         ttlSweeper?.let { list += RelayMetrics.Gauge("flash_mailbox_sweep_failures_total", "Failed TTL sweeps.", it.failureCount) }
-        delegationDaysRemaining?.invoke()?.let {
+        delegationDays?.let {
             list += RelayMetrics.Gauge("flash_delegation_days_remaining", "Days until the delegation certificate expires.", it)
+        }
+        tlsDays?.let {
+            list += RelayMetrics.Gauge("flash_tls_cert_days_remaining", "Days until the TLS server certificate expires.", it)
         }
         return list
     }
 
     private fun healthDetailJson(): String {
         val probe = database?.probe()
+        val oldestSec = oldestAgeSeconds()
+        val disk = diskUsageProvider?.invoke()
+        val delegationDays = delegationDaysRemaining?.invoke()
+        val tlsDays = tlsDaysRemaining?.invoke()
+        val quarantinedOutstanding = mailboxStats.quarantinedOutstanding()
+        val alerts = currentAlerts(oldestSec, disk, delegationDays, tlsDays, quarantinedOutstanding)
+        val level = if (probe != null && !probe.ok) HealthLevel.DOWN
+        else if ((probe != null && probe.latencyMs > SLOW_DB_MS) || alerts.any { it.severity == AlertSeverity.CRITICAL }) HealthLevel.DEGRADED
+        else HealthLevel.OK
+
         val rt = Runtime.getRuntime()
-        val b = StringBuilder(512)
+        val b = StringBuilder(768)
         b.append('{')
-        b.append("\"status\":\"").append(healthLevel().wire).append('"')
+        b.append("\"status\":\"").append(level.wire).append('"')
         b.append(",\"serverVersion\":").append(kotlinx.serialization.json.JsonPrimitive(com.transfer.flash.server.ServerVersion.value))
         b.append(",\"uptimeSeconds\":").append((clock() - serverStartTime) / 1000)
         b.append(",\"sessions\":").append(connectionPool.activeCount)
         b.append(",\"openConnections\":").append(relayFrameRouter.openConnections)
         b.append(",\"mailbox\":{\"queuedRows\":").append(mailboxStats.queuedCount())
         b.append(",\"queuedBytes\":").append(mailboxStats.queuedBytes())
-        b.append(",\"oldestAgeSeconds\":").append(oldestAgeSeconds())
+        b.append(",\"oldestAgeSeconds\":").append(oldestSec)
         b.append(",\"deliveredTotal\":").append(mailboxStats.deliveredTotal())
         b.append(",\"expiredTotal\":").append(mailboxStats.expiredTotal())
         b.append(",\"droppedTotal\":").append(mailboxStats.droppedTotal())
+        b.append(",\"quarantinedTotal\":").append(mailboxStats.quarantinedTotal())
+        b.append(",\"quarantinedOutstanding\":").append(quarantinedOutstanding)
         b.append('}')
         if (probe != null) {
             b.append(",\"database\":{\"ok\":").append(probe.ok)
@@ -360,7 +442,24 @@ public class FlashServerEngine(
             probe.walPages?.let { b.append(",\"walPages\":").append(it) }
             b.append('}')
         }
-        delegationDaysRemaining?.invoke()?.let { b.append(",\"delegationDaysRemaining\":").append(it) }
+        if (disk != null) {
+            b.append(",\"disk\":{\"totalBytes\":").append(disk.totalBytes)
+            b.append(",\"usableBytes\":").append(disk.usableBytes)
+            b.append(",\"usedPercent\":").append(kotlin.math.round(disk.usedPercent * 10.0) / 10.0)
+            b.append('}')
+        }
+        delegationDays?.let { b.append(",\"delegationDaysRemaining\":").append(it) }
+        tlsDays?.let { b.append(",\"tlsDaysRemaining\":").append(it) }
+        b.append(",\"alerts\":[")
+        alerts.forEachIndexed { idx, alert ->
+            if (idx > 0) b.append(',')
+            b.append("{\"id\":").append(kotlinx.serialization.json.JsonPrimitive(alert.id))
+            b.append(",\"severity\":\"").append(alert.severity.wire).append('"')
+            b.append(",\"summary\":").append(kotlinx.serialization.json.JsonPrimitive(alert.summary))
+            b.append(",\"action\":").append(kotlinx.serialization.json.JsonPrimitive(alert.action))
+            b.append('}')
+        }
+        b.append(']')
         b.append(",\"memory\":{\"usedBytes\":").append(rt.totalMemory() - rt.freeMemory())
         b.append(",\"maxBytes\":").append(rt.maxMemory()).append('}')
         b.append('}')

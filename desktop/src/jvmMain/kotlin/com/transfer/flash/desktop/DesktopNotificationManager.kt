@@ -50,8 +50,10 @@ public class DesktopNotificationManager(
     private val isWindowMinimized: () -> Boolean = { false },
     private val isWindowFocused: () -> Boolean = { true },
     private val currentTimeMillis: () -> Long = { System.currentTimeMillis() },
+    private val isAnnouncementNotificationsEnabled: () -> Boolean = { engine.settings.value.announcementNotifications },
 ) {
     public var onBackgroundMessageReceived: ((conversationId: String) -> Unit)? = null
+    public var onOpenAnnouncement: ((announcementId: String) -> Unit)? = null
 
     private var started = false
     private var transferJob: Job? = null
@@ -93,6 +95,9 @@ public class DesktopNotificationManager(
             handleJoinRequest(groupId, groupTitle, requesterName)
         }
         engine.onGroupOfferRefused = { _, groupName, message -> handleGroupOfferRefused(groupName, message) }
+        engine.onAnnouncementNotification = { announcementId, title, departmentName ->
+            handleAnnouncement(announcementId, title, departmentName)
+        }
 
         // Observe transfers when ready
         transferJob = scope.launch {
@@ -146,6 +151,7 @@ public class DesktopNotificationManager(
         engine.onInboundAttachmentNotification = null
         engine.onJoinRequestNotification = null
         engine.onGroupOfferRefused = null
+        engine.onAnnouncementNotification = null
         transferJob?.cancel()
         transferJob = null
         callsJob?.cancel()
@@ -325,6 +331,28 @@ public class DesktopNotificationManager(
             )
             dispatchToast(card, Notification.Type.Warning)
         }
+    }
+
+    /** Plan A3 §4.4 / HR7: Desktop system notification for eligible announcement. Strictly title-only. */
+    public fun handleAnnouncement(
+        announcementId: String,
+        title: String,
+        departmentName: String? = null,
+    ) {
+        if (!isNotificationsEnabled() || !isAnnouncementNotificationsEnabled()) return
+        val notifTitle = if (departmentName.isNullOrBlank()) "New announcement" else "New announcement · $departmentName"
+        dispatchToast(
+            DesktopToastCard(
+                id = "announcement-$announcementId",
+                title = notifTitle,
+                detail = title.trim(),
+                actions = listOf(ToastAction.Dismiss, ToastAction.OpenAnnouncement),
+                kind = ToastKind.Announcement,
+                autoDismissAtMs = currentTimeMillis() + DesktopTransferToastModel.AUTO_DISMISS_SHORT_MS,
+                announcementId = announcementId,
+            ),
+            Notification.Type.Info,
+        )
     }
 
     public fun handleTransfersUpdate(transfers: List<FlashTransfer>) {
@@ -642,6 +670,12 @@ public class DesktopNotificationManager(
                     val file = DesktopHelpers.resolveFile(card.localPath)
                     file?.isFile == true && java.awt.Desktop.isDesktopSupported() &&
                         runCatching { java.awt.Desktop.getDesktop().open(file) }.isSuccess
+                }
+                ToastAction.OpenAnnouncement -> {
+                    val open = onOpenAnnouncement
+                    val id = card.announcementId
+                    if (open != null && id != null) open(id)
+                    open != null && id != null
                 }
                 ToastAction.OpenChat -> {
                     card.conversationId?.let { onOpenConversation?.invoke(it) }

@@ -412,12 +412,13 @@ public class AnnouncementStore(
         callerDeptId: String?,
         isOrgAdmin: Boolean,
         nowMs: Long = clock(),
+        expectedEpoch: String? = null,
     ): AnnouncementFeedDto = db.withConnection { conn ->
         val safeLimit = limit.coerceIn(1, 200)
         val epoch = readState(conn, "epoch") ?: UUID.randomUUID().toString()
         val highestSeq = readState(conn, "seq")?.toLongOrNull() ?: 0L
 
-        if (sinceSeq == 0L) {
+        if (sinceSeq == 0L && (expectedEpoch.isNullOrBlank() || expectedEpoch != epoch)) {
             // Initial sync: newest 200 non-deleted, non-expired items (pinned first, then created_at DESC)
             val sql = if (isOrgAdmin) {
                 """

@@ -911,7 +911,7 @@ private const val KEY_NOTIFICATIONS_BANNER_DISMISSED = "notifications_banner_dis
 
 /** UI-056: how long the system splash takes to fade into the Ink splash. */
 /** Intent extra with a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`); validated before use (UI-058 H9). */
-internal const val EXTRA_HUB_ROUTE: String = "com.transfer.flash.extra.HUB_ROUTE"
+internal const val EXTRA_HUB_ROUTE: String = FlashNotificationManager.EXTRA_HUB_ROUTE
 
 private const val SYSTEM_SPLASH_FADE_MS: Long = 200L
 
@@ -1036,6 +1036,7 @@ fun FlashApp(
     val hubStatusFlow = remember(hubObject) { hubObject?.status ?: hubStatusFallback }
     val hubStatus by hubStatusFlow.collectAsState(initial = null)
     val hubContentViaHub by engine.hubContentViaHub.collectAsState()
+    val announcementNotifications by engine.announcementNotifications.collectAsState()
     // ADR-126: the sealing key state and the dropped-message counts for the connection details.
     val hubSealingKeyFallback = remember { MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
     val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
@@ -1143,6 +1144,7 @@ fun FlashApp(
         enterpriseRootFingerprint = enterpriseCreds?.rootFingerprint,
         hubStatus = hubStatus,
         hubContentViaHub = hubContentViaHub,
+        announcementNotifications = announcementNotifications,
         hubSealing = if (hubObject?.sealingKeys == null) null else com.transfer.flash.ui.settings.FlashHubSealingUi(
             keyState = hubSealingKeyState,
             unverified = hubDropped.unverified,
@@ -3451,6 +3453,7 @@ private fun FlashShell(
             onRetryHub = { engine.enterpriseHub?.retryNow() },
             onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
             onSetHubContentViaHub = { engine.setHubContentViaHub(it) },
+            onAnnouncementNotificationsChanged = { engine.setAnnouncementNotifications(it) },
             onRestoreHubGroups = {
                 scope.launch {
                     val restored = engine.enterpriseHub?.relinkPreviousGroups() ?: 0

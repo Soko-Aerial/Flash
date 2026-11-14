@@ -1684,6 +1684,13 @@ fun FlashConversationScreen(
             isEnterpriseEnrolled = isEnterpriseEnrolled,
             isLinkedToHub = isLinkedToHub,
             onToggleLinkToHub = onToggleLinkToHub,
+            hubConfidentialityNotice = state.hubNotice?.let { notice ->
+                if (notice.kind.name.startsWith("GROUP_")) {
+                    "${FlashHubNoticeMath.title(notice)}: ${FlashHubNoticeMath.body(notice)}"
+                } else {
+                    null
+                }
+            },
         )
     }
 

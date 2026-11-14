@@ -26,12 +26,13 @@ public class FakeHubAnnouncementsApi : HubAnnouncementsApi {
     public var simulateUnsupported: Boolean = false
     public var simulatePinLimit: Boolean = false
 
-    override suspend fun fetchFeed(hubUrl: String, since: Long, limit: Int): FlashResult<AnnouncementFeedDto> {
+    override suspend fun fetchFeed(hubUrl: String, since: Long, limit: Int, epoch: String?): FlashResult<AnnouncementFeedDto> {
         if (simulateOffline) return FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
         if (simulateUnsupported) return FlashResult.Failure(HubAnnouncementError.NotSupportedByHub.toFlashError())
 
+        val isFullResync = since == 0L && (epoch.isNullOrBlank() || epoch != currentEpoch)
         val feedItems = items.values
-            .filter { it.seq > since }
+            .filter { if (isFullResync) !it.deleted else it.seq > since }
             .sortedBy { it.seq }
             .take(limit)
 
@@ -39,6 +40,7 @@ public class FakeHubAnnouncementsApi : HubAnnouncementsApi {
             AnnouncementFeedDto(
                 epoch = currentEpoch,
                 seq = items.values.maxOfOrNull { it.seq } ?: 0L,
+                fullResync = isFullResync,
                 items = feedItems,
                 // Same as the server (AnnouncementStore.getChangesFeed): a full page names where the next one starts.
                 nextCursor = if (feedItems.size == limit) feedItems.last().seq.toString() else null,

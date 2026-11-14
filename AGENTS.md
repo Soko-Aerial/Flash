@@ -917,6 +917,9 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-14 — Hub readiness HR6–HR11 integrated into `dev`.**
+Resolved all 8 findings (`6 P1 + 2 P2`) from `docs/audit/2026-11-14-hub-completion-review.md` plus all 6 independent re-verifier defects atop `256e140d` in isolated worktree `C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness`: atomic `hub_device_replacements` + startup/lease crash recovery & `409` pending-grant conflict handling (HR6), `expectedEpoch` feed reset guard (HR7), `FileContinuityCheckpointStore` disk persistence + bidirectional `sendFile`/`resumeTransfer` `LAN <-> Hub` handover (HR8), pre-replay frame validation + proactive ICE config renewal + `suspend iceConfigProvider` on call setup (HR9), bounded epochs + canonical tie-breaking (HR10), and `quarantinedOutstanding` observability (HR11). Verified after final edits (`--rerun` / `--rerun-tasks`): `87` Node Admin UI tests, `76 suites / 703 tests` in `:server:test`, `394 suites / 3,311 tests` (`4` Windows POSIX skips) across client/UI/Desktop/Android + `:app:assembleDebug` (`4,101` total automated tests, `0` failures). Physical/VPS/Chrome/coturn acceptance remains `TODO` in `docs/testing/TEST-BACKLOG.md`; see `logs/handoff.md` and `docs/plans/HUB-READINESS-REMEDIATION.md`.
+
 **2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0` and Hub prerelease
 `server-v2.2.0-beta.1` point to `322a92aa`. The release-wide host gate passed. SDK beta.3
 published on JitPack from `13e0fa3f`; beta.2 also has a verified Maven repository ZIP. See

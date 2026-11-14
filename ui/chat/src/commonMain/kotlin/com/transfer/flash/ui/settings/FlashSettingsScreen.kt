@@ -175,6 +175,8 @@ data class FlashSettingsModel(
     val hubStatus: com.transfer.flash.core.enterprise.HubStatus? = null,
     /** The user's opt-in to let the hub carry readable chat text (ADR-121). Off by default; never reset by "Reset to defaults". */
     val hubContentViaHub: Boolean = false,
+    /** HR7: whether new company/department announcement system notifications are enabled. */
+    val announcementNotifications: Boolean = true,
     /** ADR-126: sealing key state and dropped-message counts for the connection details. Null on a host without a hub. */
     val hubSealing: FlashHubSealingUi? = null,
     /** Groups that were linked to this organisation before the last unenrol, restorable after enrolling again. */
@@ -423,6 +425,7 @@ object FlashSettingsMath {
     internal val enterpriseTrustRowTerms = listOf("Colleague trust")
     internal val enterpriseRelinkRowTerms = listOf("Restore", "Linked groups")
     internal val enterpriseContentRowTerms = listOf("Messages through the hub")
+    internal val enterpriseAnnouncementNotificationsRowTerms = listOf("Announcement notifications", "System notifications", "Mute")
     internal fun enterpriseDepartmentRowTerms(department: String? = null): List<String> =
         listOfNotNull("Department", "Directory", "Authorized organization directory scope", department?.takeIf { it.isNotBlank() })
 
@@ -455,6 +458,7 @@ object FlashSettingsMath {
         showColleagueTrust: Boolean = isEnterpriseEnrolled,
         showRelinkOffer: Boolean = false,
         showContentViaHub: Boolean = isEnterpriseEnrolled,
+        showAnnouncementNotifications: Boolean = isEnterpriseEnrolled,
         showApprovals: Boolean = isEnterpriseEnrolled,
         saveLocationLabel: String? = null,
         backgroundListenTitle: String = "Keep listening in the background",
@@ -507,6 +511,7 @@ object FlashSettingsMath {
                     if (showColleagueTrust) add(enterpriseTrustRowTerms)
                     if (showRelinkOffer) add(enterpriseRelinkRowTerms)
                     if (showContentViaHub) add(enterpriseContentRowTerms)
+                    if (showAnnouncementNotifications) add(enterpriseAnnouncementNotificationsRowTerms)
                     add(enterpriseDepartmentRowTerms(enterpriseDepartment))
                     add(enterpriseRoleRowTerms(enterpriseRole))
                     if (showApprovals) add(enterpriseApprovalsRowTerms)
@@ -629,6 +634,8 @@ fun FlashSettingsScreen(
     onDismissHubRevoked: (() -> Unit)? = null,
     /** Turns readable chat content through the hub on or off (the disclosure is shown here before it turns on). */
     onSetHubContentViaHub: ((Boolean) -> Unit)? = null,
+    /** HR7: enables or mutes announcement notifications in the system tray / shade. */
+    onAnnouncementNotificationsChanged: ((Boolean) -> Unit)? = null,
     /** Links the groups remembered from the previous enrolment again. */
     onRestoreHubGroups: (() -> Unit)? = null,
     /** Throws the remembered groups away. */
@@ -872,6 +879,7 @@ fun FlashSettingsScreen(
         showColleagueTrust = model.orgTrustState != null,
         showRelinkOffer = showRelinkOffer,
         showContentViaHub = onSetHubContentViaHub != null,
+        showAnnouncementNotifications = onAnnouncementNotificationsChanged != null,
         showApprovals = onLoadApprovals != null && onApprove != null,
         enterpriseHubName = hubStatus?.hubName,
         enterpriseHubUrl = model.enterpriseHubUrl,
@@ -1233,6 +1241,12 @@ fun FlashSettingsScreen(
                             // the setting really changed: a cancelled disclosure would otherwise leave the
                             // switch on while messages still do not go through the hub.
                             optimistic = false,
+                        )
+                        if (onAnnouncementNotificationsChanged != null && FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, *FlashSettingsMath.enterpriseAnnouncementNotificationsRowTerms.toTypedArray())) SwitchRow(
+                            title = "Announcement notifications",
+                            subtitle = "Show title-only system notifications for new announcements",
+                            checked = model.announcementNotifications,
+                            onCheckedChange = onAnnouncementNotificationsChanged,
                         )
                         val deptTerms = FlashSettingsMath.enterpriseDepartmentRowTerms(model.enterpriseDepartment)
                         if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, *deptTerms.toTypedArray())) ValueRow(

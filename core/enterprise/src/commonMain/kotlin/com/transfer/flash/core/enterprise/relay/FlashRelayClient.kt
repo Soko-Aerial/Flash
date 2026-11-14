@@ -133,6 +133,10 @@ public class FlashRelayClient(
     public val announcementEvents: Flow<RelayFrame.AnnouncementEvent> = transport.incomingFrames
         .filterIsInstance<RelayFrame.AnnouncementEvent>()
 
+    /** HR9: Ephemeral, short-lived incoming call signaling frames from the hub relay. */
+    public val callSignals: Flow<RelayFrame.CallSignal> = transport.incomingFrames
+        .filterIsInstance<RelayFrame.CallSignal>()
+
     private val lifecycleLock = Any()
 
     @kotlin.concurrent.Volatile
@@ -288,6 +292,17 @@ public class FlashRelayClient(
         )
         return sendLock.withLock {
             transport.sendFrame(meta)
+        }
+    }
+
+    /**
+     * HR9: Sends a short-lived ephemeral call signaling frame over the live relay session.
+     * Returns false immediately if the relay connection is unavailable.
+     */
+    public suspend fun sendCallSignal(frame: RelayFrame.CallSignal): Boolean {
+        if (!state.value.canSend) return false
+        return sendLock.withLock {
+            transport.sendFrame(frame)
         }
     }
 

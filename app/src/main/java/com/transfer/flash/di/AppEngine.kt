@@ -110,6 +110,12 @@ class AppEngine @Inject constructor(
 
     fun setHubContentViaHub(enabled: Boolean) = DiscoveryEngineHolder.setHubContentViaHub(enabled)
 
+    /** HR7: user toggle for title-only system notifications on new announcements. */
+    val announcementNotifications: kotlinx.coroutines.flow.StateFlow<Boolean>
+        get() = DiscoveryEngineHolder.announcementNotifications()
+
+    fun setAnnouncementNotifications(enabled: Boolean) = DiscoveryEngineHolder.setAnnouncementNotifications(enabled)
+
     fun isOrgPeer(deviceId: String): Boolean = DiscoveryEngineHolder.isOrgPeer(deviceId)
 
     fun isKnownColleague(deviceId: String): Boolean = DiscoveryEngineHolder.isKnownColleague(deviceId)
