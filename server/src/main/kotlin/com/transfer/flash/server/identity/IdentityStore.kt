@@ -524,21 +524,25 @@ class IdentityStore(private val db: ServerDatabase) {
             map = ::replacementRow,
         )
         if (existing != null) {
-            when (existing.state) {
-                DeviceReplacementState.IN_PROGRESS -> return@immediate BeginReplacementOutcome.AlreadyInProgress(existing)
-                DeviceReplacementState.INVITE_ISSUED -> {
-                    val existingInvite = existing.inviteId?.let { inviteId ->
-                        conn.queryOne("SELECT * FROM hub_invites WHERE invite_id = ?", inviteId, map = ::inviteRow)
-                    }
-                    if (existingInvite != null) {
-                        when (existingInvite.state(nowMs)) {
-                            InviteState.PENDING -> return@immediate BeginReplacementOutcome.InviteAlreadyPending(existing, existingInvite)
-                            InviteState.USED -> return@immediate BeginReplacementOutcome.InviteAlreadyUsed(existing, existingInvite)
-                            InviteState.EXPIRED, InviteState.REVOKED -> Unit
-                        }
+            val effectiveState = if (existing.state == DeviceReplacementState.IN_PROGRESS) {
+                if (nowMs - existing.updatedAt < IN_PROGRESS_LEASE_MS) {
+                    return@immediate BeginReplacementOutcome.AlreadyInProgress(existing)
+                }
+                reclaimInProgressRow(conn, existing, nowMs, "interrupted in-progress replacement lease expired")
+            } else {
+                existing.state
+            }
+            if (effectiveState == DeviceReplacementState.INVITE_ISSUED) {
+                val existingInvite = existing.inviteId?.let { inviteId ->
+                    conn.queryOne("SELECT * FROM hub_invites WHERE invite_id = ?", inviteId, map = ::inviteRow)
+                }
+                if (existingInvite != null) {
+                    when (existingInvite.state(nowMs)) {
+                        InviteState.PENDING -> return@immediate BeginReplacementOutcome.InviteAlreadyPending(existing.copy(state = DeviceReplacementState.INVITE_ISSUED), existingInvite)
+                        InviteState.USED -> return@immediate BeginReplacementOutcome.InviteAlreadyUsed(existing.copy(state = DeviceReplacementState.INVITE_ISSUED), existingInvite)
+                        InviteState.EXPIRED, InviteState.REVOKED -> Unit
                     }
                 }
-                DeviceReplacementState.FAILED -> Unit
             }
         }
         val replacementId = UUID.randomUUID().toString()
@@ -586,6 +590,50 @@ class IdentityStore(private val db: ServerDatabase) {
                 DeviceReplacementState.FAILED.name, failureReason?.take(200), nowMs, oldDeviceId, replacementId,
             )
         }
+    }
+
+    /** Reclaims orphaned `IN_PROGRESS` replacement rows left by a prior crash at startup or lease expiry. */
+    fun reconcileInterruptedReplacements(nowMs: Long = System.currentTimeMillis()): Int = db.immediate { conn ->
+        val orphaned = conn.query(
+            "SELECT * FROM hub_device_replacements WHERE state = ?",
+            DeviceReplacementState.IN_PROGRESS.name,
+            map = ::replacementRow,
+        )
+        orphaned.forEach { row -> reclaimInProgressRow(conn, row, nowMs, "interrupted by server restart") }
+        orphaned.size
+    }
+
+    private fun reclaimInProgressRow(
+        conn: Connection,
+        row: DeviceReplacementRecord,
+        nowMs: Long,
+        reason: String,
+    ): DeviceReplacementState {
+        val inviteId = row.inviteId
+        if (!inviteId.isNullOrBlank()) {
+            val deviceStatus = conn.queryOne(
+                "SELECT status FROM hub_devices WHERE device_id = ?",
+                row.oldDeviceId,
+            ) { it.getString(1) }
+            if (deviceStatus == DeviceStatus.REVOKED.name) {
+                conn.update(
+                    "UPDATE hub_device_replacements SET state = ?, failure_reason = NULL, updated_at = ? " +
+                        "WHERE old_device_id = ? AND replacement_id = ?",
+                    DeviceReplacementState.INVITE_ISSUED.name, nowMs, row.oldDeviceId, row.replacementId,
+                )
+                return DeviceReplacementState.INVITE_ISSUED
+            }
+            conn.update(
+                "UPDATE hub_invites SET revoked_at = COALESCE(revoked_at, ?) WHERE invite_id = ?",
+                nowMs, inviteId,
+            )
+        }
+        conn.update(
+            "UPDATE hub_device_replacements SET invite_id = NULL, state = ?, failure_reason = ?, updated_at = ? " +
+                "WHERE old_device_id = ? AND replacement_id = ?",
+            DeviceReplacementState.FAILED.name, reason.take(200), nowMs, row.oldDeviceId, row.replacementId,
+        )
+        return DeviceReplacementState.FAILED
     }
 
     // ------------------------------------------------------------------------------------------------ meta
@@ -675,6 +723,7 @@ class IdentityStore(private val db: ServerDatabase) {
         const val COMPONENT: String = "identity"
         const val MAX_NAME: Int = 128
         private const val FIRST_SERIAL: Long = 1000L
+        internal const val IN_PROGRESS_LEASE_MS: Long = 60_000L
 
         /** SHA-256 hex of an invite token: what is stored and what the admin API calls the invite's secret fingerprint. */
         fun hashToken(token: String): String =
@@ -773,7 +822,7 @@ class IdentityStore(private val db: ServerDatabase) {
         /** Registers and applies the identity schema, returning the store. */
         fun open(db: ServerDatabase): IdentityStore {
             Migrator(db).apply { register(COMPONENT, MIGRATIONS) }.migrate()
-            return IdentityStore(db)
+            return IdentityStore(db).apply { reconcileInterruptedReplacements() }
         }
 
         /** A private in-memory store (tests, and services built without a database). */

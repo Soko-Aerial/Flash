@@ -601,7 +601,8 @@ class CrossRouteWiringIntegrationTest {
         )
         bobDb.hubFileDao().insert(offeredRow(ticket, "report.bin").copy(state = HubFileStates.OFFERED))
         eventually("Bob Hub download completes with one row") {
-            bobDb.hubFileDao().get(HubFileStates.TRANSFER_PREFIX_IN + wireFileId)?.state == HubFileStates.DONE
+            bobDb.hubFileDao().get(HubFileStates.TRANSFER_PREFIX_IN + wireFileId)?.state == HubFileStates.DONE &&
+                bobRepo.activeTransfers.value.singleOrNull { it.wireFileId == wireFileId }?.state == FlashTransferState.Completed
         }
         assertFalse(0 in bobRecordingApi.fetchedChunks, "Verified Hub chunk 0 covered by LAN must be skipped")
         assertEquals(1, bobRepo.activeTransfers.value.count { it.wireFileId == wireFileId })

@@ -1876,7 +1876,7 @@ object DiscoveryEngineHolder {
                 if (networkImpl.activeSessions.value.containsKey(FlashDeviceId(peerId))) {
                     emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
                 } else {
-                    val cfg = hub.validCallIceConfig()
+                    val cfg = hub.ensureFreshCallIceConfig() ?: hub.validCallIceConfig()
                     if (cfg == null) {
                         emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
                     } else {
