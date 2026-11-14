@@ -164,6 +164,7 @@ fun FlashChatHeader(
                         translationX = if (isRtl) travel else -travel
                         alpha = titleEntry.value
                     },
+                verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

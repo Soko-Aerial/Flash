@@ -44,6 +44,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -57,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -619,17 +621,34 @@ private fun HeaderBlock(
     onManualConnectClick: (() -> Unit)? = null,
     onScanNetworkClick: (() -> Unit)? = null,
 ) {
-    val actions: @Composable () -> Unit = {
+    val scanning = state.scan is NearbyNetworkScan.Running
+    val actions: @Composable (Boolean) -> Unit = { showConnectIcon ->
         if (onScanNetworkClick != null) {
-            ScanNetworkTextAction(running = state.scan is NearbyNetworkScan.Running, onClick = onScanNetworkClick)
+            ScanNetworkTextAction(running = scanning, onClick = onScanNetworkClick)
         }
         if (onManualConnectClick != null) {
-            ConnectByIpTextAction(onClick = onManualConnectClick)
+            ConnectByIpTextAction(showIcon = showConnectIcon, onClick = onManualConnectClick)
         }
     }
     Column(Modifier.fillMaxWidth()) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
-            if (maxWidth < 340.dp || LocalDensity.current.fontScale >= 1.3f) {
+            val measurer = rememberTextMeasurer()
+            val typography = FlashTheme.typography
+            val density = LocalDensity.current
+            val inlineWidth = with(density) {
+                val title = measurer.measure("Nearby", typography.headingMedium, maxLines = 1).size.width.toDp()
+                val scan = if (onScanNetworkClick != null) {
+                    measurer.measure(if (scanning) "Scanning…" else "Scan network", typography.captionEmphasis, maxLines = 1)
+                        .size.width.toDp() + FlashSpacing.space16 + FlashSpacing.space4
+                } else 0.dp
+                val connect = if (onManualConnectClick != null) {
+                    measurer.measure("Connect by IP", typography.captionEmphasis, maxLines = 1).size.width.toDp() +
+                        FlashSpacing.space16 + FlashSpacing.space4
+                } else 0.dp
+                title + scan + connect
+            }
+            val showConnectIcon = maxWidth >= inlineWidth + FlashDimensions.iconSm + FlashSpacing.space4
+            if (inlineWidth > maxWidth) {
                 Column(Modifier.fillMaxWidth()) {
                     FlashText(
                         text = "Nearby",
@@ -641,7 +660,7 @@ private fun HeaderBlock(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
                     ) {
-                        actions()
+                        actions(true)
                     }
                 }
             } else {
@@ -652,6 +671,7 @@ private fun HeaderBlock(
                     FlashText(
                         text = "Nearby",
                         modifier = Modifier.weight(1f).semantics { heading() },
+                        maxLines = 1,
                         style = FlashTheme.typography.headingMedium,
                         color = FlashTheme.colors.textPrimary,
                     )
@@ -659,7 +679,7 @@ private fun HeaderBlock(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
                     ) {
-                        actions()
+                        actions(showConnectIcon)
                     }
                 }
             }
@@ -973,7 +993,7 @@ private fun TrustedTile(
                     text = trusted.name,
                     style = FlashTheme.typography.bodyEmphasis,
                     color = colors.textPrimary,
-                    maxLines = 2,
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
                 val detail = listOfNotNull(
@@ -1122,15 +1142,16 @@ private fun RadiosOffPanel(
         verticalArrangement = Arrangement.Center,
     ) {
         FlashText(
-            text = "Wi-Fi is turned off",
+            text = "No local network",
             style = FlashTheme.typography.headingSmall,
             color = colors.textPrimary,
         )
         Spacer(Modifier.height(FlashSpacing.space4))
         FlashText(
-            text = "Turn on Wi-Fi so Flash can find nearby devices.",
+            text = "Turn on Wi-Fi, enable Mobile Hotspot, or connect Ethernet so Flash can find nearby devices.",
             style = FlashTheme.typography.metadataDefault,
             color = colors.textSecondary,
+            textAlign = TextAlign.Center,
         )
         if (onOpenWifiSettings != null) {
             Spacer(Modifier.height(FlashSpacing.space16))
@@ -1144,7 +1165,7 @@ private fun RadiosOffPanel(
                 contentAlignment = Alignment.Center,
             ) {
                 FlashText(
-                    text = "Open Wi-Fi Settings",
+                    text = "Open Network Settings",
                     style = FlashTheme.typography.captionEmphasis,
                     color = colors.onAccentFill,
                 )
@@ -1317,7 +1338,7 @@ private fun ScanNetworkTextAction(running: Boolean, onClick: () -> Unit) {
 
 /** Labeled "Connect by IP" action in the Nearby header when populated. */
 @Composable
-private fun ConnectByIpTextAction(onClick: () -> Unit) {
+private fun ConnectByIpTextAction(showIcon: Boolean, onClick: () -> Unit) {
     val colors = FlashTheme.colors
     Row(
         modifier = Modifier
@@ -1328,12 +1349,14 @@ private fun ConnectByIpTextAction(onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
     ) {
-        FlashIcon(
-            icon = FlashIcons.Connection,
-            contentDescription = null,
-            tint = colors.accentFill,
-            size = FlashDimensions.iconSm,
-        )
+        if (showIcon) {
+            FlashIcon(
+                icon = FlashIcons.Connection,
+                contentDescription = null,
+                tint = colors.accentFill,
+                size = FlashDimensions.iconSm,
+            )
+        }
         FlashText(
             text = "Connect by IP",
             style = FlashTheme.typography.captionEmphasis,
