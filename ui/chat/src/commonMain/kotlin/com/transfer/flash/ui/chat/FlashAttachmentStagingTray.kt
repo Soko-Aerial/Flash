@@ -58,18 +58,18 @@ object FlashStagingMath {
         currentCount < maxLimit
 
     /**
-     * Appends [incoming] to [current] only when below [maxLimit], returning the updated list and
-     * whether [incoming] was accepted.
+     * Stages each source URI once per draft. A repeat pick is already staged, so it succeeds even
+     * at the limit. Returns false only when the draft has no room for a new source.
      */
     fun appendUpToLimit(
         current: List<FlashShareItemUi>,
         incoming: FlashShareItemUi,
         maxLimit: Int = MAX_STAGED_ATTACHMENTS,
     ): Pair<List<FlashShareItemUi>, Boolean> =
-        if (canAddMore(current.size, maxLimit)) {
-            (current + incoming) to true
-        } else {
-            current to false
+        when {
+            current.any { it.uri == incoming.uri } -> current to true
+            canAddMore(current.size, maxLimit) -> (current + incoming) to true
+            else -> current to false
         }
 
     fun formatTotalBytes(items: List<FlashShareItemUi>): String {

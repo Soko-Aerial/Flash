@@ -79,4 +79,17 @@ class FlashStagingMathTest {
         assertFalse(acceptedOverflow)
         assertEquals(FlashStagingMath.MAX_STAGED_ATTACHMENTS, capped.size)
     }
+
+    @Test
+    fun `picking the same photo again stages a single transfer`() {
+        val photo = FlashShareItemUi(uri = "content://gallery/photo/42", name = "photo.jpg", sizeBytes = 1024L)
+        val staged = listOf(photo)
+        val duplicate = photo.copy(id = "another-picker-result")
+
+        assertEquals(staged to true, FlashStagingMath.appendUpToLimit(staged, duplicate, maxLimit = 1))
+        assertEquals(listOf(duplicate) to true, FlashStagingMath.appendUpToLimit(emptyList(), duplicate))
+
+        val otherPhoto = photo.copy(uri = "content://gallery/photo/43", id = "other-photo")
+        assertEquals(listOf(photo, otherPhoto) to true, FlashStagingMath.appendUpToLimit(staged, otherPhoto))
+    }
 }
