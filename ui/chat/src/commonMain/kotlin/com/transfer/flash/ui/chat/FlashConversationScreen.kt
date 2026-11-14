@@ -1057,13 +1057,11 @@ fun FlashConversationScreen(
                     if (text.isNotEmpty() || hasAttachments) {
                         val quoted = replyingToMessage
                         if (itemsToSend.isNotEmpty()) {
-                            val sendingIds = itemsToSend.mapTo(mutableSetOf()) { it.id }
+                            // Consume the draft entries before invoking the host send callbacks.
+                            stagedAttachments = stagedAttachments.filter { it.isSending }
                             itemsToSend.forEach { item ->
                                 onSendFile(item.uri, item.name, item.sizeBytes)
                             }
-                            // Retire staged attachments cleanly once enqueued instead of leaving a
-                            // stale 4s spinner in the tray.
-                            stagedAttachments = stagedAttachments.filterNot { it.id in sendingIds }
                         }
                         if (text.isNotEmpty()) {
                             // OPT-O24-01: the echo appears as soon as this click handler records it — the

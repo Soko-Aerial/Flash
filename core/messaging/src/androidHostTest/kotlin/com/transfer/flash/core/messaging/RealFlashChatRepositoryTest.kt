@@ -33,6 +33,8 @@ import com.transfer.flash.core.persistence.db.entity.ReceiptEntity
 import com.transfer.flash.core.persistence.db.entity.RecentSearchEntity
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -1041,6 +1043,57 @@ class RealFlashChatRepositoryTest {
             kotlinx.coroutines.delay(100)
             assertEquals(1, notified.size)
         }
+
+    @Test
+    fun `racing receive callbacks insert one bubble per attachment transfer`() = runBlocking {
+        for ((fileName, mimeType) in listOf("photo.jpg" to "image/jpeg", "voice.m4a" to "audio/mp4")) {
+            val storedMessages = FakeMessageDao()
+            val reads = AtomicInteger()
+            val writes = AtomicInteger()
+            val bothMissed = CompletableDeferred<Unit>()
+            val bothInserted = CompletableDeferred<Unit>()
+            val notified = CompletableDeferred<Unit>()
+            val messageDao = object : MessageDao by storedMessages {
+                override suspend fun existsAttachment(transferId: String): Boolean {
+                    val exists = storedMessages.existsAttachment(transferId)
+                    if (reads.incrementAndGet() == 2) bothMissed.complete(Unit)
+                    bothMissed.await()
+                    return exists
+                }
+
+                override suspend fun insert(message: MessageEntity): Long {
+                    val result = storedMessages.insert(message)
+                    if (writes.incrementAndGet() == 2) bothInserted.complete(Unit)
+                    return result
+                }
+            }
+            val repository = RealFlashChatRepository(
+                localDeviceId = "my-device-id",
+                localDisplayName = "Kali",
+                messageDao = messageDao,
+                conversationDao = FakeConversationDao(),
+                outboxDao = FakeOutboxDao(),
+                receiptDao = FakeReceiptDao(),
+                draftDao = FakeDraftDao(),
+                recentSearchDao = FakeRecentSearchDao(),
+                reactionDao = FakeReactionDao(),
+                transportSink = null,
+                ioDispatcher = testDispatcher,
+                onInboundAttachment = { _, _, _, _ -> notified.complete(Unit) },
+            )
+
+            repeat(2) {
+                repository.onInboundAttachment("peer-device-id", "transfer-1", fileName, mimeType, 1024)
+            }
+
+            withTimeout(5_000) {
+                bothInserted.await()
+                notified.await()
+            }
+            assertEquals(1, storedMessages.messages.size)
+            assertEquals(mimeType, storedMessages.messages.values.single().attachmentMime)
+        }
+    }
 
     /**
      * The image branch of `applyAttachment` used to render a tile for any status, so a received photo

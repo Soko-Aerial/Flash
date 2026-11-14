@@ -3613,11 +3613,12 @@ public class RealFlashChatRepository(
                 }
                 return@launch
             }
-            // Same dedupe gate as text: existsAttachment guards the replay path, and a
-            // real insert result is what lets the host notify (Bug 7).
+            // The lookup above recognizes old rows that used random IDs. Concurrent callbacks
+            // can both miss that lookup, so the primary key must arbitrate the insert. Scope it
+            // to the authenticated sender so a second peer cannot claim the same message ID.
             val insertedRowId = messageDao.insert(
                 MessageEntity(
-                    localId = UuidIdGenerator.newId(),
+                    localId = "lan-attachment:${peerDeviceId.length}:$peerDeviceId:$transferId",
                     conversationId = peerDeviceId,
                     senderId = peerDeviceId,
                     senderName = peerNameResolver(peerDeviceId),
@@ -3631,8 +3632,8 @@ public class RealFlashChatRepository(
                     attachmentPath = null,
                 ),
             )
-            touchConversation(peerDeviceId, now)
             if (insertedRowId != -1L) {
+                touchConversation(peerDeviceId, now)
                 runCatching {
                     onInboundAttachmentWithGroupTitle(
                         peerDeviceId,
