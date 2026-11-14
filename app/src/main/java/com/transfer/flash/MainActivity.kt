@@ -191,6 +191,7 @@ import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -1947,8 +1948,19 @@ private fun FlashShell(
                 networkRefreshTick++
             }
         }
+        val filter = IntentFilter().apply {
+            addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
+            @Suppress("DEPRECATION")
+            addAction(ConnectivityManager.CONNECTIVITY_ACTION)
+            addAction("android.net.wifi.WIFI_AP_STATE_CHANGED")
+        }
         runCatching {
-            toastContext.registerReceiver(wifiReceiver, IntentFilter(WifiManager.WIFI_STATE_CHANGED_ACTION))
+            ContextCompat.registerReceiver(
+                toastContext,
+                wifiReceiver,
+                filter,
+                ContextCompat.RECEIVER_EXPORTED,
+            )
         }
         onDispose {
             runCatching { cm?.unregisterNetworkCallback(callback) }
@@ -1961,8 +1973,10 @@ private fun FlashShell(
                 com.transfer.flash.core.network.util.LocalNetworkAddresses(toastContext).ipv4Addresses()
             }.getOrDefault(emptyList())
             val wm = toastContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            @Suppress("DEPRECATION")
-            val isWifiOn = wm?.isWifiEnabled ?: true
+            val isWifiOn = runCatching {
+                @Suppress("DEPRECATION")
+                wm?.isWifiEnabled
+            }.getOrNull() ?: true
             addrs to isWifiOn
         }
         localLanAddresses = ips
@@ -3230,6 +3244,14 @@ private fun FlashShell(
             DiscoveryEngineHolder.setNearbyVisible(true)
             onDispose { DiscoveryEngineHolder.setNearbyVisible(false) }
         }
+        LaunchedEffect(radiosAvailable) {
+            if (!radiosAvailable) {
+                while (true) {
+                    delay(2000L)
+                    networkRefreshTick++
+                }
+            }
+        }
         FlashNearbyScreen(
             state = nearby,
             onPairClick = { peer ->
@@ -3304,6 +3326,10 @@ private fun FlashShell(
             onTrustedPeerClick = { trusted -> selectedNearbyPeerId = trusted.id },
             onOpenWifiSettings = {
                 runCatching {
+                    toastContext.startActivity(
+                        Intent(Settings.ACTION_WIRELESS_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }.recoverCatching {
                     toastContext.startActivity(
                         Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                     )

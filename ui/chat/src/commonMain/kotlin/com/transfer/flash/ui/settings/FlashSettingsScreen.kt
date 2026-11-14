@@ -26,8 +26,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -66,6 +67,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -1561,123 +1563,97 @@ private fun ThemeModeSegmented(
 
 private val SegmentTrackHeight = FlashDimensions.minTouchTarget
 
-/**
- * Adaptive wrapping option chips shared by [PerformanceModeSegmented] and [DiscoveryModeSegmented].
- * Keeps >= 48.dp touch targets and avoids horizontal clipping on narrow screens or large font scales.
- */
-@Composable
-private fun <T> SettingsOptionChipGroup(
-    title: String,
-    options: List<T>,
-    isSelected: (T) -> Boolean,
-    labelFor: (T) -> String,
-    a11yLabelFor: (T) -> String,
-    subtitle: String,
-    onSelected: (T) -> Unit,
-) {
-    val colors = FlashTheme.colors
-    val haptics = rememberFlashHaptics()
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-    ) {
-        FlashText(
-            text = title,
-            style = FlashTheme.typography.bodyDefault,
-            color = colors.textPrimary,
-        )
-        FlowRow(
-            modifier = Modifier
-                .fillMaxWidth()
-                .selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-        ) {
-            options.forEach { option ->
-                val selectedOption = isSelected(option)
-                val label = labelFor(option)
-                Box(
-                    modifier = Modifier
-                        .heightIn(min = FlashDimensions.minTouchTarget)
-                        .clip(FlashShapes.button)
-                        .background(if (selectedOption) colors.accentFill else colors.backgroundSurfaceSubtle)
-                        .border(
-                            width = FlashDimensions.borderHairline,
-                            color = if (selectedOption) colors.accentFill else colors.borderSubtle,
-                            shape = FlashShapes.button,
-                        )
-                        .selectable(
-                            selected = selectedOption,
-                            role = Role.RadioButton,
-                            onClick = {
-                                if (!selectedOption) {
-                                    haptics(FlashHaptic.Tick)
-                                    onSelected(option)
-                                }
-                            },
-                        )
-                        .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
-                        .semantics { contentDescription = a11yLabelFor(option) },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    FlashText(
-                        text = label,
-                        style = FlashTheme.typography.captionEmphasis,
-                        color = if (selectedOption) colors.onAccentFill else colors.textSecondary,
-                    )
-                }
-            }
-        }
-        FlashText(
-            text = subtitle,
-            style = FlashTheme.typography.captionDefault,
-            color = colors.textSecondary,
-        )
-    }
-}
-
-/**
- * Auto / Ultra Low / Low / Medium / High tier picker (ERROR-033).
- */
 @Composable
 private fun PerformanceModeSegmented(
     selected: FlashPerformanceMode?,
     detected: FlashPerformanceMode,
     onSelected: (FlashPerformanceMode?) -> Unit,
 ) {
-    val options: List<FlashPerformanceMode?> = listOf(
-        null,
-        FlashPerformanceMode.ULTRA_LOW,
-        FlashPerformanceMode.LOW,
-        FlashPerformanceMode.MEDIUM,
-        FlashPerformanceMode.HIGH,
-    )
-    SettingsOptionChipGroup(
+    SettingsModeOptions(
         title = "Performance mode",
-        options = options,
-        isSelected = { it == selected },
-        labelFor = { FlashSettingsMath.performanceModeLabel(it) },
-        a11yLabelFor = { "${FlashSettingsMath.performanceModeLabel(it)} performance" },
+        options = listOf(null, FlashPerformanceMode.ULTRA_LOW, FlashPerformanceMode.LOW,
+            FlashPerformanceMode.MEDIUM, FlashPerformanceMode.HIGH),
+        selected = selected,
+        labelFor = FlashSettingsMath::performanceModeLabel,
         subtitle = FlashSettingsMath.performanceModeSubtitle(pinned = selected, detected = detected),
         onSelected = onSelected,
     )
 }
 
 @Composable
-private fun DiscoveryModeSegmented(
-    selected: String,
-    onSelected: (String) -> Unit,
-) {
-    val options = listOf("STANDARD", "GHOST", "ECO", "BOOST")
-    SettingsOptionChipGroup(
+private fun DiscoveryModeSegmented(selected: String, onSelected: (String) -> Unit) {
+    SettingsModeOptions(
         title = "Discovery mode",
-        options = options,
-        isSelected = { it.equals(selected, ignoreCase = true) },
-        labelFor = { FlashSettingsMath.discoveryModeShortLabel(it) },
-        a11yLabelFor = { "${FlashSettingsMath.discoveryModeShortLabel(it)} discovery mode" },
+        options = listOf("STANDARD", "GHOST", "ECO", "BOOST"),
+        selected = selected.uppercase(),
+        labelFor = FlashSettingsMath::discoveryModeShortLabel,
         subtitle = FlashSettingsMath.discoveryModeSubtitle(selected),
         onSelected = onSelected,
     )
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun <T> SettingsModeOptions(
+    title: String,
+    options: List<T>,
+    selected: T,
+    labelFor: (T) -> String,
+    subtitle: String,
+    onSelected: (T) -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val haptics = rememberFlashHaptics()
+    Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+        FlashText(title, style = typography.bodyDefault, color = colors.textPrimary)
+        BoxWithConstraints(Modifier.fillMaxWidth().selectableGroup()) {
+            val measurer = rememberTextMeasurer()
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            val minimumWidth = with(density) {
+                options.maxOf {
+                    measurer.measure(labelFor(it), typography.captionEmphasis, maxLines = 1).size.width.toDp()
+                } + FlashSpacing.space16
+            }.coerceAtLeast(FlashDimensions.minTouchTarget)
+            val inline = maxWidth >= minimumWidth * options.size + FlashSpacing.space2 * (options.size - 1)
+            val optionContent: @Composable (T, Modifier) -> Unit = { option, modifier ->
+                val checked = option == selected
+                Box(
+                    modifier = modifier
+                        .heightIn(min = FlashDimensions.minTouchTarget)
+                        .clip(FlashShapes.bubbleGrouped)
+                        .background(if (checked) colors.accentFill else colors.backgroundSurfaceSubtle)
+                        .selectable(selected = checked, role = Role.RadioButton) {
+                            if (!checked) {
+                                haptics(FlashHaptic.Tick)
+                                onSelected(option)
+                            }
+                        }
+                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashText(
+                        text = labelFor(option),
+                        style = typography.captionEmphasis,
+                        color = if (checked) colors.onAccentFill else colors.textPrimary,
+                    )
+                }
+            }
+            if (inline) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
+                    options.forEach { optionContent(it, Modifier.weight(1f)) }
+                }
+            } else {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                ) {
+                    options.forEach { optionContent(it, Modifier.widthIn(min = FlashDimensions.minTouchTarget)) }
+                }
+            }
+        }
+        FlashText(subtitle, style = typography.captionDefault, color = colors.textSecondary)
+    }
 }
 
 @Composable

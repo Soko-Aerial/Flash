@@ -261,7 +261,7 @@ fun FlashMessageList(
 
                 FlashMessageGroupPosition.BOTTOM,
                 FlashMessageGroupPosition.SINGLE,
-                -> FlashSpacing.space16
+                -> FlashSpacing.space8
             }
 
             val isSelected = message.id in selectedMessageIds

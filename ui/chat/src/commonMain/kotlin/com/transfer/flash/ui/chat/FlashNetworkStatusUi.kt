@@ -197,7 +197,7 @@ fun FlashConnectionBanner(
             .fillMaxWidth()
             .heightIn(min = 36.dp)
             .background(background)
-            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
             .semantics(mergeDescendants = true) {
                 contentDescription = label
             },
@@ -218,23 +218,20 @@ fun FlashConnectionBanner(
         if (FlashNetworkStatusMath.isBlockingState(health)) {
             Box(
                 modifier = Modifier
+                    .defaultMinSize(minWidth = FlashDimensions.minTouchTarget, minHeight = FlashDimensions.minTouchTarget)
                     .clip(FlashShapes.chip)
                     .background(colors.accentFill)
-                    .defaultMinSize(
-                        minWidth = FlashDimensions.minTouchTarget,
-                        minHeight = FlashDimensions.minTouchTarget,
-                    )
                     .clickable(onClick = onRetry)
                     .semantics(mergeDescendants = true) {
                         role = Role.Button
                         contentDescription = "Retry connection"
                     }
-                    .padding(horizontal = FlashSpacing.space16),
+                    .padding(horizontal = FlashSpacing.space10, vertical = FlashSpacing.space4),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashText(
                     text = "Retry",
-                    style = typography.metadataEmphasis,
+                    style = typography.captionEmphasis,
                     color = colors.onAccentFill,
                 )
             }
