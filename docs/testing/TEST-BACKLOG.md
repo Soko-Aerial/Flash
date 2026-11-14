@@ -8659,3 +8659,19 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
   - Under RTL, lateral nudges/tilts (`Chats`, `Transfers`, `Nearby`) mirror naturally.
   - With `reduceMotion` enabled, all icon transforms and gear rotation collapse cleanly to identity with no jarring jump or residual offset.
 - **Status:** TODO
+
+### UXPOL-16 — Compact Transfers rows and conversation header
+
+- **Setup:** Android phone and desktop with narrow and wide panes, long file and peer names, and an encrypted direct chat.
+- **Steps:** Inspect Transfers with an incoming offer, an active transfer, a long failure reason and a completed receive. Repeat with large text and in dark mode. Open the chat in online and offline states. Tap Retry when offline and open encryption details by touch and with assistive input. Check a received text and voice note in both the normal and Ultra Low bubbles. Open message options and start and pause the voice note.
+- **Pass:** File name, peer and status each take one line in the list, row actions are reachable, and the detail view shows full file names and failure reasons. The username sits directly above presence. The lock opens its trust sheet and the compact Retry pill starts a reconnect. Timestamps sit close to text and voice content, and the options and playback controls remain usable.
+- **Source:** [Transfers refinement](../ui/transfers-nearby-refinement.md), [UI-004](../ui/chat-screen.md#ui-004--chat-header).
+- **Status:** TODO
+
+### UXPOL-17 — One recipient bubble per image or voice transfer
+
+- **Setup:** Two paired physical devices with a shared LAN and a chat. Use two distinct photos, including two with the same display name if available.
+- **Steps:** Send one photo and one voice note. Interrupt and reconnect the LAN during a second send and retry if needed. Select the same photo again in one draft, then press Send quickly twice. Repeat with two distinct photos in a draft, then send the original in a fresh draft. Repeat with a Hub-routed direct chat if available.
+- **Pass:** One receiver bubble and one saved file per photo or voice note, including after retry. Repeat selection in one draft creates one tray item and one sender transfer ID. Distinct photos are delivered once each, and the fresh draft creates one new transfer. If a duplicate appears, capture both logs and the corresponding transfer IDs and routes.
+- **Source:** ERROR-1024/1025 and [UI-012](../ui/attachment-button.md).
+- **Status:** TODO

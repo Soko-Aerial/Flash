@@ -1,5 +1,21 @@
 # Error Log
 
+## ERROR-1027 — Windows Gradle JVM stack overflow during the verification run
+
+**2026-11-14 · Build host · Status: OPEN.** Two Gradle attempts exited `-1073741571`. Windows Application Error recorded `java.exe` in `ntdll.dll` with `0xc00000fd` (stack overflow). The first daemon connection also dropped before task execution. The final locked verification passed with `--no-daemon`, two workers and a per-invocation `-Xss4m` for the Gradle daemon. The underlying Windows failure was not isolated. There was also a compile failure in the first render fixture due to a missing import and a misplaced closing brace. Both were corrected and the fixture ran on the next compiling pass.
+
+## ERROR-1026 — Desktop discovery ECO test timed out during chat verification
+
+**2026-11-14 · Windows desktop integration · Status: OPEN.** `DesktopDiscoveryDownscaleTest` case `idle inactive window uses ECO and restores selected mode` timed out after 30 seconds, in both the wide desktop suite and the class rerun bundled with the render fixture. Its other four cases and the render fixture passed. The test booted real local discovery on a network with other Flash peers. The cause of the timeout was not isolated. Discovery logic was outside the chat changes. Reproduce with a controlled discovery environment before changing the idle policy.
+
+## ERROR-1025 — Concurrent receives could create two recipient bubbles for one attachment
+
+**2026-11-14 · LAN chat attachments · Status: OPEN pending UXPOL-17.** The owner saw duplicate photos and voice notes only in the receiving chat. Text had one bubble. Text uses a stable message ID. The attachment receive callback checked `existsAttachment` before inserting with a fresh random ID, allowing two concurrent callbacks through the check and into two rows. New direct LAN attachment rows use a deterministic sender-scoped key and Room's insert conflict handling. The lookup still recognizes older rows. A regression forces both callbacks past the lookup before either inserts and checks that each media type produces one row. Device acceptance is needed to correlate the owner report with transfer IDs and rule in or out a route change.
+
+## ERROR-1024 — Repeated photo selection queued multiple transfers from one draft
+
+**2026-11-14 · Chat composer · Status: OPEN pending UXPOL-17.** The staging helper appended each picker result even if its URI was already present. Each entry had a separate UI ID, and Send invoked the host transfer callback for every entry. The staging helper now keeps the first entry for each URI within the draft, and the composer consumes ready entries before invoking the host. A focused regression covers the same URI with different entry IDs, a distinct URI with the same name, and a fresh draft. The owner-reported device symptom still needs correlation with sender and receiver transfer IDs.
+
 ## ERROR-1023 — Hub integration abandoned a late LAN completion before duplicate cleanup
 
 **2026-11-14 · HR8 merge · RESOLVED.** `CrossRouteWiringIntegrationTest` found that a Hub takeover could retire the LAN transfer row before the LAN assembly callback. The cancellation guard then returned `ABANDONED` before checking the Hub's terminal route state or deleting the losing copy. The merged finalization path now uses the retained LAN file-ID mapping when the row was retired, checks continuity, and cleans the duplicate while preserving the user-cancelled path. The full engine rerun passed, including the regression, and the Android-host transfer suite remained green.
