@@ -1,5 +1,27 @@
 # Progress Log
 
+## 2026-11-14 — Audit remediation for HR6–HR11 completion review (`agent/hub-readiness`)
+
+### Worked on
+Resolved all 8 findings (`6 P1 + 2 P2`) from `docs/audit/2026-11-14-hub-completion-review.md` in isolated worktree `C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness` atop `256e140d`:
+- **HR6 (#1 & #2):** Added `hub_device_replacements` (`IdentityStore` Migration 4) + per-device lock (`EnrollmentService.beginDeviceReplacement`), validated scope/department/group membership/`remainingQuotaAssumingRevoked` and admin/approver/linked-admin rules before credential/revocation mutations, and added `200 OK` interrupted replacement retry recovery (`AdminApi`, `AdminApiDtos`, `DeviceReplacementTest`).
+- **HR7 (#3):** Threaded `expectedEpoch` across `AnnouncementRoutes`, `AnnouncementStore.getChangesFeed`, `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, `FakeHubAnnouncementsApi`, and `RealFlashChatRepository.refreshHubAnnouncements` to force `fullResync = true` when Hub feed epochs reset (`AnnouncementClientContractTest`, `RealFlashChatRepositoryAnnouncementsTest`).
+- **HR8 (#4):** Added atomic disk persistence via `FileContinuityCheckpointStore`, 32-hex `wireFileId` generation (`RealFlashTransferRepository.newWireFileId`), normal UI `sendFile` / `resumeTransfer` `LAN <-> Hub` handover (`TransferRouteFallback`, `HubFileBinding`), `senderSourceFingerprint` validation, `hubfile.handover.*` probes, Android/Desktop wiring (`DiscoveryEngineHolder`, `DesktopEngine`), and 4 end-to-end integration tests (`CrossRouteWiringIntegrationTest`).
+- **HR9 (#5 & #7):** Validated inner `FLASH_CALL` frame (`callId`, sender, non-terminal state) and monotonic `seq` prior to replay-cache recording (`CallCoordinator`, `HubOffLanCalling`, `OffLanCallSignalingTest`); added proactive `EnterpriseHub.ensureFreshCallIceConfig` renewal/retry wired on Android and Desktop (`DiscoveryEngineHolder`, `DesktopEngine`, `DesktopShell`, `EnterpriseHubTest`).
+- **HR10 (#6):** Bounded `GroupRelaySealing.MAX_VALID_EPOCH` (`1_000_000_000L`) and unified `(rosterVersion, epoch, keyId)` canonical epoch tie-breaking (`HubGroupE2eeCoordinator`, `HubGroupE2eeTest`).
+- **HR11 (#8):** Added `MailboxStats.quarantinedOutstanding()` backed by `MailboxQueue`, wired into `OperationalMonitor.evaluate`, `/health/detail` (`mailbox.quarantinedOutstanding`), and Prometheus `flash_mailbox_quarantined_outstanding` (`FlashServerEngine`, `OperationsAndRolloutDrillsTest`).
+
+### Verification (after final code & doc edits)
+- **Node Admin UI tests (`node --no-warnings --test server/admin-ui-tests/*.test.mjs`):** `87 tests, 87 passed, 0 failed, 0 skipped`.
+- **Server (`tools\flash-gradle.cmd --max-workers=2 :server:test`):** `76 suites, 702 tests, 0 failures, 0 errors, 0 skipped`.
+- **Client / Protocol / Persistence / Network / UI / Desktop / Android:** `tools\flash-gradle.cmd :core:common:jvmTest :core:hub-protocol:jvmTest :core:security:jvmTest :core:discovery:jvmTest :core:persistence:jvmTest :core:enterprise:jvmTest :core:network:jvmTest :core:transfer:jvmTest :core:messaging:jvmTest :core:calling:jvmTest :core:engine:jvmTest :ui:chat:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:assembleDebug` -> `394 suites, 3,310 tests, 0 failures, 0 errors, 4 pre-existing POSIX skips on Windows` (`:core:security:jvmTest` 2, `:desktop:jvmTest` 2) + `:app:assembleDebug` `BUILD SUCCESSFUL`.
+- **Total automated gate:** `4,099 tests, 0 failures, 0 errors, 4 skipped`.
+
+### Remaining / Next AI
+- Commit cleanly on `agent/hub-readiness` and pass an independent verifier re-review (`docs/plans/HUB-PLANS-PROMPTS.md` §2).
+- Three-way merge overlapping uncommitted `dev` files in `C:\Users\KaliOxygen\Downloads\Flash` (`DiscoveryEngineHolder.kt`, `CallCoordinator.kt`, `RealFlashTransferRepository.kt`, `DesktopShell.kt`, `docs/testing/TEST-BACKLOG.md`, `logs/handoff.md`, `logs/progress.md`).
+- Physical device, Chrome console, coturn, and isolated VPS items remain `TODO` in `docs/testing/TEST-BACKLOG.md` (`HR6-DEV-01 / ORGT-14` .. `HR11-ENV-02`).
+
 ## 2026-11-13 — Hub readiness phases HR6–HR11 implemented, audit-remediated, and integration-verified (`agent/hub-readiness`)
 
 ### Worked on

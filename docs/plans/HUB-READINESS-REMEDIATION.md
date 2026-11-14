@@ -699,6 +699,39 @@ Tests to write first:
 #### Verification
 - Targeted HR11 suite (after final code edit + mutation check restore): `OperationsAndRolloutDrillsTest` (4/4), `FlashServerEngineTest` (10/10), `RouteTableContractTest` (2/2) -> `16/16` passed; full cross-module integration gate follows next.
 
+---
+
+## 2026-11-14 Audit Remediation Summary (`docs/audit/2026-11-14-hub-completion-review.md`)
+
+All 8 findings (6 P1, 2 P2) raised during the independent completion review were resolved on `agent/hub-readiness`:
+
+1. **HR6 — Finding #1 & #2 (Atomic replacement ledger, lock, quota/scope/privilege order, interrupted retry recovery):**
+   - Added SQLite `hub_device_replacements` (`IdentityStore` Migration 4) with per-device replacement lock in `EnrollmentService.beginDeviceReplacement`.
+   - Enforced department scope, target department/group membership validation, org-admin-only checks (old/target admin roles, approver, enrolled, linked admin bindings), and `remainingQuotaAssumingRevoked` before mutating credentials or revocations, returning `200 OK` with active grant details when retrying an interrupted unredeemed replacement (`DeviceReplacementTest`).
+2. **HR7 — Finding #3 (`expectedEpoch` full-resync detection on changes feed):**
+   - Added `expectedEpoch` query parameter across `AnnouncementRoutes`, `AnnouncementStore.getChangesFeed`, `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, `FakeHubAnnouncementsApi`, and `RealFlashChatRepository.refreshHubAnnouncements`, forcing `fullResync = true` when the Hub reset/recreated its feed epoch so notifications stay suppressed (`docs/protocol.md`, `AnnouncementClientContractTest`, `RealFlashChatRepositoryAnnouncementsTest`).
+3. **HR8 — Finding #4 (Durable continuity checkpoints + normal UI `sendFile`/`resumeTransfer` `LAN <-> Hub` handover):**
+   - Added atomic disk persistence (`FileContinuityCheckpointStore` in `noBackupFilesDir/transfer-continuity` on Android and `stateDir/transfer-continuity` on Desktop) storing verified spans, `lanPartialPath`, `senderSourceFingerprint`, and cancel/complete fences across restart.
+   - Generated native 32-hex `wireFileId` values for 1:1 LAN sends (`RealFlashTransferRepository.newWireFileId`), wired `TransferRouteFallback` (`HubFileBinding.tryHandoverFromLan` & `tryHandoverOutToLan`) directly into normal `sendFile` / `resumeTransfer` flows, preserved exact `(transferId, wireFileId)`, verified source fingerprints pre-resume, and proved `LAN -> Hub`, `Hub -> LAN`, restart recovery, and changed-source / oversized explicit refusal in `CrossRouteWiringIntegrationTest`.
+4. **HR9 — Finding #5 & #7 (Pre-replay inner frame validation & proactive ICE config renewal):**
+   - Validated inner `FLASH_CALL` frame parsing, `callId` match, sender match, non-terminal state, and monotonic `seq` before recording `signalId` into the replay set (`CallCoordinator.onInboundOffLanSignal`, `HubOffLanCalling.validateInbound`, `OffLanCallSignalingTest`).
+   - Added `EnterpriseHub.ensureFreshCallIceConfig` with proactive renewal/retry on Android and Desktop (`DiscoveryEngineHolder`, `DesktopEngine`, `DesktopShell`, `EnterpriseHubTest`).
+5. **HR10 — Finding #6 (Bounded epochs & deterministic canonical tie-breaking):**
+   - Enforced `GroupRelaySealing.MAX_VALID_EPOCH = 1_000_000_000L`, bounded epoch/roster admission, and aligned canonical key selection tie-breaking on `(rosterVersion, epoch, keyId)` (`HubGroupE2eeCoordinator`, `HubGroupE2eeTest`).
+6. **HR11 — Finding #8 (Durable quarantined backlog observability):**
+   - Added `MailboxStats.quarantinedOutstanding()` backed by `MailboxQueue`, wired into `OperationalMonitor.evaluate` (`unreadable_queue`) and `FlashServerEngine` (`/health/detail` + `flash_mailbox_quarantined_outstanding`), with regression coverage in `OperationsAndRolloutDrillsTest`.
+
+### Adversarial Self-Review & Integration Overlap
+- **Lazy-pattern scan notes (`git diff HEAD -U0`):** Every production `runCatching { ... }` in the remediation diff is strictly intentional non-fatal best-effort cleanup or rollback compensation (`TransferContinuityCoordinator.kt` deleting a duplicate/temp partial file when losing a route race; `RealFlashTransferRepository.kt` dismissing/clearing local chunk progress mirrors when externally retiring a transfer row; `EnrollmentService.kt` rolling back a newly created invite when binding creation fails before returning the error); test fixture `"temporary"` in `EnterpriseHubTest.kt` simulates an HTTP 503 response payload.
+- **Overlapping main-checkout edits (`C:\Users\KaliOxygen\Downloads\Flash` on `dev`):** `DiscoveryEngineHolder.kt`, `CallCoordinator.kt`, `RealFlashTransferRepository.kt`, `DesktopShell.kt`, `docs/testing/TEST-BACKLOG.md`, `logs/handoff.md`, `logs/progress.md` must be three-way merged cleanly by the owner when integrating `agent/hub-readiness`.
+- **Verified Post-Remediation Gates (after final code edit):**
+  - `node --no-warnings --test server/admin-ui-tests/*.test.mjs`: `87 tests, 87 passed, 0 failed, 0 skipped`.
+  - `tools\flash-gradle.cmd --max-workers=2 :server:test`: `76 suites, 702 tests, 0 failures, 0 errors, 0 skipped`.
+  - `tools\flash-gradle.cmd :core:common:jvmTest :core:hub-protocol:jvmTest :core:security:jvmTest :core:discovery:jvmTest :core:persistence:jvmTest :core:enterprise:jvmTest :core:network:jvmTest :core:transfer:jvmTest :core:messaging:jvmTest :core:calling:jvmTest :core:engine:jvmTest :ui:chat:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:assembleDebug`: `394 suites, 3,310 tests, 0 failures, 0 errors, 4 pre-existing POSIX skips on Windows` (`:core:security:jvmTest` 2, `:desktop:jvmTest` 2) + `:app:assembleDebug` `BUILD SUCCESSFUL`.
+  - Combined Gradle + Node total: `4,099 tests, 0 failures, 0 errors, 4 skipped`.
+- **Residual open items:** Physical-device / isolated-VPS / Chrome console / coturn acceptance tests (`HR6-DEV-01 / ORGT-14`, `HR7-DEV-01`, `HR8-DEV-01`, `HR9-DEV-01`, `HR9-DEV-02`, `HR10-DEV-01`, `HR11-ENV-01`, `HR11-ENV-02`) remain `TODO` in `docs/testing/TEST-BACKLOG.md`.
+
+
 
 
 

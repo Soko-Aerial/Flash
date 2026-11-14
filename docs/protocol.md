@@ -1377,7 +1377,7 @@ mailbox, then closes. A client treats it like any disconnect.
 **Operational endpoints.** `GET /health` is public and returns only `{"status":"ok"|"degraded"|"down"}` (HTTP 503 when the database does not
 answer; `"degraded"` when any critical operational alert fires or database latency is slow while still reachable). `GET /health/detail` (JSON) and `GET /metrics` (Prometheus text) require the management bearer token or a loopback caller without
 proxy headers; otherwise `403 ERR_FORBIDDEN`. Unhandled errors answer `500 ERR_INTERNAL` with a fixed sentence and a `correlationId`.
-`/health/detail` returns `{status, serverVersion, uptimeSeconds, sessions, openConnections, mailbox: {queuedRows, queuedBytes, oldestAgeSeconds, deliveredTotal, expiredTotal, droppedTotal, quarantinedTotal}, database?: {ok, latencyMs, walPages?}, disk?: {totalBytes, usableBytes, usedPercent}, delegationDaysRemaining?, tlsDaysRemaining?, alerts: [{id, severity, summary, action}], memory: {usedBytes, maxBytes}}`.
+`/health/detail` returns `{status, serverVersion, uptimeSeconds, sessions, openConnections, mailbox: {queuedRows, queuedBytes, oldestAgeSeconds, deliveredTotal, expiredTotal, droppedTotal, quarantinedTotal, quarantinedOutstanding}, database?: {ok, latencyMs, walPages?}, disk?: {totalBytes, usableBytes, usedPercent}, delegationDaysRemaining?, tlsDaysRemaining?, alerts: [{id, severity, summary, action}], memory: {usedBytes, maxBytes}}`.
 
 ### Hub REST contract (`/api/v1`)
 
@@ -1469,7 +1469,7 @@ Announcements are stored and broadcast in **plain text** on the hub. Hub adminis
 
 | Method and path | Auth | Request | Response | State |
 |---|---|---|---|---|
-| `GET /api/v1/announcements?since=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned), or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
+| `GET /api/v1/announcements?since=&epoch=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned) plus optional `epoch` so post-empty `since=0` checks receive delta instead of full resync, or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
 | `GET /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` (404 if deleted or caller lacks access) | served (A3) |
 | `POST /api/v1/announcements` | bearer | `PostAnnouncementRequestDto` | `201 Created` with `AnnouncementItemDto` | served (A3) |
 | `PUT /api/v1/announcements/{id}` | bearer | `UpdateAnnouncementRequestDto` (expiry is tri-state, see below) | `AnnouncementItemDto` (409 if `expectedSeq` mismatch; 400 if `expiresAtMs` and `clearExpiry` are both set) | served (A3) |
@@ -1891,9 +1891,9 @@ enrolment credential. No manual pairing pin is changed.
 
 ## Cross-Route LAN ↔ Hub File Transfer Continuity (HR8)
 
-- **Logical identity (`LogicalTransferIdentity`):** Binds `(logicalTransferId, senderDeviceId, recipientDeviceId, plainBytes, fileSha256Hex)`. A transfer preserves the same `fileId` across LAN and Hub routes (`RealFlashTransferRepository.wireFileId` / `HubFileBinding`).
-- **Route ownership (`TransferRouteCoordinator` / `EngineTransferRouteContinuityPort`):** Serializes active route transitions (`RouteOwner.NONE | LAN | HUB`) under a monotonic `routeEpoch`, preventing concurrent completions, duplicate rows, or duplicate published files (`isTerminalElsewhere`).
-- **Verified byte continuity (`TransferByteAlignment`):** Exports only cryptographically verified byte spans (`[offset, length)` from Hub `.part` + `HubChunkBitmap` or LAN `ReceivePipeline`) and marks a target chunk completed only when the verified span completely covers `[chunkStart, chunkEndExclusive)`. On completion or corruption, tampered partial bytes or source digest mismatches fail closed (`cancelled` / `INCOMPATIBLE`) without publishing.
+- **Logical identity (`LogicalTransferIdentity`):** Binds `(logicalTransferId, senderDeviceId, recipientDeviceId, plainBytes, fileSha256Hex)`. New 1:1 LAN sends generate 32-lowercase-hex `wireFileId` values (`RealFlashTransferRepository.newWireFileId`), preserving the exact `transferId` and `wireFileId` across LAN and Hub routes (`RealFlashTransferRepository` / `HubFileBinding`).
+- **Route ownership & restart durability (`TransferRouteCoordinator` / `FileContinuityCheckpointStore` / `EngineTransferRouteContinuityPort`):** Serializes active route transitions (`RouteOwner.NONE | LAN | HUB`) under a monotonic `routeEpoch` persisted atomically to `<noBackupFilesDir>/transfer-continuity/*.chk` (Android) / `<stateDir>/transfer-continuity/*.chk` (Desktop) including verified spans, `lanPartialPath`, `senderSourceFingerprint`, and terminal cancel/complete fences. Restart normalization clears stale `activeRoute` ownership while bumping `routeEpoch` and preserving verified spans and terminal fences (`isTerminalElsewhere`).
+- **Bidirectional user handover & verified byte continuity (`TransferRouteFallback` / `HubFileBinding` / `TransferByteAlignment`):** When a direct `sendFile` fails or resumes offline, `RealFlashTransferRepository.resumeTransfer` invokes `TransferRouteFallback` (`HubFileBinding.tryHandoverFromLan`) to transition `LAN -> HUB` using the same `transferId`, `wireFileId`, and `senderSourceFingerprint`; conversely, resuming an incomplete `HUB` upload while the peer is directly reachable (`HubFileBinding.tryHandoverOutToLan`) stops/retires the `hub_file` row cleanly and resumes on LAN via `resumeHubSendOnLan`. Exports only cryptographically verified byte spans (`[offset, length)` from Hub `.part` + `HubChunkBitmap` or LAN `ReceivePipeline`) and marks a target chunk completed only when the verified span completely covers `[chunkStart, chunkEndExclusive)`. On completion or corruption, tampered partial bytes, oversized Hub limits, or source digest/fingerprint mismatches fail closed (`cancelled` / `FILE_CHANGED` / `INCOMPATIBLE`) without publishing or falling back silently.
 
 ## Off-LAN Voice and Video Calling (HR9)
 

@@ -164,6 +164,8 @@ data class DeviceDto(
     val online: Boolean = false,
     val subjectPublicKey: String = "",
     val inviteId: String? = null,
+    val replacementState: String? = null,
+    val replacementInviteId: String? = null,
 )
 
 @Serializable

@@ -26,12 +26,16 @@ import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.MemberRole
 import com.transfer.flash.server.directory.OrganizationDirectory
+import com.transfer.flash.server.identity.DeviceReplacementState
 import com.transfer.flash.server.identity.DeviceStatus
 import com.transfer.flash.server.identity.EnrollRefusal
 import com.transfer.flash.server.identity.IdentityStore
+import com.transfer.flash.server.identity.InviteState
 import com.transfer.flash.server.storage.ServerDatabase
+import com.transfer.flash.server.storage.update
 import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -69,6 +73,11 @@ class DeviceReplacementTest {
 
     private inner class Realm(
         val initialQuota: Int = 50,
+        val delegationScopes: Set<String> = setOf(
+            DelegationCert.SCOPE_ENROL_MEMBER,
+            DelegationCert.SCOPE_ENROL_ADMIN,
+            DelegationCert.SCOPE_REVOKE_MEMBER,
+        ),
     ) {
         var now: Long = System.currentTimeMillis()
         val rootKey: KeyPair = FlashCrypto.generateEcKeyPair()
@@ -79,7 +88,7 @@ class DeviceReplacementTest {
             rootPrivateKey = rootKey.private,
             rootPublicKey = rootKey.toBase64Spki(),
             delegatePublicKey = serverKey.toBase64Spki(),
-            scopes = setOf(DelegationCert.SCOPE_ENROL_MEMBER, DelegationCert.SCOPE_ENROL_ADMIN, DelegationCert.SCOPE_REVOKE_MEMBER),
+            scopes = delegationScopes,
             validFrom = now - 60_000,
             validTo = now + 400L * 24 * 3600 * 1000,
             maxDevices = initialQuota,
@@ -648,5 +657,298 @@ class DeviceReplacementTest {
         } finally {
             keyDir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun invalidTtlAndDelegationAndUrlRefusedBeforeRevokingOldDevice() = testApplication {
+        val r = Realm()
+        mount(r)
+        val client = createClient { followRedirects = false }
+        val s = client.login(r)
+
+        val inv = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-valid", inv.token, dept = "sales")
+        val oldSerial = r.identities.device("dev-valid")!!.serial
+        val (tok, _) = r.tokens.issue(HubPrincipal(deviceId = "dev-valid", role = DeviceCert.ROLE_MEMBER, departmentId = "sales", certSerial = oldSerial), r.now)
+
+        // 1. ttlMinutes = 4 (< 5 minimum) must fail with 400 BEFORE revocation or invite creation
+        val suTtl = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-valid")
+        val badTtl = client.postJson(
+            "/devices/dev-valid/replace",
+            s,
+            DeviceReplaceBody(department = "sales", ttlMinutes = 4, reason = "Bad TTL"),
+            stepUp = suTtl,
+        )
+        assertEquals(HttpStatusCode.BadRequest, badTtl.status, badTtl.bodyAsText())
+        assertEquals(DeviceStatus.ACTIVE, r.identities.device("dev-valid")!!.status)
+        assertNotNull(r.tokens.resolve(tok, r.now))
+        assertEquals(0, r.identities.listInvites(state = InviteState.PENDING, nowMs = r.now).size)
+
+        // 2. Non-HTTPS externalUrl when HTTPS is required refuses 409 without revoking
+        val strictEnrollment = EnrollmentService(
+            r.rootKey.toBase64Spki(),
+            r.serverKey.private,
+            r.delegation,
+            initialQuota = r.initialQuota,
+            store = r.identities,
+            revocations = r.revocations,
+            requireHttpsInvites = true,
+        )
+        // Missing SCOPE_ENROL_ADMIN on a member-only delegation also refuses before revoking
+        val memberOnlyDelegation = DelegationCert.issue(
+            rootPrivateKey = r.rootKey.private,
+            rootPublicKey = r.rootKey.toBase64Spki(),
+            delegatePublicKey = r.serverKey.toBase64Spki(),
+            scopes = setOf(DelegationCert.SCOPE_ENROL_MEMBER, DelegationCert.SCOPE_REVOKE_MEMBER),
+            validFrom = r.now - 60_000,
+            validTo = r.now + 400L * 24 * 3600 * 1000,
+            maxDevices = 50,
+            serial = 2L,
+        )
+        val noAdminEnrollment = EnrollmentService(
+            r.rootKey.toBase64Spki(),
+            r.serverKey.private,
+            memberOnlyDelegation,
+            initialQuota = 50,
+            store = r.identities,
+            revocations = r.revocations,
+        )
+        val strictDeps = AdminApiDeps(
+            web = r.deps.web,
+            admins = r.admins,
+            audit = r.audit,
+            directory = r.directory,
+            identities = r.identities,
+            stepUp = r.stepUp,
+            config = r.deps.config.copy(externalUrl = "http://insecure.example.invalid", allowInsecure = true),
+            enrollment = strictEnrollment,
+            revocations = r.revocations,
+            bearerTokens = r.tokens,
+            clock = { r.now },
+        )
+        assertFailsWithPrecheck(strictDeps, noAdminEnrollment, r)
+        assertEquals(DeviceStatus.ACTIVE, r.identities.device("dev-valid")!!.status)
+        assertNull(r.identities.getDeviceReplacement("dev-valid"))
+    }
+
+    private fun assertFailsWithPrecheck(
+        strictDeps: AdminApiDeps,
+        noAdminEnrollment: EnrollmentService,
+        r: Realm,
+    ) {
+        kotlin.runCatching {
+            strictDeps.enrollment!!.validateInviteScope(
+                strictDeps.config.externalUrl,
+                com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 600_000),
+                r.now,
+            )
+        }.also { assertTrue(it.isFailure) }
+        kotlin.runCatching {
+            noAdminEnrollment.validateInviteScope(
+                "https://hub.example.invalid",
+                com.transfer.flash.server.auth.InviteScope(department = "sales", role = "admin", expiry = r.now + 600_000),
+                r.now,
+            )
+        }.also { assertTrue(it.isFailure) }
+    }
+
+    @Test
+    fun deptHeadCannotInheritOrMintDeptAdminOnReplacement() = testApplication {
+        val r = Realm(
+            delegationScopes = setOf(
+                DelegationCert.SCOPE_ENROL_MEMBER,
+                DelegationCert.SCOPE_ENROL_ADMIN,
+                DelegationCert.SCOPE_REVOKE_MEMBER,
+                com.transfer.flash.core.hubprotocol.certs.HubRoles.enrolScope(com.transfer.flash.core.hubprotocol.certs.HubRoles.DEPT_ADMIN),
+            ),
+        )
+        mount(r)
+        val client = createClient { followRedirects = false }
+
+        // Enrol a dept_admin device in sales WITHOUT approver/signer/linked bindings
+        val headInv = r.enrollment.createInvite(
+            "http://localhost",
+            com.transfer.flash.server.auth.InviteScope(department = "sales", role = "dept_admin", expiry = r.now + 86400000),
+        )
+        val kHeadDev = FlashCrypto.generateEcKeyPair()
+        val pHeadDev = FlashCrypto.sign(kHeadDev.private, HubAuth.enrollProofBytes(headInv.token, "dev-sales-head", kHeadDev.toBase64Spki(), r.enrollment.serverId))
+        assertTrue(r.enrollment.enrollDevice(headInv.token, "dev-sales-head", kHeadDev.toBase64Spki(), pHeadDev, "Sales Head Device", r.now).isSuccess)
+        r.directory.registerMember(com.transfer.flash.server.directory.DepartmentMember("dev-sales-head", "sales", "Sales Head", MemberRole.MEMBER, kHeadDev.toBase64Spki()))
+
+        val headSess = client.login(r, user = "head_sales", pass = headPassword)
+        val headKey = FlashCrypto.generateEcKeyPair()
+        r.admins.registerConsoleKey("head_sales", headKey.toBase64Spki(), "Head browser key")
+
+        // Omitting role on a dept_admin target must NOT inherit dept_admin -> 403 ERR_FORBIDDEN
+        val suOmit = client.stepUp(r, headSess, StepUpActions.REPLACE_DEVICE, "dev-sales-head", key = headKey)
+        val omitRes = client.postJson(
+            "/devices/dev-sales-head/replace",
+            headSess,
+            DeviceReplaceBody(department = "sales", role = null, reason = "Bypass role inheritance"),
+            stepUp = suOmit,
+        )
+        assertEquals(HttpStatusCode.Forbidden, omitRes.status, omitRes.bodyAsText())
+        assertEquals(DeviceStatus.ACTIVE, r.identities.device("dev-sales-head")!!.status)
+        assertEquals(0, r.identities.listInvites(state = InviteState.PENDING, nowMs = r.now).size)
+
+        // Explicit dept_admin must also be refused -> 403
+        val suExplicit = client.stepUp(r, headSess, StepUpActions.REPLACE_DEVICE, "dev-sales-head", key = headKey)
+        val explicitRes = client.postJson(
+            "/devices/dev-sales-head/replace",
+            headSess,
+            DeviceReplaceBody(department = "sales", role = "dept_admin", reason = "Explicit dept_admin"),
+            stepUp = suExplicit,
+        )
+        assertEquals(HttpStatusCode.Forbidden, explicitRes.status, explicitRes.bodyAsText())
+        assertEquals(DeviceStatus.ACTIVE, r.identities.device("dev-sales-head")!!.status)
+
+        // Explicit member role IS permitted without issuing elevated credentials
+        val suMember = client.stepUp(r, headSess, StepUpActions.REPLACE_DEVICE, "dev-sales-head", key = headKey)
+        val downgradeRes = client.postJson(
+            "/devices/dev-sales-head/replace",
+            headSess,
+            DeviceReplaceBody(department = "sales", role = "member", reason = "Downgrade lost head device"),
+            stepUp = suMember,
+        )
+        assertEquals(HttpStatusCode.OK, downgradeRes.status, downgradeRes.bodyAsText())
+        val dto = HubRestCodec.decode<DeviceReplaceResultDto>(downgradeRes.bodyAsText())
+        assertEquals("member", dto.invite.invite.role)
+        assertEquals(DeviceStatus.REVOKED, r.identities.device("dev-sales-head")!!.status)
+    }
+
+    @Test
+    fun inviteWriteFailureLeavesOldDeviceActiveAndAllowsRecoveryRetry() = testApplication {
+        val r = Realm()
+        mount(r)
+        val client = createClient { followRedirects = false }
+        val s = client.login(r)
+
+        val inv = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-fail", inv.token, dept = "sales")
+        val oldSerial = r.identities.device("dev-fail")!!.serial
+        val (tok, _) = r.tokens.issue(HubPrincipal(deviceId = "dev-fail", role = DeviceCert.ROLE_MEMBER, departmentId = "sales", certSerial = oldSerial), r.now)
+
+        // Inject real SQLite failure on invite insertion after all prechecks pass
+        r.db.withConnection { conn ->
+            conn.update(
+                "CREATE TRIGGER fail_repl_invite BEFORE INSERT ON hub_invites " +
+                    "WHEN NEW.note LIKE 'replacement:%' BEGIN " +
+                    "SELECT RAISE(ABORT, 'injected invite write failure'); END",
+            )
+        }
+
+        val su1 = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-fail")
+        val failRes = client.postJson(
+            "/devices/dev-fail/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Lost phone"),
+            stepUp = su1,
+        )
+        assertEquals(HttpStatusCode.ServiceUnavailable, failRes.status, failRes.bodyAsText())
+
+        // Old device must NOT be stranded, revoked, or disconnected, and zero live grants exist
+        assertEquals(DeviceStatus.ACTIVE, r.identities.device("dev-fail")!!.status)
+        assertNotNull(r.tokens.resolve(tok, r.now))
+        assertFalse(r.revocations.isRevoked(oldSerial, "dev-fail"))
+        assertEquals(0, r.identities.listInvites(state = InviteState.PENDING, nowMs = r.now).size)
+
+        // Operator-visible outcome on GET /devices/{id}
+        val devDto = HubRestCodec.decode<DeviceDto>(
+            client.get("/admin/api/v1/devices/dev-fail") { withSession(s) }.bodyAsText(),
+        )
+        assertEquals(DeviceReplacementState.FAILED.name, devDto.replacementState)
+        assertNull(devDto.replacementInviteId)
+
+        // Recovery: clear the DB fault and retry
+        r.db.withConnection { conn -> conn.update("DROP TRIGGER fail_repl_invite") }
+        val su2 = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-fail")
+        val okRes = client.postJson(
+            "/devices/dev-fail/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Lost phone"),
+            stepUp = su2,
+        )
+        assertEquals(HttpStatusCode.OK, okRes.status, okRes.bodyAsText())
+        val okDto = HubRestCodec.decode<DeviceReplaceResultDto>(okRes.bodyAsText())
+        assertEquals(DeviceStatus.REVOKED, r.identities.device("dev-fail")!!.status)
+        assertEquals(DeviceReplacementState.INVITE_ISSUED.name, okDto.oldDevice.replacementState)
+        assertEquals(okDto.invite.invite.inviteId, okDto.oldDevice.replacementInviteId)
+        assertEquals(1, r.identities.listInvites(state = InviteState.PENDING, nowMs = r.now).size)
+    }
+
+    @Test
+    fun lostResponseRetryAndConcurrentReplaceLeaveAtMostOneLiveGrant() = testApplication {
+        val r = Realm()
+        mount(r)
+        val client = createClient { followRedirects = false }
+        val s = client.login(r)
+
+        val inv1 = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-retry", inv1.token, dept = "sales")
+        val inv2 = r.enrollment.createInvite("http://localhost", com.transfer.flash.server.auth.InviteScope(department = "sales", expiry = r.now + 86400000))
+        r.enrolMember("dev-conc", inv2.token, dept = "sales")
+
+        // 1. Simulate lost HTTP response after first replacement succeeded, then retry
+        val su1 = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-retry")
+        val firstRes = client.postJson(
+            "/devices/dev-retry/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Lost response"),
+            stepUp = su1,
+        )
+        assertEquals(HttpStatusCode.OK, firstRes.status)
+        val firstDto = HubRestCodec.decode<DeviceReplaceResultDto>(firstRes.bodyAsText())
+
+        val suRetry = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-retry")
+        val retryRes = client.postJson(
+            "/devices/dev-retry/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Lost response retry"),
+            stepUp = suRetry,
+        )
+        assertEquals(HttpStatusCode.Conflict, retryRes.status, retryRes.bodyAsText())
+        assertTrue(retryRes.bodyAsText().contains(firstDto.invite.invite.inviteId))
+
+        // Operator recovers via visible replacementInviteId -> revokes old grant -> issues new grant
+        val inspected = HubRestCodec.decode<DeviceDto>(
+            client.get("/admin/api/v1/devices/dev-retry") { withSession(s) }.bodyAsText(),
+        )
+        assertEquals(DeviceReplacementState.INVITE_ISSUED.name, inspected.replacementState)
+        assertEquals(firstDto.invite.invite.inviteId, inspected.replacementInviteId)
+
+        val revokeOld = client.post("/admin/api/v1/invites/${inspected.replacementInviteId}/revoke") { withSession(s) }
+        assertEquals(HttpStatusCode.OK, revokeOld.status)
+
+        val suRecover = client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-retry")
+        val recoverRes = client.postJson(
+            "/devices/dev-retry/replace",
+            s,
+            DeviceReplaceBody(department = "sales", reason = "Re-issue after lost response"),
+            stepUp = suRecover,
+        )
+        assertEquals(HttpStatusCode.OK, recoverRes.status, recoverRes.bodyAsText())
+        assertEquals(1, r.identities.listInvites(state = InviteState.PENDING, nowMs = r.now).size)
+
+        // Revoke recover grant before concurrent test check
+        val recDto = HubRestCodec.decode<DeviceReplaceResultDto>(recoverRes.bodyAsText())
+        r.identities.revokeInvite(recDto.invite.invite.inviteId, r.now)
+
+        // 2. Concurrent POST /devices/dev-conc/replace permits at most 1 live grant
+        val stepUps = (1..4).map { client.stepUp(r, s, StepUpActions.REPLACE_DEVICE, "dev-conc") }
+        val concResponses = runBlocking {
+            stepUps.map { su ->
+                async {
+                    client.postJson(
+                        "/devices/dev-conc/replace",
+                        s,
+                        DeviceReplaceBody(department = "sales", reason = "Concurrent click"),
+                        stepUp = su,
+                    )
+                }
+            }.awaitAll()
+        }
+        assertEquals(1, concResponses.count { it.status == HttpStatusCode.OK }, concResponses.map { it.status }.toString())
+        assertEquals(3, concResponses.count { it.status == HttpStatusCode.Conflict })
+        assertEquals(1, r.identities.listInvites(state = InviteState.PENDING, nowMs = r.now).size)
     }
 }

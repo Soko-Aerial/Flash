@@ -1093,8 +1093,12 @@ object DiscoveryEngineHolder {
         }
         if (dataPort > 0) Log.i(TAG_WS, "Real multistream data channels listening on port=$dataPort")
 
-        // HR8: Single cross-route continuity coordinator shared by LAN transferImpl and HubFileBinding.
-        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator()
+        // HR8: Single disk-backed cross-route continuity coordinator shared by LAN transferImpl and HubFileBinding.
+        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator(
+            com.transfer.flash.core.engine.hubfiles.FileContinuityCheckpointStore(
+                File(appContext.noBackupFilesDir, "transfer-continuity").path,
+            ),
+        )
         var hubFileTransfersRef: com.transfer.flash.core.enterprise.files.HubFileTransfers? = null
         val routeContinuityPort = com.transfer.flash.core.engine.hubfiles.EngineTransferRouteContinuityPort(
             localDeviceId = { identity.deviceId.value },
@@ -1711,7 +1715,7 @@ object DiscoveryEngineHolder {
             radioPort = radioPort,
             hubFileDao = db.hubFileDao(),
             offLanCallSupported = {
-                val cfg = hub.callIceConfig.value
+                val cfg = hub.validCallIceConfig()
                 hub.relay.state.value.canSend &&
                     cfg != null &&
                     cfg.offLanCallingSupported &&
@@ -1872,7 +1876,7 @@ object DiscoveryEngineHolder {
                 if (networkImpl.activeSessions.value.containsKey(FlashDeviceId(peerId))) {
                     emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
                 } else {
-                    val cfg = hub.callIceConfig.value
+                    val cfg = hub.validCallIceConfig()
                     if (cfg == null) {
                         emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
                     } else {
@@ -1909,7 +1913,7 @@ object DiscoveryEngineHolder {
                     Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
                     true
                 } else {
-                    val iceCfg = hub.callIceConfig.value
+                    val iceCfg = if (hub.relay.state.value.canSend) hub.ensureFreshCallIceConfig() else null
                     if (hub.relay.state.value.canSend && iceCfg != null && iceCfg.offLanCallingSupported) {
                         val sent = hub.relay.sendCallSignal(
                             com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(

@@ -213,14 +213,14 @@ public class OffLanCallSignalGuard(
         if (nowMs - signal.issuedAtMs > effectiveTtl || signal.ttlMs <= 0L || signal.ttlMs > maxTtlMs) {
             return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.EXPIRED_TTL)
         }
-        val seenIds = seenSignalIdsByCall.getOrPut(signal.callId) { mutableSetOf() }
-        if (!seenIds.add(signal.signalId)) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REPLAYED_SIGNAL_ID)
-        }
         val seqKey = "${signal.callId}|${signal.fromPeerId}"
         val previousSeq = highestSeqByCallPeer[seqKey]
         if (previousSeq != null && signal.seq <= previousSeq) {
             return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.STALE_SEQUENCE)
+        }
+        val seenIds = seenSignalIdsByCall.getOrPut(signal.callId) { mutableSetOf() }
+        if (!seenIds.add(signal.signalId)) {
+            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REPLAYED_SIGNAL_ID)
         }
         highestSeqByCallPeer[seqKey] = signal.seq
         return OffLanSignalVerdict.Accepted

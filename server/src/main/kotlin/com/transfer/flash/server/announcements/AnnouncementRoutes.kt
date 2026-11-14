@@ -64,6 +64,7 @@ fun Route.announcementRoutes(
 
                 val isOrgAdmin = isOrgAdminRole(principal.role)
                 val since = call.request.queryParameters["since"]?.toLongOrNull()
+                val expectedEpoch = call.request.queryParameters["epoch"]?.trim()?.takeIf { it.isNotEmpty() }
                 val q = call.request.queryParameters["q"]
                 val scope = call.request.queryParameters["scope"]
                 val departmentId = call.request.queryParameters["departmentId"]
@@ -78,6 +79,7 @@ fun Route.announcementRoutes(
                         callerDeptId = principal.departmentId,
                         isOrgAdmin = isOrgAdmin,
                         nowMs = clock(),
+                        expectedEpoch = expectedEpoch,
                     )
                     audit.record(principal.deviceId, "announcement.feed", "since=$since,rows=${feed.items.size}")
                     call.respondJson(feed)

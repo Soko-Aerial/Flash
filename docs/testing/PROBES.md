@@ -218,11 +218,11 @@ contains the hidden rows.
   emitted once per `CALL_DIAG` period (5 s), never per frame, ids shortened, no media content. A `PERF-C02` device run could
   then assert `plcPct > 5` or `|avDriftMs| > 50` without parsing prose.
 
-## HR6–HR11 evidence hooks (2026-11-13)
+## HR6–HR11 evidence hooks (2026-11-14)
 
-No new `FlashProbe` namespaces were registered in HR6–HR11. Observable runtime evidence uses existing registered probes plus structured non-secret logs and operational metrics:
+HR6–HR11 extend `hubfile.*` with cross-route handover probes alongside existing registered probes, structured non-secret logs, and operational metrics:
 
 - **HR6 (Device replacement):** Server audit chain (`device.replace`), `org.revocation.applied`, and `org.revocation.lan` record the revocation version pushed to peers and offline LAN sync without secrets.
-- **HR8 (Cross-route LAN ↔ Hub continuity):** Reuses existing `hubfile.*` probes (`hubfile.upload`, `hubfile.download`, `hubfile.receive.done`, `hubfile.cancel`) alongside structured continuity logs in `TransferContinuityCoordinator` (`transferId`/`fileId` shortened IDs only).
+- **HR8 (Cross-route LAN ↔ Hub continuity):** Emits `hubfile.handover.lan_to_hub` (`id` shortened 8-char fileId, `bytes` verified) and `hubfile.handover.hub_to_lan` (`id` shortened 8-char fileId), alongside existing `hubfile.*` probes (`hubfile.upload`, `hubfile.download`, `hubfile.receive.done`, `hubfile.cancel`) and structured continuity logs in `TransferContinuityCoordinator`.
 - **HR7 / HR9 / HR10:** Surface structured `FlashLog` diagnostics (e.g., dropped unsealed group frame counters in `HubChatBridge` and call revocation teardown in `CallCoordinator`/`FlashGroupCallSession`) without logging message bodies, titles, or key material.
-- **HR11 (Operations):** Server monitoring exposes `GET /health/detail` (`mailbox.quarantinedTotal`, `mailbox.oldestAgeSeconds`, `disk`, `delegationDaysRemaining`, `tlsDaysRemaining`, `alerts[]`) and Prometheus `GET /metrics` (`flash_mailbox_quarantined_total`, `flash_alert_*`).
+- **HR11 (Operations):** Server monitoring exposes `GET /health/detail` (`mailbox.quarantinedTotal`, `mailbox.quarantinedOutstanding`, `mailbox.oldestAgeSeconds`, `disk`, `delegationDaysRemaining`, `tlsDaysRemaining`, `alerts[]`) and Prometheus `GET /metrics` (`flash_mailbox_quarantined_total`, `flash_mailbox_quarantined_outstanding`, `flash_alert_*`).

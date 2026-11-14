@@ -15,6 +15,7 @@ import com.transfer.flash.server.storage.update
 import java.security.MessageDigest
 import java.sql.Connection
 import java.sql.ResultSet
+import java.util.UUID
 
 /** Lifecycle of an enrolled device in the hub's registry (SEC-07/SEC-08, ADR-111). */
 enum class DeviceStatus {
@@ -118,6 +119,33 @@ enum class RenewRefusal { NOT_ENROLLED, NOT_ACTIVE, KEY_MISMATCH, UNKNOWN_SERIAL
 sealed interface RenewOutcome {
     data class Renewed(val cert: DeviceCert, val device: DeviceRecord) : RenewOutcome
     data class Refused(val reason: RenewRefusal) : RenewOutcome
+}
+
+enum class DeviceReplacementState { IN_PROGRESS, INVITE_ISSUED, FAILED }
+
+data class DeviceReplacementRecord(
+    val oldDeviceId: String,
+    val replacementId: String,
+    val inviteId: String?,
+    val department: String?,
+    val role: String,
+    val allowedGroups: Set<String>,
+    val autoJoinGroups: Set<String>,
+    val ttlMinutes: Long,
+    val note: String?,
+    val reason: String,
+    val requestedBy: String,
+    val state: DeviceReplacementState,
+    val failureReason: String?,
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+sealed interface BeginReplacementOutcome {
+    data class Acquired(val replacementId: String) : BeginReplacementOutcome
+    data class AlreadyInProgress(val record: DeviceReplacementRecord) : BeginReplacementOutcome
+    data class InviteAlreadyPending(val record: DeviceReplacementRecord, val invite: InviteRecord) : BeginReplacementOutcome
+    data class InviteAlreadyUsed(val record: DeviceReplacementRecord, val invite: InviteRecord) : BeginReplacementOutcome
 }
 
 /**
@@ -455,6 +483,111 @@ class IdentityStore(private val db: ServerDatabase) {
         conn.update("DELETE FROM hub_sealing_keys WHERE device_id = ?", deviceId) > 0
     }
 
+    // ------------------------------------------------------------------------------------------------ replacements
+
+    fun getDeviceReplacement(oldDeviceId: String): DeviceReplacementRecord? = db.withConnection { conn ->
+        conn.queryOne("SELECT * FROM hub_device_replacements WHERE old_device_id = ?", oldDeviceId, map = ::replacementRow)
+    }
+
+    fun listDeviceReplacements(oldDeviceIds: Collection<String>): Map<String, DeviceReplacementRecord> {
+        if (oldDeviceIds.isEmpty()) return emptyMap()
+        val ids = oldDeviceIds.distinct()
+        val placeholders = ids.joinToString(",") { "?" }
+        return db.withConnection { conn ->
+            conn.query(
+                "SELECT * FROM hub_device_replacements WHERE old_device_id IN ($placeholders)",
+                *ids.toTypedArray(),
+                map = ::replacementRow,
+            ).associateBy { it.oldDeviceId }
+        }
+    }
+
+    /**
+     * Atomically claims an exclusive replacement operation for [oldDeviceId] when no live replacement invite is
+     * pending, no replacement is currently in progress, and no replacement invite has already been redeemed.
+     */
+    fun beginDeviceReplacement(
+        oldDeviceId: String,
+        department: String?,
+        role: String,
+        allowedGroups: Set<String>,
+        autoJoinGroups: Set<String>,
+        ttlMinutes: Long,
+        note: String?,
+        reason: String,
+        requestedBy: String,
+        nowMs: Long,
+    ): BeginReplacementOutcome = db.immediate { conn ->
+        val existing = conn.queryOne(
+            "SELECT * FROM hub_device_replacements WHERE old_device_id = ?",
+            oldDeviceId,
+            map = ::replacementRow,
+        )
+        if (existing != null) {
+            when (existing.state) {
+                DeviceReplacementState.IN_PROGRESS -> return@immediate BeginReplacementOutcome.AlreadyInProgress(existing)
+                DeviceReplacementState.INVITE_ISSUED -> {
+                    val existingInvite = existing.inviteId?.let { inviteId ->
+                        conn.queryOne("SELECT * FROM hub_invites WHERE invite_id = ?", inviteId, map = ::inviteRow)
+                    }
+                    if (existingInvite != null) {
+                        when (existingInvite.state(nowMs)) {
+                            InviteState.PENDING -> return@immediate BeginReplacementOutcome.InviteAlreadyPending(existing, existingInvite)
+                            InviteState.USED -> return@immediate BeginReplacementOutcome.InviteAlreadyUsed(existing, existingInvite)
+                            InviteState.EXPIRED, InviteState.REVOKED -> Unit
+                        }
+                    }
+                }
+                DeviceReplacementState.FAILED -> Unit
+            }
+        }
+        val replacementId = UUID.randomUUID().toString()
+        conn.update(
+            "INSERT INTO hub_device_replacements(" +
+                "old_device_id, replacement_id, invite_id, department, role, allowed_groups, auto_join_groups, " +
+                "ttl_minutes, note, reason, requested_by, state, failure_reason, created_at, updated_at) " +
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) " +
+                "ON CONFLICT(old_device_id) DO UPDATE SET " +
+                "replacement_id = excluded.replacement_id, invite_id = NULL, department = excluded.department, " +
+                "role = excluded.role, allowed_groups = excluded.allowed_groups, auto_join_groups = excluded.auto_join_groups, " +
+                "ttl_minutes = excluded.ttl_minutes, note = excluded.note, reason = excluded.reason, " +
+                "requested_by = excluded.requested_by, state = excluded.state, failure_reason = NULL, " +
+                "created_at = excluded.created_at, updated_at = excluded.updated_at",
+            oldDeviceId, replacementId, null, department, role, encodeSet(allowedGroups), encodeSet(autoJoinGroups),
+            ttlMinutes, note, reason, requestedBy, DeviceReplacementState.IN_PROGRESS.name, null, nowMs, nowMs,
+        )
+        BeginReplacementOutcome.Acquired(replacementId)
+    }
+
+    fun recordReplacementInvite(oldDeviceId: String, replacementId: String, inviteId: String, nowMs: Long) {
+        db.withConnection { conn ->
+            conn.update(
+                "UPDATE hub_device_replacements SET invite_id = ?, updated_at = ? WHERE old_device_id = ? AND replacement_id = ?",
+                inviteId, nowMs, oldDeviceId, replacementId,
+            )
+        }
+    }
+
+    fun completeDeviceReplacement(oldDeviceId: String, replacementId: String, inviteId: String, nowMs: Long) {
+        db.withConnection { conn ->
+            conn.update(
+                "UPDATE hub_device_replacements SET invite_id = ?, state = ?, failure_reason = NULL, updated_at = ? " +
+                    "WHERE old_device_id = ? AND replacement_id = ?",
+                inviteId, DeviceReplacementState.INVITE_ISSUED.name, nowMs, oldDeviceId, replacementId,
+            )
+        }
+    }
+
+    fun failDeviceReplacement(oldDeviceId: String, replacementId: String, failureReason: String?, nowMs: Long) {
+        db.withConnection { conn ->
+            conn.update(
+                "UPDATE hub_device_replacements SET invite_id = NULL, state = ?, failure_reason = ?, updated_at = ? " +
+                    "WHERE old_device_id = ? AND replacement_id = ?",
+                DeviceReplacementState.FAILED.name, failureReason?.take(200), nowMs, oldDeviceId, replacementId,
+            )
+        }
+    }
+
     // ------------------------------------------------------------------------------------------------ meta
 
     fun meta(key: String): String? = db.withConnection { conn ->
@@ -518,6 +651,24 @@ class IdentityStore(private val db: ServerDatabase) {
         statusChangedAt = rs.getLong("status_changed_at"),
         delegationSerial = rs.getLong("delegation_serial"),
         inviteId = rs.getString("invite_id"),
+    )
+
+    private fun replacementRow(rs: ResultSet) = DeviceReplacementRecord(
+        oldDeviceId = rs.getString("old_device_id"),
+        replacementId = rs.getString("replacement_id"),
+        inviteId = rs.getString("invite_id"),
+        department = rs.getString("department"),
+        role = rs.getString("role"),
+        allowedGroups = decodeSet(rs.getString("allowed_groups")),
+        autoJoinGroups = decodeSet(rs.getString("auto_join_groups")),
+        ttlMinutes = rs.getLong("ttl_minutes"),
+        note = rs.getString("note"),
+        reason = rs.getString("reason"),
+        requestedBy = rs.getString("requested_by"),
+        state = DeviceReplacementState.valueOf(rs.getString("state")),
+        failureReason = rs.getString("failure_reason"),
+        createdAt = rs.getLong("created_at"),
+        updatedAt = rs.getLong("updated_at"),
     )
 
     companion object {
@@ -603,6 +754,18 @@ class IdentityStore(private val db: ServerDatabase) {
                 conn.createStatement().use { st ->
                     st.execute("CREATE INDEX IF NOT EXISTS idx_hub_devices_department_order ON hub_devices(department, enrolled_at DESC, device_id)")
                     st.execute("CREATE INDEX IF NOT EXISTS idx_hub_invites_department_order ON hub_invites(department, created_at DESC, invite_id)")
+                }
+            },
+            Migration(4, "identity: durable device replacement state") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute(
+                        "CREATE TABLE IF NOT EXISTS hub_device_replacements(" +
+                            "old_device_id TEXT PRIMARY KEY, replacement_id TEXT NOT NULL, invite_id TEXT, " +
+                            "department TEXT, role TEXT NOT NULL, allowed_groups TEXT NOT NULL DEFAULT '', " +
+                            "auto_join_groups TEXT NOT NULL DEFAULT '', ttl_minutes INTEGER NOT NULL, " +
+                            "note TEXT, reason TEXT NOT NULL, requested_by TEXT NOT NULL, state TEXT NOT NULL, " +
+                            "failure_reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+                    )
                 }
             },
         )

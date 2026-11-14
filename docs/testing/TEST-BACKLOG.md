@@ -8494,7 +8494,7 @@ Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`
 - **Setup:** Android phone + Desktop sharing a large (>100 MB) file on LAN, toggling Wi-Fi off mid-transfer (forcing Hub resume) and on again in reverse direction.
 - **Steps:** Interrupt LAN transfer partway through, allow Hub continuation, repeat starting on Hub and finishing over LAN, verify final output file hash.
 - **Pass:** One logical transfer row, one completion row, one published file copy, byte-exact SHA-256 match across LAN -> Hub and Hub -> LAN.
-- **Status:** TODO (automated unit/integration tests pass; physical multi-hundred-MB phone <-> Desktop run owed).
+- **Status:** TODO (automated unit/integration tests including normal `sendFile`/`resumeTransfer` `LAN <-> Hub`, `FileContinuityCheckpointStore` restart persistence, and changed-source/oversized refusals pass; physical multi-hundred-MB phone <-> Desktop run owed).
 
 ### HR9-DEV-01 — Off-LAN 1:1 and group voice/video calling across two independent networks + TURN relay
 - **Setup:** Android phone (cellular / separate AP) and Windows Desktop (home LAN) enrolled in isolated Hub configured with `FLASH_STUN_URLS`, `FLASH_TURN_URLS`, and `FLASH_TURN_SECRET` pointing at a disposable coturn instance (`RELAY_ONLY` and fallback runs).

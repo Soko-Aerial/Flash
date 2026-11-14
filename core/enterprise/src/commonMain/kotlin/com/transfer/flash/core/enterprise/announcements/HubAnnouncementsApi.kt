@@ -87,12 +87,15 @@ public sealed interface HubAnnouncementError {
 public interface HubAnnouncementsApi {
 
     /**
-     * Fetches announcement changes feed (`GET /api/v1/announcements?since=<since>&limit=<limit>`).
+     * Fetches announcement changes feed (`GET /api/v1/announcements?since=<since>&limit=<limit>[&epoch=<epoch>]`).
+     * Passing [epoch] lets the server distinguish an initial `since=0` bootstrap from a subsequent delta check
+     * after an empty initial sync (`seq=0`).
      */
     public suspend fun fetchFeed(
         hubUrl: String,
         since: Long,
         limit: Int = 100,
+        epoch: String? = null,
     ): FlashResult<AnnouncementFeedDto>
 
     /**

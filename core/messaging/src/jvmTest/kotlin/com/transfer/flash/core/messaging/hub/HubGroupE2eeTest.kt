@@ -11,6 +11,7 @@ import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.crypto.FlashEcKeyPair
+import com.transfer.flash.core.security.enterprise.GroupKeyDistPayload
 import com.transfer.flash.core.security.enterprise.GroupRelaySealing
 import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.HubSealingKeyPair
@@ -28,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HubGroupE2eeTest {
@@ -370,5 +372,109 @@ class HubGroupE2eeTest {
         assertTrue(h.routeOutbox(bob, alice, aliceBridgeRestarted).all { it == HubInboundOutcome.STORED })
         assertEquals("after-restart-msg", (alice.received.last().first as GroupWireFrame.Message).text)
         assertEquals(aliceE2eeRestarted.currentEpochFor("g-eng"), bobE2eeRestarted.currentEpochFor("g-eng"))
+    }
+
+    @Test
+    fun memberCannotPoisonGroupRotationWithExtremeEpochOrFutureRosterAndLegitimateRotationSurvivesRestart() = runTest {
+        val alice = MemberNode("alice")
+        val bob = MemberNode("bob")
+        val mallory = MemberNode("mallory")
+        val h = Harness(
+            mapOf("alice" to alice, "bob" to bob, "mallory" to mallory),
+            membership = mutableMapOf("g-eng" to (setOf("alice", "bob", "mallory") to 1L)),
+        )
+        val (aliceE2ee, aliceBridge) = h.bridgeFor(alice)
+        val (_, bobBridge) = h.bridgeFor(bob)
+
+        // Baseline valid epoch 1 message
+        assertTrue(aliceBridge.sendGroup("bob", "m-1", now, msg("g-eng", "m-1", "alice", "baseline")))
+        h.routeOutbox(alice, bob, bobBridge)
+        assertEquals(1L, aliceE2ee.currentEpochFor("g-eng"))
+
+        // 1. Mallory sends Long.MAX_VALUE epoch inside valid roster -> refused by decoder and coordinator
+        val maxEpochPayload = GroupKeyDistPayload(
+            version = GroupRelaySealing.FORMAT_VERSION,
+            groupId = "g-eng",
+            epoch = Long.MAX_VALUE,
+            keyId = "poison-max",
+            keyBytes = GroupRelaySealing.generateEpochKeyBytes(),
+            rosterVersion = 1L,
+            memberDeviceIds = setOf("alice", "bob", "mallory"),
+            creatorDeviceId = "mallory",
+            createdAtMs = now + 10L,
+        )
+        val maxEpochEncoded = GroupRelaySealing.encodeKeyDist(maxEpochPayload)
+        assertNull(GroupRelaySealing.decodeKeyDist(maxEpochEncoded), "Decoder must reject Long.MAX_VALUE epoch")
+        val aliceSealKey = alice.sealingKey!!.publicKeyEncoded
+        val sealedPoisonMax = HubSealing.seal(
+            crypto = mallory.crypto,
+            senderDeviceId = "mallory",
+            recipientDeviceId = "alice",
+            recipientSealingPublicKey = aliceSealKey,
+            msgId = "poison-1",
+            sentAt = now + 10L,
+            innerType = GroupRelaySealing.KEY_DIST_INNER_TYPE,
+            body = maxEpochEncoded,
+        )!!
+        assertEquals(
+            HubInboundOutcome.REJECTED,
+            aliceBridge.handleInbound(
+                HubInbound("mallory", "poison-1", HubSealing.ENVELOPE_TYPE, now + 10L, sealedPoisonMax),
+                RecordingGroupSink(alice.received),
+            ),
+        )
+
+        // 2. Mallory sends huge within-range epoch (999_999_999L) at current roster -> coordinator rejects as unauthorized
+        val hugeEpochPayload = maxEpochPayload.copy(epoch = 999_999_999L, keyId = "poison-huge")
+        val sealedPoisonHuge = HubSealing.seal(
+            crypto = mallory.crypto,
+            senderDeviceId = "mallory",
+            recipientDeviceId = "alice",
+            recipientSealingPublicKey = aliceSealKey,
+            msgId = "poison-2",
+            sentAt = now + 20L,
+            innerType = GroupRelaySealing.KEY_DIST_INNER_TYPE,
+            body = GroupRelaySealing.encodeKeyDist(hugeEpochPayload),
+        )!!
+        assertEquals(
+            HubInboundOutcome.REJECTED,
+            aliceBridge.handleInbound(
+                HubInbound("mallory", "poison-2", HubSealing.ENVELOPE_TYPE, now + 20L, sealedPoisonHuge),
+                RecordingGroupSink(alice.received),
+            ),
+        )
+
+        // 3. Mallory claims future rosterVersion=99 with current members -> rejected without promoting
+        val futureRosterPayload = maxEpochPayload.copy(epoch = 2L, rosterVersion = 99L, keyId = "poison-future")
+        val sealedFuture = HubSealing.seal(
+            crypto = mallory.crypto,
+            senderDeviceId = "mallory",
+            recipientDeviceId = "alice",
+            recipientSealingPublicKey = aliceSealKey,
+            msgId = "poison-3",
+            sentAt = now + 30L,
+            innerType = GroupRelaySealing.KEY_DIST_INNER_TYPE,
+            body = GroupRelaySealing.encodeKeyDist(futureRosterPayload),
+        )!!
+        assertEquals(
+            HubInboundOutcome.REJECTED,
+            aliceBridge.handleInbound(
+                HubInbound("mallory", "poison-3", HubSealing.ENVELOPE_TYPE, now + 30L, sealedFuture),
+                RecordingGroupSink(alice.received),
+            ),
+        )
+        assertEquals(1L, aliceE2ee.currentEpochFor("g-eng"))
+
+        // 4. Remove Mallory, restart Alice & Bob from persisted key store, rotate -> epoch 2 succeeds and delivers cleanly
+        h.membership["g-eng"] = setOf("alice", "bob") to 2L
+        val (aliceRestarted, aliceBridgeRestarted) = h.bridgeFor(alice)
+        val (_, bobBridgeRestarted) = h.bridgeFor(bob)
+        aliceRestarted.onMembershipChanged("g-eng", setOf("alice", "bob"), 2L)
+        alice.resetSent()
+
+        assertTrue(aliceBridgeRestarted.sendGroup("bob", "m-after-remove", now + 40L, msg("g-eng", "m-after-remove", "alice", "post-poison-ok")))
+        assertEquals(2L, aliceRestarted.currentEpochFor("g-eng"))
+        assertTrue(h.routeOutbox(alice, bob, bobBridgeRestarted).all { it == HubInboundOutcome.STORED })
+        assertEquals("post-poison-ok", (bob.received.last().first as GroupWireFrame.Message).text)
     }
 }

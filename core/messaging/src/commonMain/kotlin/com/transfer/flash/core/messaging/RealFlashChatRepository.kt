@@ -8456,16 +8456,16 @@ public class RealFlashChatRepository(
                 return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
             }
 
-            var state = dao.getState()
-            var currentSince = state?.seq ?: 0L
-            val isInitialSync = currentSince == 0L
-            var knownEpoch = state?.epoch
+            val initialState = dao.getState()
+            var currentSince = initialState?.seq ?: 0L
+            var knownEpoch = initialState?.epoch
+            val persistedEpoch = initialState?.epoch
             var loopCount = 0
             val maxLoops = 20
 
             while (loopCount < maxLoops) {
                 loopCount++
-                val result = api.fetchFeed(creds.hubUrl, since = currentSince, limit = 100)
+                val result = api.fetchFeed(creds.hubUrl, since = currentSince, limit = 100, epoch = knownEpoch)
                 val feed = when (result) {
                     is FlashResult.Failure -> return@withContext result
                     is FlashResult.Success -> result.value
@@ -8476,13 +8476,14 @@ public class RealFlashChatRepository(
                     // of an empty table (items 1..since would be skipped for good). Drop everything and ask again from zero.
                     dao.clearAnnouncements()
                     currentSince = 0L
-                    knownEpoch = feed.epoch
+                    knownEpoch = null
                     continue
                 }
                 if (feed.fullResync) {
                     dao.clearAnnouncements()
                     currentSince = 0L
                 }
+                val allowNotifyForFeed = !feed.fullResync && persistedEpoch != null && persistedEpoch == feed.epoch
                 knownEpoch = feed.epoch
 
                 for (item in feed.items) {
@@ -8493,8 +8494,8 @@ public class RealFlashChatRepository(
                         val entity = item.toEntity(existingReadAtMs = existing?.readAtMs)
                         dao.upsertOne(entity)
 
-                        // HR7: Eligibility check for announcement notification
-                        if (existing == null && !isInitialSync && !feed.fullResync) {
+                        // HR7: Eligibility check for announcement notification (after initial epoch bootstrap)
+                        if (existing == null && allowNotifyForFeed) {
                             val isAuthor = (item.authorKind == "device" && item.authorRef == localDeviceId) ||
                                 item.authorRef == localDeviceId
                             val userDept = creds.deviceCert.department?.takeIf { it.isNotBlank() }

@@ -224,7 +224,13 @@ public class HubGroupE2eeCoordinator(
                 for (i in list.indices) {
                     if (list[i].canSend) list[i] = list[i].copy(canSend = false)
                 }
-                val nextEpoch = (list.maxOfOrNull { it.epoch } ?: 0L) + 1L
+                val currentHighestEpoch = list
+                    .filter { it.epoch in 1L..GroupRelaySealing.MAX_VALID_EPOCH }
+                    .maxOfOrNull { it.epoch } ?: 0L
+                if (currentHighestEpoch >= GroupRelaySealing.MAX_VALID_EPOCH) {
+                    return@withLock GroupSealResult.Blocked(state, "group epoch space exhausted")
+                }
+                val nextEpoch = currentHighestEpoch + 1L
                 canonical = GroupEpochKey(
                     groupId = groupId,
                     epoch = nextEpoch,
@@ -296,11 +302,24 @@ public class HubGroupE2eeCoordinator(
         if (localDeviceId !in dist.memberDeviceIds || fromDeviceId !in dist.memberDeviceIds) {
             return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
         }
-        if (dist.keyBytes.size != GroupRelaySealing.KEY_BYTES || dist.epoch < 1L) {
+        if (dist.keyBytes.size != GroupRelaySealing.KEY_BYTES || dist.epoch !in 1L..GroupRelaySealing.MAX_VALID_EPOCH) {
+            return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
+        }
+        if (currentRosterVersion != null && dist.rosterVersion > currentRosterVersion) {
+            // An ordinary member cannot claim a roster version ahead of the Hub's authoritative roster.
             return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
         }
 
         val list = keysByGroup.getOrPut(dist.groupId) { ArrayList() }
+        val validKeys = list.filter { it.epoch in 1L..GroupRelaySealing.MAX_VALID_EPOCH }
+        val maxKnownEpoch = validKeys.maxOfOrNull { it.epoch } ?: 0L
+        val maxKnownRoster = validKeys.maxOfOrNull { it.rosterVersion } ?: 0L
+        val rosterAdvance = if (validKeys.isEmpty()) maxOf(dist.rosterVersion, 1L) else (dist.rosterVersion - maxKnownRoster).coerceAtLeast(0L)
+        val maxAllowedEpoch = (maxKnownEpoch + maxOf(4L, rosterAdvance * 4L + 4L)).coerceAtMost(GroupRelaySealing.MAX_VALID_EPOCH)
+        if (dist.epoch > maxAllowedEpoch) {
+            return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
+        }
+
         val existing = list.firstOrNull { it.epoch == dist.epoch && it.keyId == dist.keyId }
         if (existing != null) {
             return@withLock if (existing.keyBytes.contentEquals(dist.keyBytes) &&
@@ -414,8 +433,8 @@ public class HubGroupE2eeCoordinator(
         keyId: String,
         other: GroupEpochKey,
     ): Int {
-        if (epoch != other.epoch) return epoch.compareTo(other.epoch)
         if (rosterVersion != other.rosterVersion) return rosterVersion.compareTo(other.rosterVersion)
+        if (epoch != other.epoch) return epoch.compareTo(other.epoch)
         return keyId.compareTo(other.keyId)
     }
 

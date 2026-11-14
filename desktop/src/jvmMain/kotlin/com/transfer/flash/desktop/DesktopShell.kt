@@ -721,7 +721,7 @@ public fun DesktopShell(
             }
             val isColleaguePeer = base.header.isColleague || (fallback?.isColleague == true)
             val offLanCallReady = engine.enterpriseHub?.let { hub ->
-                val cfg = hub.callIceConfig.value
+                val cfg = hub.validCallIceConfig()
                 hub.relay.state.value.canSend &&
                     cfg != null &&
                     cfg.offLanCallingSupported &&
