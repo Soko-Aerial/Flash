@@ -87,6 +87,8 @@ kotlin {
             // `:ui:platform-shims` (19). `:ui:platform-shims` is what replaced this module's last
             // `android.*` imports, so it belongs in commonMain, not androidMain.
             implementation(project(":core:common"))
+            // Offline group invite QR generation, shared by Android and desktop.
+            implementation("com.google.zxing:core:3.5.3")
             implementation(project(":core:messaging"))
             implementation(project(":core:security"))
             // Hub status types for the Settings organisation card (HubStatus, EnrollFailureReason, EnterpriseDirectoryGroup).

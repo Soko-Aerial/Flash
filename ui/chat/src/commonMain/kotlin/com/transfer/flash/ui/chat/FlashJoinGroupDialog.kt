@@ -57,7 +57,7 @@ public fun FlashJoinGroupDialog(
 ) {
     val colors = FlashTheme.colors
     val clipboardManager = LocalClipboardManager.current
-    var inputUrl by remember { mutableStateOf(initialInviteUrl.orEmpty()) }
+    var inputUrl by remember(initialInviteUrl) { mutableStateOf(initialInviteUrl.orEmpty()) }
     val parsedInvite = remember(inputUrl) {
         if (inputUrl.isNotBlank()) FlashGroupInviteJoinMath.parseInviteUrl(inputUrl) else null
     }
@@ -143,7 +143,7 @@ public fun FlashJoinGroupDialog(
                 } else {
                     // Link input state
                     FlashText(
-                        text = "Paste a Flash group invite link (flash://g/1/...) to join:",
+                        text = "Paste the Flash group invite link to join.",
                         style = FlashTheme.typography.bodyDefault,
                         color = colors.textSecondary,
                     )
@@ -168,7 +168,7 @@ public fun FlashJoinGroupDialog(
                             decorationBox = { innerTextField ->
                                 if (inputUrl.isEmpty()) {
                                     FlashText(
-                                        text = "flash://g/1/...",
+                                        text = "Invite link",
                                         style = FlashTheme.typography.bodyDefault,
                                         color = colors.textTertiary,
                                     )
@@ -225,7 +225,7 @@ public fun FlashJoinGroupDialog(
                     }
                     if (inputUrl.isNotBlank() && parsedInvite == null) {
                         FlashText(
-                            text = "Invalid link: must be a valid flash://g/1/... invite",
+                            text = "That group invite link is invalid.",
                             style = FlashTheme.typography.metadataDefault,
                             color = colors.textError,
                         )

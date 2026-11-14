@@ -249,6 +249,8 @@ public class FlashServerEngine(
                 )
             }
 
+            com.transfer.flash.server.invites.inviteWebRoutes(this, config.inviteSigningFingerprints)
+
             // WebSocket Relay route
             relayFrameRouter.registerRoute(this)
 

@@ -307,6 +307,21 @@ public fun DesktopShell(
     var showBrowseOrgGroups by remember { mutableStateOf(false) }
     var showJoinGroupDialog by remember { mutableStateOf(false) }
     var activeJoinLink by remember { mutableStateOf<String?>(null) }
+    var pendingEnrollmentLink by remember { mutableStateOf<String?>(null) }
+    val activationInvite by SingleInstanceController.invites.collectAsState()
+    LaunchedEffect(ready, activationInvite) {
+        val invite = activationInvite ?: return@LaunchedEffect
+        if (!ready) return@LaunchedEffect
+        if (invite.startsWith("flash://g/1/")) {
+            activeJoinLink = invite
+            showJoinGroupDialog = true
+        } else {
+            showRadioGateway = false
+            pendingEnrollmentLink = invite
+            nav.selectTab(FlashDestination.Settings)
+        }
+        SingleInstanceController.consumeInvite(invite)
+    }
 
     // ── Calls, 33a: the shared coordinator behind the shared overlay ──
     // `calls` is null until assemble builds it; the empty flow keeps this collect
@@ -1912,6 +1927,10 @@ public fun DesktopShell(
             },
             onRequestInviteLink = { gid ->
                 (chatRepository.inviteFor(gid) as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
+                    ?.let { invite ->
+                        val host = System.getProperty("flash.inviteLinkHost").orEmpty()
+                        com.transfer.flash.core.common.protocol.InviteAppLink.wrap(host, invite) ?: invite
+                    }
             },
             onJoinInviteGroup = { inviteUrl ->
                 activeJoinLink = inviteUrl
@@ -2257,6 +2276,8 @@ public fun DesktopShell(
                         showRadioGateway = showRadioGateway,
                         onOpenRadioGateway = { showRadioGateway = true },
                         onCloseRadioGateway = { showRadioGateway = false },
+                        pendingEnrollmentLink = pendingEnrollmentLink,
+                        onEnrollmentLinkHandled = { pendingEnrollmentLink = null },
                     )
                     }
                 }
@@ -3461,6 +3482,8 @@ private fun DesktopSettingsDestination(
     showRadioGateway: Boolean,
     onOpenRadioGateway: () -> Unit,
     onCloseRadioGateway: () -> Unit,
+    pendingEnrollmentLink: String?,
+    onEnrollmentLinkHandled: () -> Unit,
 ) {
     if (showRadioGateway) {
         com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
@@ -3680,6 +3703,8 @@ private fun DesktopSettingsDestination(
             }
         },
         onEnrollDevice = onEnrollDeviceAction,
+        pendingEnrollmentLink = pendingEnrollmentLink,
+        onEnrollmentLinkHandled = onEnrollmentLinkHandled,
         onDisconnectEnterprise = {
             scope.launch {
                 val result = engine.enterpriseHub?.unenrol()

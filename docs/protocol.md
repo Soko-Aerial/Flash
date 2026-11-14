@@ -1523,6 +1523,12 @@ HTTP mapping used by the hub (`statusFor`; `ERR_EXPIRED` is 410 on `POST /api/v1
 
 ### Enrolment invite link
 
+New Hub invites use `https://<issuing-hub>/invite/enroll#<base64url>`. Local group invites use
+`https://<configured-flash-link-host>/invite/group#<base64url>`. The fragment is the unpadded base64url
+encoding of the complete legacy invite as UTF-8. It is read by the app or the browser fallback and
+never participates in the HTTP request. The fallback serves static content and passes the original invite
+to the app after a user gesture. See [invite deployment and verification](deploy/INVITE-LINKS.md).
+
 `flash://enroll?server=<percent-encoded URL>&token=<percent-encoded>&root=<percent-encoded upper-case hex SHA-256 of the root key>`.
 There is one parser (`EnrollmentInvite.parseOrNull`) used by Android, desktop and the chat UI; it never throws. A client refuses an invite
 whose `root` is blank (it would pin nothing), and, from Phase 3, an invite whose `server` is cleartext `http://` unless the user confirms.
@@ -1541,7 +1547,7 @@ Errors are `{"code": "...", "message": "<fixed sentence>", "correlationId": "...
 | Setup and session | `GET setup/status`, `POST setup/begin`, `POST setup/complete`, `POST login`, `POST logout`, `GET session` | setup needs the setup token (file `<data>/setup-token.txt`) and a confirmed TOTP code; login is username + password + TOTP or a recovery code; attempts are reserved before verification |
 | Overview | `GET overview` | device counts and online devices, delegation status and days left, revocation version, mailbox figures |
 | Devices | `GET devices`, `GET devices/{id}`, `PUT devices/{id}` (rename, move to a department), `POST devices/{id}/revoke`, `POST devices/{id}/unrevoke` | revoke and unrevoke need step-up; revoke also kills the bearer, removes the directory entry and kicks the socket |
-| Invites | `GET invites`, `POST invites`, `POST invites/bulk`, `POST invites/{id}/revoke` | real `EnrollmentService` registry; state `ACTIVE`, `USED`, `EXPIRED`, `REVOKED`; a non-member role needs step-up; the response carries the `flash://enroll` link and the QR as one SVG path |
+| Invites | `GET invites`, `POST invites`, `POST invites/bulk`, `POST invites/{id}/revoke` | real `EnrollmentService` registry; state `ACTIVE`, `USED`, `EXPIRED`, `REVOKED`; a non-member role needs step-up; the response carries the share link and its QR as one SVG path |
 | Revocations | `GET revocations`, `POST revocations/serial`, `POST revocations/install` | the signed list state and entries; revoking a bare serial needs step-up; `install` takes a root-signed list from `keytool revoke` (step-up `revocation.install`, REV-04) |
 | Delegation | `GET delegation`, `POST delegation/reload`, `POST delegation` | install takes a delegation certificate, accepted only under the pinned root, for this hub's key, with a higher serial; both need step-up |
 | Settings | `GET settings`, `PUT settings` | a change needs step-up |

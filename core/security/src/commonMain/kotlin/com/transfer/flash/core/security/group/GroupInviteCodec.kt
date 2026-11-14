@@ -1,6 +1,7 @@
 package com.transfer.flash.core.security.group
 
 import com.transfer.flash.core.common.protocol.Base64Url
+import com.transfer.flash.core.common.protocol.InviteAppLink
 
 /**
  * Binary and URI codec for [GroupInvite] (ADR-044, ADR-073, GM-2).
@@ -118,7 +119,9 @@ public object GroupInviteCodec {
      * Never throws.
      */
     public fun decode(linkOrPayload: String): GroupInvite? = runCatching {
-        val trimmed = linkOrPayload.trim()
+        val input = linkOrPayload.trim()
+        val trimmed = InviteAppLink.unwrap(input) ?: input
+        if (trimmed.length > InviteAppLink.MAX_LINK_CHARS) return null
         val payload = if (trimmed.startsWith(URI_PREFIX, ignoreCase = true)) {
             trimmed.substring(URI_PREFIX.length)
         } else {

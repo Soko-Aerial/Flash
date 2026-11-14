@@ -1,6 +1,9 @@
 import com.transfer.flash.buildlogic.StripSqliteTask
 import com.transfer.flash.buildlogic.ThirdPartyNoticesTask
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import javax.inject.Inject
 
 plugins {
     // A pure-JVM Compose Desktop application module (Phase 21). KMP plugin + `jvm()` target:
@@ -22,6 +25,9 @@ plugins {
 // when the desktop release version changes, so the About card can never drift from the installer
 // again (2.2.0 shipped a hardcoded "1.0.0-desktop").
 val desktopAppVersion = "2.2.0"
+val desktopBuildJdk = providers.environmentVariable("FLASH_JDK")
+    .orElse(providers.environmentVariable("JAVA_HOME"))
+    .orElse(providers.systemProperty("java.home"))
 
 val sqliteJdbcStripped: Configuration = configurations.create("sqliteJdbcStripped") {
     isCanBeConsumed = false
@@ -166,6 +172,7 @@ kotlin {
 
 compose.desktop {
     application {
+        javaHome = desktopBuildJdk.get()
         mainClass = "com.transfer.flash.desktop.DesktopMainKt"
 
         // Windows/JDK multicast fix, same one Phase 16 needed on `:core:engine`'s
@@ -216,6 +223,10 @@ compose.desktop {
             "-XX:+ExitOnOutOfMemoryError"
         )
 
+        val groupInviteHost = providers.gradleProperty("flashInviteLinkHost")
+            .orElse(providers.environmentVariable("FLASH_INVITE_LINK_HOST")).orNull
+        if (groupInviteHost != null) jvmArgs += "-Dflash.inviteLinkHost=$groupInviteHost"
+
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
         // wired into any verification gate here — the phase's own Do-NOT list forbids it
         // (packaging tools may not be installed). This block exists only so the entry point is
@@ -250,6 +261,93 @@ compose.desktop {
                 iconFile.set(project.file("src/jvmMain/resources/icons/flash.png"))
             }
         }
+    }
+}
+
+// Build the standard Compose app image, then package it with the platform's invite handler.
+abstract class PackageFlashInviteInstaller : DefaultTask() {
+    @get:InputDirectory
+    abstract val image: DirectoryProperty
+
+    @get:InputDirectory
+    abstract val resources: DirectoryProperty
+
+    @get:InputFile
+    abstract val icon: RegularFileProperty
+
+    @get:Input
+    abstract val format: Property<String>
+
+    @get:Input
+    abstract val version: Property<String>
+
+    @get:InputFile
+    abstract val packager: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val destination: DirectoryProperty
+
+    @get:Inject
+    abstract val execOperations: org.gradle.process.ExecOperations
+
+    @TaskAction
+    fun packageInstaller() {
+        val windows = format.get() in listOf("msi", "exe")
+        val launcher = image.get().asFile
+        val jpackage = packager.get().asFile
+        val outputDirectory = destination.get().asFile.apply { mkdirs() }
+        val stagedDirectory = Files.createTempDirectory(temporaryDir.toPath(), "jpackage-").toFile()
+        val arguments = mutableListOf(
+            "--type", format.get(), "--name", "Flash", "--app-version", version.get(),
+            "--app-image", launcher.absolutePath, "--dest", stagedDirectory.absolutePath,
+            "--vendor", "Flash", "--description", "Offline LAN peer-to-peer file transfer & messaging",
+            "--resource-dir", resources.get().asFile.absolutePath, "--icon", icon.get().asFile.absolutePath,
+        )
+        if (windows) {
+            arguments += listOf("--win-dir-chooser", "--win-per-user-install", "--win-menu", "--win-menu-group", "Flash", "--win-shortcut",
+                "--win-upgrade-uuid", "6d9b4b0e-3c58-45b7-8df1-e3e9d8f8e021")
+        } else {
+            arguments += listOf("--linux-shortcut", "--linux-package-name", "flash")
+        }
+        try {
+            execOperations.exec {
+                executable(jpackage)
+                args(arguments)
+            }
+            val installer = stagedDirectory.listFiles().orEmpty().single { it.extension == format.get() }
+            val output = outputDirectory.resolve(installer.name)
+            if (windows && output.isFile && !output.canWrite()) output.setWritable(true)
+            Files.move(installer.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } finally {
+            stagedDirectory.deleteRecursively()
+        }
+    }
+}
+
+val windowsInviteInstaller = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+val inviteInstallerFormats = if (windowsInviteInstaller) {
+    listOf("msi", "exe")
+} else if (System.getProperty("os.name").startsWith("Linux", ignoreCase = true)) {
+    listOf("deb")
+} else emptyList()
+
+for (installerFormat in inviteInstallerFormats) {
+    val suffix = installerFormat.replaceFirstChar(Char::uppercaseChar)
+    val buildInviteInstaller = tasks.register<PackageFlashInviteInstaller>("buildFlash${suffix}WithInviteHandler") {
+        dependsOn("createDistributable")
+        image.set(layout.buildDirectory.dir("compose/binaries/main/app/Flash"))
+        resources.set(layout.projectDirectory.dir("src/packaging/" + if (windowsInviteInstaller) "windows" else "linux"))
+        icon.set(layout.projectDirectory.file("src/jvmMain/resources/icons/" + if (windowsInviteInstaller) "flash.ico" else "flash.png"))
+        format.set(installerFormat)
+        version.set(desktopAppVersion)
+        packager.fileProvider(desktopBuildJdk.map { home ->
+            File(home, if (windowsInviteInstaller) "bin/jpackage.exe" else "bin/jpackage")
+        })
+        destination.set(layout.buildDirectory.dir("compose/binaries/main/$installerFormat"))
+    }
+    tasks.matching { it.name == "package$suffix" }.configureEach {
+        dependsOn(buildInviteInstaller)
+        onlyIf("Flash installer was built with the invite protocol handler") { false }
     }
 }
 

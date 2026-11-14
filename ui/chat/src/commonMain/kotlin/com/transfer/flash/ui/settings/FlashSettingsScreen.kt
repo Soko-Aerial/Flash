@@ -637,6 +637,8 @@ fun FlashSettingsScreen(
     isEnrollingDevice: Boolean = false,
     /** Error message to display in the enrollment dialog. */
     enrollDeviceError: String? = null,
+    pendingEnrollmentLink: String? = null,
+    onEnrollmentLinkHandled: () -> Unit = {},
     onOpenRadioGateway: (() -> Unit)? = null,
     radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController? = null,
     /**
@@ -674,6 +676,13 @@ fun FlashSettingsScreen(
     var showClearStorageConfirmation by remember { mutableStateOf(false) }
     var showRestartPrompt by remember { mutableStateOf(false) }
     var showEnrollDialog by remember { mutableStateOf(false) }
+    var initialEnrollmentLink by remember { mutableStateOf("") }
+    LaunchedEffect(pendingEnrollmentLink) {
+        val invite = pendingEnrollmentLink ?: return@LaunchedEffect
+        initialEnrollmentLink = invite
+        showEnrollDialog = true
+        onEnrollmentLinkHandled()
+    }
     var showDisconnectEnterpriseConfirmation by remember { mutableStateOf(false) }
     var showApprovals by remember { mutableStateOf(false) }
     var showHubDetails by remember { mutableStateOf(false) }
@@ -685,6 +694,7 @@ fun FlashSettingsScreen(
     androidx.compose.runtime.LaunchedEffect(model.isEnterpriseEnrolled) {
         if (model.isEnterpriseEnrolled) {
             showEnrollDialog = false
+            initialEnrollmentLink = ""
         }
     }
 
@@ -746,7 +756,11 @@ fun FlashSettingsScreen(
 
     if (showEnrollDialog) {
         FlashEnrollDialog(
-            onDismiss = { showEnrollDialog = false },
+            onDismiss = {
+                showEnrollDialog = false
+                initialEnrollmentLink = ""
+            },
+            initialLink = initialEnrollmentLink,
             onEnroll = { link ->
                 onEnrollDevice?.invoke(link)
             },

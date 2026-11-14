@@ -34,6 +34,8 @@ public object SingleInstanceController {
     private const val TAG = "SINGLE_INSTANCE"
     private const val COMMAND_ACTIVATE = "ACTIVATE"
     private const val COMMAND_SEND = "SEND"
+    private const val COMMAND_INVITE = "INVITE"
+    internal const val OPEN_INVITE_ARGUMENT = "--open-invite"
     private const val END_OF_TRANSMISSION = "END_SEND"
     private const val RESPONSE_OK = "OK"
 
@@ -44,6 +46,24 @@ public object SingleInstanceController {
     private var portFile: File? = null
 
     private val pendingInitialFiles = java.util.Collections.synchronizedList(mutableListOf<File>())
+    private val pendingInvite = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    internal val invites: kotlinx.coroutines.flow.StateFlow<String?> get() = pendingInvite
+
+    internal fun consumeInvite(invite: String) {
+        pendingInvite.compareAndSet(invite, null)
+    }
+
+    internal fun parseInviteArg(args: Array<String>): String? {
+        val link = when {
+            args.size == 2 && args[0] == OPEN_INVITE_ARGUMENT -> args[1]
+            args.size == 1 -> args[0]
+            else -> return null
+        }
+        return link.takeIf {
+            it.length <= MAX_LINE_CHARS && it.none { char -> char.isWhitespace() || char.isISOControl() || char == '"' } &&
+                (it.startsWith("flash://g/1/") || it.startsWith("flash://enroll?"))
+        }
+    }
 
     @Volatile
     public var onActivate: (() -> Unit)? = null
@@ -95,19 +115,21 @@ public object SingleInstanceController {
         lockFile = File(baseDir, "app.lock")
         portFile = File(baseDir, "app.port")
 
-        val files = parseFilesFromArgs(args)
+        val invite = parseInviteArg(args)
+        val files = if (invite == null && args.firstOrNull() != OPEN_INVITE_ARGUMENT) parseFilesFromArgs(args) else emptyList()
 
         val acquired = tryAcquireLock()
         if (acquired) {
             if (files.isNotEmpty()) {
                 pendingInitialFiles.addAll(files)
             }
+            pendingInvite.value = invite
             startActivationServer()
             return true
         }
 
         // Another instance is already running; ping it to bring its window to front or transfer files
-        notifyRunningInstance(files)
+        notifyRunningInstance(files, invite)
         return false
     }
 
@@ -192,6 +214,15 @@ public object SingleInstanceController {
                                     write(RESPONSE_OK + "\n")
                                     flush()
                                 }
+                            } else if (trimmed == COMMAND_INVITE) {
+                                val invite = readBoundedLine(reader)?.let { parseInviteArg(arrayOf(it)) }
+                                if (invite != null) {
+                                    pendingInvite.value = invite
+                                    client.getOutputStream().bufferedWriter().apply {
+                                        write(RESPONSE_OK + "\n")
+                                        flush()
+                                    }
+                                }
                             } else if (trimmed.startsWith(COMMAND_ACTIVATE)) {
                                 FlashLog.i(TAG, "Received activation ping from duplicate instance; focusing window.")
                                 javax.swing.SwingUtilities.invokeLater {
@@ -214,7 +245,7 @@ public object SingleInstanceController {
         }
     }
 
-    private fun notifyRunningInstance(files: List<File> = emptyList()) {
+    private fun notifyRunningInstance(files: List<File> = emptyList(), invite: String? = null) {
         try {
             val lines = awaitPortFileLines()
             val port = lines.getOrNull(0)?.trim()?.toIntOrNull()
@@ -225,7 +256,10 @@ public object SingleInstanceController {
                     socket.soTimeout = 4000
                     socket.getOutputStream().bufferedWriter().apply {
                         write(token + "\n")
-                        if (files.isNotEmpty()) {
+                        if (invite != null) {
+                            write(COMMAND_INVITE + "\n")
+                            write(invite + "\n")
+                        } else if (files.isNotEmpty()) {
                             write(COMMAND_SEND + "\n")
                             for (f in files) {
                                 write(f.absolutePath + "\n")
@@ -314,6 +348,7 @@ public object SingleInstanceController {
      * Releases locks and sockets on app termination.
      */
     public fun release() {
+        pendingInvite.value = null
         try {
             serverSocket?.close()
         } catch (_: Throwable) {}

@@ -33,7 +33,7 @@ import com.transfer.flash.ui.theme.FlashTheme
 
 /**
  * Dialog for manual enrollment into an enterprise organization hub.
- * Allows employees to paste or type a flash://enroll link.
+ * Allows employees to paste an HTTPS or flash:// enrollment link.
  */
 @Composable
 public fun FlashEnrollDialog(
@@ -46,7 +46,7 @@ public fun FlashEnrollDialog(
 ) {
     val colors = FlashTheme.colors
     val clipboardManager = LocalClipboardManager.current
-    var inputLink by remember { mutableStateOf(initialLink) }
+    var inputLink by remember(initialLink) { mutableStateOf(initialLink) }
     val parsed = remember(inputLink) { FlashEnrollMath.parseInvite(inputLink) }
 
     FlashConfirmHost(
@@ -66,7 +66,7 @@ public fun FlashEnrollDialog(
                 verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
             ) {
                 FlashText(
-                    text = "Paste the invitation link (flash://enroll) provided by your company administrator:",
+                    text = "Paste the invite link from your organisation administrator.",
                     style = FlashTheme.typography.bodyDefault,
                     color = colors.textSecondary,
                 )
@@ -89,7 +89,7 @@ public fun FlashEnrollDialog(
                     ),
                     placeholder = {
                         FlashText(
-                            text = "flash://enroll?server=...&token=...",
+                            text = "Invite link",
                             style = FlashTheme.typography.metadataDefault,
                             color = colors.textTertiary,
                         )

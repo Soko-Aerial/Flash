@@ -96,7 +96,7 @@ class HubServicesTest {
     private suspend fun ApplicationTestBuilder.enrol(hub: HubServices, deviceId: String, key: KeyPair): EnrollResponse {
         val enrollment = hub.enrollment!!
         val token = enrollment.createInvite("https://hub.test", InviteScope(department = "eng", expiry = System.currentTimeMillis() + 60_000))
-            .link.substringAfter("token=").substringBefore("&")
+            .token
         val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), enrollment.serverId))
         val res = client.post(HubContract.PATH_ENROLL) {
             contentType(ContentType.Application.Json)
@@ -154,8 +154,8 @@ class HubServicesTest {
         application { hub.engine.configureApplication(this) }
         val enrollment = hub.enrollment!!
         val now = System.currentTimeMillis()
-        val valid = enrollment.createInvite("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000)).link.substringAfter("token=").substringBefore("&")
-        val used = enrollment.createInvite("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000)).link.substringAfter("token=").substringBefore("&")
+        val valid = enrollment.createInvite("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000)).token
+        val used = enrollment.createInvite("https://hub.test", InviteScope(department = "eng", expiry = now + 60_000)).token
         val key = FlashCrypto.generateEcKeyPair()
         val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(used, "landing-dev", key.toBase64Spki(), enrollment.serverId))
         assertEquals(

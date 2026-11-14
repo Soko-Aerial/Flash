@@ -165,7 +165,15 @@ class EnrollmentService(
             createdBy = scope.createdBy,
         )
         // One builder shared with the clients (percent-encodes the server URL and token).
-        return CreatedInvite(token, EnrollmentInvite.buildLink(serverUrl, token, serverId), record)
+        val legacyLink = EnrollmentInvite.buildLink(serverUrl, token, serverId)
+        val origin = runCatching { java.net.URI(serverUrl) }.getOrNull()
+        val shareLink = origin?.takeIf { it.scheme == "https" && it.host != null && it.userInfo == null }
+            ?.let {
+                val host = it.host.lowercase()
+                val authority = if (it.port == -1 || it.port == 443) host else "$host:${it.port}"
+                com.transfer.flash.core.common.protocol.InviteAppLink.wrap(authority, legacyLink)
+            }
+        return CreatedInvite(token, shareLink ?: legacyLink, record)
     }
 
     /**
