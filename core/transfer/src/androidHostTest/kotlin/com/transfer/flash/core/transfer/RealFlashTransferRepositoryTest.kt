@@ -581,7 +581,9 @@ class RealFlashTransferRepositoryTest {
         // A receiver's declined offer: tapping the bubble or a stale Retry must not ask the sender to send it again.
         repo.onIncomingOffered("tx-b01", "fx-b01", "doc.pdf", 2048L, "Pixel", "peer-b01")
         assertTrue(repo.declineIncoming(FlashTransferId("tx-b01")) is FlashResult.Success)
-        awaitUntil(describe = { "decline traffic never emitted" }) { outgoing.contains("cancel") }
+        awaitUntil(describe = { "decline traffic never emitted" }) {
+            outgoing.contains("cancel") && incoming.contains("decline")
+        }
         outgoing.clear()
         incoming.clear()
 
