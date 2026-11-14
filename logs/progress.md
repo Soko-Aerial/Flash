@@ -1,5 +1,21 @@
 # Progress Log
 
+## 2026-11-14 — Branch inventory and compact Transfers and chat
+
+Checked 32 registered worktrees, local and remote refs, patch-equivalent commits, and detached release trees against `dev` at `1e8868d2`. `origin/linux` at `839e44ae` has eight commits outside `dev` (six non-merge), including live Bluetooth discovery, pairing and RFCOMM, XDG autostart, network band detection, and the `.deb` and portable release script with its packaged runtime fix. A merge simulation conflicts in `logs/errors.md`, `logs/handoff.md` and this file. The Linux branch also uses ERROR-1020 for a different issue, so preserve both entries when integrating. Remote `dev` at `31e1551c` lacks the 31 commits already on local `dev`.
+
+The Hub readiness, release and accepted redesign commits are ancestors of `dev`. Local `main`'s audio capture patch is represented by `ab9ebf24`; the transfer state machine from the old remote `main` WIP is present in current common code. The register design branch is an owner-rejected reference. The two release worktrees contain scratch build changes and the first-packet PTT fix is already in `40375e14`. `S2-server` has local log-fragment edits and a test expectation change. `Flash-kmp` has migration notes and staged reference project files, with the same reference files staged in the transcript-review tree. No branch was integrated in this pass.
+
+Reduced list row padding and badge size in Transfers, fit file name, peer and status on one line each, and kept full name and error details accessible on inspection. Restored the chat lock's compact footprint so it no longer adds height between the username and presence. Staging coalesces repeated picks of the same URI within a draft and consumes the draft before dispatch (ERROR-1024). Physical layout, touch and two-device send acceptance are tracked under UXPOL-16/17.
+
+The owner clarified that photos and voice notes duplicate only in the receiving chat, while text appears once. Fixed the direct LAN receiver's check-then-insert race with a stable sender-scoped ID (ERROR-1025). Also compacted the timestamp row and lower padding in the normal and low-power message layouts for text and voice.
+
+Compared both parents of the HR6–HR11 merge `5dbf7dbc`, `37c45602`, local reflogs, stash and recent dangling commit metadata after the owner reported seeing the earlier layout live. The first parent already measured the lock and message-options control at 48 dp. It carried the 8 dp message group gap and part of the offline banner refinement from `2891b759`, but Retry still measured at a 48 dp minimum. The merge preserved these first-parent versions. The chat search source files are identical across `37c45602`, the first parent and the merge result. Reapplied the compact lock, message-options and Retry measurements and added a narrow native search-bar fixture to verify the existing two-row layout.
+
+The full messaging Android-host suite passed 695 tests, including the forced photo and voice race. The native captures cover 320 dp Transfers, the encrypted online/offline header, compact text and voice timestamps, and the 360 dp search bar. The full desktop run and class rerun timed out in one discovery ECO case (ERROR-1026). Device verification still owes UXPOL-11, UXPOL-16 and UXPOL-17. The receive fix prevents new same-ID rows and leaves existing chat history intact.
+
+Final locked gate passed in 9m 55s: `:core:messaging:testAndroidHostTest --tests '*RealFlashChatRepositoryTest*'` (108), `:ui:chat:jvmTest` (801), `:ui:chat:testAndroidHostTest` (776), `:desktop:jvmTest --tests '*FlashWorkspaceTabsRenderTest*'` (1, 55 native renders), `:app:testDebugUnitTest` (119), `:app:lintDebug` (0 errors, 169 warnings, 2 hints), and `:app:assembleDebug`. That is 1,805 passing tests with zero failures or skips in the final gate. The final native inspection covered standard and large text. The voice waveform now stays within its measured width and does not overlap the duration. The debug APK is `app/build/outputs/apk/debug/app-universal-debug.apk`.
+
 ## 2026-11-14 — Nearby paired-device availability, compact detail actions, Relay/Nearby icons & BottomNav animations
 
 ### Worked on

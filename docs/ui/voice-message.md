@@ -19,6 +19,10 @@ Voice notes are a first-class message type in every premium messenger. Flash nee
 
 Appears in: `FlashMessageBubble` (incoming and outgoing bubbles).
 
+**2026-11-14 layout refinement.** The player has a smaller lower inset so the message
+timestamp sits closer. Waveform slots fit the available width, including narrow bubbles
+with enlarged duration text.
+
 ## Research sources
 
 - Android Developers — Compose `Canvas` drawing, `pointerInput` tap/drag detection, `rememberInfiniteTransition`, `android.media.MediaPlayer` (current status: not deprecated but Media3 is the recommended path for new features).

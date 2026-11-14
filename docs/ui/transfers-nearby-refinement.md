@@ -5,6 +5,15 @@
 The owner approved the compact Nearby and Transfers screens on 2026-11-07.
 Physical-device checks remain TABREF-01–04.
 
+### 2026-11-14 — Compact Transfers rows
+
+File name, peer metadata and status each use one line with an ellipsis when needed.
+The file badge and insets are smaller, and pairs of 48 dp actions sit side by side when
+there is room. Narrow panes and large system text can stack the actions. The row's
+accessible description retains the file name and status. Inspecting a transfer shows
+the full wrapping name, the transfer metrics and the full failure reason.
+[Compose text layout](https://developer.android.com/develop/ui/compose/text/configure-layout).
+
 ## Direction and evidence
 The owner rejected the workspace redesign and requested rollback, followed by component-by-component refinement of the previous screens, including their different states. Both production files were restored from `f999b5a5` before this design. The committed Hub remains separate. Historical rejected direction: `transfers-nearby-redesign.md`; original native evidence: `transfers-nearby-baseline/`.
 

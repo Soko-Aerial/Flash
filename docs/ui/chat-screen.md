@@ -80,6 +80,15 @@ Meets UI-004 requirements, uses UI-001/UI-002 tokens, supports P2P-specific affo
 **Layout (LTR):**  
 `[Back] [Avatar 36dp] [Title + status (weight=1)] [Call?] [Video?] [Menu]`
 
+**2026-11-14 spacing correction.** The lock uses a 16 dp layout footprint alongside the
+presence text. Foundation's clickable expands its touch area, and the trust sheet opens
+from the lock as before. The header can grow for large system text. Long status copy
+ellipsizes within the space left by the presence, transport and lock icons.
+[Compose accessibility](https://developer.android.com/develop/ui/compose/accessibility/api-defaults).
+
+The offline banner's Retry pill has a 28 dp minimum visual height. The surrounding banner
+stays 36 dp at standard text size and can grow for longer peer names or larger text.
+
 ### Interaction specification
 
 | Control | Action |

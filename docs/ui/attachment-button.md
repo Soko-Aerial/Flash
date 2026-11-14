@@ -15,6 +15,10 @@
 
 ## Purpose
 
+Each source URI appears once in the current draft. Picking the same source again keeps
+its existing tray entry. A later draft can send that source again. The composer consumes
+its ready entries before dispatching them to the host.
+
 The attachment system allows users to select and send various types of media, documents, and high-speed peer-to-peer data transfers. It provides:
 1. **Tactile composer attachment trigger** with rotation feedback (`FlashIcons.Attach`) and active state highlight.
 2. **Sculpted modal attachment palette** presenting categorized options (Gallery, Files, Camera, Audio, Flash Direct Transfer).

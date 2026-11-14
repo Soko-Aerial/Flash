@@ -1,5 +1,8 @@
 # Current Handoff
 
+> **2026-11-14 — Branch inventory, compact Transfers and chat, and duplicate receive fix.** On `dev` from `1e8868d2`. Read the latest progress entry for the worktree inventory. `origin/linux` contains substantive Linux product and packaging changes outside `dev`, with three history-log merge conflicts. UXPOL-16/17 cover device layout and photo/voice receive acceptance. ERROR-1025 explains the recipient insert race, and ERROR-1024 covers repeat selection. For a remaining duplicate, compare both transfer IDs and route events before changing transport code.
+> **Last verified product commit `9e2a82cf`**, with attachment fix `29b97709`. The focused gate passed 1,805 tests, 55 native renders, lint with zero errors and debug APK assembly. ERROR-1026 tracks the discovery timeout in the wider desktop suite. For search, compare the specific device symptom with UXPOL-11. The committed search source survived the merge and the search logic tests and narrow native bar render passed.
+
 > **2026-11-14 — Nearby availability, compact detail actions, Relay/Nearby icons & BottomNav animations verified on `dev` at `26924567`.**
 > - **Commits on `dev`:**
 >   - `508dbee6`: `feat(icons): replace Wi-Fi-like Relay and Nearby vector icons` (`FlashIcons.Relay` Hub Relay Bridge + `FlashIcons.Nearby` Discovery Compass)
