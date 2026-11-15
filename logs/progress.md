@@ -1,5 +1,11 @@
 # Progress Log
 
+## 2026-11-15 — Radio modes implementation research
+
+Reviewed current Field Companion wiring, the reserved `BEACON` sender and receive branch, radio ACK handling, the vendor SBC audio path, and the PTT audio/floor interfaces. Checked KISS and AX.25 specifications, Android location and audio guidance, Microsoft desktop APIs, and Vero/BTECH and HTCommander documentation. The [implementation proposal](../docs/plans/RADIO-MODES-IMPLEMENTATION.md) sequences Radar, single-base text Relay, a conditional receive-first PTT bridge, and All-in-One arbitration. It records why relay needs a post-commit application receipt and why the return audio path needs a real unkey-on-loss measurement.
+
+Updated the older plan, voice and wire status notes to reflect current hardware evidence. Checked local links, heading anchors and whitespace. The work is a documentation proposal under the existing FO-28 decision. Start with the encrypted `BEACON` compatibility decision and host round-trip vectors. Complete each phase's hardware run before offering its mode.
+
 ## 2026-11-15 — Windows inline media and the shared playback timeline
 
 Windows chat videos now use the shared viewer with `IMFMediaEngine` and a D3D11 frame-server bridge. The player opens local files and hands bounded BGRA frames to Compose. Windows supplies the decoders. The system-player action remains available if playback fails. The local x64 bridge is 121,344 bytes, or 61,010 bytes compressed inside the platform-shims JAR. ADR-364 and UI-018 record the architecture and build requirements.

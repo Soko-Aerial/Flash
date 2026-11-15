@@ -2,9 +2,12 @@
 
 **Date:** 2026-10-16 (revision 3, same day)
 **Status:** APPROVED by the owner on 2026-10-16 (ADR-173 as amended, O-4, O-5, O-6, O-7 answered; code phases are built by the streams of `docs/plans/RADIO-PROMPTS-2.md`). Earlier status was PROPOSED, DESIGN ONLY. Hardware spike `BT-00` passed (`EXP-023`).
+
 **Owner decision target:** approve (1) the dedicated `:core:radio` module, built by **moving** the radio code that already exists, (2) the "find, pair and connect" flow in section 6 (automatic detection, in-app scan and pairing), (3) the open decisions in section 12.
 **Decision record:** ADR-173 in `docs/decisions.md` (amended by this revision).
 **Parent blueprint:** `Project Goal and Blueprint/android-lan-wifi-direct-transfer-app-plan.md`
+
+**2026-11-15 follow-up.** Field Companion's bidirectional text is verified between Android and Windows. Base Station Relay and Tactical Radar remain implementation work. The [radio modes implementation proposal](RADIO-MODES-IMPLEMENTATION.md) records the current code findings, research, candidate contracts and verification order. ADR-227 governs the existing direct radio fallback. Modes 3 and 5 remain parked under FO-28, with a new feasibility plan if reopened.
 **Earlier work this plan builds on:** `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md` (BT-0/BT-1 groundwork, ADR-101), `docs/network/RADIO-WIRE-FORMAT.md` (the byte layout), `docs/reports/2026-10-09-bluetooth-radio.md`, `docs/ui/radio-link-test.md`.
 
 ## 0. What changed in revision 2
@@ -254,7 +257,7 @@ The older `BT-00` and `BT-09`..`BT-17` entries in the backlog stay as they are (
 | ID | Question | Recommendation |
 |---|---|---|
 | O-1 | **ANSWERED by the owner 2026-10-16:** encryption is needed (military use); Profile M is the default. | Done in section 8. The one-time authorisation confirmation stays, because the same radio can be on an amateur band. |
-| O-2 | Is a second radio available for R3 and R5 tests? | **ANSWERED 2026-10-16:** two radios exist but are at the owner's workplace, available later. Until then R3 and R5 are built and simulated only; every radio test stays TODO and nothing is called verified. |
+| O-2 | Is a second radio available for R3 and R5 tests? | **Answered 2026-10-16.** Two radios existed at the owner's workplace. The November two-radio test verified R3's bidirectional direct text. R5 still needs a forwarding implementation and the BT-R07 device run. |
 | O-3 | Move `ReconnectPolicy` to `:core:common` (section 4.2)? | Yes if it has no network types. |
 | O-4 | May `:core:engine` and the connection planner be touched for `FlashTransportType.BLUETOOTH` (R3)? | **ANSWERED yes by the owner 2026-10-16** ("yes now"): separate small commits, hooks only; the prompt requires proof that users who never enable the radio see no change. |
 | O-5 | Approve ADR-173 as amended (revision 3). | **ANSWERED yes by the owner 2026-10-16.** |

@@ -1,9 +1,8 @@
 # Radio wire format (Profile M) - exact byte layout
 
-Status: IMPLEMENTED and unit-tested on the JVM and Android host 2026-10-09 (originally in `core/network`, package `...network.kiss` and
-`...network.radio`; moved to `:core:radio` package `com.transfer.flash.core.radio.*` in R0, plan rev 3 §4). **Never transmitted by a real radio.** A second implementation (Linux client, Rust) should be able to
-reproduce section 11 byte for byte. Part of the plan `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`; that plan's known errors
-are corrected here (section 12). Architecture decision: ADR-101 (see the report for the paste-ready text).
+Implemented and unit-tested on the JVM and Android host on 2026-10-09, before the first RF test. R0 moved the codec from `core/network` to `:core:radio` (Plan R rev 3 §4). EXP-023 later exercised real RF, and `RADIO-PATH-01` records bidirectional Android–Windows text using the current pairing integration. An independent implementation should reproduce section 11 byte for byte. ADR-101 and section 12 record corrections to the original Bluetooth TNC plan.
+
+The [radio modes implementation proposal](../plans/RADIO-MODES-IMPLEMENTATION.md) identifies the reserved `BEACON` policy and new relay envelopes that need a separate protocol decision. The version 1 layout here stays authoritative for existing traffic.
 
 All multi-byte integers are big-endian. "Hex" strings are upper case without spaces.
 

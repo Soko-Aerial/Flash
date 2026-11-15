@@ -468,6 +468,8 @@ path, a change/recover story and a decision on what happens when the vault is op
 
 ## FO-28 - Radio walkie-talkie voice bridge (old radio Modes 3 and 5)
 
+> **2026-11-15 research.** If reopened, the proposed progression is vendor RFCOMM audio → receive-only Flash PTT → controlled talk-back → voice/data arbitration. See the [implementation plan](plans/RADIO-MODES-IMPLEMENTATION.md#mode-3--walkie-talkie-bridge) for the current evidence and hardware gates.
+
 > **Partly SUPERSEDED 2026-10-23 (ADR-225):** hearing and talking through the radio's own audio channel is now built (`docs/network/RADIO-AUDIO.md`, device checks owed). The *bridge* (Flash chat/PTT <-> radio audio) described below is still not built and still needs an owner decision.
 
 **Status:** PARKED. Dropped from Plan R by the owner on 2026-10-18 (ADR-210 ACCEPTED). Do not start unasked.
