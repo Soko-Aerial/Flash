@@ -1,5 +1,9 @@
 # Android Platform Notes
 
+## 2026-11-15 — In-viewer video playback
+
+The Android viewer uses a `TextureView` attached with Media3 `Player.setVideoTextureView` on the player's application thread. The documented `SurfaceView` path can offer better frame timing and power use. The TextureView path supports the Compose overlay and viewport transform on the same view hierarchy. Playback pauses on Android host stop and releases as the video leaves composition. The app's minimum remains API 24. Glass uses a dark translucent tint on all versions, and the poster blur depends on platform rendering support. [Media3 surface types](https://developer.android.com/media/media3/ui/surface) · [Player lifecycle](https://developer.android.com/media/media3/exoplayer/hello-world) · [Compose blur API](https://developer.android.com/reference/kotlin/androidx/compose/ui/draw/package-summary#blur(androidx.compose.ui.Modifier,androidx.compose.ui.unit.Dp,androidx.compose.ui.draw.BlurredEdgeTreatment))
+
 ## 2026-11-14 — Verified invite links
 
 - Android App Links verify the HTTPS hosts declared by the app against `/.well-known/assetlinks.json` on each host. The file must be served directly over trusted HTTPS and identify the distributed app's package and signing certificate. Android 11 (API 30) and earlier require all declared App Links hosts to verify. Android 12 (API 31) and later verify hosts independently. Flash uses separate exact path filters for group and enrollment, with browser and paste flows for Hubs outside those filters. [Add Android App Links](https://developer.android.com/training/app-links/add-applinks) · [Configure website associations](https://developer.android.com/training/app-links/configure-assetlinks)

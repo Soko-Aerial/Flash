@@ -1,5 +1,7 @@
 # Current Handoff
 
+> **2026-11-15 — Desktop direct-transfer recovery and unified Android media viewer.** Product commits `ac572f1f` and `82f7906b` are on local `dev`. The encrypted-store restart regression passed over loopback, and 145 transfer tests, 1,577 chat tests and the final debug APK build passed. The shared viewer retains the poster and controls while Android Media3 starts playback. UI-018 records the desktop Media Foundation recommendation and package comparison. See ADR-362/363 for the implementation and DESK-RESUME-01 and MEDIA-PLAY-01/02 for physical acceptance.
+
 > **2026-11-15 — Feature inventory reviewed against `dev` at `0a1be983`.** See the [inventory](../docs/audit/2026-11-15-feature-implementation-inventory.md) for production evidence, the separate `origin/linux` work, and deferred items. Native Wi-Fi Direct, desktop direct-transfer recovery after restart and managed folder/file batches remain open. The review was documentation-only. Use the device backlog for live acceptance and the feature plans for scope decisions.
 
 > **2026-11-14 — Desktop tray icon, voice button and Passes 1–4 UI polish committed on `dev` as `a21bf8f9`.**

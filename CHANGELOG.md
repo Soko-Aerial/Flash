@@ -10,6 +10,8 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## Unreleased
 
+- Desktop restores interrupted direct transfers from its encrypted store and offers Retry. Retries reuse the bytes the receiving peer confirms.
+- Android opens and plays videos in the same media viewer, with translucent controls and an integrated seek bar.
 ## SDK 2.2.0-beta.3 - 2026-11-08
 
 - Added verified Linux AAPT2 and Compose Desktop metadata checksums for JitPack. The stable

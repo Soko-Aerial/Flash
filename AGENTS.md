@@ -917,6 +917,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-15 — Desktop direct-transfer restart recovery and unified Android media viewer.** See ADR-362/363 and `logs/handoff.md`. Desktop uses encrypted transfer rows and validated LAN checkpoints. Android shares the preview and playback controls. Device acceptance is DESK-RESUME-01 and MEDIA-PLAY-01/02. The desktop player recommendation is recorded in UI-018.
+
 **2026-11-14 — Cross-screen Android and desktop polish, tray icon and voice recording controls.** See `logs/handoff.md` for the commits and verification. Live acceptance is tracked by UXPOL-18 and UXPOL-19.
 
 **2026-11-14 — Compact Transfers rows, chat header and message timestamps, and attachment deduplication.** See `logs/handoff.md`, ERROR-1024/1025 and UXPOL-16/17 for physical-device acceptance. The branch inventory identified Linux Bluetooth and packaging work on `origin/linux` outside `dev`.

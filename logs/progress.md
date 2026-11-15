@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-11-15 — Desktop restart recovery and unified Android media viewer
+
+Desktop opens its encrypted database before constructing the direct-transfer repository. The Room transfer adapter is shared with Android. Restarted rows offer Retry, and desktop uses the receiver's confirmed coverage with the existing source and final hash checks. The receiver verifies the re-offer identity and validates the partial destination before reusing a LAN checkpoint. SDK hosts can opt out through `enableResume`.
+
+Android keeps preview and playback in one viewer with a translucent dock, one play control, a subdued poster backdrop and a seek bar. The new Media3 surface draws under the existing shared media controls and pauses on host stop. For desktop, UI-018 recommends Windows Media Foundation when package size is the priority and records the libmpv, libVLC and JCodec footprint comparison.
+
+Updated the historical status for group swarm, group history, the Android screen-share presenter and Hub group encryption. DESK-RESUME-01 and MEDIA-PLAY-01/02 track the remaining physical checks.
+
+The shared viewer was rendered with a local H.264 clip at portrait, landscape and 200% text sizes. The review prompted a font-scaled caption height and distinct album navigation chevrons. The broad engine run hit the existing ENG-13 swarm timeout, and the focused swarm rerun passed. The first restart fixture raced automatic discovery. Its isolated rerun exposed a fixture save-location mismatch, corrected by configuring the temporary receive root before enabling Ghost mode.
+
+Verification on the final media code passed `:ui:chat:jvmTest` (801), `:ui:chat:testAndroidHostTest` (776) and `:app:assembleDebug` (9m 41s together). The transfer core suite passed 145 tests. `adb devices -l` showed no connected device. Shared UI renders are under `build/reports/media-review`.
+
+The final isolated `:desktop:jvmTest --tests '*FlashDesktopEngineTest.*restart restores*'` passed in 2m 47s. It restored a real encrypted Room row and a disk checkpoint, rejected a changed offer, received only the missing chunk over TLS loopback and compared the finished file byte for byte. Product commits on local `dev` are `ac572f1f` (desktop recovery) and `82f7906b` (media viewer).
+
 ## 2026-11-15 — Feature implementation inventory
 
 Reviewed the original blueprint, the deferred-work register, feature plans and current production code at

@@ -6654,7 +6654,7 @@ confirm the audit's reading of the code.
 ### CNCL-19 — Dismiss, Clear and 30-day history survive a restart (C-09, C-05, C-10)
 - **Setup:** one Failed, one Cancelled and one Paused 1:1 row, plus one running at ~50 %.
 - **Steps:** dismiss the Cancelled row, `adb shell am force-stop com.transfer.flash`, reopen, open Transfers. Later set the phone date 31 days ahead and reopen.
-- **Pass:** the dismissed row stays gone; Failed and Paused rows are back, the running one is Failed with "Flash was closed while this was transferring. Tap Retry to continue."; no notification storm on start; rows older than 30 days are gone. **Source:** C-09/C-05 (`3df0bfa5`, Room step 20; supersedes the "today the list starts empty" part of CNCL-11). Desktop does not persist yet (store = null, D5). **Status:** TODO
+- **Pass:** the dismissed row stays gone; Failed and Paused rows are back, the running one is Failed with "Flash was closed while this was transferring. Tap Retry to continue."; no notification storm on start; rows older than 30 days are gone. **Source:** C-09/C-05 (`3df0bfa5`, Room step 20; supersedes the "today the list starts empty" part of CNCL-11). For desktop, see DESK-RESUME-01. **Status:** TODO
 
 ### CNCL-20 — Receiver's refusal names its reason on the sender (C-11)
 - **Setup:** B with a full storage / a session ceiling reached / a write error.
@@ -8694,4 +8694,28 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 - **Steps:** Check the tray icon, then tap or click different parts of the mic button. On Android, verify a short tap shows the hold hint and a long press starts recording. On desktop, click to start and stop recording. Repeat after sending text so the composer switches back to the mic.
 - **Pass:** The desktop tray shows the Flash app icon. The mic responds across its target, the hint leaves the composer visible, and the press animation is suppressed with reduced motion.
 - **Source:** Desktop tray and voice message button fixes in `logs/progress.md`.
+- **Status:** TODO
+
+### DESK-RESUME-01 — Restore desktop LAN transfers after restart
+
+- **Setup:** Paired Windows or Linux desktop and physical Android device on the same LAN with a large local file. Disable Hub file routing for this check.
+- **Steps:** Quit or terminate Flash on desktop partway through receiving, reopen and retry. Repeat with desktop sending, then with both peers restarted. Check a changed send source, a deleted receive partial, a dismissed row and an SDK host with `enableResume = false`.
+- **Pass:** Interrupted work returns with Retry, and paused rows retain their state without automatic sends. Verified receiver progress is reused, the completed file hash matches and a changed source is refused. A missing partial is rebuilt from bytes received after retry. Dismissed rows stay gone, and the SDK opt-out skips restoration.
+- **Source:** ADR-362 and `FlashDesktopEngineTest`.
+- **Status:** TODO
+
+### MEDIA-PLAY-01 — Same Android viewer from poster to playback
+
+- **Setup:** Android phone with a mixed photo/video album and local H.264/AAC clips. Include landscape and portrait clips, a long caption and a corrupt video. Repeat with large text, reduced motion and Minimal visual quality.
+- **Steps:** Open a video from chat and from Shared Content. Play, pause, scrub and replay. Swipe to a photo during playback, rotate the phone, reopen the clip, background the app, then return. From a corrupt clip, use the system-player action. Try TalkBack and Android Back.
+- **Pass:** Poster stays visible until a frame renders. Close, album navigation and file actions remain in the same viewer. Playback remains correctly fitted, scrubbing does not change album page, and paging, closing or backgrounding stops audio. Back returns to the prior surface. Loading and error states remain readable, and controls are reachable at large text sizes.
+- **Source:** UI-018 and ADR-363.
+- **Status:** TODO
+
+### MEDIA-PLAY-02 — Check Android video surface and glass on supported device tiers
+
+- **Setup:** An API 24–30 phone, an API 31+ phone and a tablet or foldable if available. Use bright and dark clips and the local picker and received-file URI paths.
+- **Steps:** Compare letterboxing and glass contrast in portrait and landscape. Seek while playing a long clip and switch between videos several times. Inspect playback logs, frame drops and repeated audio output.
+- **Pass:** The graphically lighter fallback remains legible on older or constrained hardware. Chrome draws over the decoded video throughout, player resources release on page changes, and the playlist stays responsive.
+- **Source:** UI-018 and the Media3 surface note in `docs/android-platform-notes.md`.
 - **Status:** TODO

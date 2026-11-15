@@ -1,5 +1,11 @@
 # Error Log
 
+## ERROR-1028 — Media3 dependencies rejected on initial build
+
+**2026-11-15 · Android build.** The first combined build hit a transient Maven Central DNS failure while resolving the Media3 Kotlin BOM. The next resolution succeeded and strict dependency verification rejected the new Media3 artifacts and transitive metadata because the repository did not have their hashes. The fix adds SHA-256 hashes obtained from the Google and Maven Central artifact URLs, with strict verification active. A subsequent compile exposed a Kotlin cross-module smart-cast error in the viewer. Copying the optional source URI into a local value preserves its null check.
+
+**Status: RESOLVED.** The final chat JVM and Android host tasks and debug APK assembly passed with strict verification active.
+
 ## ERROR-1027 — Windows Gradle JVM stack overflow during the verification run
 
 **2026-11-14 follow-up.** The pre-commit verification for `a21bf8f9` confirmed all six test tasks were up to date, then exited `-1073741571` during lint. A single-worker retry also reported `EXCEPTION_IN_PAGE_ERROR (0xc0000006)` in the Gradle launcher JBR's `jimage.dll`. Separate APK assembly and lint runs passed with the installed Android Studio JBR as launcher, one worker, and `-Xss8m` for the Gradle daemon. The host error remains open.

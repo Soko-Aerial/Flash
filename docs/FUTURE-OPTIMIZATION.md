@@ -23,13 +23,13 @@ for current code evidence and the remaining scope.
 | FO-01 | QR first contact (DR4) | 2026-09-29 | POSTPONED |
 | FO-02 | Bluetooth (BLE) discovery (DR6) | 2026-09-29 | POSTPONED |
 | FO-03 | Wi-Fi Direct transport (DR7) | 2026-09-29 | POSTPONED |
-| FO-04 | Group file sending: fan-out cost and a revamp of file sending | 2026-09-29 | POSTPONED |
+| FO-04 | Group file sending: fan-out cost and a revamp of file sending | 2026-09-29 | DONE for group swarm (ADR-071/072). Managed file and folder batches remain open (FA-5). |
 | FO-05 | Scale and battery measurement, PC6 / MEAS-02 (and the choice of 32) | 2026-09-29 | POSTPONED |
 | FO-06 | Hotspot client isolation (joined phones cannot reach each other) | 2026-10-02 | IDEA (not prioritised) |
 | FO-07 | Group invite link lifetime: expiry or single use | 2026-10-06 | OPEN DECISION (owner) |
 | FO-08 | Joining by invite: pending-join row, saved address hints, approval timeout | 2026-10-06 | OPEN DECISION (owner) |
 | FO-09 | Organisation realms (private protocol identity, enrolment, revocation) | 2026-10-07 | PLANNED, design only: `docs/ENTERPRISE-HYBRID-PLAN.md` (merged with the hybrid server draft, stages E0-E5) |
-| FO-10 | New-member history: ask before syncing, admin rule | 2026-10-07 | DESIGNED 2026-10-08, owner decisions taken (30 days default, no history = no files, returning member 7 days, any admin changes the ceiling): `docs/group/GROUP-SYNC-REVAMP-PLAN.md`. Not built |
+| FO-10 | New-member history: ask before syncing, admin rule | 2026-10-07 | DONE in Android and desktop (ADR-100). See the [group history plan](group/GROUP-SYNC-REVAMP-PLAN.md) and GSY device checks. |
 | FO-11 | Linux desktop as a committed target | 2026-10-07 | OPEN DECISION (owner, D-L1): `docs/LINUX-PORT-PLAN.md`; only Phase L0 (unbreak build/CI, audit `TASK-CORE-SEC-1`) is justified before it is answered |
 | FO-12 | Bluetooth direct transport and VHF/UHF radio (KISS TNC) bridge | 2026-10-07 | POSTPONED until the owner confirms it and hardware spike `BT-00` passes: `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`. Overlaps FO-02 (BLE discovery) and FO-03 (ADR-056 postponements) |
 | FO-13 | Hub revocation list served as hashed device ids (`SHA-256(serverId \| deviceId)`) | 2026-10-13 | BUILT 2026-10-14 (ADR-129), unit-tested, not device-verified (owner asked for it; was POSTPONED by ADR-127 P-1) |
@@ -46,7 +46,7 @@ for current code evidence and the remaining scope.
 | FO-24 | Sealed (end-to-end) announcements for a department | 2026-10-14 | IDEA (needs group sealing; owner chose plaintext for v1, ADR-138) |
 | FO-25 | Remote wipe of a lost company phone; presence "out of office" status; file drop to a department over the hub | 2026-10-14 | IDEA |
 | FO-26 | Per-department audit view for department heads; heads revoke leavers in their department | 2026-10-14 | IDEA (roadmap questions 7/8, ADR-136) |
-| FO-27 | Group message encryption (a per-group message key, end to end, also on the hub relay path); announcements and hub groups could then be sealed | 2026-10-14 | IDEA (owner asked to record it; needs an ADR and a design before any code) |
+| FO-27 | Group message encryption (a per-group message key, end to end, also on the hub relay path); announcements and hub groups could then be sealed | 2026-10-14 | DONE for Hub-relayed group chat under [HR10](plans/HUB-READINESS-REMEDIATION.md). Sealed announcements remain open under FO-24. |
 | FO-29 | Refuse plaintext binary frames once the session holds a key (SEC-D07-05; `FlashTransfer.isEncrypted` is set but not enforced) | 2026-10-23 | POSTPONED (owner decision, ADR-226 addendum) |
 | FO-30 | Linux key vault: passphrase-derived master key instead of the fallback `vault.key` file next to the encrypted data (SEC-D01-01) | 2026-10-23 | POSTPONED (owner decision, ADR-226 addendum) |
 | FO-31 | Clipboard parity: text and image clipboard between phone and PC, optional encrypted history, sensitive-content exclusion | 2026-11-03 | POSTPONED (owner decision; companion track after the current optimization programme) |
@@ -122,6 +122,8 @@ or the same IP behaviour across devices.
 ---
 
 ## FO-04 — Group file sending: fan-out cost and a revamp of file sending
+
+**Current status (2026-11-15).** Group swarm is wired in production under [ADR-071 and FSW1](protocol.md#group-swarm-wire-fsw1-v1-adr-071-implemented-device-checks-owed). The original proposal below records the earlier sender-direct model. The unified file and folder batch design in FA-5 remains open.
 
 **What.** Today a group attachment is sent by the sender to each member separately: `sendGroupAttachment` creates one
 `GroupDeliveryEntity` per recipient, and each recipient re-requests the bytes sender-direct (no chunk relay; see
@@ -299,6 +301,8 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 
 ## FO-10 — New-member history: ask before syncing, and an admin rule for how much history a new member gets
 
+**Current status (2026-11-15).** Android and desktop show the join-history choice, apply the signed ceiling and page through catch-up (ADR-100). The original behavior and proposal below are historical. Device acceptance is tracked under GSY.
+
 **Owner idea 2026-10-07:** when a member is added, offer to sync past messages and the files of the last seven days.
 
 **What exists.** A new member automatically receives what the others still hold: text of the last 24 h (up to 100 rows per request) and swarm file offers of the last 7 days (ERROR-120/121). There is no prompt and no admin rule; the new member cannot decline and the group cannot restrict it.
@@ -405,6 +409,8 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 ---
 
 ## FO-27 — Group message encryption
+
+**Current status (2026-11-15).** [HR10](plans/HUB-READINESS-REMEDIATION.md) implemented epoch-key encryption for Hub-relayed group messages. Device acceptance is HR10-DEV-01. The earlier sender-key proposal below is historical. Sealed announcements remain FO-24.
 
 **What.** Today a group has **no message key**. The group secret of the GM track (`:core:security:group`) is only a membership proof (a MAC challenge), never used to encrypt. Group messages between phones on the LAN are protected hop by hop by TLS with pinned device identities, which is real encryption in transit and invisible to the hub. A group message that travels **through the hub** (opt-in, default off) is readable by the hub, and so are announcements (plaintext by owner decision D5). One-to-one hub messages are different: they are already sealed end to end to the recipient's sealing key (ADR-121/124/126).
 

@@ -1,8 +1,10 @@
 # Group History Join Card — UI-057
 
-**Status:** DESIGNED  
+**Status:** IMPLEMENTED · GSY device acceptance open
+
 **Component ID:** UI-057  
-**Last updated:** 2026-10-09  
+**Last updated:** 2026-11-15
+
 **Owner phase:** Group history sync (`docs/group/GROUP-SYNC-REVAMP-PLAN.md`, ADR-100)  
 **Master plan:** [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md)  
 **Template:** [component-doc-template.md](component-doc-template.md)  

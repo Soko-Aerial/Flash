@@ -1,5 +1,15 @@
 # Decisions
 
+## ADR-362 — Recover desktop direct transfers with the existing encrypted store
+
+2026-11-15. Desktop uses the shared Room adapter and existing encrypted database to restore transfer identity, retry state and retention. `FlashConfig.enableResume` controls the store in SDK hosts. Open the database before constructing the transfer repository and index durable rows before binding inbound sessions. With a database open failure, transfers continue in memory.
+
+The receiver flushes new acknowledged data before recording coverage. Desktop uses the existing LAN continuity checkpoint's byte ranges to map saved progress onto the incoming chunk layout. It checks the destination and re-offer identity before reusing progress. A fresh desktop sender dispatcher waits for the receiver's replayed coverage before skipping bytes. The existing source identity checks and final SHA-256 verification still apply. Interrupted rows return as Retry, with no automatic sends at startup. Existing desktop versions did not persist these rows, so only transfers recorded by the new build can restore their UI state. No schema or wire version change. Device acceptance is DESK-RESUME-01.
+
+## ADR-363 — Keep video playback inside the shared media viewer
+
+2026-11-15. A single Compose viewer owns page navigation, playback state, system-player fallback, and attribution/actions. Android uses Media3 ExoPlayer with its TextureView binding for first-frame notification and composition beneath the viewer controls. The viewer keeps the local poster during prepare, releases the player when paging or dismissing, and pauses on host stop. Playback uses local file and content URIs. UI-018 records the design and the desktop backend comparison. The desktop runtime still uses the system-player fallback. Android acceptance is MEDIA-PLAY-01 and MEDIA-PLAY-02.
+
 ## ADR-361 — Invite links carry the credential in the HTTPS fragment
 
 Hub enrollment invitations use the issuing Hub's public HTTPS origin. Local group invitations use the Flash link origin configured into the app build. Both carry the original invite in an unpadded base64url fragment so the public landing server serves a static page without receiving an invitation credential. The clients reuse the existing parsers, trust checks and confirmation screens. Android can verify the configured hostnames, and other Hub origins use the browser's explicit Open in Flash action. Existing custom-scheme links remain supported. See [invite deployment](deploy/INVITE-LINKS.md).

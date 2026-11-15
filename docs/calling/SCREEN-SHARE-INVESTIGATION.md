@@ -1,6 +1,6 @@
 # Screen sharing in calls — investigation (2026-10-08)
 
-Status: **SUPERSEDED 2026-10-09: the desktop presenter, the wire, the ladder and the receivers were built (ADR-102, `docs/calling/SCREEN-SHARE-DESIGN.md`, report `docs/reports/2026-10-09-screen-share.md`); not device-verified; the Android presenter is not built.** Original status when written (2026-10-08): **INVESTIGATION, nothing built.** Owner question: "share the laptop screen into the video call; it will be one decoding
+Status: **SUPERSEDED by [the screen-share design](SCREEN-SHARE-DESIGN.md) and ADR-102.** Desktop presentation and cross-platform viewing were implemented 2026-10-09. Android presentation was added 2026-10-24. Physical acceptance remains tracked in the device backlog. Original status when written (2026-10-08): **INVESTIGATION, nothing built.** Owner question: "share the laptop screen into the video call; it will be one decoding
 to all so it won't impact performance much, right?" Screen share was deferred earlier on purpose (ADR-067 "Not built";
 `logs/handoff.md` 2026-09 entries: "do not start unasked"). Labels: **read** (in this repo), **verified** (official docs),
 **estimate** (reasoning, not measured).

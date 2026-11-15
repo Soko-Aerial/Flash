@@ -2,10 +2,32 @@
 
 **Status:** IMPLEMENTED  
 **Component ID:** UI-018  
-**Last updated:** 2026-08-21  
+**Last updated:** 2026-11-15
+
 **Owner phase:** Premium Chat UI — media track (after UI-017 image grid)  
 **Master plan:** [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md)  
 **Template:** [component-doc-template.md](component-doc-template.md)
+
+## Unified media viewer and playback refresh · 2026-11-15
+
+**Status:** IMPLEMENTED. Android device acceptance is tracked by MEDIA-PLAY-01 and MEDIA-PLAY-02. Photo and video pages keep one edge-to-edge media stage and one set of controls. A video poster stays visible while the decoder prepares. The first decoded frame takes over the same fitted area, and the close control, album count, caption, and Save/Share/Forward actions stay in place. The bottom dock adds the timeline once playback starts. Taps toggle chrome during active playback, and paging away releases playback. Android Back closes the viewer from either state.
+
+The stage uses Flash's graphite backdrop, with a translucent dark dock and fine highlight edge so controls remain readable over bright footage. A softly blurred, dimmed copy of the already decoded poster fills letterbox space when a poster is available and the performance tier allows it. The primary play control echoes the small translucent close and album controls. Typography and touch targets use the current Flash system. Unavailable and unplayable video keeps the poster, with a system-player action for the latter.
+
+Compared the existing framework `VideoView`, a custom framework `MediaPlayer` plus `TextureView`, and Media3 ExoPlayer plus `TextureView`. Media3 provides the first-frame, playback, buffering, error and surface lifecycle events needed for one viewer. Use only its Android playback artifact and Flash's Compose chrome. Keep pause/resume ownership in the viewer and pause when the Android host stops. [Media3 surface guidance](https://developer.android.com/media/media3/ui/surface) · [Playback lifecycle](https://developer.android.com/media/media3/exoplayer/hello-world)
+
+### Desktop player recommendation
+
+For a small Windows installer, use Windows Media Foundation's `IMFMediaEngine` behind `FlashVideoSurface`. The OS supplies the playback stack, so the Flash package would carry only the interop code. Start with local H.264/AAC MP4, then measure the capability of each target OS for HEVC, AV1 and less common containers. Make sure decoded frames can sit underneath Compose controls before committing to the interop approach. The same seam can use AVFoundation on macOS or a distro-provided `libmpv` on Linux. [Media Foundation playback API](https://learn.microsoft.com/en-us/windows/win32/api/mfmediaengine/nf-mfmediaengine-imfmediaengine-play) · [Windows codec baseline](https://learn.microsoft.com/en-us/windows/win32/medfound/supported-media-formats-in-media-foundation) · [AVPlayer](https://developer.apple.com/documentation/avfoundation/avplayer) · [Debian libmpv package](https://packages.debian.org/sid/libmpv2)
+
+| Option | Observed packaging footprint and tradeoff |
+|---|---|
+| Windows Media Foundation | Uses system decoders. Only the bridge would add to Flash's archive. Its actual size and overlay integration still need a packaged prototype. |
+| Existing JCodec | The `0.2.5` JAR already ships with Flash (2,068,570 bytes), so reuse has zero marginal dependency size. It already handles thumbnails and voice notes. Its software decoder and narrower video support make it a poor fit for general playback. [JCodec format and performance notes](https://github.com/jcodec/jcodec) |
+| Bundled libmpv | Broad codec coverage and an embeddable engine. The published Windows x64 LGPL v0.42.0 ZIP is 56,277,779 bytes (53.7 MiB), including the assets supplied by that build. A purpose-built package could be smaller. Measure its complete runtime and maintain the corresponding build and licenses. [Release and artifacts](https://github.com/mpv-player/mpv/releases/tag/v0.42.0) · [Windows build options](https://github.com/mpv-player/mpv/blob/master/DOCS/compile-windows.md) |
+| Bundled libVLC | Mature embedding API. The Windows x64 VLC 3.0.22 portable archive is 39,098,035 bytes (37.3 MiB). That archive includes the app and serves as a reference, so the installer delta for a curated libVLC plugin bundle needs its own measurement. [Portable artifacts](https://download.videolan.org/pub/videolan/vlc/3.0.22/win64/) · [Native plugin layout](https://github.com/videolan/vlc/blob/master/doc/BUILD-win32.md) |
+
+Recorded 2026-11-15. Package sizes are published archive sizes or the locally resolved JAR. Neither libmpv nor libVLC archive size predicts the Flash installer delta. Desktop currently offers the system-player action from the shared viewer.
 
 ---
 
@@ -77,7 +99,9 @@ Approach A: stable `HorizontalPager` + per-page custom `FlashZoomState` with an 
 - Keeps UI-005/017 untouched except threading `onImageClick`.
 - ADR-005 applies: all visible styling through `FlashColors`/`FlashTypography` semantic tokens (two new semantic tokens added — section "Visual specification").
 
-## Visual specification
+## Initial visual specification
+
+This records the original photo viewer. The unified media viewer section above defines the current translucent controls.
 
 All values reference tokens; raw values below are new **semantic tokens**, not scattered magic numbers.
 
