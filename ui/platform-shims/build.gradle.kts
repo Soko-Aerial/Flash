@@ -111,6 +111,7 @@ kotlin {
         // MediaPlayer and never names this.
         jvmMain.dependencies {
             implementation(libs.jcodec)
+            implementation(libs.jna)
         }
         jvmTest.dependencies {
             implementation(libs.junit)
@@ -131,6 +132,27 @@ kotlin {
             // because a test dependency is not published, `ui-platform-shims`'s POM is unchanged.
             implementation(compose.desktop.currentOs)
         }
+    }
+}
+
+if (System.getProperty("os.name").startsWith("Windows")) {
+    val architecture = if (System.getProperty("os.arch") == "aarch64") "ARM64" else "x64"
+    val nativeSource = layout.projectDirectory.dir("src/jvmMain/cpp")
+    val nativeBuild = layout.buildDirectory.dir("windowsMediaFoundation/$architecture")
+    val nativeLibrary = nativeBuild.map { it.file("Release/flash_media_foundation.dll") }
+    val configureMediaFoundation = tasks.register<Exec>("configureWindowsMediaFoundation") {
+        inputs.file(nativeSource.file("CMakeLists.txt"))
+        outputs.file(nativeBuild.map { it.file("CMakeCache.txt") })
+        commandLine("cmake", "-S", nativeSource.asFile, "-B", nativeBuild.get().asFile, "-A", architecture)
+    }
+    val buildMediaFoundation = tasks.register<Exec>("buildWindowsMediaFoundation") {
+        dependsOn(configureMediaFoundation)
+        inputs.dir(nativeSource)
+        outputs.file(nativeLibrary)
+        commandLine("cmake", "--build", nativeBuild.get().asFile, "--config", "Release")
+    }
+    tasks.named<ProcessResources>("jvmProcessResources") {
+        from(buildMediaFoundation) { into("com/transfer/flash/ui/shims/win32") }
     }
 }
 

@@ -8,6 +8,21 @@ import kotlin.test.assertNull
 class FlashVideoPlayerMathTest {
 
     @Test
+    fun `forward jumps accumulate and stop at the end without starting paused playback`() {
+        val playback = FlashVideoPlayback(autoPlay = true)
+        playback.update(duration = 24_000, position = 2_000, atEnd = false)
+        playback.pause()
+
+        assertEquals(10_000L, playback.skipForward())
+        playback.update(duration = 24_000, position = 2_050, atEnd = false)
+        assertEquals(10_000L, playback.skipForward())
+        assertEquals(2_000L, playback.skipForward())
+        assertEquals(0L, playback.skipForward())
+        assertEquals(24_000L, playback.seekToMs)
+        assertEquals(false, playback.playing)
+    }
+
+    @Test
     fun `play click toggles play state during normal playback without seeking`() {
         val pausedResult = FlashVideoPlayerMath.onPlayClick(isCompleted = false, isPlaying = true)
         assertEquals(false, pausedResult.isCompleted)

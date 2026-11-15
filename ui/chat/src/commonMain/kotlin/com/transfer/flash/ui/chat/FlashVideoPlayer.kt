@@ -1,21 +1,25 @@
 package com.transfer.flash.ui.chat
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -26,11 +30,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.ui.icons.FlashIcon
@@ -101,6 +110,7 @@ internal class FlashVideoPlayback(autoPlay: Boolean) {
 
     fun update(duration: Long, position: Long, atEnd: Boolean) {
         durationMs = duration
+        if (seekToMs != null) return
         positionMs = position
         if (atEnd) {
             playing = false
@@ -111,8 +121,21 @@ internal class FlashVideoPlayback(autoPlay: Boolean) {
     fun finishSeek() {
         val target = dragPositionMs ?: return
         dragPositionMs = null
-        positionMs = target
-        seekToMs = target
+        seekTo(target)
+    }
+
+    fun skipForward(): Long {
+        if (!started || durationMs <= 0 || error != null) return 0
+        val from = (seekToMs ?: positionMs).coerceIn(0, durationMs)
+        val jump = minOf(10_000L, durationMs - from)
+        if (jump > 0) seekTo(from + jump)
+        return jump
+    }
+
+    private fun seekTo(target: Long) {
+        val position = target.coerceIn(0, durationMs)
+        positionMs = position
+        seekToMs = position
         completed = false
     }
 
@@ -197,39 +220,57 @@ internal fun FlashMediaPlayControl(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 internal fun FlashMediaTimeline(playback: FlashVideoPlayback) {
     val colors = FlashTheme.colors
     val foreground = colors.mediaViewerChromeText
     val position = (playback.dragPositionMs ?: playback.positionMs).coerceIn(0, playback.durationMs)
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-    ) {
-        FlashText(
-            text = formatVideoDuration(position),
-            style = FlashTheme.typography.metadataEmphasis,
-            color = foreground,
-            maxLines = 1,
-        )
+    val interactions = remember { MutableInteractionSource() }
+    val focused by interactions.collectIsFocusedAsState()
+    Column(Modifier.fillMaxWidth()) {
         Slider(
             value = if (playback.durationMs > 0) position.toFloat() / playback.durationMs else 0f,
             onValueChange = { playback.dragPositionMs = (it * playback.durationMs.toDouble()).toLong() },
             onValueChangeFinished = playback::finishSeek,
             enabled = playback.durationMs > 0,
-            colors = SliderDefaults.colors(
-                thumbColor = colors.accentPrimary,
-                activeTrackColor = colors.accentPrimary,
-                inactiveTrackColor = foreground.copy(alpha = 0.25f),
-            ),
-            modifier = Modifier.weight(1f).semantics { contentDescription = "Playback position" },
+            interactionSource = interactions,
+            modifier = Modifier.fillMaxWidth().height(48.dp)
+                .semantics {
+                    contentDescription = "Playback position"
+                    stateDescription = "${formatVideoDuration(position)} of ${formatVideoDuration(playback.durationMs)}"
+                },
+            thumb = {
+                Box(
+                    Modifier.size(4.dp, if (focused || playback.dragPositionMs != null) 18.dp else 12.dp)
+                        .background(foreground.copy(alpha = if (playback.durationMs > 0) 1f else 0.35f), CircleShape),
+                )
+            },
+            track = { slider ->
+                Canvas(Modifier.fillMaxWidth().height(4.dp)) {
+                    val radius = CornerRadius(size.height / 2f)
+                    drawRoundRect(foreground.copy(alpha = if (focused) 0.40f else 0.22f), cornerRadius = radius)
+                    val playedWidth = size.width * slider.value.coerceIn(0f, 1f)
+                    val left = if (layoutDirection == LayoutDirection.Rtl) size.width - playedWidth else 0f
+                    if (playedWidth > 0f) {
+                        drawRoundRect(
+                            color = colors.accentPrimary,
+                            topLeft = Offset(left, 0f),
+                            size = Size(playedWidth, size.height),
+                            cornerRadius = radius,
+                        )
+                    }
+                }
+            },
         )
-        FlashText(
-            text = formatVideoDuration(playback.durationMs),
-            style = FlashTheme.typography.metadataDefault,
-            color = foreground.copy(alpha = 0.8f),
-            maxLines = 1,
-        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            FlashText(formatVideoDuration(position), style = FlashTheme.typography.metadataEmphasis, color = foreground, maxLines = 1)
+            FlashText(
+                formatVideoDuration(playback.durationMs),
+                style = FlashTheme.typography.metadataDefault,
+                color = foreground.copy(alpha = 0.78f),
+                maxLines = 1,
+            )
+        }
     }
 }
 

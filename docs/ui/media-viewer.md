@@ -18,16 +18,18 @@ Compared the existing framework `VideoView`, a custom framework `MediaPlayer` pl
 
 ### Desktop player recommendation
 
-For a small Windows installer, use Windows Media Foundation's `IMFMediaEngine` behind `FlashVideoSurface`. The OS supplies the playback stack, so the Flash package would carry only the interop code. Start with local H.264/AAC MP4, then measure the capability of each target OS for HEVC, AV1 and less common containers. Make sure decoded frames can sit underneath Compose controls before committing to the interop approach. The same seam can use AVFoundation on macOS or a distro-provided `libmpv` on Linux. [Media Foundation playback API](https://learn.microsoft.com/en-us/windows/win32/api/mfmediaengine/nf-mfmediaengine-imfmediaengine-play) · [Windows codec baseline](https://learn.microsoft.com/en-us/windows/win32/medfound/supported-media-formats-in-media-foundation) · [AVPlayer](https://developer.apple.com/documentation/avfoundation/avplayer) · [Debian libmpv package](https://packages.debian.org/sid/libmpv2)
+**Follow-up implemented, device acceptance pending.** Windows Media Foundation runs in frame-server mode so the decoded image stays below the shared Compose controls. Windows supplies the codecs and the Windows build includes the bridge. The shared timeline uses a continuous track, a narrow light playhead and time labels on a separate row. It uses Compose Slider for touch, keyboard and accessibility behavior. In short windows, the play control moves above the dock. On Android, double-tapping the right half of a video jumps forward by up to ten seconds and briefly shows the jump. Photo pages retain double-tap zoom. Sources checked 2026-11-15. [Media Foundation frame server](https://learn.microsoft.com/en-us/windows/win32/api/mfmediaengine/nf-mfmediaengine-imfmediaengine-transfervideoframe) · [Compose slider customizations](https://developer.android.com/develop/ui/compose/components/slider)
+
+The Windows implementation uses `IMFMediaEngine` behind `FlashVideoSurface`. Local H.264/AAC MP4 is the verification baseline. Coverage for HEVC, AV1 and less common containers depends on the installed codecs and still needs device tests. Linux and macOS currently use the system-player action. Windows builds that include the desktop target require CMake and Visual Studio C++ Build Tools with a Windows SDK for the JVM's target architecture. [Media Foundation playback API](https://learn.microsoft.com/en-us/windows/win32/api/mfmediaengine/nf-mfmediaengine-imfmediaengine-play) · [Windows codec baseline](https://learn.microsoft.com/en-us/windows/win32/medfound/supported-media-formats-in-media-foundation)
 
 | Option | Observed packaging footprint and tradeoff |
 |---|---|
-| Windows Media Foundation | Uses system decoders. Only the bridge would add to Flash's archive. Its actual size and overlay integration still need a packaged prototype. |
+| Windows Media Foundation | Uses system decoders. The local x64 Release bridge measured 121,344 bytes, or 61,010 bytes compressed in the desktop JAR. |
 | Existing JCodec | The `0.2.5` JAR already ships with Flash (2,068,570 bytes), so reuse has zero marginal dependency size. It already handles thumbnails and voice notes. Its software decoder and narrower video support make it a poor fit for general playback. [JCodec format and performance notes](https://github.com/jcodec/jcodec) |
 | Bundled libmpv | Broad codec coverage and an embeddable engine. The published Windows x64 LGPL v0.42.0 ZIP is 56,277,779 bytes (53.7 MiB), including the assets supplied by that build. A purpose-built package could be smaller. Measure its complete runtime and maintain the corresponding build and licenses. [Release and artifacts](https://github.com/mpv-player/mpv/releases/tag/v0.42.0) · [Windows build options](https://github.com/mpv-player/mpv/blob/master/DOCS/compile-windows.md) |
 | Bundled libVLC | Mature embedding API. The Windows x64 VLC 3.0.22 portable archive is 39,098,035 bytes (37.3 MiB). That archive includes the app and serves as a reference, so the installer delta for a curated libVLC plugin bundle needs its own measurement. [Portable artifacts](https://download.videolan.org/pub/videolan/vlc/3.0.22/win64/) · [Native plugin layout](https://github.com/videolan/vlc/blob/master/doc/BUILD-win32.md) |
 
-Recorded 2026-11-15. Package sizes are published archive sizes or the locally resolved JAR. Neither libmpv nor libVLC archive size predicts the Flash installer delta. Desktop currently offers the system-player action from the shared viewer.
+Recorded 2026-11-15. The comparison uses published archives or locally measured binaries. The Windows installer remains to be checked under MEDIA-PLAY-03.
 
 ---
 
@@ -249,7 +251,6 @@ Gesture note for device testing: `FlashImageTile` tiles use their own `detectTap
 
 ## Future improvements
 
-- `FlashVideoViewer` page (UI-018.5) driven by a `FlashVideoAttachmentUi` model + `Media3 ExoPlayer` (dependency ADR required).
 - Compose shared-element hero transition from tile → viewer (after `SharedTransitionScope` stabilizes / or alpha decision documented).
 - Whole-conversation media pager with virtualized list across messages.
 - Double-tap-and-hold interim zoom (Google Photos behavior).

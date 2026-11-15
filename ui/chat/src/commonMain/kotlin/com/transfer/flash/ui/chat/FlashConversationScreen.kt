@@ -1919,9 +1919,7 @@ fun FlashConversationScreen(
                     }
                 },
                 onPlayVideo = { index ->
-                    // Error-banner fallback only: badge playback is in-app now (double-player
-                    // fix); this opens the clip in the system player when the platform has no
-                    // in-app surface (desktop stub reports an error, banner offers this).
+                    // The error banner opens the system player when inline playback fails.
                     val item = mediaViewerItems.getOrNull(index)
                     val uri = item?.image?.uri
                     if (item != null && uri != null) {

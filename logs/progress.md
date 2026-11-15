@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-11-15 — Windows inline media and the shared playback timeline
+
+Windows chat videos now use the shared viewer with `IMFMediaEngine` and a D3D11 frame-server bridge. The player opens local files and hands bounded BGRA frames to Compose. Windows supplies the decoders. The system-player action remains available if playback fails. The local x64 bridge is 121,344 bytes, or 61,010 bytes compressed inside the platform-shims JAR. ADR-364 and UI-018 record the architecture and build requirements.
+
+The glass dock now uses a continuous seek track, a narrow playhead, and a row for elapsed and total time. Android double-taps on the right half of the video seek up to ten seconds, keep paused clips paused, and briefly show the jump. The state regression covers repeated jumps and the end boundary.
+
+The first landscape render showed the dock covering the bottom of the pause control. The viewer now uses the dock's measured height to move that control up when space is short. Portrait keeps the control centered where there is room.
+
+The Windows native smoke and the packaged JNA regression decoded an H.264/AAC MP4, sought while paused, resumed, ended, and replayed. Loading the DLL from the actual JAR also decoded a file whose path contained a space and a Unicode character. ERROR-1029 records the Windows drive interruption during verification.
+
+The locked gates passed 43 platform-shim JVM tests, 802 chat JVM tests, 777 chat Android-host tests and debug APK assembly. Debug lint reported zero errors. Moving frame drawing to Compose's `ImageBitmap` resolved the native render crash recorded in ERROR-1030. All seven Windows media renders passed twice, including the final frame-conversion build. The landscape play button clears the dock and both timeline labels fit at 200% text. Captures are under `build/reports/media-review/windows`.
+
+ADB reported no attached device. MEDIA-PLAY-03/04 track installed Windows and physical Android acceptance.
+
 ## 2026-11-15 — Desktop restart recovery and unified Android media viewer
 
 Desktop opens its encrypted database before constructing the direct-transfer repository. The Room transfer adapter is shared with Android. Restarted rows offer Retry, and desktop uses the receiver's confirmed coverage with the existing source and final hash checks. The receiver verifies the re-offer identity and validates the partial destination before reusing a LAN checkpoint. SDK hosts can opt out through `enableResume`.

@@ -8,7 +8,13 @@ The receiver flushes new acknowledged data before recording coverage. Desktop us
 
 ## ADR-363 — Keep video playback inside the shared media viewer
 
-2026-11-15. A single Compose viewer owns page navigation, playback state, system-player fallback, and attribution/actions. Android uses Media3 ExoPlayer with its TextureView binding for first-frame notification and composition beneath the viewer controls. The viewer keeps the local poster during prepare, releases the player when paging or dismissing, and pauses on host stop. Playback uses local file and content URIs. UI-018 records the design and the desktop backend comparison. The desktop runtime still uses the system-player fallback. Android acceptance is MEDIA-PLAY-01 and MEDIA-PLAY-02.
+2026-11-15. A single Compose viewer owns page navigation, playback state, system-player fallback, and attribution/actions. Android uses Media3 ExoPlayer with its TextureView binding for first-frame notification and composition beneath the viewer controls. The viewer keeps the local poster during prepare, releases the player when paging or dismissing, and pauses on host stop. Playback uses local file and content URIs. UI-018 records the design and the desktop backend comparison. ADR-364 adds Windows inline playback. Android acceptance is MEDIA-PLAY-01 and MEDIA-PLAY-02.
+
+## ADR-364 — Windows Media Foundation inside the shared viewer
+
+2026-11-15. Windows uses `IMFMediaEngine` in frame-server mode and the existing JNA runtime to open local files and control playback. A dedicated thread owns the Media Foundation and D3D11 resources for the active video. The bridge reads back BGRA frames with a 1280-pixel long edge for Compose to render with the same fit and controls as Android. Frame readback adds a copy. Keep the output bound and measure dropped frames, GPU and CPU usage on older hardware before raising it.
+
+Windows supplies the codecs. The measured x64 Release bridge is 121,344 bytes and does not require a bundled decoder or Visual C++ runtime. UI-018 records the existing JCodec and bundled libmpv/libVLC alternatives. Retain the system-player action for unavailable Windows media components, unsupported files and other desktop operating systems. The [Media Foundation frame-server API](https://learn.microsoft.com/en-us/windows/win32/api/mfmediaengine/nf-mfmediaengine-imfmediaengine-transfervideoframe) was verified against Microsoft documentation on 2026-11-15. Runtime acceptance is MEDIA-PLAY-03.
 
 ## ADR-361 — Invite links carry the credential in the HTTPS fragment
 

@@ -1,5 +1,17 @@
 # Error Log
 
+## ERROR-1030 — Skiko crashed while drawing a recorded layer during Windows video renders
+
+**2026-11-15 · Windows media viewer.** After six captures, the Gradle desktop test worker exited with `EXCEPTION_ACCESS_VIOLATION` in `skiko-windows-x64.dll`. Its Java stack started at `RenderNode.drawInto` on `AWT-EventQueue-0`. The original frame producer drew the raw Skia image into a native canvas and explicitly closed the previous image when publishing its replacement. That lifetime could end while a recorded layer still used it. The revised producer publishes a Compose `ImageBitmap` and renders through `DrawScope.drawImage`. The intermediate raster image is closed after the conversion copies its pixels. Compose retains the bitmap for drawing.
+
+**Status:** Resolved in the host verification runs. The Windows render harness passed all seven cases twice after the change, including a fresh run of the final frame-conversion code. Installed-app acceptance is tracked by MEDIA-PLAY-03.
+
+## ERROR-1029 — Windows SDK and Gradle cache became temporarily unreadable during media checks
+
+**2026-11-15 · Verification host.** The Kotlin compiler lost access to `E:/AndroidDev/SDK/platforms/android-37.0/android.jar` and a Compose dependency while reading both in the same build. Gradle itself then reported `java.io.IOException: The device is not ready` while reading its distribution on that volume. The Windows DLL had already compiled. The same files became readable again, and rerunning under the build lock resumed compilation with Kotlin's local fallback. No repository dependency or SDK files were replaced.
+
+**Status:** Resolved for this verification session. The cause of the temporary volume outage remains unknown.
+
 ## ERROR-1028 — Media3 dependencies rejected on initial build
 
 **2026-11-15 · Android build.** The first combined build hit a transient Maven Central DNS failure while resolving the Media3 Kotlin BOM. The next resolution succeeded and strict dependency verification rejected the new Media3 artifacts and transitive metadata because the repository did not have their hashes. The fix adds SHA-256 hashes obtained from the Google and Maven Central artifact URLs, with strict verification active. A subsequent compile exposed a Kotlin cross-module smart-cast error in the viewer. Copying the optional source URI into a local value preserves its null check.
@@ -7,6 +19,8 @@
 **Status: RESOLVED.** The final chat JVM and Android host tasks and debug APK assembly passed with strict verification active.
 
 ## ERROR-1027 — Windows Gradle JVM stack overflow during the verification run
+
+**2026-11-15 media verification.** The combined run passed Android assembly and lint, the native-player test, both chat suites and desktop compilation. It wrote the first live-playback render, then exited `-1073741571`. Windows recorded `0xc00000fd` in `ntdll.dll` for the Gradle launcher, daemon and desktop test process within the same minute. An isolated retry with the Android Studio JBR launcher and an 8 MiB JVM stack for the launcher, daemon and test worker passed all seven media renders. The underlying host issue remains open.
 
 **2026-11-14 follow-up.** The pre-commit verification for `a21bf8f9` confirmed all six test tasks were up to date, then exited `-1073741571` during lint. A single-worker retry also reported `EXCEPTION_IN_PAGE_ERROR (0xc0000006)` in the Gradle launcher JBR's `jimage.dll`. Separate APK assembly and lint runs passed with the installed Android Studio JBR as launcher, one worker, and `-Xss8m` for the Gradle daemon. The host error remains open.
 

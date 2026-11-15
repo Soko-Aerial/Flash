@@ -103,12 +103,17 @@ class FlashWorkspaceTabsRenderTest {
                 "Amara Okafor", "11:19",
             )
             val album = listOf(preview, preview.copy(image = preview.image.copy(id = "next")))
+            val missing = preview.copy(image = preview.image.copy(uri = File(source).resolveSibling("missing-video.mp4").path))
             listOf(
                 Case("media-preview-portrait", dark = true, media = album),
                 Case("media-preview-landscape", width = 844, height = 390, media = album),
                 Case("media-preview-large-text", width = 320, fontScale = 2f, media = album),
-                Case("media-system-player-fallback", dark = true, media = album, startVideo = true),
-            )
+                Case("media-system-player-fallback", dark = true, media = listOf(missing), startVideo = true),
+            ) + if (System.getProperty("os.name").startsWith("Windows")) listOf(
+                Case("media-playing-windows", dark = true, media = album, startVideo = true),
+                Case("media-playing-windows-landscape", width = 844, height = 390, media = album, startVideo = true),
+                Case("media-playing-windows-large-text", width = 320, fontScale = 2f, media = album, startVideo = true),
+            ) else emptyList()
         }.orEmpty()
         val cases = listOf(
             Case("nearby-phone", nearby), Case("nearby-dark", nearby, dark = true),

@@ -44,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -73,6 +74,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -83,6 +85,7 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
@@ -516,11 +519,25 @@ fun FlashMediaViewer(
         }
 
         val playbackError = playback?.error
+        val dockVisible = chromeEffective && (showActions || (playback?.started == true && playbackError == null))
+        val dockGap = with(density) { FlashSpacing.space12.roundToPx() }
+        var dockHeight by remember { mutableIntStateOf(0) }
+        val playbackAlignment = remember(dockVisible, dockGap) {
+            Alignment { control, viewport, direction ->
+                val center = Alignment.Center.align(control, viewport, direction)
+                if (dockVisible && dockHeight > 0) {
+                    val aboveDock = (viewport.height - dockHeight - dockGap - control.height).coerceAtLeast(0)
+                    IntOffset(center.x, minOf(center.y, aboveDock))
+                } else {
+                    center
+                }
+            }
+        }
         if (playbackError != null) {
             FlashMediaPlaybackError(
                 message = playbackError,
                 onOpenExternally = { onPlayVideo(currentIndex) },
-                modifier = Modifier.align(Alignment.Center)
+                modifier = Modifier.align(playbackAlignment)
                     .padding(horizontal = if (isDesktopChatPlatform && pageCount > 1) 68.dp else FlashSpacing.space16),
             )
         } else if (playback != null) {
@@ -528,17 +545,17 @@ fun FlashMediaViewer(
                 visible = chromeEffective,
                 enter = fadeIn(motion.tweenNormalSpec()),
                 exit = fadeOut(motion.tweenFastSpec()),
-                modifier = Modifier.align(Alignment.Center),
+                modifier = Modifier.align(playbackAlignment),
             ) {
                 FlashMediaPlayControl(playback)
             }
         }
 
         AnimatedVisibility(
-            visible = chromeEffective && (showActions || (playback?.started == true && playbackError == null)),
+            visible = dockVisible,
             enter = fadeIn(motion.tweenNormalSpec()),
             exit = fadeOut(motion.tweenFastSpec()),
-            modifier = Modifier.align(Alignment.BottomCenter),
+            modifier = Modifier.align(Alignment.BottomCenter).onSizeChanged { dockHeight = it.height },
         ) {
             Column(
                 modifier = Modifier
@@ -639,6 +656,15 @@ private fun FlashMediaPage(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val toggleChrome by rememberUpdatedState(onToggleChrome)
+    val activePlayback by rememberUpdatedState(playback)
+    var forwardJump by remember(item.image.id) { mutableStateOf(0L) }
+    var feedbackSequence by remember(item.image.id) { mutableStateOf(0) }
+    LaunchedEffect(feedbackSequence) {
+        if (forwardJump > 0) {
+            delay(700)
+            forwardJump = 0
+        }
+    }
 
     val decodeState = produceState(
         FlashMediaDecodeState(),
@@ -678,7 +704,16 @@ private fun FlashMediaPage(
                 detectTapGestures(
                     onTap = { toggleChrome() },
                     onDoubleTap = { tapPoint ->
-                        if (item.image.isVideo) return@detectTapGestures
+                        if (item.image.isVideo) {
+                            if (!isDesktopChatPlatform && tapPoint.x >= size.width / 2f) {
+                                val jump = activePlayback?.skipForward() ?: 0L
+                                if (jump > 0) {
+                                    forwardJump = jump
+                                    feedbackSequence++
+                                }
+                            }
+                            return@detectTapGestures
+                        }
                         scope.launch {
                             if (zoomState.isZoomed) {
                                 zoomState.reset(motion)
@@ -863,6 +898,18 @@ private fun FlashMediaPage(
             }
         }
 
+        if (forwardJump > 0) {
+            FlashText(
+                text = "+${(forwardJump + 999) / 1000}s",
+                style = FlashTheme.typography.bodyEmphasis,
+                color = FlashTheme.colors.mediaViewerChromeText,
+                modifier = Modifier.align(Alignment.CenterEnd)
+                    .padding(end = FlashSpacing.space24)
+                    .mediaGlass(CircleShape)
+                    .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        }
     }
 }
 

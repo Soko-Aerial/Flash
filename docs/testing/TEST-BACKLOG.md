@@ -8719,3 +8719,19 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 - **Pass:** The graphically lighter fallback remains legible on older or constrained hardware. Chrome draws over the decoded video throughout, player resources release on page changes, and the playlist stays responsive.
 - **Source:** UI-018 and the Media3 surface note in `docs/android-platform-notes.md`.
 - **Status:** TODO
+
+### MEDIA-PLAY-03 — Windows inline video in the installed app
+
+- **Setup:** Windows installer built from ADR-364. Open a local H.264/AAC MP4 from a chat video tile and a downloaded file attachment. Include a Unicode path, a corrupt file and a second Windows GPU or architecture when available.
+- **Steps:** Open the poster, play, pause and seek, seek near the end and replay, page away and close. Try dragging the timeline and using the arrow keys. Check narrow and landscape windows at 100% and 200% text. Try the system-player action on the corrupt file. Watch audio and memory across repeated opens and closes.
+- **Pass:** Video and audio play inline. Controls draw above video and remain readable. Seek and replay land where expected, closing releases playback, and unsupported media offers the system player. Record installed DLL and package size, GPU and codec details, and any frame drops.
+- **Source:** UI-018 and ADR-364.
+- **Status:** TODO
+
+### MEDIA-PLAY-04 — Android double-tap seek and revised timeline
+
+- **Setup:** Android phone, a clip longer than 30 seconds, and an adjacent photo in the album.
+- **Steps:** Double-tap the right half during playback and while paused. Repeat quickly and near the end. Drag the timeline, toggle chrome with one tap, page to the photo and double-tap to zoom. Repeat in landscape and with large text. Use TalkBack to read and adjust playback position.
+- **Pass:** Each video gesture advances by up to ten seconds, briefly shows the jump and preserves pause. The timeline clamps at the end, responds to drag and accessibility actions, and keeps both time labels readable. Photo zoom and album paging still work.
+- **Source:** UI-018.
+- **Status:** TODO
