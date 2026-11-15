@@ -1,30 +1,25 @@
 package com.transfer.flash.ui.chat
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -32,9 +27,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.shims.FlashVideoSurface
@@ -42,290 +40,220 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
-import kotlinx.coroutines.delay
 
-/**
- * In-app interactive video player (UI-018 video playback).
- *
- * Renders the native [FlashVideoSurface] with custom Compose playback controls:
- * - Tap to toggle controls visibility
- * - Center Play / Pause / Replay badge
- * - Bottom scrub bar with live time readout (m:ss / m:ss)
- * - Auto-hiding chrome after 3.5 seconds of playback
- */
+/** Opens a single local video with the same stage and controls as the conversation viewer. */
 @Composable
 fun FlashVideoPlayer(
     uri: String,
     modifier: Modifier = Modifier,
     autoPlay: Boolean = true,
     onClose: () -> Unit = {},
-    /**
-     * External fallback, offered on the error banner. In-app is the only automatic path;
-     * this fires solely on user tap when the platform surface cannot play (e.g. the desktop
-     * stub, which reports an error immediately).
-     */
     onOpenExternally: () -> Unit = {},
 ) {
-    var isPlaying by remember { mutableStateOf(autoPlay) }
-    var durationMs by remember { mutableStateOf(0L) }
-    var positionMs by remember { mutableStateOf(0L) }
-    var isCompleted by remember { mutableStateOf(false) }
-    var seekToTarget by remember { mutableStateOf<Long?>(null) }
-    var controlsVisible by remember { mutableStateOf(true) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var isDraggingSlider by remember { mutableStateOf(false) }
-    var sliderDragPosition by remember { mutableStateOf(0f) }
+    val items = remember(uri) {
+        listOf(FlashMediaViewerItem(FlashImageAttachmentUi(uri, uri, isVideo = true), "", ""))
+    }
+    FlashMediaViewer(
+        items = items,
+        initialIndex = 0,
+        initialPlayVideo = autoPlay,
+        onDismiss = onClose,
+        onPlayVideo = { onOpenExternally() },
+        showActions = false,
+        modifier = modifier,
+    )
+}
 
-    val colors = FlashTheme.colors
-    val motion = FlashTheme.motion
+@Stable
+internal class FlashVideoPlayback(autoPlay: Boolean) {
+    var started by mutableStateOf(autoPlay)
+        private set
+    var playing by mutableStateOf(autoPlay)
+        private set
+    var firstFrame by mutableStateOf(false)
+    var buffering by mutableStateOf(autoPlay)
+    var completed by mutableStateOf(false)
+        private set
+    var error by mutableStateOf<String?>(null)
+        private set
+    var durationMs by mutableLongStateOf(0)
+        private set
+    var positionMs by mutableLongStateOf(0)
+        private set
+    var dragPositionMs by mutableStateOf<Long?>(null)
+    var seekToMs by mutableStateOf<Long?>(null)
 
-    // Auto-hide controls after 3.5 seconds if video is actively playing and not dragging
-    LaunchedEffect(controlsVisible, isPlaying, isDraggingSlider) {
-        if (controlsVisible && isPlaying && !isDraggingSlider) {
-            delay(3500L)
-            controlsVisible = false
+    val loading: Boolean
+        get() = started && playing && (!firstFrame || buffering)
+    val chromeMayHide: Boolean
+        get() = playing && firstFrame && !buffering && dragPositionMs == null
+
+    fun toggle() {
+        started = true
+        val result = FlashVideoPlayerMath.onPlayClick(completed, playing)
+        completed = result.isCompleted
+        result.seekToTarget?.let {
+            seekToMs = it
+            positionMs = it
+        }
+        playing = result.isPlaying
+    }
+
+    fun update(duration: Long, position: Long, atEnd: Boolean) {
+        durationMs = duration
+        positionMs = position
+        if (atEnd) {
+            playing = false
+            completed = true
         }
     }
 
+    fun finishSeek() {
+        val target = dragPositionMs ?: return
+        dragPositionMs = null
+        positionMs = target
+        seekToMs = target
+        completed = false
+    }
+
+    fun pause() {
+        playing = false
+    }
+
+    fun fail(message: String) {
+        error = message
+        playing = false
+    }
+}
+
+@Composable
+internal fun FlashMediaVideoSurface(
+    uri: String,
+    playback: FlashVideoPlayback,
+    modifier: Modifier = Modifier,
+) {
+    FlashVideoSurface(
+        uri = uri,
+        isPlaying = playback.playing,
+        seekToMs = playback.seekToMs,
+        onPlaybackStateChanged = playback::update,
+        onError = playback::fail,
+        onSeekHandled = { playback.seekToMs = FlashVideoPlayerMath.onSeekHandled() },
+        onFirstFrame = { playback.firstFrame = true },
+        onBuffering = { playback.buffering = it },
+        onHostPaused = playback::pause,
+        modifier = modifier,
+    )
+}
+
+/** One material for the dock and floating controls, with a contrast-preserving graphite tint. */
+@Composable
+internal fun Modifier.mediaGlass(shape: Shape): Modifier {
+    val colors = FlashTheme.colors
+    val backdrop = colors.mediaViewerBackdrop
+    return clip(shape)
+        .background(
+            Brush.verticalGradient(
+                listOf(colors.mediaViewerChromeText.copy(alpha = 0.16f), backdrop.copy(alpha = 0.06f)),
+            ),
+        )
+        .background(backdrop.copy(alpha = 0.85f))
+        .border(0.5.dp, colors.mediaViewerChromeText.copy(alpha = 0.28f), shape)
+}
+
+@Composable
+internal fun FlashMediaPlayControl(
+    playback: FlashVideoPlayback,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val label = when {
+        playback.completed -> "Replay video"
+        playback.playing -> "Pause video"
+        else -> "Play video"
+    }
     Box(
         modifier = modifier
-            .fillMaxSize()
-            .background(colors.mediaViewerBackdrop)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = { controlsVisible = !controlsVisible },
-            ),
+            .size(68.dp)
+            .mediaGlass(CircleShape)
+            .clickable(role = Role.Button, onClick = playback::toggle)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
     ) {
-        // Native video view surface
-        FlashVideoSurface(
-            uri = uri,
-            isPlaying = isPlaying,
-            seekToMs = seekToTarget,
-            onPlaybackStateChanged = { dur, pos, completed ->
-                durationMs = dur
-                if (!isDraggingSlider) {
-                    positionMs = pos
-                }
-                if (completed) {
-                    isPlaying = false
-                    isCompleted = true
-                    controlsVisible = true
-                }
-            },
-            onError = { err ->
-                errorMessage = err
-                isPlaying = false
-            },
-            onSeekHandled = {
-                seekToTarget = FlashVideoPlayerMath.onSeekHandled()
-            },
-            modifier = Modifier.fillMaxSize(),
+        if (playback.loading && !FlashTheme.motion.reduceMotion) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(52.dp).semantics { contentDescription = "Loading video" },
+                color = colors.accentPrimary,
+                strokeWidth = 2.dp,
+            )
+        }
+        FlashIcon(
+            icon = if (playback.playing) FlashIcons.Pause else FlashIcons.Play,
+            size = FlashDimensions.iconLg,
+            tint = colors.mediaViewerChromeText,
+            contentDescription = null,
         )
+    }
+}
 
-        // Error banner if playback fails
-        if (errorMessage != null) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(FlashSpacing.space24),
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Failed,
-                        tint = Color.White.copy(alpha = 0.85f),
-                        size = FlashDimensions.iconLg,
-                    )
-                    FlashText(
-                        text = errorMessage ?: "Couldn't play video",
-                        style = FlashTheme.typography.metadataDefault,
-                        color = Color.White.copy(alpha = 0.85f),
-                    )
-                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .heightIn(min = FlashDimensions.minTouchTarget)
-                            .clip(CircleShape)
-                            .background(colors.accentFill)
-                            .clickable(role = Role.Button, onClick = onOpenExternally)
-                            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
-                    ) {
-                        FlashText(
-                            text = "Open in system player",
-                            style = FlashTheme.typography.bodyEmphasis,
-                            color = colors.onAccentFill,
-                        )
-                    }
-                }
-            }
-        }
+@Composable
+internal fun FlashMediaTimeline(playback: FlashVideoPlayback) {
+    val colors = FlashTheme.colors
+    val foreground = colors.mediaViewerChromeText
+    val position = (playback.dragPositionMs ?: playback.positionMs).coerceIn(0, playback.durationMs)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
+        FlashText(
+            text = formatVideoDuration(position),
+            style = FlashTheme.typography.metadataEmphasis,
+            color = foreground,
+            maxLines = 1,
+        )
+        Slider(
+            value = if (playback.durationMs > 0) position.toFloat() / playback.durationMs else 0f,
+            onValueChange = { playback.dragPositionMs = (it * playback.durationMs.toDouble()).toLong() },
+            onValueChangeFinished = playback::finishSeek,
+            enabled = playback.durationMs > 0,
+            colors = SliderDefaults.colors(
+                thumbColor = colors.accentPrimary,
+                activeTrackColor = colors.accentPrimary,
+                inactiveTrackColor = foreground.copy(alpha = 0.25f),
+            ),
+            modifier = Modifier.weight(1f).semantics { contentDescription = "Playback position" },
+        )
+        FlashText(
+            text = formatVideoDuration(playback.durationMs),
+            style = FlashTheme.typography.metadataDefault,
+            color = foreground.copy(alpha = 0.8f),
+            maxLines = 1,
+        )
+    }
+}
 
-        val showPlaybackControls = FlashVideoPlayerMath.showPlaybackControls(errorMessage)
-
-        // Center play / pause / replay affordance
-        AnimatedVisibility(
-            visible = showPlaybackControls && (controlsVisible || !isPlaying),
-            enter = fadeIn(motion.tweenNormalSpec()),
-            exit = fadeOut(motion.tweenFastSpec()),
-            modifier = Modifier.align(Alignment.Center),
+@Composable
+internal fun FlashMediaPlaybackError(
+    message: String,
+    onOpenExternally: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val foreground = FlashTheme.colors.mediaViewerChromeText
+    Column(
+        modifier = modifier.mediaGlass(RoundedCornerShape(16.dp))
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        FlashText(text = message, color = foreground, style = FlashTheme.typography.bodyEmphasis)
+        Box(
+            modifier = Modifier
+                .sizeIn(minHeight = FlashDimensions.minTouchTarget)
+                .clickable(role = Role.Button, onClick = onOpenExternally)
+                .padding(horizontal = FlashSpacing.space8),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(64.dp)
-                    .background(Color(0x99000000), CircleShape)
-                    .clickable(
-                        role = Role.Button,
-                        onClick = {
-                            val res = FlashVideoPlayerMath.onPlayClick(isCompleted, isPlaying)
-                            isCompleted = res.isCompleted
-                            if (res.seekToTarget != null) {
-                                seekToTarget = res.seekToTarget
-                            }
-                            isPlaying = res.isPlaying
-                        },
-                    ),
-            ) {
-                FlashIcon(
-                    icon = if (isCompleted || !isPlaying) FlashIcons.Play else FlashIcons.Pause,
-                    tint = Color.White,
-                    contentDescription = if (isCompleted || !isPlaying) "Play" else "Pause",
-                    size = 32.dp,
-                )
-            }
-        }
-
-        // Controls overlay: Top bar (Close) and Bottom bar (Scrubber + Times)
-        AnimatedVisibility(
-            visible = FlashVideoPlayerMath.showTopBar(errorMessage, controlsVisible, isPlaying),
-            enter = fadeIn(motion.tweenNormalSpec()),
-            exit = fadeOut(motion.tweenFastSpec()),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                // Top gradient bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .align(Alignment.TopCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                listOf(Color(0xB3000000), Color.Transparent),
-                            ),
-                        )
-                        .statusBarsPadding()
-                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .size(FlashDimensions.minTouchTarget)
-                            .clickable(role = Role.Button, onClick = onClose),
-                    ) {
-                        FlashIcon(
-                            icon = FlashIcons.Close,
-                            tint = Color.White,
-                            contentDescription = FlashIcons.Close.contentDescription,
-                            size = FlashDimensions.iconMd,
-                        )
-                    }
-                }
-
-                if (showPlaybackControls) {
-                    // Bottom gradient bar with timeline controls
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .align(Alignment.BottomCenter)
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(Color.Transparent, Color(0xCC000000)),
-                                ),
-                            )
-                            .navigationBarsPadding()
-                            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
-                    ) {
-                        val currentPos = if (isDraggingSlider) sliderDragPosition.toLong() else positionMs
-                        val totalDur = durationMs.coerceAtLeast(0L)
-
-                        // Scrubber slider
-                        Slider(
-                            value = if (totalDur > 0L) currentPos.toFloat().coerceIn(0f, totalDur.toFloat()) else 0f,
-                            onValueChange = { target ->
-                                isDraggingSlider = true
-                                sliderDragPosition = target
-                            },
-                            onValueChangeFinished = {
-                                isDraggingSlider = false
-                                val targetMs = sliderDragPosition.toLong()
-                                positionMs = targetMs
-                                seekToTarget = targetMs
-                                if (isCompleted) {
-                                    isCompleted = false
-                                    isPlaying = true
-                                }
-                            },
-                            valueRange = 0f..maxOf(1f, totalDur.toFloat()),
-                            colors = SliderDefaults.colors(
-                                thumbColor = colors.accentPrimary,
-                                activeTrackColor = colors.accentPrimary,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.25f),
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(28.dp),
-                        )
-
-                        Spacer(modifier = Modifier.height(FlashSpacing.space4))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-                            ) {
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clickable(
-                                            role = Role.Button,
-                                            onClick = {
-                                                val res = FlashVideoPlayerMath.onPlayClick(isCompleted, isPlaying)
-                                                isCompleted = res.isCompleted
-                                                if (res.seekToTarget != null) {
-                                                    seekToTarget = res.seekToTarget
-                                                }
-                                                isPlaying = res.isPlaying
-                                            },
-                                        ),
-                                ) {
-                                    FlashIcon(
-                                        icon = if (isCompleted || !isPlaying) FlashIcons.Play else FlashIcons.Pause,
-                                        tint = Color.White,
-                                        size = FlashDimensions.iconSm,
-                                    )
-                                }
-
-                                FlashText(
-                                    text = "${formatVideoDuration(currentPos)} / ${formatVideoDuration(totalDur)}",
-                                    style = FlashTheme.typography.metadataDefault,
-                                    color = Color.White.copy(alpha = 0.85f),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            FlashText("Open in system player", color = foreground, style = FlashTheme.typography.metadataEmphasis)
         }
     }
 }

@@ -19,15 +19,21 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -42,11 +48,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Size
@@ -58,21 +67,24 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalAccessibilityManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
@@ -86,6 +98,7 @@ import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -259,6 +272,7 @@ fun FlashMediaViewer(
      * which is currently the only playback path on platforms without an in-app surface.
      */
     onPlayVideo: (Int) -> Unit = {},
+    showActions: Boolean = true,
 ) {
     if (items.isEmpty()) return
 
@@ -273,12 +287,32 @@ fun FlashMediaViewer(
         pageCount = { pageCount },
     )
 
-    var chromeVisible by remember { mutableStateOf(true) }
-    // Which page (by image id) currently plays video, if any. While set, the viewer's own
-    // chrome hides — otherwise the viewer top/bottom bars stack over the player's own close,
-    // badge and scrubber (the reported double overlay).
-    var playingPageId by remember { mutableStateOf<String?>(null) }
-    val chromeEffective = chromeVisible && playingPageId == null
+    val currentIndex = pagerState.currentPage
+    val currentItem = items[currentIndex]
+    val videoSource = currentItem.image.uri?.takeIf { currentItem.image.isVideo && it.isNotBlank() }
+    var initialVideoPending by remember { mutableStateOf(initialPlayVideo) }
+    val playback = remember(currentIndex, currentItem.image.id, videoSource) {
+        videoSource?.let { FlashVideoPlayback(initialVideoPending && currentIndex == initialIndex) }
+    }
+    LaunchedEffect(Unit) { initialVideoPending = false }
+    var chromeVisible by remember(currentIndex) { mutableStateOf(true) }
+    val chromeEffective = if (playback?.started == true) {
+        FlashVideoPlayerMath.showTopBar(playback.error, chromeVisible, playback.chromeMayHide)
+    } else {
+        chromeVisible
+    }
+    val chromeTimeoutMs = LocalAccessibilityManager.current?.calculateRecommendedTimeoutMillis(
+        originalTimeoutMillis = 3500L,
+        containsIcons = true,
+        containsText = true,
+        containsControls = true,
+    ) ?: 3500L
+    LaunchedEffect(playback, playback?.chromeMayHide, chromeVisible, chromeTimeoutMs) {
+        if (chromeVisible && playback?.chromeMayHide == true) {
+            delay(chromeTimeoutMs)
+            chromeVisible = false
+        }
+    }
 
     // Dismiss drag distance in px; read only inside draw/graphicsLayer scopes so the
     // gesture never recomposes — it only redraws backdrop alpha + page transform.
@@ -308,8 +342,8 @@ fun FlashMediaViewer(
             .fillMaxSize()
             .focusRequester(focusRequester)
             .focusable()
-            .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && playingPageId == null) {
+            .onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) {
                     when (event.key) {
                         Key.DirectionLeft -> {
                             stepPage(-1)
@@ -322,6 +356,13 @@ fun FlashMediaViewer(
                         Key.Escape -> {
                             requestDismiss()
                             true
+                        }
+                        Key.Spacebar -> {
+                            if (playback == null || playback.error != null) false else {
+                                playback.toggle()
+                                chromeVisible = true
+                                true
+                            }
                         }
                         else -> false
                     }
@@ -356,7 +397,17 @@ fun FlashMediaViewer(
                 modifier = Modifier
                     .fillMaxSize()
                     .semantics {
-                        contentDescription = FlashMediaViewerMath.pageDescription(page, pageCount)
+                        contentDescription = if (item.image.isVideo) {
+                            "Video ${page + 1} of $pageCount"
+                        } else {
+                            FlashMediaViewerMath.pageDescription(page, pageCount)
+                        }
+                        if (currentIndex == page && (playback?.started != true || playback.chromeMayHide)) {
+                            onClick(if (chromeEffective) "Hide media controls" else "Show media controls") {
+                                chromeVisible = !chromeEffective
+                                true
+                            }
+                        }
                     }
                     .graphicsLayer {
                         val progress = dismissDragPx.value / dismissThresholdPx
@@ -368,13 +419,8 @@ fun FlashMediaViewer(
                 FlashMediaPage(
                     item = item,
                     zoomState = zoomState,
-                    isCurrentPage = (pagerState.currentPage == page),
-                    initialPlayVideo = (initialPlayVideo && page == initialIndex),
+                    playback = playback.takeIf { currentIndex == page },
                     onToggleChrome = { chromeVisible = !chromeVisible },
-                    onPlayingChanged = { id, playing ->
-                        playingPageId = if (playing) id else if (playingPageId == id) null else playingPageId
-                    },
-                    onOpenExternally = { onPlayVideo(page) },
                     onDismissDrag = { dragY -> dismissDragPx.value = dragY },
                     onDismissSettle = { dismissDragPx.value = 0f },
                     onDismissConfirm = {
@@ -385,7 +431,6 @@ fun FlashMediaViewer(
             }
         }
 
-        // Top chrome bar — counter + close (hidden while a video plays; the player has its own)
         AnimatedVisibility(
             visible = chromeEffective,
             enter = fadeIn(motion.tweenNormalSpec()),
@@ -395,8 +440,9 @@ fun FlashMediaViewer(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
                     .statusBarsPadding()
-                    .padding(horizontal = FlashSpacing.space8),
+                    .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 FlashIconButtonChrome(
@@ -406,17 +452,17 @@ fun FlashMediaViewer(
                     onClick = ::requestDismiss,
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                FlashText(
-                    text = FlashMediaViewerMath.counterLabel(pagerState.currentPage, pageCount),
-                    style = FlashTheme.typography.metadataEmphasis,
-                    color = colors.mediaViewerChromeText.copy(alpha = ChromeTextAlpha),
-                    // UI-038: page counter changes on swipe — announce politely.
-                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-                )
+                if (pageCount > 1) {
+                    FlashText(
+                        text = FlashMediaViewerMath.counterLabel(currentIndex, pageCount),
+                        style = FlashTheme.typography.metadataEmphasis,
+                        color = colors.mediaViewerChromeText,
+                        modifier = Modifier.mediaGlass(CircleShape)
+                            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+                            .semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
                 Spacer(modifier = Modifier.weight(1f))
-                // The overflow (⋮) slot held a button with an empty onClick — a control that looked
-                // live and did nothing. Every action it could host already sits in the bottom bar,
-                // so it is now a spacer that keeps the counter optically centred.
                 Spacer(modifier = Modifier.size(FlashDimensions.minTouchTarget))
             }
         }
@@ -429,19 +475,19 @@ fun FlashMediaViewer(
                         .align(Alignment.CenterStart)
                         .padding(start = FlashSpacing.space16)
                         .size(FlashDimensions.minTouchTarget)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.55f))
+                        .mediaGlass(CircleShape)
                         .clickable { stepPage(-1) }
                         .semantics {
                             role = Role.Button
-                            contentDescription = "Previous photo"
+                            contentDescription = "Previous media item"
                         },
                     contentAlignment = Alignment.Center,
                 ) {
                     FlashIcon(
-                        icon = FlashIcons.Back,
+                        icon = FlashIcons.ChevronDown,
                         tint = colors.mediaViewerChromeText,
                         contentDescription = null,
+                        modifier = Modifier.rotate(90f),
                     )
                 }
             }
@@ -451,48 +497,68 @@ fun FlashMediaViewer(
                         .align(Alignment.CenterEnd)
                         .padding(end = FlashSpacing.space16)
                         .size(FlashDimensions.minTouchTarget)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.55f))
+                        .mediaGlass(CircleShape)
                         .clickable { stepPage(1) }
                         .semantics {
                             role = Role.Button
-                            contentDescription = "Next photo"
+                            contentDescription = "Next media item"
                         },
                     contentAlignment = Alignment.Center,
                 ) {
                     FlashIcon(
-                        icon = FlashIcons.Forward,
+                        icon = FlashIcons.ChevronDown,
                         tint = colors.mediaViewerChromeText,
                         contentDescription = null,
+                        modifier = Modifier.rotate(-90f),
                     )
                 }
             }
         }
 
-        // Bottom chrome bar — caption + attribution + labeled actions (hidden while a video plays)
+        val playbackError = playback?.error
+        if (playbackError != null) {
+            FlashMediaPlaybackError(
+                message = playbackError,
+                onOpenExternally = { onPlayVideo(currentIndex) },
+                modifier = Modifier.align(Alignment.Center)
+                    .padding(horizontal = if (isDesktopChatPlatform && pageCount > 1) 68.dp else FlashSpacing.space16),
+            )
+        } else if (playback != null) {
+            AnimatedVisibility(
+                visible = chromeEffective,
+                enter = fadeIn(motion.tweenNormalSpec()),
+                exit = fadeOut(motion.tweenFastSpec()),
+                modifier = Modifier.align(Alignment.Center),
+            ) {
+                FlashMediaPlayControl(playback)
+            }
+        }
+
         AnimatedVisibility(
-            visible = chromeEffective,
+            visible = chromeEffective && (showActions || (playback?.started == true && playbackError == null)),
             enter = fadeIn(motion.tweenNormalSpec()),
             exit = fadeOut(motion.tweenFastSpec()),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            val currentItem = items[pagerState.currentPage]
             Column(
                 modifier = Modifier
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                    .widthIn(max = 560.dp)
                     .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
-                        ),
-                    )
                     .navigationBarsPadding()
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+                    .mediaGlass(RoundedCornerShape(16.dp))
                     .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
             ) {
+                if (playback?.started == true && FlashVideoPlayerMath.showPlaybackControls(playback.error)) {
+                    FlashMediaTimeline(playback)
+                }
                 val caption = currentItem.image.caption?.trim()
                 if (!caption.isNullOrEmpty()) {
+                    val captionHeight = 64.dp * LocalDensity.current.fontScale.coerceIn(1f, 2f)
                     Box(
                         modifier = Modifier
-                            .heightIn(max = 120.dp)
+                            .heightIn(max = captionHeight)
                             .verticalScroll(rememberScrollState()),
                     ) {
                         FlashText(
@@ -503,34 +569,45 @@ fun FlashMediaViewer(
                     }
                     Spacer(modifier = Modifier.height(FlashSpacing.space8))
                 }
-                FlashText(
-                    text = "${currentItem.senderName} • ${currentItem.timeLabel}",
-                    style = FlashTheme.typography.metadataDefault,
-                    color = colors.mediaViewerChromeText.copy(alpha = ChromeTextAlpha),
-                )
-                Spacer(modifier = Modifier.height(FlashSpacing.space8))
-                Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12)) {
-                    FlashViewerActionButton(
-                        icon = FlashIcons.Download,
-                        label = "Save",
-                        tint = colors.mediaViewerChromeText,
-                        contentDescription = if (currentItem.image.isVideo) "Save video" else "Save image",
-                        onClick = { onSave(pagerState.currentPage) },
+                val attribution = listOf(currentItem.senderName, currentItem.timeLabel)
+                    .filter { it.isNotBlank() }.joinToString(" · ")
+                if (attribution.isNotEmpty()) {
+                    FlashText(
+                        text = attribution,
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.mediaViewerChromeText.copy(alpha = ChromeTextAlpha),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    FlashViewerActionButton(
-                        icon = FlashIcons.Share,
-                        label = "Share",
-                        tint = colors.mediaViewerChromeText,
-                        contentDescription = FlashIcons.Share.contentDescription,
-                        onClick = { onShare(pagerState.currentPage) },
-                    )
-                    FlashViewerActionButton(
-                        icon = FlashIcons.Forward,
-                        label = "Forward",
-                        tint = colors.mediaViewerChromeText,
-                        contentDescription = FlashIcons.Forward.contentDescription,
-                        onClick = { onForward(pagerState.currentPage) },
-                    )
+                }
+                if (showActions) BoxWithConstraints(Modifier.fillMaxWidth().padding(top = FlashSpacing.space4)) {
+                    val showLabels = maxWidth / LocalDensity.current.fontScale >= 244.dp
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        FlashViewerActionButton(
+                            icon = FlashIcons.Download,
+                            label = "Save",
+                            tint = colors.mediaViewerChromeText,
+                            contentDescription = if (currentItem.image.isVideo) "Save video" else "Save image",
+                            onClick = { onSave(currentIndex) },
+                            showLabel = showLabels,
+                        )
+                        FlashViewerActionButton(
+                            icon = FlashIcons.Share,
+                            label = "Share",
+                            tint = colors.mediaViewerChromeText,
+                            contentDescription = FlashIcons.Share.contentDescription,
+                            onClick = { onShare(currentIndex) },
+                            showLabel = showLabels,
+                        )
+                        FlashViewerActionButton(
+                            icon = FlashIcons.Forward,
+                            label = "Forward",
+                            tint = colors.mediaViewerChromeText,
+                            contentDescription = FlashIcons.Forward.contentDescription,
+                            onClick = { onForward(currentIndex) },
+                            showLabel = showLabels,
+                        )
+                    }
                 }
             }
         }
@@ -549,49 +626,19 @@ private const val ChromeTextAlpha = 0.92f
 private fun FlashMediaPage(
     item: FlashMediaViewerItem,
     zoomState: FlashZoomState,
-    isCurrentPage: Boolean,
-    initialPlayVideo: Boolean,
+    playback: FlashVideoPlayback?,
     onToggleChrome: () -> Unit,
-    onOpenExternally: () -> Unit,
-    onPlayingChanged: (pageId: String, playing: Boolean) -> Unit = { _, _ -> },
     onDismissDrag: (Float) -> Unit,
     onDismissSettle: () -> Unit,
     onDismissConfirm: () -> Unit,
 ) {
-    var isPlayingVideo by remember(item.image.id, initialPlayVideo) {
-        mutableStateOf(item.image.isVideo && initialPlayVideo)
-    }
-
-    // Stop playback when swiped away
-    LaunchedEffect(isCurrentPage) {
-        if (!isCurrentPage && isPlayingVideo) {
-            isPlayingVideo = false
-        }
-    }
-
-    // Report play state up so the viewer can hide its own chrome (double-overlay fix)
-    LaunchedEffect(isPlayingVideo, item.image.id) {
-        onPlayingChanged(item.image.id, isPlayingVideo)
-    }
-
-    if (isPlayingVideo && item.image.isVideo) {
-        val videoSource = item.image.uri ?: item.image.thumbUri ?: ""
-        FlashVideoPlayer(
-            uri = videoSource,
-            modifier = Modifier.fillMaxSize(),
-            autoPlay = true,
-            onClose = { isPlayingVideo = false },
-            onOpenExternally = onOpenExternally,
-        )
-        return
-    }
-
     val imageDecoder = rememberFlashImageDecoder()
     val motion = FlashTheme.motion
     val minimalChrome = FlashTheme.minimalChrome
     val viewConfiguration = LocalViewConfiguration.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
+    val toggleChrome by rememberUpdatedState(onToggleChrome)
 
     val decodeState = produceState(
         FlashMediaDecodeState(),
@@ -629,8 +676,9 @@ private fun FlashMediaPage(
             // Tap/double-tap live in their own lightweight scope; taps never consume drags.
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { onToggleChrome() },
+                    onTap = { toggleChrome() },
                     onDoubleTap = { tapPoint ->
+                        if (item.image.isVideo) return@detectTapGestures
                         scope.launch {
                             if (zoomState.isZoomed) {
                                 zoomState.reset(motion)
@@ -751,7 +799,24 @@ private fun FlashMediaPage(
     ) {
         val result = decodeState.value
 
+        val poster = result.bitmap
+        if (poster != null && item.image.isVideo && !minimalChrome) {
+            Image(
+                bitmap = poster,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize().blur(28.dp),
+            )
+            Box(Modifier.fillMaxSize().background(FlashTheme.colors.mediaViewerBackdrop.copy(alpha = 0.8f)))
+        }
+
+        val videoUri = item.image.uri
+        if (playback?.started == true && playback.error == null && videoUri != null) {
+            FlashMediaVideoSurface(videoUri, playback, Modifier.fillMaxSize())
+        }
+
         when {
+            playback?.firstFrame == true && playback.error == null -> Unit
             result.bitmap != null -> {
                 Image(
                     bitmap = result.bitmap,
@@ -768,7 +833,7 @@ private fun FlashMediaPage(
                         },
                 )
             }
-            result.failed -> {
+            result.failed && playback == null -> {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
@@ -782,13 +847,13 @@ private fun FlashMediaPage(
                         size = FlashDimensions.iconLg,
                     )
                     FlashText(
-                        text = if (item.image.isVideo) "Couldn't load video" else "Couldn't load image",
+                        text = if (item.image.isVideo) "Video isn't available on this device" else "Couldn't load image",
                         style = FlashTheme.typography.metadataDefault,
                         color = FlashTheme.colors.mediaViewerChromeText.copy(alpha = ChromeTextAlpha),
                     )
                 }
             }
-            else -> {
+            !item.image.isVideo -> {
                 // Seed-gradient loading placeholder matching the grid tile fallback (UI-017).
                 Box(
                     modifier = Modifier
@@ -798,34 +863,6 @@ private fun FlashMediaPage(
             }
         }
 
-        // A frame is a still: a video page needs an explicit "play" target, offered as soon as the
-        // decode settles either way — an undecodable frame says nothing about whether the clip
-        // plays. It sits above the page's own gesture scopes, so tapping the badge plays while
-        // tapping anywhere else still toggles chrome. In-app ONLY: it used to also fire onPlay()
-        // (external system player), which stacked two players — the reported double overlay.
-        // The external player is now strictly the error-banner fallback inside FlashVideoPlayer.
-        if (item.image.isVideo && (result.bitmap != null || result.failed)) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(FlashDimensions.minTouchTarget)
-                    .background(Color(0x99000000), CircleShape)
-                    .clickable(
-                        onClick = {
-                            isPlayingVideo = true
-                        },
-                    )
-                    .semantics { role = Role.Button },
-            ) {
-                FlashIcon(
-                    icon = FlashIcons.Play,
-                    tint = Color.White,
-                    contentDescription = "Play video",
-                    size = FlashDimensions.iconMd,
-                )
-            }
-        }
     }
 }
 
@@ -840,6 +877,7 @@ private fun FlashIconButtonChrome(
     Box(
         modifier = Modifier
             .size(FlashDimensions.minTouchTarget)
+            .mediaGlass(CircleShape)
             .clickable(onClick = onClick)
             .semantics { role = Role.Button },
         contentAlignment = Alignment.Center,
@@ -860,12 +898,12 @@ private fun FlashViewerActionButton(
     tint: Color,
     contentDescription: String,
     onClick: () -> Unit,
+    showLabel: Boolean,
 ) {
     Row(
         modifier = Modifier
             .defaultMinSize(minWidth = FlashDimensions.minTouchTarget, minHeight = FlashDimensions.minTouchTarget)
             .clip(RoundedCornerShape(FlashSpacing.space12))
-            .background(Color.White.copy(alpha = 0.12f))
             .clickable(onClick = onClick)
             .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
             .semantics {
@@ -881,11 +919,14 @@ private fun FlashViewerActionButton(
             contentDescription = null,
             size = FlashDimensions.iconSm,
         )
-        FlashText(
-            text = label,
-            style = FlashTheme.typography.metadataEmphasis,
-            color = tint,
-        )
+        if (showLabel) {
+            FlashText(
+                text = label,
+                style = FlashTheme.typography.metadataEmphasis,
+                color = tint,
+                maxLines = 1,
+            )
+        }
     }
 }
 

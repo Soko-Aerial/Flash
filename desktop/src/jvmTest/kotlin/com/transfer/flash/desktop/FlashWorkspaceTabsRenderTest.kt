@@ -25,6 +25,8 @@ import com.transfer.flash.ui.chat.FlashChatSearchBar
 import com.transfer.flash.ui.chat.FlashConnectionBanner
 import com.transfer.flash.ui.chat.FlashConnectionHealth
 import com.transfer.flash.ui.chat.FlashEncryptionBadgeState
+import com.transfer.flash.ui.chat.FlashMediaViewer
+import com.transfer.flash.ui.chat.FlashMediaViewerItem
 import com.transfer.flash.ui.chat.FlashMessageBubble
 import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.ui.chat.FlashPairingRequestUi
@@ -79,7 +81,8 @@ class FlashWorkspaceTabsRenderTest {
         data class Case(val name: String, val nearbyState: NearbyUiState? = null,
             val transferState: TransfersUiState = transfers, val width: Int = 390, val height: Int = 844,
             val dark: Boolean = false, val fontScale: Float = 1f, val optionalActions: Boolean = true, val frames: Int = 30,
-            val chatHeader: FlashChatHeaderUiState? = null, val messages: List<FlashMessageUi> = emptyList())
+            val chatHeader: FlashChatHeaderUiState? = null, val messages: List<FlashMessageUi> = emptyList(),
+            val media: List<FlashMediaViewerItem> = emptyList(), val startVideo: Boolean = false)
         val chatHeader = FlashChatHeaderUiState(
             title = "Amara Okafor", avatarInitials = "AO", avatarSeed = "amara",
             presence = FlashPeerPresence.Reachable, transport = FlashNetworkTransport.Lan,
@@ -94,6 +97,19 @@ class FlashWorkspaceTabsRenderTest {
             voiceAttachments = listOf(FlashVoiceAttachmentUi(id = "sample-voice", durationMs = 7_000)),
         )
         val request = FlashPairingRequestUi("Amara’s phone", "AO", "123456", FlashNetworkTransport.Lan)
+        val mediaCases = System.getenv("FLASH_TABS_RENDER_VIDEO")?.let { source ->
+            val preview = FlashMediaViewerItem(
+                FlashImageAttachmentUi("preview", File(source).absolutePath, isVideo = true, caption = "A clip from the trip"),
+                "Amara Okafor", "11:19",
+            )
+            val album = listOf(preview, preview.copy(image = preview.image.copy(id = "next")))
+            listOf(
+                Case("media-preview-portrait", dark = true, media = album),
+                Case("media-preview-landscape", width = 844, height = 390, media = album),
+                Case("media-preview-large-text", width = 320, fontScale = 2f, media = album),
+                Case("media-system-player-fallback", dark = true, media = album, startVideo = true),
+            )
+        }.orEmpty()
         val cases = listOf(
             Case("nearby-phone", nearby), Case("nearby-dark", nearby, dark = true),
             Case("nearby-desktop", nearby, width = 1200, height = 800),
@@ -116,7 +132,7 @@ class FlashWorkspaceTabsRenderTest {
             Case("chat-bubbles", width = 320, height = 320, chatHeader = chatHeader, messages = listOf(textMessage, voiceMessage)),
             Case("chat-bubbles-large-text", height = 460, dark = true, fontScale = 2f,
                 chatHeader = chatHeader, messages = listOf(textMessage.copy(isMine = true), voiceMessage)),
-        ) + listOf(
+        ) + mediaCases + listOf(
             Case("nearby-menu", nearby),
             Case("nearby-optional-actions-absent", nearby, optionalActions = false),
             Case("nearby-paused", nearby.copy(isScanning = false)),
@@ -170,7 +186,9 @@ class FlashWorkspaceTabsRenderTest {
                                     onClearFailed = if (case.optionalActions) ({}) else null)
                             }
                         }
-                        if (case.chatHeader != null) {
+                        if (case.media.isNotEmpty()) {
+                            FlashMediaViewer(case.media, initialIndex = 0, onDismiss = {}, initialPlayVideo = case.startVideo)
+                        } else if (case.chatHeader != null) {
                             Column(Modifier.fillMaxSize().background(FlashTheme.colors.backgroundApp)) {
                                 if (case.name == "chat-search") {
                                     FlashChatSearchBar("photo", {}, 0, 3, {}, {}, {}, onToggleResults = {})

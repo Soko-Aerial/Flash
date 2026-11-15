@@ -14,13 +14,16 @@ public actual fun FlashVideoSurface(
     onError: (String) -> Unit,
     onSeekHandled: () -> Unit,
     modifier: Modifier,
+    onFirstFrame: () -> Unit,
+    onBuffering: (Boolean) -> Unit,
+    onHostPaused: () -> Unit,
 ) {
-    // Desktop stub — in-app video playback is provided on Android via VideoView.
+    // Desktop exposes the explicit system-player fallback until it has an embedded decoder.
     // Report once (LaunchedEffect, not direct: onError flips caller state and a direct call
     // would loop recompositions) so the player shows its error banner with the "open in
     // system player" fallback instead of a black surface. Real desktop playback needs a
     // player dependency (JavaFX/VLC/ffmpeg) — an R10 decision, asked separately.
     LaunchedEffect(uri) {
-        onError("Desktop video playback: open in default media player")
+        onError("In-app playback is unavailable on desktop")
     }
 }

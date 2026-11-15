@@ -88,6 +88,7 @@ kotlin {
             // (FlashFilePicker) and `ActivityResultContracts.RequestPermission` (FlashPermissions).
             // This is the dependency `:ui:chat` was carrying for those same three reasons.
             implementation(libs.androidx.activity.compose)
+            implementation(libs.androidx.media3.exoplayer)
             // `androidx.core.content.ContextCompat.checkSelfPermission`, from `androidx.core:core`.
             implementation(libs.androidx.core.ktx)
         }
