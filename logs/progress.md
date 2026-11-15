@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-11-15 — Feature implementation inventory
+
+Reviewed the original blueprint, the deferred-work register, feature plans and current production code at
+`0a1be983`. The [inventory](../docs/audit/2026-11-15-feature-implementation-inventory.md) records missing and
+partial features, work on `origin/linux`, and implemented features still listed as open in older documents.
+The main transfer gaps are native Wi-Fi Direct, persistent desktop direct transfers and managed folder/file batches.
+
+Cross-checked Android, desktop and Hub entry points, storage wiring, protocol coverage and published branch tips.
+The review changed documentation only. Runtime acceptance stays in the existing device backlog. Use the inventory
+with the relevant feature plan when scoping the next implementation.
+
 ## 2026-11-14 — Desktop Tray Icon & Voice Message Button UX Fixes
 
 Committed together with the four visual polish passes as `a21bf8f9` on `dev`. The pre-commit check confirmed the six affected test tasks were up to date with 2,189 passing tests and two opt-in render skips. Separate locked runs with the Android Studio JBR launcher and one worker passed `:app:assembleDebug` in 2m 26s and `:app:lintDebug` in 8m 18s (zero errors, 169 warnings, two hints). Device acceptance is UXPOL-18 and UXPOL-19.

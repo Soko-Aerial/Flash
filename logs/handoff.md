@@ -1,5 +1,7 @@
 # Current Handoff
 
+> **2026-11-15 — Feature inventory reviewed against `dev` at `0a1be983`.** See the [inventory](../docs/audit/2026-11-15-feature-implementation-inventory.md) for production evidence, the separate `origin/linux` work, and deferred items. Native Wi-Fi Direct, desktop direct-transfer recovery after restart and managed folder/file batches remain open. The review was documentation-only. Use the device backlog for live acceptance and the feature plans for scope decisions.
+
 > **2026-11-14 — Desktop tray icon, voice button and Passes 1–4 UI polish committed on `dev` as `a21bf8f9`.**
 > - **Last verified product commit:** `a21bf8f9`. Debug APK assembly and lint passed in separate locked runs. Lint reported zero errors.
 > - `DesktopMain.kt`: `Tray(...)` now uses the redesigned Flash logo via `DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0)` (`appIconPainter`) instead of `FlashIcons.Tray`.

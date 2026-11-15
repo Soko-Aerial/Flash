@@ -3,6 +3,11 @@
 **Created 2026-09-29 (owner decision, ADR-056).** This file is the single list of work the owner has *deliberately
 postponed*. Nothing here is forgotten and nothing here is cancelled; it is simply not next.
 
+**2026-11-15 implementation check:** Group file sending and swarm (FO-04), new-member history controls
+(FO-10), and Hub-relayed group message encryption (FO-27) are wired on `dev`. Managed file batches and
+sealed announcements remain open. See the [feature implementation inventory](audit/2026-11-15-feature-implementation-inventory.md)
+for current code evidence and the remaining scope.
+
 **Rules**
 
 1. An item is added here in the same session the owner postpones it, with the reason and what would bring it back.
