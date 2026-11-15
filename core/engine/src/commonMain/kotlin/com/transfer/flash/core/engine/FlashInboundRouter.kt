@@ -330,12 +330,13 @@ public object FlashInboundRouter {
         onTransferUntracked: ((transferId: String) -> Unit)? = null,
         onResumableRetry: ((frame: ChunkFrame.FileStart, peerDeviceId: String?, secureReply: (ByteArray) -> Boolean) -> Unit)? = null,
         incomingOwners: MutableMap<String, String>? = null,
+        flushBeforeAcknowledging: Boolean = false,
     ): Boolean = try {
         routeBinary(
             peerDeviceId, data, reply, peerLabel, pttProvider, sessionKeyLookup, magicRouter, transferRepository,
             receivePipeline, incomingMeta, receivedPaths, openHandles, fileExistsAndSizeMatches, sendXferResume,
             sendXferCancel, sendXferRefuse, onOfferReceived, onProgressUpdated, onRejected, onCompleted, onSessionStarted,
-            onTransferUntracked, onResumableRetry, incomingOwners,
+            onTransferUntracked, onResumableRetry, incomingOwners, flushBeforeAcknowledging,
         )
     } catch (t: Throwable) {
         if (t is CancellationException) throw t
@@ -368,6 +369,7 @@ public object FlashInboundRouter {
         onTransferUntracked: ((transferId: String) -> Unit)?,
         onResumableRetry: ((frame: ChunkFrame.FileStart, peerDeviceId: String?, secureReply: (ByteArray) -> Boolean) -> Unit)?,
         incomingOwners: MutableMap<String, String>?,
+        flushBeforeAcknowledging: Boolean,
     ): Boolean {
         // 1. PTT voice audio first (ADR-032): 4-byte magic disjoint from transfer pipeline
         if (PttAudioFrame.isPttAudio(data)) {
@@ -460,6 +462,7 @@ public object FlashInboundRouter {
             onTransferUntracked = onTransferUntracked,
             onResumableRetry = onResumableRetry,
             incomingOwners = incomingOwners,
+            flushBeforeAcknowledging = flushBeforeAcknowledging,
         )
         for (event in events) {
             // One failing event (a throwing repository or host hook) must not starve the rest.
@@ -498,6 +501,7 @@ public object FlashInboundRouter {
         val onTransferUntracked: ((transferId: String) -> Unit)?,
         val onResumableRetry: ((frame: ChunkFrame.FileStart, peerDeviceId: String?, secureReply: (ByteArray) -> Boolean) -> Unit)?,
         val incomingOwners: MutableMap<String, String>?,
+        val flushBeforeAcknowledging: Boolean,
     )
 
     private fun handleEvent(host: ReceiveHost, event: ReceiveEvent) {
@@ -505,6 +509,16 @@ public object FlashInboundRouter {
             is ReceiveEvent.SessionStarted -> handleSessionStarted(host, event.frame)
             is ReceiveEvent.AckBatchReady -> {
                 val transferId = event.frame.transferId
+                // A restart must never restore coverage for bytes still waiting to be flushed.
+                if (host.flushBeforeAcknowledging) {
+                    try {
+                        host.openHandles?.get(transferId)?.flush()
+                    } catch (error: Exception) {
+                        if (error is CancellationException) throw error
+                        handleWriteFailed(host, ReceiveEvent.Rejected(RejectReason.WRITE_FAILED, transferId = transferId))
+                        return
+                    }
+                }
                 host.transferRepository?.onIncomingChunkConfirmed(transferId, event.frame.indexes)
                 reportProgress(host, transferId)
                 host.secureReply(ChunkFrame.serialize(event.frame))
@@ -813,6 +827,18 @@ public object FlashInboundRouter {
                 FlashLog.w(TAG, "Offer refused from peer=$peerDeviceId: transferId differs from another transfer only by case")
                 sendXferCancel?.invoke(peerDeviceId, transferId)
                 return false
+            }
+            val restored = transferRepository?.activeTransfers?.value?.firstOrNull {
+                it.id.value == transferId && it.restored && it.direction == FlashTransferDirection.Receiving
+            }
+            if (restored != null) {
+                val offer = ChunkFrame.parse(frameData) as? ChunkFrame.FileStart ?: return false
+                if (offer.totalBytes != restored.bytesTotal || offer.fileName != restored.fileName ||
+                    (restored.wireFileId != null && offer.fileId != restored.wireFileId)
+                ) {
+                    FlashLog.w(TAG, "Refused a changed offer for restored transferId=$transferId")
+                    return false
+                }
             }
         }
 

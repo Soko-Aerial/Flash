@@ -15,8 +15,7 @@ import com.transfer.flash.core.transfer.store.TransferStore
  * Room / SQLCipher entirely off `core:transfer`'s classpath: a lightweight consumer that wants
  * transfers without a database simply passes `store = null`.
  *
- * Each method mirrors exactly what [com.transfer.flash.core.transfer.RealFlashTransferRepository]
- * used to call directly on the DAOs, so behavior is unchanged.
+ * Android and desktop use the same DAO-backed transfer state and retention rules.
  */
 public class RoomTransferStore(
     private val transferDao: TransferDao,

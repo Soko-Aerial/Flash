@@ -109,6 +109,8 @@ public class RealFlashTransferRepository(
     private val placeReceivedFile: ((path: String, fileName: String) -> String)? = null,
     /** HR8: Cross-route continuity port shared between LAN and Hub transfer pipelines. */
     private val routeContinuity: TransferRouteContinuityPort? = null,
+    /** Reconfirm stored send chunks with the receiver when starting a new dispatcher. */
+    private val confirmResumeWithReceiver: Boolean = false,
 ) : FlashTransferRepository, AutoCloseable {
 
     override fun close() {
@@ -775,6 +777,7 @@ public class RealFlashTransferRepository(
             )
             return
         }
+        val initialConfirmed = if (confirmResumeWithReceiver) emptyList() else doneIndexes
         val dispatcher = MultiStreamDispatcher(
             chunker = chunker,
             meta = meta,
@@ -784,7 +787,7 @@ public class RealFlashTransferRepository(
             requestedChunkSize = transferProfile.chunkSizeBytes,
             feedBufferFrames = transferProfile.feedBufferFrames,
             sharedBufferFrames = transferProfile.sharedBufferFrames,
-            doneIndexes = doneIndexes,
+            doneIndexes = initialConfirmed,
             fileSha256Hex = fileSha256Hex,
             workerDispatcher = workerDispatcher,
             peerDeviceId = peerDeviceId,
@@ -799,7 +802,7 @@ public class RealFlashTransferRepository(
         // Persist only newly confirmed chunks. The watcher emits every 10 ms (or 250 ms while a
         // voice call is active), so whole-set snapshots and per-tick row writes are needlessly
         // quadratic and expensive on slow storage.
-        val persistedChunks = ResumeBitVector(dispatcher.totalChunks).also { it.reconcile(doneIndexes) }
+        val persistedChunks = ResumeBitVector(dispatcher.totalChunks).also { it.reconcile(initialConfirmed) }
         var lastConfirmedCount = -1
         var persistedBytesDone = -1L
         val progressJob = repositoryScope.launch(workerDispatcher) {
@@ -1783,11 +1786,22 @@ public class RealFlashTransferRepository(
         totalBytes: Long,
         senderDeviceId: String?,
         chunkSize: Int,
+        /** Desktop can supply byte-aligned progress from its validated checkpoint. */
+        verifiedIndexes: List<Int>? = null,
     ): List<Int> {
         receiverDoneLock.withLock {
             if (chunkSize > 0) lanReceiveChunkSizes[transferId] = chunkSize
             if (fileId.isNotBlank()) lanReceiveFileIds[transferId] = fileId
+            if (verifiedIndexes != null) {
+                val lastIndex = verifiedIndexes.lastOrNull()
+                if (lastIndex == null) {
+                    receiverDone.remove(transferId)
+                } else {
+                    receiverDone[transferId] = ResumeBitVector(lastIndex + 1).also { it.reconcile(verifiedIndexes) }
+                }
+            }
         }
+        if (verifiedIndexes != null) return verifiedIndexes
         val lanDone = receiverDoneIndexes(transferId)
         val hubCovered = routeContinuity?.coveredLanChunksFromHub(
             fileId = fileId,
@@ -2407,21 +2421,29 @@ public class RealFlashTransferRepository(
         repositoryScope.launch { runCatching { activeStore.dismissStored(ids) } }
     }
 
-    /**
-     * Brings the stored rows back into the list once at start (Failed, Cancelled and Paused rows as they were; a row that
-     * was still running when the process died comes back Failed with a sentence, never resumed by itself), then keeps the
-     * store current as rows change state. Rows the person dismissed, and rows untouched for [HISTORY_RETENTION_MS], are not
-     * restored (C-05). Without a store nothing is restored and nothing is written.
-     */
-    private fun startIdentityPersistence() {
-        val activeStore = store ?: return
-        repositoryScope.launch {
+    /** Waits for durable rows to be indexed before the host accepts inbound re-offers. */
+    public suspend fun awaitRestoredTransfers() {
+        identityPersistenceJob?.let { job ->
+            // Restoration and the ongoing writer share a coroutine. Only await its startup phase.
+            kotlinx.coroutines.selects.select<Unit> {
+                restoredTransfers.onAwait { }
+                job.onJoin { }
+            }
+        }
+    }
+
+    /** Restores retained transfer rows once and then keeps the store in sync with state changes. */
+    private fun startIdentityPersistence(): Job? {
+        val activeStore = store ?: return null
+        return repositoryScope.launch {
             try {
                 restoreStoredTransfers(activeStore)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (t: Throwable) {
                 runCatching { FlashLog.w("TRANSFER", "restoring stored transfers failed: ${t::class.simpleName}") }
+            } finally {
+                restoredTransfers.complete(Unit)
             }
             _internalTransfers.collect { rows ->
                 for (row in rows) {
@@ -2488,7 +2510,6 @@ public class RealFlashTransferRepository(
         runCatching { FlashLog.i("TRANSFER", "restored ${restored.size} stored transfer(s)") }
     }
 
-    init {
-        startIdentityPersistence()
-    }
+    private val restoredTransfers = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val identityPersistenceJob = startIdentityPersistence()
 }

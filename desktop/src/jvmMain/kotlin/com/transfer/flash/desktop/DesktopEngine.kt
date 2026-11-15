@@ -47,6 +47,7 @@ import com.transfer.flash.core.ptt.protocol.PttSessionCodec
 import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
+import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.swarm.api.FlashSwarm
 import com.transfer.flash.core.swarm.api.FlashSwarmConfig
 import com.transfer.flash.core.engine.swarm.SwarmHostBinding
@@ -176,8 +177,8 @@ import okio.Path.Companion.toPath
  * completes [chats] is still the honest empty repository below; the shell already
  * renders that state.
  *
- * **Resume across restart is off** (`store = null`, D5 = C pending): the Phase 16 harness runs
- * the same way, and G7 is already logged BLOCKED ON 09B-2.
+ * Direct transfer recovery uses the same encrypted database, with byte ranges in the LAN
+ * continuity checkpoint identifying the usable bytes in a partial receive.
  */
 public class DesktopEngine(
     /** Root for received files. Default: null (resolves to settings store or ~/FlashReceived). */
@@ -207,6 +208,7 @@ public class DesktopEngine(
      * an offer from a peer that is not trusted always waits for the user, whatever this says.
      */
     private val autoAcceptIncoming: Boolean = false,
+    private val enableResume: Boolean = true,
 ) : FlashEngine, FlashReadiness {
     // OPT-O14-06: Bound engine background scope concurrency via Dispatchers.IO.limitedParallelism(8).
     // Prevents idle thread fragmentation across independent engine subsystems and coroutines.
@@ -1422,6 +1424,11 @@ public class DesktopEngine(
             }
             FileSystem.SYSTEM.source(file.absolutePath.toPath())
         }
+        val databaseFile = File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME)
+        val db = runCatching { openEncryptedFlashDatabase(databaseFile, chatDbKey()) }
+            .onFailure { FlashLog.w(TAG_WS, "Encrypted database unavailable; chat and restart recovery are unavailable this run", it) }
+            .getOrNull()
+        chatDb = db
         // HR8: Single disk-backed cross-route continuity coordinator shared by LAN transfer and HubFileBinding.
         val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator(
             com.transfer.flash.core.engine.hubfiles.FileContinuityCheckpointStore(
@@ -1440,7 +1447,7 @@ public class DesktopEngine(
             sourceIdentityProvider = object : SourceIdentityProvider {
                 override suspend fun identity(fileUri: String): SourceIdentity? = readSourceIdentity(fileUri)
             },
-            store = null, // D5 = C pending (09B-2) — matches the Phase 16 harness.
+            store = db?.takeIf { enableResume }?.let { RoomTransferStore(it.transferDao(), it.transferChunkDao()) },
             repositoryScope = scope,
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
@@ -1453,8 +1460,10 @@ public class DesktopEngine(
                 placed
             },
             routeContinuity = routeContinuityPort,
+            confirmResumeWithReceiver = true,
         )
         transferImpl = transfer
+        runBlocking { transfer.awaitRestoredTransfers() }
 
         // ---- presence sharing (PC4, ADR-046): the same wiring as both Android hosts ----
         // Built before the chat repository, whose Online set it feeds. Group rosters come from
@@ -1525,13 +1534,9 @@ public class DesktopEngine(
         modeController = modes
 
         // ---- durable chat (slice 4): the same repository the phone runs ----
-        // Built after the transfer repository because the attachment-progress join reads
-        // it, and before the WS server binds because inbound frames can arrive as soon as
-        // sessions do. A database failure must not abort boot (chat degrades to the honest
-        // empty repository; transfers/discovery/pairing are unaffected).
-        runCatching {
-            val db = openEncryptedFlashDatabase(File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME), chatDbKey())
-            chatDb = db
+        // The attachment-progress join needs the transfer repository, and inbound frames can
+        // arrive as soon as the WS server binds. LAN remains available if database open failed.
+        if (db != null) runCatching {
             val hubRevocations = HubRevocationCache(
                 directory = File(stateDir, "hub/revocations").path,
                 credentials = enterpriseTrustStore::getCredentials,
@@ -2064,19 +2069,22 @@ public class DesktopEngine(
         }
         boot("ptt engine built")
 
+        fun receiveDestination(start: ChunkFrame.FileStart): File {
+            val safeRelativePath = sanitizeRelativePath(start.fileName.ifBlank { "received.bin" })
+            val safeId = sanitize(start.transferId)
+            val destDir = File(canonicalRoot, safeId).canonicalFile
+            val dest = File(destDir, safeRelativePath).canonicalFile
+            require(isContainedInReceivedRoot(canonicalRoot, destDir, dest)) {
+                "path traversal escape: ${start.fileName}"
+            }
+            return dest
+        }
+
         val pipeline = ReceivePipeline(
             sink = { _, _ -> error("legacy shared sink must not be invoked with sinkFactory set") },
             sinkFactory = { start ->
-                val safeRelativePath = sanitizeRelativePath(start.fileName.ifBlank { "received.bin" })
-                val safeId = sanitize(start.transferId)
-                val destDir = File(canonicalRoot, safeId).canonicalFile
-                val dest = File(destDir, safeRelativePath).canonicalFile
-                // Same containment discipline as the production composition (Sentinel). The transfer folder is checked
-                // against the ROOT too (SEC-D07-01): a symlink or junction named like the transfer id would otherwise
-                // make destDir (and so dest) resolve outside the save folder and still pass the destDir test.
-                require(isContainedInReceivedRoot(canonicalRoot, destDir, dest)) {
-                    "path traversal escape: ${start.fileName}"
-                }
+                val dest = receiveDestination(start)
+                val destDir = File(canonicalRoot, sanitize(start.transferId)).canonicalFile
                 dest.parentFile?.mkdirs()
                 runBlocking {
                     transferImpl?.adoptHubPartialForLan(
@@ -2097,8 +2105,32 @@ public class DesktopEngine(
             },
             emitSessionStarted = true,
             requireAcceptance = true,
-            // #20 + HR8 on the desktop too: seed from LAN resume set or verified Hub partial bytes.
             resumeIndexesProvider = { start ->
+                val checkpoint = transferRouteCoordinator.snapshot(start.fileId)
+                val lanPath = checkpoint?.lanPartialPath
+                val validatedIndexes = if (lanPath == null) {
+                    null // Keep HR8's Hub-to-LAN seeding when there is no LAN partial.
+                } else {
+                    val dest = receiveDestination(start)
+                    if (dest.path == lanPath && dest.isFile && dest.length() == start.totalBytes) {
+                        transferRouteCoordinator.planResume(
+                            checkpoint.identity.copy(
+                                fileName = start.fileName,
+                                plainBytes = start.totalBytes,
+                                fileSha256Hex = start.fileSha256Hex,
+                            ),
+                            start.chunkSize,
+                        ).coveredTargetChunks.sorted()
+                    } else {
+                        val tracked = transfer.activeTransfers.value.any {
+                            it.id.value == start.transferId && it.wireFileId == start.fileId && it.localPath == lanPath
+                        }
+                        if (dest.path == lanPath || tracked) {
+                            transferRouteCoordinator.discardMissingLanPartial(start.fileId, lanPath)
+                        }
+                        emptyList()
+                    }
+                }
                 transferImpl?.prepareLanReceiveResume(
                     transferId = start.transferId,
                     fileId = start.fileId,
@@ -2106,6 +2138,7 @@ public class DesktopEngine(
                     totalBytes = start.totalBytes,
                     senderDeviceId = null,
                     chunkSize = start.chunkSize,
+                    verifiedIndexes = validatedIndexes,
                 ).orEmpty()
             },
         )
@@ -2460,6 +2493,7 @@ public class DesktopEngine(
                 sendXfer(pid, RealFlashTransferRepository.ACTION_CANCEL, tid, reason)
             },
             incomingOwners = incomingOwners,
+            flushBeforeAcknowledging = enableResume && chatDb != null,
             // A re-offer of an already-accepted transfer takes the full accept path (ADR-069 / FA-2
             // storage gate, sink, progress seed, then RESUME), as it did before the shared router.
             onResumableRetry = { frame, pid, _ ->
@@ -2805,14 +2839,6 @@ public class DesktopEngine(
             val options = factoryOptions
             val stateDir = options?.stateDir ?: DesktopPaths.stateDir()
             val key = runCatching { stateDir.canonicalPath }.getOrElse { stateDir.absolutePath }
-            if (config.enableResume) {
-                // The factory's `store = null` (D5 = C): there is no persistent transfer store on desktop yet.
-                FlashLog.w(
-                    TAG_WS,
-                    "FlashConfig.enableResume=true is not supported on desktop yet (no persistent transfer store, " +
-                        "D5 = C): transfers resume within a session only. Set enableResume = false to silence this.",
-                )
-            }
             val engine = synchronized(liveStateDirs) {
                 val owner = liveStateDirs[key]
                 check(owner == null || owner.closed) {
@@ -2826,6 +2852,7 @@ public class DesktopEngine(
                     pttAudio = options?.pttAudio ?: platformPttAudio(),
                     displayName = config.displayName,
                     autoAcceptIncoming = config.autoAcceptIncoming,
+                    enableResume = config.enableResume,
                 ).also { liveStateDirs[key] = it }
             }
             try {

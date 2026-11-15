@@ -397,6 +397,18 @@ public class TransferRouteCoordinator(
     public fun snapshot(logicalTransferId: String): ContinuityCheckpoint? =
         lock.withLock { checkpoints[logicalTransferId] }
 
+    /** Drops coverage when the partial file backing it is gone. Another route can re-adopt its own verified bytes. */
+    public fun discardMissingLanPartial(logicalTransferId: String, expectedPath: String) {
+        lock.withLock {
+            val current = checkpoints[logicalTransferId] ?: return@withLock
+            if (current.status == ContinuityStatus.ACTIVE && current.lanPartialPath == expectedPath &&
+                current.activeRoute != RouteOwner.HUB
+            ) {
+                putLocked(current.copy(lanPartialPath = null, verifiedSpans = emptyList()))
+            }
+        }
+    }
+
     public fun tryAcquireRoute(
         identity: LogicalTransferIdentity,
         route: RouteOwner,
