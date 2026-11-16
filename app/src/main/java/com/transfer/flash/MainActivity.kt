@@ -1893,6 +1893,15 @@ private fun FlashShell(
     // Group Phase 1A: the create-group sheet opens from the chat list's top bar; its roster comes
     // from the pairing coordinator's trusted peers only (fail-closed membership by construction).
     var showCreateGroup by remember { mutableStateOf(false) }
+    val hubGroupPolicy by com.transfer.flash.debug.DiscoveryEngineHolder.hubGroupPolicy.collectAsState()
+    var canCreateHubGroup by remember { mutableStateOf(false) }
+    LaunchedEffect(showCreateGroup, settings.isEnterpriseEnrolled) {
+        canCreateHubGroup = if (showCreateGroup && settings.isEnterpriseEnrolled) {
+            chatRepository.canCreateHubGroup()
+        } else {
+            false
+        }
+    }
     var showBrowseOrgGroups by remember { mutableStateOf(false) }
     val trustedPeerRoster = trustedPeers.map { trusted ->
         // Initials mirror the repository's rule: first letters of the first two words, uppercased.
@@ -3141,7 +3150,8 @@ private fun FlashShell(
                 activeJoinLink = inviteUrl
                 showJoinGroupDialog = true
             },
-            isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
+            isEnterpriseEnrolled = settings.isEnterpriseEnrolled &&
+                (hubGroupPolicy.allowPersonalHubLink || (conversationId != null && chatRepository.isHubGroup(conversationId))),
             isLinkedToHub = conversationId?.let { engine.enterpriseTrustStore?.isGroupLinkedToHub(it) } ?: false,
             onToggleLinkToHub = { link ->
                 conversationId?.let { gid ->
@@ -3936,6 +3946,28 @@ private fun FlashShell(
                 peers = trustedPeerRoster,
                 onDismiss = { showCreateGroup = false },
                 isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
+                allowPersonalHubLink = hubGroupPolicy.allowPersonalHubLink,
+                canCreateHubGroup = canCreateHubGroup,
+                onCreateHubGroup = { title, memberIds ->
+                    scope.launch {
+                        val result = chatRepository.createHubGroup(title, memberIds)
+                        val groupId = result.getOrNull()
+                        if (groupId != null) {
+                            showCreateGroup = false
+                            selectedChatConversationId = groupId
+                            chatRepository.openConversation(groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        } else {
+                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                            Toast.makeText(
+                                toastContext,
+                                reason ?: "Couldn't create the Hub group",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                },
                 onFindDevicesClick = {
                     showCreateGroup = false
                     nav.selectTab(FlashDestination.NearbyDevices)

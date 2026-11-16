@@ -118,7 +118,10 @@ class HubGroupE2eeTest {
         ),
         val contentViaHub: () -> Boolean = { true },
     ) {
-        fun bridgeFor(node: MemberNode): Pair<HubGroupE2eeCoordinator, HubChatBridge> {
+        fun bridgeFor(
+            node: MemberNode,
+            groupE2eeMode: () -> String = { HubChatBridge.GROUP_E2EE_MODE_REQUIRED },
+        ): Pair<HubGroupE2eeCoordinator, HubChatBridge> {
             val coordinator = HubGroupE2eeCoordinator(node.id, node.crypto, node.keyStore, clock)
             val sealing = DirectoryHubSealing(
                 crypto = node.crypto,
@@ -140,6 +143,7 @@ class HubGroupE2eeTest {
                 groupE2ee = coordinator,
                 groupMembershipProvider = { gid -> membership[gid] },
                 groupMemberAllowed = { gid, id -> membership[gid]?.first?.contains(id) == true },
+                groupE2eeMode = groupE2eeMode,
             )
             return coordinator to bridge
         }
@@ -476,5 +480,31 @@ class HubGroupE2eeTest {
         assertEquals(2L, aliceRestarted.currentEpochFor("g-eng"))
         assertTrue(h.routeOutbox(alice, bob, bobBridgeRestarted).all { it == HubInboundOutcome.STORED })
         assertEquals("post-poison-ok", (bob.received.last().first as GroupWireFrame.Message).text)
+    }
+
+    @Test
+    fun hubInspectableModeAllowsGroupFrameOverTlsWhileE2eeRequiredRejectsIt() = runTest {
+        val alice = MemberNode("alice")
+        val bob = MemberNode("bob")
+        val h = Harness(mapOf("alice" to alice, "bob" to bob))
+        val (_, aliceInspectable) = h.bridgeFor(alice) { HubChatBridge.GROUP_E2EE_MODE_HUB_INSPECTABLE }
+        val (_, bobInspectable) = h.bridgeFor(bob) { HubChatBridge.GROUP_E2EE_MODE_HUB_INSPECTABLE }
+        val (_, bobStrict) = h.bridgeFor(bob) { HubChatBridge.GROUP_E2EE_MODE_REQUIRED }
+
+        assertTrue(aliceInspectable.canCarry("bob", group = true))
+        assertTrue(aliceInspectable.sendGroup("bob", "m-insp", now, msg("g-eng", "m-insp", "alice", "inspectable-hello")))
+        assertEquals(HubChatBridge.GROUP_FRAME, alice.relay.sent.single().type)
+
+        // Strict E2EE_REQUIRED bridge rejects plaintext GROUP_FRAME
+        assertEquals(listOf(HubInboundOutcome.REJECTED), h.routeOutbox(alice, bob, bobStrict))
+        assertEquals(1, bobStrict.droppedPlain.value)
+
+        // HUB_INSPECTABLE bridge accepts GROUP_FRAME over TLS
+        assertTrue(aliceInspectable.sendGroup("bob", "m-insp-2", now + 1L, msg("g-eng", "m-insp-2", "alice", "inspectable-hello-2")))
+        assertEquals(HubInboundOutcome.STORED, bobInspectable.handleInbound(
+            HubInbound("alice", "m-insp-2", HubChatBridge.GROUP_FRAME, now + 1L, alice.relay.sent.last().payload),
+            RecordingGroupSink(bob.received),
+        ))
+        assertEquals("inspectable-hello-2", (bob.received.last().first as GroupWireFrame.Message).text)
     }
 }

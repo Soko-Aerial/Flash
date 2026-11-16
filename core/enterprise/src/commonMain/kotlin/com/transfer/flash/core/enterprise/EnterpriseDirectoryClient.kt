@@ -9,8 +9,10 @@ import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.rest.ApprovalDto
 import com.transfer.flash.core.hubprotocol.rest.ApprovalSubmitBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupBody
 import com.transfer.flash.core.hubprotocol.rest.DepartmentDto
 import com.transfer.flash.core.hubprotocol.rest.GroupDto
+import com.transfer.flash.core.hubprotocol.rest.GroupMemberBody
 import com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues
 import com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
@@ -18,6 +20,7 @@ import com.transfer.flash.core.hubprotocol.rest.JoinDecisionBody
 import com.transfer.flash.core.hubprotocol.rest.JoinRequestBody
 import com.transfer.flash.core.hubprotocol.rest.JoinRequestDto
 import com.transfer.flash.core.hubprotocol.rest.JoinResponse
+import com.transfer.flash.core.hubprotocol.rest.MeDto
 import com.transfer.flash.core.hubprotocol.rest.MemberDto
 import com.transfer.flash.core.hubprotocol.rest.SealingKeyRequest
 import io.ktor.client.HttpClient
@@ -113,6 +116,19 @@ public interface HubSealingKeyApi {
     public suspend fun remove(hubUrl: String): Boolean
 }
 
+/** Organization-wide group policy flags surfaced by `GET /api/v1/hub`. */
+@FlashInternalApi
+@kotlinx.serialization.Serializable
+public data class HubGroupPolicy(
+    public val allowPersonalHubLink: Boolean = true,
+    public val groupE2eeMode: String = GROUP_E2EE_MODE_REQUIRED,
+) {
+    public companion object {
+        public const val GROUP_E2EE_MODE_REQUIRED: String = "E2EE_REQUIRED"
+        public const val GROUP_E2EE_MODE_HUB_INSPECTABLE: String = "HUB_INSPECTABLE"
+    }
+}
+
 /**
  * What the chat repository needs from the hub's directory. An interface so repository tests use a fake and the real
  * [EnterpriseDirectoryClient] stays an HTTP detail.
@@ -132,6 +148,35 @@ public interface HubDirectoryApi {
     public suspend fun fetchJoinRequests(hubUrl: String, groupId: String? = null): FlashResult<List<EnterpriseJoinRequest>>
 
     public suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String? = null): FlashResult<EnterpriseJoinResult>
+
+    /** Caller's own directory identity (`GET /api/v1/directory/me`). */
+    public suspend fun fetchMe(hubUrl: String): FlashResult<MeDto> =
+        FlashResult.Failure(FlashError.Unknown("fetchMe not implemented"))
+
+    /** Creates an organization/department group on the Hub (`POST /api/v1/groups`). */
+    public suspend fun createHubGroup(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String = "",
+        visibility: String = HubDirectoryValues.VISIBILITY_LISTED,
+        joinMode: String = HubDirectoryValues.JOIN_REQUEST_APPROVAL,
+        adminDeviceIds: List<String> = emptyList(),
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        FlashResult.Failure(FlashError.Unknown("createHubGroup not implemented"))
+
+    /** Adds or removes a member in a Hub group (`POST /api/v1/groups/members`). */
+    public suspend fun setHubGroupMember(
+        hubUrl: String,
+        groupId: String,
+        deviceId: String,
+        add: Boolean = true,
+    ): FlashResult<Unit> =
+        FlashResult.Failure(FlashError.Unknown("setHubGroupMember not implemented"))
+
+    /** Fetches organization group policy flags from `GET /api/v1/hub`. */
+    public suspend fun fetchHubGroupPolicy(hubUrl: String): FlashResult<HubGroupPolicy> =
+        FlashResult.Success(HubGroupPolicy())
 }
 
 /**
@@ -372,6 +417,56 @@ public class EnterpriseDirectoryClient(
     override suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String?): FlashResult<EnterpriseJoinResult> =
         hubPost(hubUrl, HubContract.PATH_GROUP_JOIN_DECISION, HubRestCodec.encode(JoinDecisionBody(requestId = requestId, approve = approve, reason = reason))) { body ->
             HubRestCodec.decodeOrNull<JoinResponse>(body)?.toJoinResult("")
+        }
+
+    override suspend fun fetchMe(hubUrl: String): FlashResult<MeDto> =
+        hubGet(hubUrl, HubContract.PATH_DIRECTORY_ME) { body ->
+            HubRestCodec.decodeOrNull<MeDto>(body)
+        }
+
+    override suspend fun createHubGroup(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String,
+        visibility: String,
+        joinMode: String,
+        adminDeviceIds: List<String>,
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        hubPost(
+            hubUrl = hubUrl,
+            path = HubContract.PATH_GROUPS,
+            body = HubRestCodec.encode(
+                CreateGroupBody(
+                    id = id,
+                    name = name,
+                    departmentId = departmentId,
+                    visibility = visibility,
+                    joinMode = joinMode,
+                    adminDeviceIds = adminDeviceIds,
+                ),
+            ),
+            refusalMayCarryBody = false,
+        ) { body ->
+            HubRestCodec.decodeOrNull<GroupDto>(body)?.toDirectoryGroup()
+        }
+
+    override suspend fun setHubGroupMember(
+        hubUrl: String,
+        groupId: String,
+        deviceId: String,
+        add: Boolean,
+    ): FlashResult<Unit> =
+        hubPost(
+            hubUrl = hubUrl,
+            path = HubContract.PATH_GROUP_MEMBERS,
+            body = HubRestCodec.encode(GroupMemberBody(groupId = groupId, deviceId = deviceId, add = add)),
+            refusalMayCarryBody = false,
+        ) { Unit }
+
+    override suspend fun fetchHubGroupPolicy(hubUrl: String): FlashResult<HubGroupPolicy> =
+        hubGet(hubUrl, HubContract.PATH_HUB_INFO) { body ->
+            HubRestCodec.decodeOrNull<HubGroupPolicy>(body)
         }
 
     override suspend fun fetchDirectorySync(

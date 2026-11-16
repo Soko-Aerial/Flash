@@ -92,13 +92,21 @@ public fun FlashCreateGroupSheet(
     initialUseHub: Boolean = false,
     onCreateWithHub: ((title: String, memberIds: Set<String>, linkToHub: Boolean) -> Unit)? = null,
     onFindDevicesClick: (() -> Unit)? = null,
+    allowPersonalHubLink: Boolean = true,
+    canCreateHubGroup: Boolean = false,
+    onCreateHubGroup: ((title: String, memberIds: Set<String>) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     var title by rememberSaveable { mutableStateOf("") }
     var selected by remember { mutableStateOf(emptySet<String>()) }
-    var linkToHub by rememberSaveable { mutableStateOf(initialUseHub) }
-    val canCreate = FlashCreateGroupMath.canCreate(title, selected)
+    var linkToHub by rememberSaveable { mutableStateOf(initialUseHub && allowPersonalHubLink) }
+    var createOnHub by rememberSaveable { mutableStateOf(false) }
+    val canCreate = if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
+        FlashCreateGroupMath.normalizedTitle(title) != null
+    } else {
+        FlashCreateGroupMath.canCreate(title, selected)
+    }
     FlashSheetHost(
         onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
@@ -173,7 +181,38 @@ public fun FlashCreateGroupSheet(
                 }
             }
 
-            if (isEnterpriseEnrolled) {
+            if (canCreateHubGroup && onCreateHubGroup != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { createOnHub = !createOnHub }
+                        .padding(vertical = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        FlashText(
+                            text = "Hub Organization Group",
+                            style = typography.bodyDefault,
+                        )
+                        FlashText(
+                            text = "Managed in the Hub directory; members sync automatically",
+                            style = typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = createOnHub,
+                        onCheckedChange = { createOnHub = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = colors.onAccentFill,
+                            checkedTrackColor = colors.accentFill,
+                        ),
+                    )
+                }
+            }
+
+            if (isEnterpriseEnrolled && allowPersonalHubLink && !createOnHub) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -304,8 +343,10 @@ public fun FlashCreateGroupSheet(
                     enabled = canCreate,
                     onClick = {
                         FlashCreateGroupMath.normalizedTitle(title)?.let { normalized ->
-                            if (onCreateWithHub != null) {
-                                onCreateWithHub(normalized, selected, linkToHub)
+                            if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
+                                onCreateHubGroup(normalized, selected)
+                            } else if (onCreateWithHub != null) {
+                                onCreateWithHub(normalized, selected, allowPersonalHubLink && linkToHub)
                             } else {
                                 onCreate(normalized, selected)
                             }

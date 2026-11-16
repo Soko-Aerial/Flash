@@ -276,6 +276,11 @@ object DiscoveryEngineHolder {
     /** User opt-in to let the hub carry readable chat content (ADR-121). Default OFF; stored in SharedPreferences. */
     private val hubContentViaHubFlag = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val announcementNotificationsFlag = kotlinx.coroutines.flow.MutableStateFlow(true)
+    private val hubGroupPolicyRef = kotlinx.coroutines.flow.MutableStateFlow(
+        com.transfer.flash.core.enterprise.HubGroupPolicy(),
+    )
+    val hubGroupPolicy: kotlinx.coroutines.flow.StateFlow<com.transfer.flash.core.enterprise.HubGroupPolicy> =
+        hubGroupPolicyRef.asStateFlow()
 
     /**
      * Live WebRTC calling engine (C7 / ADR-025). Constructed in [startEngineLocked], torn down in
@@ -1452,11 +1457,27 @@ object DiscoveryEngineHolder {
                 hubGroupRosters.clear()
             },
             scope = appScope,
-            onOutcome = { reason, outcome -> Log.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+            onOutcome = { reason, outcome ->
+                Log.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}")
+                appScope.launch {
+                    val url = enterpriseTrustStore.getCredentials()?.hubUrl ?: return@launch
+                    val res = hub.directory.fetchHubGroupPolicy(url)
+                    if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        hubGroupPolicyRef.value = res.value
+                    }
+                }
+            },
             getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
         )
         orgSnapshotCoordinatorRef = orgSnapshotCoordinator
         orgSnapshotCoordinator.start()
+        appScope.launch {
+            hub.relay.metaEvents.collect { meta ->
+                if (meta.action == "DIR_SYNC" && meta.conversationId == "__dir__") {
+                    orgSnapshotCoordinator.requestSync("ws_dir_bump", force = true)
+                }
+            }
+        }
 
         // ERROR-703: the radio chat engine follows the gateway the Radio screen controls. Built once per process.
         if (radioPort == null) {
@@ -1721,6 +1742,9 @@ object DiscoveryEngineHolder {
                     cfg.offLanCallingSupported &&
                     cfg.iceServers.isNotEmpty()
             },
+            allowPersonalHubLink = { hubGroupPolicyRef.value.allowPersonalHubLink },
+            groupE2eeMode = { hubGroupPolicyRef.value.groupE2eeMode },
+            onRequestOrgSync = { reason, force -> orgSnapshotCoordinator.requestSync(reason, force) },
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             FlashNotificationManager.showJoinRequest(

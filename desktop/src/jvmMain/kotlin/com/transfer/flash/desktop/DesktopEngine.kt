@@ -324,6 +324,8 @@ public class DesktopEngine(
     @Volatile
     private var orgSnapshotCoordinatorRef: com.transfer.flash.core.enterprise.OrgSnapshotCoordinator? = null
     private val offLanCallSignalSeq = java.util.concurrent.atomic.AtomicLong(0L)
+    private val hubGroupPolicyRef = MutableStateFlow(com.transfer.flash.core.enterprise.HubGroupPolicy())
+    public val hubGroupPolicy: StateFlow<com.transfer.flash.core.enterprise.HubGroupPolicy> = hubGroupPolicyRef.asStateFlow()
 
     /** Pull-to-refresh and Hub tab opening: ask for a directory sync (honours the 60 s minimum unless [force]). */
     public fun requestOrgSync(reason: String, force: Boolean = false) {
@@ -1670,11 +1672,27 @@ public class DesktopEngine(
                     hubGroupRosters.clear()
                 },
                 scope = scope,
-                onOutcome = { reason, outcome -> FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+                onOutcome = { reason, outcome ->
+                    FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}")
+                    scope.launch {
+                        val url = enterpriseTrustStore.getCredentials()?.hubUrl ?: return@launch
+                        val res = hub.directory.fetchHubGroupPolicy(url)
+                        if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
+                            hubGroupPolicyRef.value = res.value
+                        }
+                    }
+                },
                 getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
             )
             orgSnapshotCoordinatorRef = orgSnapshotCoordinator
             orgSnapshotCoordinator.start()
+            scope.launch {
+                hub.relay.metaEvents.collect { meta ->
+                    if (meta.action == "DIR_SYNC" && meta.conversationId == "__dir__") {
+                        orgSnapshotCoordinator.requestSync("ws_dir_bump", force = true)
+                    }
+                }
+            }
 
             // ERROR-703: the radio chat engine follows the gateway the Radio screen controls. Built once per engine.
             if (radioPort == null) {
@@ -1889,6 +1907,9 @@ public class DesktopEngine(
                         cfg.offLanCallingSupported &&
                         cfg.iceServers.isNotEmpty()
                 },
+                allowPersonalHubLink = { hubGroupPolicyRef.value.allowPersonalHubLink },
+                groupE2eeMode = { hubGroupPolicyRef.value.groupE2eeMode },
+                onRequestOrgSync = { reason, force -> orgSnapshotCoordinator.requestSync(reason, force) },
             )
             hubRosterChat = chatImpl
             // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub; the engine keeps its

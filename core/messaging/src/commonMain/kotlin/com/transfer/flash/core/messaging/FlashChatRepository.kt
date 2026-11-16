@@ -92,6 +92,20 @@ public interface FlashChatRepository {
     public suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
+    /** Creates an organization/department group on the Hub (`POST /api/v1/groups`) for ORG_ADMIN / DEPT_ADMIN users. */
+    public suspend fun createHubGroup(
+        name: String,
+        memberIds: Set<String> = emptySet(),
+        departmentId: String = "",
+    ): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Hub group creation unavailable"))
+
+    /** Returns true when this device's directory role allows creating Hub groups (ORG_ADMIN or DEPT_ADMIN). */
+    public suspend fun canCreateHubGroup(): Boolean = false
+
+    /** Returns true when [groupId] is a Hub-managed directory group. */
+    public fun isHubGroup(groupId: String): Boolean = false
+
     /** Creates a v2 group with only the creator to be shared via invite link (GM-4). */
     public suspend fun createGroupForInvite(name: String): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
