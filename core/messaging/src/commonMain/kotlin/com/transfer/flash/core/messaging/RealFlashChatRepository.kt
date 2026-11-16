@@ -455,6 +455,12 @@ public class RealFlashChatRepository(
     ) -> Unit = { _, _, _ -> },
     /** HR9: whether off-LAN Hub-relayed calling (ICE config + connected relay) is supported right now. */
     private val offLanCallSupported: () -> Boolean = { true },
+    /** Hub policy: whether personal/local groups may be linked to the Hub. Default true. */
+    private val allowPersonalHubLink: () -> Boolean = { true },
+    /** Hub policy: "E2EE_REQUIRED" (default, fail-closed) or "HUB_INSPECTABLE". */
+    private val groupE2eeMode: () -> String = { HubChatBridge.GROUP_E2EE_MODE_REQUIRED },
+    /** Optional host callback to trigger an immediate org directory sync. */
+    private val onRequestOrgSync: (suspend (reason: String, force: Boolean) -> Unit)? = null,
 ) : FlashChatRepository, AutoCloseable {
 
     public var onNewAnnouncementNotificationHook: ((String, String, String?) -> Unit)? = null
@@ -477,6 +483,8 @@ public class RealFlashChatRepository(
     private val effectiveAnnouncementEvents: Flow<RelayFrame.AnnouncementEvent>? =
         hubAnnouncementEvents ?: hubRelay?.announcementEvents
     private val refreshAnnouncementsMutex: Mutex = Mutex()
+
+    private val hubTabSourcesRef: com.transfer.flash.core.messaging.hub.HubTabSources? = hubTabSources
 
     /** Plan A4 H6: the Hub tab read model (see [com.transfer.flash.core.messaging.hub.HubFacade]). */
     private val hubFacade: com.transfer.flash.core.messaging.hub.HubFacade? = hubTabSources?.let { src ->
@@ -659,6 +667,7 @@ public class RealFlashChatRepository(
                     }
                 }
             },
+            groupE2eeMode = groupE2eeMode,
         )
     }
 
@@ -1332,7 +1341,7 @@ public class RealFlashChatRepository(
                     if (entity.isGroup) {
                         val onlineMembers = activeMembersByGroup[entity.id]
                             .orEmpty()
-                            .count { it.deviceId in peers.online }
+                            .count { it.deviceId in peers.online || it.deviceId in peers.hubOnline }
                         groupOnlineCount = onlineMembers
                         presence = if (onlineMembers > 0) FlashPeerPresence.Online else FlashPeerPresence.Offline
                     } else {
@@ -1802,8 +1811,9 @@ public class RealFlashChatRepository(
                     val members = groupMemberDao?.activeMembers(conversationId).orEmpty()
                     val selfMembership = selfMembershipOf(groupMemberDao?.member(conversationId, localDeviceId))
                     val memberIds = members.mapTo(HashSet()) { it.deviceId }
-                    val onlineMembers = members.count { it.deviceId in peers.online }
-                    val onlineMemberIds = members.filter { it.deviceId in peers.online }.mapTo(HashSet()) { it.deviceId }
+                    val onlineMembers = members.count { it.deviceId in peers.online || it.deviceId in peers.hubOnline }
+                    val onlineMemberIds = members.filter { it.deviceId in peers.online || it.deviceId in peers.hubOnline }.mapTo(HashSet()) { it.deviceId }
+                    val anyLanOnline = members.any { it.deviceId in peers.online }
                     val activeTypingMembers = typingStates[conversationId]?.toMap().orEmpty()
                     val activeTypingNames = if (onlineMembers > 0) {
                         activeTypingMembers.filter { (memberId, _) ->
@@ -1837,7 +1847,11 @@ public class RealFlashChatRepository(
                             avatarInitials = computeInitials(title),
                             presence = if (onlineMembers > 0) FlashPeerPresence.Online else FlashPeerPresence.Offline,
                             // Group members share our LAN/WS mesh when any of them is online.
-                            transport = if (onlineMembers > 0) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown,
+                            transport = when {
+                                anyLanOnline -> FlashNetworkTransport.Lan
+                                onlineMembers > 0 -> FlashNetworkTransport.Relay
+                                else -> FlashNetworkTransport.Unknown
+                            },
                             isGroup = true,
                             memberInitials = members.take(4).map { computeInitials(it.displayName) },
                             memberCount = members.size,
@@ -1852,7 +1866,7 @@ public class RealFlashChatRepository(
                         pinnedMessageIds = content.pinnedMessageIds,
                         members = members.map { member ->
                             member.toMemberUi(
-                                isOnline = member.deviceId in peers.online,
+                                isOnline = member.deviceId in peers.online || member.deviceId in peers.hubOnline,
                                 introducedBy = introducedByOf(member, ownerName),
                             )
                         },
@@ -8232,12 +8246,113 @@ public class RealFlashChatRepository(
         if (!conversation.isGroup) {
             return FlashResult.Failure(FlashError.Unknown("Conversation is not a group: $groupId"))
         }
+        if (!allowPersonalHubLink() && !isHubRosterGroup(groupId)) {
+            return FlashResult.Failure(FlashError.Unknown("Personal groups cannot be linked to the Organization Hub by policy"))
+        }
 
         // Strictly adhere to Zero Cloud Dump Invariant:
         // Linking NEVER reads past rows from messageDao or uploads historical messages.
         trust.linkGroupToHub(groupId)
         notifyGroupE2eeMembershipChanged(groupId)
         return FlashResult.Success(Unit)
+    }
+
+    override fun isHubGroup(groupId: String): Boolean = isHubRosterGroup(groupId)
+
+    override suspend fun canCreateHubGroup(): Boolean {
+        val client = enterpriseDirectoryClient ?: return false
+        val credentials = enterpriseTrustStore?.getCredentials() ?: return false
+        val me = (client.fetchMe(credentials.hubUrl) as? FlashResult.Success)?.value ?: return false
+        return me.role == com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues.ROLE_ORG_ADMIN ||
+            me.role == com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues.ROLE_DEPT_ADMIN
+    }
+
+    override suspend fun createHubGroup(
+        name: String,
+        memberIds: Set<String>,
+        departmentId: String,
+    ): FlashResult<String> = withContext(ioDispatcher) {
+        val groupName = GroupPolicy.normalizedName(name)
+            ?: return@withContext FlashResult.Failure(
+                FlashError.Unknown("Group name must be 1-${GroupPolicy.MAX_GROUP_NAME_LENGTH} characters"),
+            )
+        val client = enterpriseDirectoryClient
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Enterprise directory client unavailable"))
+        val trust = enterpriseTrustStore
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Enterprise trust store unavailable"))
+        val credentials = trust.getCredentials()
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Device is not enrolled in an enterprise hub"))
+        val me = (client.fetchMe(credentials.hubUrl) as? FlashResult.Success)?.value
+        val resolvedDept = when {
+            departmentId.isNotBlank() -> departmentId
+            me?.role == com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues.ROLE_DEPT_ADMIN ->
+                me.departmentId.ifBlank { me.adminOfDepartments.firstOrNull() ?: credentials.department.orEmpty() }
+            else -> ""
+        }
+        val groupId = UuidIdGenerator.newId()
+        when (
+            val created = client.createHubGroup(
+                hubUrl = credentials.hubUrl,
+                id = groupId,
+                name = groupName,
+                departmentId = resolvedDept,
+                adminDeviceIds = listOf(credentials.deviceId),
+            )
+        ) {
+            is FlashResult.Failure -> return@withContext created
+            is FlashResult.Success -> Unit
+        }
+        for (memberId in memberIds) {
+            if (memberId == localDeviceId || memberId == credentials.deviceId) continue
+            val added = client.setHubGroupMember(credentials.hubUrl, groupId, memberId, add = true)
+            if (added is FlashResult.Failure) {
+                FlashLog.w("CHAT", "Hub group $groupId created, failed to add member $memberId: ${added.error}")
+            }
+        }
+        val now = timeSource.nowMs()
+        groupTitleCache[groupId] = groupName
+        runInTransaction {
+            upsertLegacyGroupConversation(
+                groupId = groupId,
+                title = groupName,
+                sortOrder = now,
+                createdBy = localDeviceId,
+                createdAt = now,
+            )
+            groupMemberDao?.upsert(
+                GroupMemberEntity(
+                    groupId = groupId,
+                    deviceId = localDeviceId,
+                    displayName = localDisplayName,
+                    role = "admin",
+                    joinedAt = now,
+                    membershipVersion = 1L,
+                    operationId = "$HUB_ROSTER_OP_PREFIX${1L}",
+                    isActive = true,
+                ),
+            )
+            memberIds.filter { it != localDeviceId }.forEach { memberId ->
+                groupMemberDao?.upsert(
+                    GroupMemberEntity(
+                        groupId = groupId,
+                        deviceId = memberId,
+                        displayName = orgPeerResolver?.displayName(memberId)
+                            ?: peerNameResolver(memberId)?.ifBlank { null }
+                            ?: memberId,
+                        role = "member",
+                        joinedAt = now,
+                        membershipVersion = 1L,
+                        operationId = "$HUB_ROSTER_OP_PREFIX${1L}",
+                        isActive = true,
+                    ),
+                )
+            }
+        }
+        trust.linkGroupToHub(groupId)
+        triggerImmediateOrgSync("group_created")
+        refreshHubGroupRosters()
+        touchConversationRefresh()
+        FlashResult.Success(groupId)
     }
 
     override fun isGroupLinkedToHub(groupId: String): Boolean {
@@ -8288,6 +8403,15 @@ public class RealFlashChatRepository(
     override val pendingEnterpriseJoins: StateFlow<Map<String, String>> =
         enterpriseTrustStore?.pendingJoins ?: MutableStateFlow(emptyMap())
 
+    private suspend fun triggerImmediateOrgSync(reason: String) {
+        val custom = onRequestOrgSync
+        if (custom != null) {
+            runCatching { custom(reason, true) }
+        } else {
+            runCatching { hubTabSourcesRef?.requestSync?.invoke(true) }
+        }
+    }
+
     override suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<EnterpriseJoinResult> =
         withContext(ioDispatcher) {
             val client = enterpriseDirectoryClient
@@ -8311,9 +8435,26 @@ public class RealFlashChatRepository(
                                     createdBy = localDeviceId,
                                     createdAt = now,
                                 )
+                                val members = groupMemberDao
+                                if (members != null && members.member(groupId, localDeviceId) == null) {
+                                    members.upsert(
+                                        GroupMemberEntity(
+                                            groupId = groupId,
+                                            deviceId = localDeviceId,
+                                            displayName = localDisplayName,
+                                            role = "member",
+                                            joinedAt = now,
+                                            membershipVersion = 1L,
+                                            operationId = "${HUB_ROSTER_OP_PREFIX}1",
+                                            isActive = true,
+                                        ),
+                                    )
+                                }
                             }
                             trust.linkGroupToHub(groupId)
                             trust.setPendingJoin(groupId, null)
+                            triggerImmediateOrgSync("group_joined")
+                            refreshHubGroupRosters()
                             touchConversationRefresh()
                         }
                         EnterpriseJoinStatus.PENDING -> trust.setPendingJoin(groupId, name)

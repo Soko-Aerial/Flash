@@ -223,6 +223,7 @@ public class HubChatBridge(
     private val groupMemberAllowed: suspend (groupId: String, deviceId: String) -> Boolean = { _, deviceId ->
         standing(deviceId) == HubPeerStanding.MEMBER || isPaired(deviceId)
     },
+    private val groupE2eeMode: () -> String = { GROUP_E2EE_MODE_REQUIRED },
 ) {
     private val seenLock = Mutex()
     // Keyed by (sender, id): ids are chosen by the sender, so two senders may use the same one (ERROR-396, REV-08 on the hub side).
@@ -312,6 +313,10 @@ public class HubChatBridge(
      */
     public suspend fun canCarry(recipientDeviceId: String, group: Boolean = false): Boolean {
         if (!canSignal(recipientDeviceId)) return false
+        if (group && groupE2eeMode() == GROUP_E2EE_MODE_HUB_INSPECTABLE) {
+            setWaiting(recipientDeviceId, null)
+            return true
+        }
         val legacyGroupPlain = group && groupE2ee == null
         val status = if (legacyGroupPlain || sealing == null) HubSealingStatus.NOT_PUBLISHED else sealing.statusFor(recipientDeviceId)
         return when {
@@ -408,6 +413,10 @@ public class HubChatBridge(
         val stamp = sendTime(sentAt)
         if (e2ee == null) {
             return sendPayload(to, id, stamp, GROUP_FRAME, body, seal = false)
+        }
+        if (groupE2eeMode() == GROUP_E2EE_MODE_HUB_INSPECTABLE) {
+            if (!port.usable) return false
+            return port.send(to, id, GROUP_FRAME, stamp, body)
         }
         if (!port.usable) return false
         val membership = groupMembershipProvider(frame.groupId) ?: return false
@@ -721,7 +730,7 @@ public class HubChatBridge(
                 }
             }
             GROUP_FRAME, LEGACY_GROUP -> {
-                if (groupE2ee != null && !sealed) {
+                if (groupE2ee != null && !sealed && groupE2eeMode() != GROUP_E2EE_MODE_HUB_INSPECTABLE) {
                     _droppedPlain.update { it + 1 }
                     return reject(d, "unencrypted group frame rejected on E2EE channel")
                 }
@@ -785,6 +794,9 @@ public class HubChatBridge(
 
         public const val MAX_SEEN: Int = 2048
         public const val MAX_TRACKED: Int = 256
+
+        public const val GROUP_E2EE_MODE_REQUIRED: String = "E2EE_REQUIRED"
+        public const val GROUP_E2EE_MODE_HUB_INSPECTABLE: String = "HUB_INSPECTABLE"
     }
 }
 

@@ -305,6 +305,15 @@ public fun DesktopShell(
 
     // ── Group creation (Item 3) ──
     var showCreateGroup by remember { mutableStateOf(false) }
+    val hubGroupPolicy by engine.hubGroupPolicy.collectAsState()
+    var canCreateHubGroup by remember { mutableStateOf(false) }
+    LaunchedEffect(showCreateGroup, enterpriseCredentials) {
+        canCreateHubGroup = if (showCreateGroup && enterpriseCredentials != null) {
+            chatRepository.canCreateHubGroup()
+        } else {
+            false
+        }
+    }
     var showBrowseOrgGroups by remember { mutableStateOf(false) }
     var showJoinGroupDialog by remember { mutableStateOf(false) }
     var activeJoinLink by remember { mutableStateOf<String?>(null) }
@@ -1947,7 +1956,8 @@ public fun DesktopShell(
                 activeJoinLink = inviteUrl
                 showJoinGroupDialog = true
             },
-            isEnterpriseEnrolled = enterpriseCredentials != null,
+            isEnterpriseEnrolled = enterpriseCredentials != null &&
+                (hubGroupPolicy.allowPersonalHubLink || (convId != null && chatRepository.isHubGroup(convId))),
             isLinkedToHub = convId?.let { chatRepository.isGroupLinkedToHub(it) } ?: false,
             onToggleLinkToHub = { link ->
                 convId?.let { gid ->
@@ -2540,6 +2550,27 @@ public fun DesktopShell(
                 peers = trustedPeerRoster,
                 onDismiss = { showCreateGroup = false },
                 isEnterpriseEnrolled = enterpriseCredentials != null,
+                allowPersonalHubLink = hubGroupPolicy.allowPersonalHubLink,
+                canCreateHubGroup = canCreateHubGroup,
+                onCreateHubGroup = { title, memberIds ->
+                    scope.launch {
+                        val result = chatRepository.createHubGroup(title, memberIds)
+                        val groupId = result.getOrNull()
+                        if (groupId != null) {
+                            showCreateGroup = false
+                            selectedChatConversationId = groupId
+                            chatRepository.openConversation(groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        } else {
+                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                            snackbarHostState.showSnackbar(
+                                message = reason ?: "Couldn't create the Hub group",
+                                duration = SnackbarDuration.Long,
+                            )
+                        }
+                    }
+                },
                 onFindDevicesClick = {
                     showCreateGroup = false
                     nav.selectTab(FlashDestination.NearbyDevices)
