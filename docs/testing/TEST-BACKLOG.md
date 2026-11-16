@@ -8545,6 +8545,7 @@ Added after implementing Android notification state management, `Verifying` stat
 ### INVITE-LINK-01 — Verified Android invite links and camera QR opening
 - **Setup:** Build with the actual public group and Hub link hostnames and serve the distributed APK signing association on both. Use an assigned phone with Flash installed and a browser profile or device without it.
 - **Pass:** Local group and Hub enrollment links and camera QRs open the appropriate confirmation on cold and warm launches. With no app or with a self-hosted Hub that is outside the manifest, the browser can download Flash, copy the original invite, or open the app using the fallback action. An invalid fragment removes open and copy actions, and an expired or used grant is refused on confirmation.
+- **2026-11-16 evidence:** Android 14 Infinix X6882B received an in-place APK update. Android verified the live test Hub as an App Link domain and resolved both exact invite paths to Flash as a candidate. The stock browser is also a candidate on this firmware. The custom `flash://enroll` route resolved solely to Flash, and `/admin/` resolved only to the browser. The deployed landing script passed valid and malformed payload checks. Camera and confirmation UI acceptance remain open.
 - **Status:** TODO on real hostnames and Android camera.
 
 ### INVITE-LINK-02 — Desktop invite protocol association
@@ -8561,6 +8562,7 @@ Added after implementing Android notification state management, `Verifying` stat
 - **Setup:** Isolated test Hub, Android phone, and Desktop client enrolled in the Hub, plus console operator access.
 - **Steps:** Issue a scoped replacement grant for the lost phone binding, redeem on a fresh Android install, verify old binding + active sessions are rejected across Hub restart and LAN revocation sync, and repeat with Desktop replacement.
 - **Pass:** Replacement succeeds with explicit department/group selection and quota checks; old/stolen credentials fail across both Hub and LAN; audit log records old -> new binding without secrets.
+- **2026-11-16 evidence:** The new Hub package passed on a separate container on `myserver` with disposable data and synthetic device keys. It enforced step-up, returned 409 for a second pending grant, revoked the old REST bearer and proof, and authenticated the replacement. The key behavior persisted after container restart. Physical app and LAN revocation propagation still need the device run.
 - **Status:** TODO (automated unit/server tests pass; physical device + isolated live Hub run owed).
 
 ### HR7-DEV-01 — Title-only announcement notifications + cold start tap on Android & Desktop
@@ -8605,6 +8607,7 @@ Added after implementing Android notification state management, `Verifying` stat
   2. Rehearse filesystem snapshot backup and restore with matching, missing, and wrong `data.key`, plus offline `keytool delegate` rotation and `keytool revoke` signer revocation with enrolled Android & Desktop clients reconnecting live.
   3. Trigger simulated disk pressure, quarantine alert, and expiring delegation/TLS alerts on the disposable host and verify operator scrape of `/health/detail` and `/metrics` matches `docs/deploy/HUB-SERVER-DEPLOYMENT.md`.
 - **Pass:** Live VPS health/metrics/console/restore match automated isolated drills; enrolled Android & Desktop reconnect without data loss on matching restore; missing/wrong key blocks startup.
+- **2026-11-16 evidence:** The remote test Hub accepted the saved pre-upgrade state, remained healthy and kept the same public realm ID. Its HTTPS invite routes and association file resolved. The same package in a separate loopback-only container passed management-token health and metrics, first-run console setup, enrollment, announcement synchronization and replacement. The full Chrome console and restore matrix still need dedicated runs.
 - **Status:** TODO (automated JVM Ktor `testApplication` & restore drills pass; disposable VPS + Chrome console + real TLS cert run owed).
 
 ### HR11-ENV-02 — Production-profile PERF-H03 pilot load benchmark with target fleet & coturn

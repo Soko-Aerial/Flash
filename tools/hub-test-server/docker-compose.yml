@@ -44,6 +44,7 @@ services:
       # able to start before the public URL exists. ./up.sh writes the real address into .env;
       # ./status.sh shouts if this placeholder is still in use.
       FLASH_EXTERNAL_URL: "${FLASH_EXTERNAL_URL:-https://not-configured-yet.invalid}"
+      FLASH_INVITE_ANDROID_FINGERPRINTS: "${FLASH_INVITE_ANDROID_FINGERPRINTS:-}"
       # TEST ONLY: an insecure hub that keeps the organisation root key on the
       # server and mints its own delegation (--dev-embedded-root). Never production.
       FLASH_ALLOW_INSECURE: "true"

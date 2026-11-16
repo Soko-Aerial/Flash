@@ -18,4 +18,10 @@ The group invite sheet shares and encodes the same URL in an offline QR. The lin
 
 Windows MSI/EXE and the Linux DEB declare the `flash://` handler. The browser asks the OS to launch it when the user selects **Open in Flash**. Flash forwards the invite over its existing local activation channel when another instance is already running. A portable build can open an invite supplied as one command-line argument, or paste it from the browser.
 
+On Windows, use the actual installer to verify registration, browser handoff and uninstall cleanup. For a development check, run the portable launcher with the original `flash://` invite or paste the HTTPS link in Flash. The launcher's invite argument accepts the custom scheme.
+
+```powershell
+& 'C:\path\to\Flash.exe' --open-invite '<flash:// invite>'
+```
+
 On Android 12+, use `adb shell pm verify-app-links --re-verify com.transfer.flash` and `adb shell pm get-app-links com.transfer.flash`. Confirm the intended host is verified, then test taps and camera QR opening with Flash cold and already running, browser fallback without Flash, expired and used grants, and group links with valid and missing fragments. On Android 11 and earlier, both configured hosts must pass verification. On Windows and Linux, test install, cold activation, activation with Flash hidden to the tray, and uninstall. On Linux, `xdg-mime query default x-scheme-handler/flash` shows the active handler. [Verify Android App Links](https://developer.android.com/training/app-links/verify-applinks)

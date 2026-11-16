@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-11-16 — Test Hub update and invite-link verification
+
+Built `:server:installDist` from `4c17a0a02821` and updated the `myserver` test Hub. The test tunnel stayed up on the same hostname. The previous app, database, data key and configuration are paired in `~/flash-hub/deployments/dev-4c17a0a02821-l43itK`. The Hub reported healthy and the public realm ID stayed the same. The new distribution still reports `2.2.0-beta.1`.
+
+Verified public HTTPS `/health`, `/api/v1/hub`, both invite routes, their JS and the Android association file. Public `/admin/` returned 404 and anonymous detailed health and metrics were denied. Executed the deployed landing script against valid and malformed fragments. In a distinct loopback-only container using the same deployed app, verified initial console TOTP setup, management health and metrics, synthetic P-256 enrollment and used-invite refusal, announcement feed and stale-epoch resync, replacement step-up and pending-grant conflict, immediate revocation of the old proof and bearer, and old/new proof behavior after restart. The smoke run used its own database and keys.
+
+Built the APK for the current tunnel and installed it in place on the Infinix X6882B (Android 14). Its signature matches the association. The phone listed Flash as a verified owner and as a handler for both invite paths. The custom scheme resolved solely to Flash. The camera-to-confirmation action still needs observation. Windows passed the standalone parser and running-instance tests. The shipped installer association remains in INVITE-LINK-02, and the native window was not exercised in this session.
+
 ## 2026-11-15 — Radio modes implementation research
 
 Reviewed current Field Companion wiring, the reserved `BEACON` sender and receive branch, radio ACK handling, the vendor SBC audio path, and the PTT audio/floor interfaces. Checked KISS and AX.25 specifications, Android location and audio guidance, Microsoft desktop APIs, and Vero/BTECH and HTCommander documentation. The [implementation proposal](../docs/plans/RADIO-MODES-IMPLEMENTATION.md) sequences Radar, single-base text Relay, a conditional receive-first PTT bridge, and All-in-One arbitration. It records why relay needs a post-commit application receipt and why the return audio path needs a real unkey-on-loss measurement.

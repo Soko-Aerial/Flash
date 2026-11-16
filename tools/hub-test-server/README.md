@@ -36,6 +36,12 @@ Check `serverVersion` in `/api/v1/hub` after the swap. A binary-only rollback re
 schemas. Across identity schema v3, restore the matching pre-upgrade data and key with the old
 app. See the [operator guide](../../docs/deploy/HUB-SERVER-DEPLOYMENT.md#upgrades).
 
+For Android App Links, add the test APK's public SHA-256 signing certificate fingerprint to
+`FLASH_INVITE_ANDROID_FINGERPRINTS` in the server's `.env`. The Hub service passes this setting to
+the app and publishes `/.well-known/assetlinks.json`. Build the APK with the current tunnel
+hostname as `-PflashInviteLinkHost=<hostname>` for both invite routes. Recreate only the Hub service
+to keep the tunnel hostname. See [Flash invite links](../../docs/deploy/INVITE-LINKS.md).
+
 ## What lives where
 
 | Path | What |
