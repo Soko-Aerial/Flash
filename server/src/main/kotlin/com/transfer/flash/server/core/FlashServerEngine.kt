@@ -168,6 +168,8 @@ public class FlashServerEngine(
         clock = clock,
         clientAddressOf = clientAddresses::clientIp,
         mailboxTtlMs = { mailboxTtlMs },
+        audit = auditLogger,
+        groupE2eeMode = { com.transfer.flash.server.admin.effectiveGroupE2eeMode(adminAuthService, config) },
     )
 
     public val ttlSweeper: TtlSweeper? =
@@ -323,6 +325,8 @@ public class FlashServerEngine(
                     enrollmentService = enroll,
                     serverExternalUrl = config.externalUrl,
                     bearerTokens = bearerTokens,
+                    allowPersonalHubLink = { com.transfer.flash.server.admin.effectiveAllowPersonalHubLink(adminAuthService, config) },
+                    groupE2eeMode = { com.transfer.flash.server.admin.effectiveGroupE2eeMode(adminAuthService, config) },
                 )
             }
         }

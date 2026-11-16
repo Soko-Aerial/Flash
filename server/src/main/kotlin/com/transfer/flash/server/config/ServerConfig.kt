@@ -77,6 +77,10 @@ public data class ServerConfig(
     val callMediaPolicy: String = DEFAULT_CALL_MEDIA_POLICY,
     /** Public SHA-256 signing certificate fingerprints served for this Hub's App Links. */
     val inviteSigningFingerprints: List<String> = emptyList(),
+    /** When false, clients must not link personal/local groups to this Hub. */
+    val allowPersonalHubLink: Boolean = true,
+    /** Group E2EE policy: `E2EE_REQUIRED` (default) or `HUB_INSPECTABLE`. */
+    val groupE2eeMode: String = DEFAULT_GROUP_E2EE_MODE,
 ) {
 
     init {
@@ -95,6 +99,7 @@ public data class ServerConfig(
         require(adminHost.isNotBlank()) { "adminHost must not be blank" }
         require(dataDir.isNotBlank()) { "dataDir must not be blank" }
         require(tlsMode in TLS_MODES) { "tlsMode must be one of $TLS_MODES, was: '$tlsMode'" }
+        require(groupE2eeMode in GROUP_E2EE_MODES) { "groupE2eeMode must be one of $GROUP_E2EE_MODES, was: '$groupE2eeMode'" }
         require(setupToken == null || setupToken.length >= MIN_SETUP_TOKEN_CHARS) {
             "setupToken must be at least $MIN_SETUP_TOKEN_CHARS characters"
         }
@@ -169,6 +174,11 @@ public data class ServerConfig(
         public const val MAX_DEVICE_CERT_VALIDITY_DAYS: Int = 365
         public const val DEFAULT_CALL_ICE_TTL_SECONDS: Long = 3600L
         public const val DEFAULT_CALL_MEDIA_POLICY: String = "DIRECT_PREFERRED_RELAY_FALLBACK"
+        public const val DEFAULT_GROUP_E2EE_MODE: String = com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_REQUIRED
+        public val GROUP_E2EE_MODES: List<String> = listOf(
+            com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_REQUIRED,
+            com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_HUB_INSPECTABLE,
+        )
 
         public const val TLS_PROXY: String = "proxy"
         public const val TLS_SELF: String = "self"
@@ -261,6 +271,8 @@ public data class ServerConfig(
                 turnSharedSecret = text("turn-secret", "turnSecret", envName = "FLASH_TURN_SECRET")?.takeIf { it.isNotBlank() },
                 callIceTtlSeconds = long("call-ice-ttl-seconds", "callIceTtlSeconds", envName = "FLASH_CALL_ICE_TTL_SECONDS", default = DEFAULT_CALL_ICE_TTL_SECONDS),
                 callMediaPolicy = text("call-media-policy", "callMediaPolicy", envName = "FLASH_CALL_MEDIA_POLICY")?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: DEFAULT_CALL_MEDIA_POLICY,
+                allowPersonalHubLink = text("allow-personal-hub-link", "allowPersonalHubLink", envName = "FLASH_ALLOW_PERSONAL_HUB_LINK")?.let { !it.equals("false", ignoreCase = true) } ?: true,
+                groupE2eeMode = text("group-e2ee-mode", "groupE2eeMode", envName = "FLASH_GROUP_E2EE_MODE")?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: DEFAULT_GROUP_E2EE_MODE,
             )
         }
 

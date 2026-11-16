@@ -208,6 +208,8 @@ public sealed interface RelayFrame {
             public const val ACTION_TYPING: String = "TYPING"
             public const val ACTION_ONLINE: String = "ONLINE"
             public const val ACTION_OFFLINE: String = "OFFLINE"
+            public const val ACTION_DIR_SYNC: String = "DIR_SYNC"
+            public const val CONV_DIRECTORY: String = "__dir__"
         }
     }
 

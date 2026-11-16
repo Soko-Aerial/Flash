@@ -257,6 +257,10 @@ public data class HubInfo(
     public val serverVersion: String? = null,
     /** HR9: True when the hub advertises off-LAN call signaling and ICE/TURN configuration. */
     public val offLanCallingSupported: Boolean = false,
+    /** When false, clients must not link personal/local groups to this Hub. */
+    public val allowPersonalHubLink: Boolean = true,
+    /** Group E2EE policy: `E2EE_REQUIRED` (default) or `HUB_INSPECTABLE`. */
+    public val groupE2eeMode: String = com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_REQUIRED,
 )
 
 /** HR9: Authenticated short-lived ICE/TURN server entry for off-LAN WebRTC calls. */

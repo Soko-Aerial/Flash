@@ -486,6 +486,8 @@ class HubServices private constructor(
                             principalResolver = resolver,
                             maxFileBytes = { FileSettings.maxFileBytes(admins::getSetting) },
                             offLanCallingSupported = { callIce.isSupported },
+                            allowPersonalHubLink = { com.transfer.flash.server.admin.effectiveAllowPersonalHubLink(admins, config) },
+                            groupE2eeMode = { com.transfer.flash.server.admin.effectiveGroupE2eeMode(admins, config) },
                         )
                     }
                 },

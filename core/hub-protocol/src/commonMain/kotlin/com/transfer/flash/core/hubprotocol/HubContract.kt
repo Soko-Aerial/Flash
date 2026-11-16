@@ -135,6 +135,9 @@ public object HubContract {
     /** Feature capability & relay envelope type for E2EE Hub-relayed group messages (HR10). */
     public const val FEATURE_GROUP_E2EE: String = "hge1"
     public const val GROUP_SEALED_ENVELOPE_TYPE: String = "GROUP_SEALED_V1"
+    public const val GROUP_FRAME_TYPE: String = "GROUP_FRAME"
+    public const val GROUP_E2EE_REQUIRED: String = "E2EE_REQUIRED"
+    public const val GROUP_E2EE_HUB_INSPECTABLE: String = "HUB_INSPECTABLE"
 
     // ---- sealed files (ADR-215) -----------------------------------------------------------------------------
 

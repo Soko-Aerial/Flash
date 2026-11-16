@@ -940,6 +940,8 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
                     fileRetentionDays = (fileLimits(d).retentionMs / DAY_MS).toInt(),
                     deviceStoredBytes = fileLimits(d).deviceStoredBytes,
                     globalStoredBytes = fileLimits(d).globalStoredBytes,
+                    allowPersonalHubLink = effectiveAllowPersonalHubLink(d.admins, c),
+                    groupE2eeMode = effectiveGroupE2eeMode(d.admins, c),
                 ),
             )
         }
@@ -959,6 +961,16 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
                 } else {
                     "$SETTING_USES must be a whole number between 1 and ${EnrollmentService.MAX_INVITE_USES}"
                 }
+                SETTING_ALLOW_PERSONAL_HUB_LINK -> if (b.value == "true" || b.value == "false") {
+                    null
+                } else {
+                    "$SETTING_ALLOW_PERSONAL_HUB_LINK must be 'true' or 'false'"
+                }
+                SETTING_GROUP_E2EE_MODE -> if (b.value in com.transfer.flash.server.config.ServerConfig.GROUP_E2EE_MODES) {
+                    null
+                } else {
+                    "$SETTING_GROUP_E2EE_MODE must be one of ${com.transfer.flash.server.config.ServerConfig.GROUP_E2EE_MODES}"
+                }
                 else -> com.transfer.flash.server.files.FileSettings.validate(b.key, b.value)
             }
             if (invalid != null) {
@@ -975,6 +987,25 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
 /** The administrator's file policy (ADR-215), read from the settings on every call. */
 internal fun fileLimits(d: AdminApiDeps): com.transfer.flash.server.files.FileLimits =
     com.transfer.flash.server.files.FileSettings.limits(d.admins::getSetting)
+
+internal const val SETTING_ALLOW_PERSONAL_HUB_LINK: String = "allowPersonalHubLink"
+internal const val SETTING_GROUP_E2EE_MODE: String = "groupE2eeMode"
+
+internal fun effectiveAllowPersonalHubLink(
+    admins: AdminAuthService,
+    config: com.transfer.flash.server.config.ServerConfig,
+): Boolean = when (admins.getSetting(SETTING_ALLOW_PERSONAL_HUB_LINK)) {
+    "true" -> true
+    "false" -> false
+    else -> config.allowPersonalHubLink
+}
+
+internal fun effectiveGroupE2eeMode(
+    admins: AdminAuthService,
+    config: com.transfer.flash.server.config.ServerConfig,
+): String = admins.getSetting(SETTING_GROUP_E2EE_MODE)
+    ?.takeIf { it in com.transfer.flash.server.config.ServerConfig.GROUP_E2EE_MODES }
+    ?: config.groupE2eeMode
 
 /**
  * `GET /admin/api/v1/files/stats`: what the hub is holding, for the operator. Counts and bytes only: the console never

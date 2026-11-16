@@ -58,6 +58,10 @@ fun Route.authRoutes(
     maxFileBytes: () -> Long = { 0L },
     /** HR9: True when off-LAN call signaling and ICE/TURN configuration are enabled. */
     offLanCallingSupported: () -> Boolean = { false },
+    /** When false, clients must not link personal/local groups to this Hub. */
+    allowPersonalHubLink: () -> Boolean = { true },
+    /** Group E2EE policy: `E2EE_REQUIRED` (default) or `HUB_INSPECTABLE`. */
+    groupE2eeMode: () -> String = { HubContract.GROUP_E2EE_REQUIRED },
 ) {
     // GET /enroll: the browser landing page. Always shows the CONFIGURED hub address (a `?server=` parameter is ignored:
     // it would let a link point a browser, and the app it opens, at an attacker's hub), and says the same thing for an
@@ -99,6 +103,8 @@ fun Route.authRoutes(
                     maxFileBytes = maxFileBytes(),
                     serverVersion = com.transfer.flash.server.ServerVersion.value,
                     offLanCallingSupported = offLanCallingSupported(),
+                    allowPersonalHubLink = allowPersonalHubLink(),
+                    groupE2eeMode = groupE2eeMode(),
                 ),
             )
         }

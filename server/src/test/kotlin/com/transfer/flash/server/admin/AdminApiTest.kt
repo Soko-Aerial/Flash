@@ -687,6 +687,27 @@ class AdminApiTest {
         assertEquals(0L, dto.readyBytes)
     }
 
+    @Test
+    fun groupPolicySettingsAreValidatedAndPersisted() = testApplication {
+        val r = Realm()
+        mount(r)
+        val s = client.signIn(r)
+
+        suspend fun put(key: String, value: String): HttpResponse = client.put("/admin/api/v1/settings") {
+            withSession(s, stepUp = client.stepUp(r, s, StepUpActions.SETTINGS_CHANGE, "$key=$value"))
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(SettingChangeBody(key, value)))
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, put("allowPersonalHubLink", "maybe").status)
+        assertEquals(HttpStatusCode.BadRequest, put("groupE2eeMode", "PLAINTEXT").status)
+        assertEquals(HttpStatusCode.OK, put("allowPersonalHubLink", "false").status)
+        assertEquals(HttpStatusCode.OK, put("groupE2eeMode", "HUB_INSPECTABLE").status)
+        val updatedPolicy = HubRestCodec.decode<SettingsDto>(client.getA("/settings", s).bodyAsText())
+        assertFalse(updatedPolicy.allowPersonalHubLink)
+        assertEquals("HUB_INSPECTABLE", updatedPolicy.groupE2eeMode)
+    }
+
     // ------------------------------------------------------------------------------------------------ accounts
 
     @Test

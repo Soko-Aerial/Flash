@@ -55,19 +55,21 @@ class E2eDirectoryContractTest {
         val dir = hub.services.directory
         dir.createDepartment("eng", "Engineering", emptyList(), DirectoryActor.CONSOLE)
         dir.createDepartment("ops", "Operations", emptyList(), DirectoryActor.CONSOLE)
+        suspend fun enrolled(id: String, department: String): E2eDevice {
+            val device = E2eDevice(id, hub).also { devices += it }
+            assertIs<EnrollmentOutcome.Enrolled>(device.client.enroll(hub.invite(department = department)))
+            return device
+        }
+        val alice = enrolled("alice", "eng")
+        val bob = enrolled("bob", "eng")
+        val carol = enrolled("carol", "ops")
         fun group(id: String, dept: String, visibility: GroupVisibility, mode: JoinMode, admins: List<String> = emptyList()) =
             dir.createGroup(id, "Group $id", dept, visibility, mode, admins, DirectoryActor.CONSOLE)
         group("g-open", "eng", GroupVisibility.LISTED, JoinMode.OPEN_IN_SCOPE)
         group("g-approve", "eng", GroupVisibility.LISTED, JoinMode.REQUEST_APPROVAL, listOf("alice"))
         group("g-hidden", "eng", GroupVisibility.HIDDEN, JoinMode.REQUEST_APPROVAL)
         group("g-ops", "ops", GroupVisibility.LISTED, JoinMode.OPEN_IN_SCOPE)
-
-        suspend fun enrolled(id: String, department: String): E2eDevice {
-            val device = E2eDevice(id, hub).also { devices += it }
-            assertIs<EnrollmentOutcome.Enrolled>(device.client.enroll(hub.invite(department = department)))
-            return device
-        }
-        return World(hub, enrolled("alice", "eng"), enrolled("bob", "eng"), enrolled("carol", "ops"))
+        return World(hub, alice, bob, carol)
     }
 
     private fun <T> FlashResult<T>.ok(): T = (this as? FlashResult.Success)?.value

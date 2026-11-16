@@ -3,13 +3,16 @@
 package com.transfer.flash.server.relay
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.certs.RevocationList
 import com.transfer.flash.core.hubprotocol.relay.AckStatus
 import com.transfer.flash.core.hubprotocol.relay.QueueEvent
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
 import com.transfer.flash.core.hubprotocol.relay.RelayFrameCodec
+import com.transfer.flash.server.auth.AuditSink
 import com.transfer.flash.server.auth.RevocationService
+import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode
 import com.transfer.flash.server.directory.OrganizationDirectory
@@ -805,6 +808,53 @@ class RelayFrameRouterTest {
         assertEquals("m-old", state.id)
         rig.router.notifyExpired("nobody-online", "bob", "m-x") // must not throw
         assertTrue(alice.isOpen)
+    }
+
+    @Test
+    fun directoryVersionBumpBroadcastsDirSyncMetaToConnectedSessions() = runBlocking<Unit> {
+        val dir = directoryWithGroup()
+        val rig = rig(directory = dir)
+        val (_, aliceWs) = rig.connect("alice")
+        val (_, bobWs) = rig.connect("bob")
+
+        dir.createGroup(
+            "grp-new", "New Group", "eng", GroupVisibility.LISTED, JoinMode.OPEN_IN_SCOPE,
+            emptyList(), DirectoryActor.CONSOLE,
+        )
+
+        val aliceMeta = aliceWs.nextOf<RelayFrame.Meta>()
+        val bobMeta = bobWs.nextOf<RelayFrame.Meta>()
+        assertEquals(RelayFrame.Meta.ACTION_DIR_SYNC, aliceMeta.action)
+        assertEquals(RelayFrame.Meta.CONV_DIRECTORY, aliceMeta.conversationId)
+        assertEquals(RelayFrame.Meta.ACTION_DIR_SYNC, bobMeta.action)
+        assertEquals(RelayFrame.Meta.CONV_DIRECTORY, bobMeta.conversationId)
+    }
+
+    @Test
+    fun hubInspectableModeAuditsPlaintextGroupFrame() = runBlocking<Unit> {
+        val dir = directoryWithGroup()
+        dir.addMemberToGroup("grp-dev", "alice", isOrgAdmin = true)
+        val audited = mutableListOf<String>()
+        val rig = Rig(
+            RelayFrameRouter(
+                connectionPool = RelayConnectionPool(),
+                mailboxQueue = mailbox(),
+                directory = dir,
+                audit = AuditSink { actor, action, details -> audited += "$actor|$action|$details" },
+                groupE2eeMode = { HubContract.GROUP_E2EE_HUB_INSPECTABLE },
+            ),
+        )
+        val (alice, aliceWs) = rig.connect("alice")
+
+        rig.router.processFrame(
+            alice,
+            RelayFrameCodec.encode(RelayFrame.Send(id = "gi-1", type = HubContract.GROUP_FRAME_TYPE, sentAt = 1L, payload = "hello group", group = "grp-dev")),
+        )
+        assertIs<RelayFrame.Ack>(aliceWs.nextOf<RelayFrame.Ack>())
+        assertEquals(1, audited.size)
+        assertTrue(audited[0].contains("alice|relay.group.inspect|"), audited[0])
+        assertTrue(audited[0].contains("target=grp-dev"), audited[0])
+        assertTrue(audited[0].contains("preview=hello group"), audited[0])
     }
 
     private suspend fun awaitCondition(what: String, timeoutMs: Long = 5_000L, condition: suspend () -> Boolean) {

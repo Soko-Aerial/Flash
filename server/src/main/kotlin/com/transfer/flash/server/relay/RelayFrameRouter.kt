@@ -100,6 +100,8 @@ public class RelayFrameRouter(
      * deliveries (SEC-D15-02). Defaults to the shipped retention for a router built without a mailbox.
      */
     private val mailboxTtlMs: () -> Long = { HubContract.DEFAULT_MAILBOX_TTL_MS },
+    private val audit: com.transfer.flash.server.auth.AuditSink = com.transfer.flash.server.auth.AuditSink.None,
+    private val groupE2eeMode: () -> String = { HubContract.GROUP_E2EE_REQUIRED },
 ) {
 
     private val logger = LoggerFactory.getLogger(RelayFrameRouter::class.java)
@@ -111,6 +113,7 @@ public class RelayFrameRouter(
 
     init {
         revocation.onRevoked { deviceId, _, reason -> kickIfRevoked(deviceId, reason) }
+        directory?.onVersionBumped { version -> broadcastDirectorySync(version) }
     }
 
     // =====================================================================================================
@@ -231,6 +234,9 @@ public class RelayFrameRouter(
             return
         }
         if (!withinByteBudget(origin, send, send.to, copies = 1)) return
+        if (send.type == HubContract.GROUP_FRAME_TYPE && groupE2eeMode() == HubContract.GROUP_E2EE_HUB_INSPECTABLE) {
+            auditInspectableGroupFrame(origin.deviceId, target = send.to, send = send)
+        }
         val kind = routeOne(origin.deviceId, send.to, send.id, send.type, send.sentAt, send.payload, group = null)
         offerFrame(origin, ackFor(kind, send.id, send.to))
     }
@@ -264,6 +270,9 @@ public class RelayFrameRouter(
         }
         val recipients = members.filter { it != origin.deviceId }
         if (!withinByteBudget(origin, send, groupId, copies = recipients.size)) return
+        if (groupE2eeMode() == HubContract.GROUP_E2EE_HUB_INSPECTABLE && send.type != HubContract.GROUP_SEALED_ENVELOPE_TYPE) {
+            auditInspectableGroupFrame(origin.deviceId, target = groupId, send = send)
+        }
         val gate = Semaphore(policy.groupFanoutConcurrency)
         val preEncodedJson = RelayFrameCodec.encode(
             RelayFrame.Deliver(from = origin.deviceId, id = send.id, type = send.type, sentAt = send.sentAt, payload = send.payload, group = groupId),
@@ -908,6 +917,27 @@ public class RelayFrameRouter(
         offerFrame(session, RelayFrame.Kick(reason = reason))
         session.closeGracefully(reason, CloseReason.Codes.NORMAL)
         return true
+    }
+
+    /**
+     * Broadcasts a lightweight directory-sync notification to all connected `/flash-relay` sessions so clients
+     * refresh their directory snapshot immediately when [OrganizationDirectory.currentVersion] advances.
+     */
+    public fun broadcastDirectorySync(version: Long): Int {
+        val text = RelayFrameCodec.encode(
+            RelayFrame.Meta(
+                action = RelayFrame.Meta.ACTION_DIR_SYNC,
+                conversationId = RelayFrame.Meta.CONV_DIRECTORY,
+                ts = clock(),
+            ),
+        )
+        return connectionPool.broadcastText(text) { true }
+    }
+
+    private fun auditInspectableGroupFrame(senderId: String, target: String, send: RelayFrame.Send) {
+        val preview = send.payload.replace('\n', ' ').replace('\r', ' ').take(256)
+        logger.info("GROUP_INSPECT sender={} target={} id={} type={} bytes={}", senderId, target, send.id, send.type, send.payload.length)
+        audit.record(senderId, "relay.group.inspect", "target=$target id=${send.id} type=${send.type} bytes=${send.payload.length} preview=$preview")
     }
 
     /**

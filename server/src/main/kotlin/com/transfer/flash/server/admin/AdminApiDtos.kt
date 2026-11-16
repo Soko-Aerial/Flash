@@ -368,6 +368,8 @@ data class SettingsDto(
     val fileRetentionDays: Int = com.transfer.flash.server.files.FileSettings.DEFAULT_RETENTION_DAYS,
     val deviceStoredBytes: Long = com.transfer.flash.server.files.FileSettings.DEFAULT_DEVICE_STORED_BYTES,
     val globalStoredBytes: Long = com.transfer.flash.server.files.FileSettings.DEFAULT_GLOBAL_STORED_BYTES,
+    val allowPersonalHubLink: Boolean = true,
+    val groupE2eeMode: String = com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_REQUIRED,
 )
 
 @Serializable
