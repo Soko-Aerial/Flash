@@ -210,6 +210,7 @@ public sealed interface RelayFrame {
             public const val ACTION_OFFLINE: String = "OFFLINE"
             public const val ACTION_DIR_SYNC: String = "DIR_SYNC"
             public const val CONV_DIRECTORY: String = "__dir__"
+            public const val ACTION_GROUP_POLICY_CHANGED: String = "GROUP_POLICY_CHANGED"
         }
     }
 

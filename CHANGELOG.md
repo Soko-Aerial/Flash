@@ -11,7 +11,12 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 ## Unreleased
 
 - Desktop restores interrupted direct transfers from its encrypted store and offers Retry. Retries reuse the bytes the receiving peer confirms.
-- Android opens and plays videos in the same media viewer, with translucent controls and an integrated seek bar.
+- Android opens and plays videos in the same media viewer, with translucent controls and an integrated timeline. Double-tap the right side of the video to skip ahead ten seconds.
+- Windows plays video inline through Media Foundation and uses the shared playback controls.
+- Transfers and chat use more compact rows and timestamps. Incoming image and voice attachments stay in one message bubble per transfer.
+- The Hub loads its sections independently and keeps cached content visible during refresh. On Windows, Hub opens beside the current chat, and conversations opened from Hub stay in that tab.
+- Hub group creation saves the group and initial members together. Group managers can share invite links that follow the group's enrollment and approval rules. The relay enforces the organization's required group encryption setting.
+
 ## SDK 2.2.0-beta.3 - 2026-11-08
 
 - Added verified Linux AAPT2 and Compose Desktop metadata checksums for JitPack. The stable

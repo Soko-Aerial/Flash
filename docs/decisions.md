@@ -1,5 +1,13 @@
 # Decisions
 
+## ADR-365 — Enforce Hub group policy before delivery and create the initial roster atomically
+
+2026-11-18. The Hub rejects readable group relay sends under required encryption and excludes old readable copies from replay and spill while the policy is active. Server policy updates invalidate Android and desktop state. Clients bind policy to the current enrollment and restore required encryption and disabled personal links during a failed refresh.
+
+Hub group creation submits the full initial roster in one request. Client retries reuse the draft's group ID. The Hub returns an existing result only for a matching creator and unchanged request. It validates every member before writing the group and roster. The existing Hub group route remains for older callers.
+
+Shareable Hub directory group links use a separate `flash://g/2` credential, sealed by the issuing Hub and wrapped in the existing HTTPS group landing URL. The recipient must be enrolled in that Hub and its regular join policy still applies. Token expiry and group version prevent an old link from resolving indefinitely. Device and deployed-Hub acceptance are IFREV-01..06.
+
 ## ADR-362 — Recover desktop direct transfers with the existing encrypted store
 
 2026-11-15. Desktop uses the shared Room adapter and existing encrypted database to restore transfer identity, retry state and retention. `FlashConfig.enableResume` controls the store in SDK hosts. Open the database before constructing the transfer repository and index durable rows before binding inbound sessions. With a database open failure, transfers continue in memory.

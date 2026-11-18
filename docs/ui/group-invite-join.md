@@ -21,6 +21,10 @@
 
 ---
 
+### Hub directory groups
+
+A Hub group manager can share a join link for a listed group that allows self-service join. The confirmation explains that the link uses the recipient's current Hub enrollment and may require approval. It resolves through the Hub and uses the normal directory join state. Local signed group invitations still carry their own peer join information.
+
 ## Purpose
 
 Joining a group in Flash P2P mesh cannot rely on a centralized server to validate access tokens. Instead:

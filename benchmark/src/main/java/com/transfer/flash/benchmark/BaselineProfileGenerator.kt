@@ -7,7 +7,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * OPT-O01-03: Baseline profile generator targeting Flash startup and critical Compose UI paths.
+ * OPT-O01-03: Baseline profile generator for Flash startup.
  */
 @RunWith(AndroidJUnit4::class)
 class BaselineProfileGenerator {

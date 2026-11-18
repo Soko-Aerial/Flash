@@ -1,5 +1,29 @@
 # Error Log
 
+## ERROR-1031 — Hub required mode does not refuse readable group traffic
+
+**2026-11-18 · Hub relay · Status: OPEN.** The relay reads group encryption mode when deciding whether to audit inspectable content. Recipient-targeted and group-targeted delivery paths still route readable group frames when the configured mode requires encryption. Current clients have recipient-side checks, which run after the relay boundary. Require the appropriate group transport envelope at the Hub before live or mailbox delivery and make the refusal observable to the sender. Source is IF-01 in the [module audit](../docs/audit/2026-11-17-module-if-review.md#findings-to-act-on). Static trace only at discovery.
+
+**Fix and verification.** The relay now refuses readable group traffic in required mode and skips previously queued readable group messages under that mode. The server regression passes for recipient-targeted delivery, group fanout, and mailbox replay. Live acceptance remains IFREV-01.
+
+## ERROR-1032 — Android and desktop can retain stale Hub group policy
+
+**2026-11-18 · Hub settings and client policy · Status: OPEN.** The admin settings write stores the value without scheduling a client policy refresh. WebSocket directory sync follows directory version bumps. Each client fetches policy after a snapshot outcome and assigns any successful result without checking whether the active enrollment still matches. A connected device can retain the old confidentiality mode after a policy change. Scope the cache to the active enrollment and handle refresh failure and stale responses explicitly. Source is IF-02 in the [module audit](../docs/audit/2026-11-17-module-if-review.md#findings-to-act-on). Static trace only at discovery.
+
+**Fix and verification.** The Hub broadcasts a policy invalidation after an admin write. A shared Android and desktop monitor binds fetched policy to its enrollment and invalidation generation and defaults to required encryption on loss of freshness. The monitor and relay notification regressions passed. Live acceptance remains IFREV-02.
+
+## ERROR-1033 — Partial Hub group membership is shown as successful creation
+
+**2026-11-18 · Hub group creation · Status: OPEN.** Creation and member addition are separate requests. A failed member add produces a warning, then the client upserts every requested member locally and returns success. If the next sync is unavailable, the roster can show members the Hub never accepted. Return an accurate partial outcome and base the local roster on confirmed membership. Source is IF-05 in the [module audit](../docs/audit/2026-11-17-module-if-review.md#findings-to-act-on). Static trace only at discovery.
+
+**Fix and verification.** The Hub validates and persists the entire starting roster with the group in one request. The client seeds local rows only after confirmation. Server and messaging regressions passed for an invalid member and refusal without local state. Live acceptance remains IFREV-03.
+
+## ERROR-1034 — Repeated Hub group creation may produce duplicate groups
+
+**2026-11-18 · Hub group creation UI and repository · Status: OPEN.** Create remains enabled while either host is awaiting the API. Independent calls generate different group IDs. Gate the in-flight UI action and make retries of one creation request idempotent. Source is IF-06 in the [module audit](../docs/audit/2026-11-17-module-if-review.md#findings-to-act-on). Static trace only at discovery.
+
+**Fix and verification.** The group sheet gates in-flight Create and the Hub accepts an identical retry using the same draft ID and authorized creator. The server and messaging retry regressions passed. Live UX acceptance remains IFREV-04.
+
 ## ERROR-1030 — Skiko crashed while drawing a recorded layer during Windows video renders
 
 **2026-11-15 · Windows media viewer.** After six captures, the Gradle desktop test worker exited with `EXCEPTION_ACCESS_VIOLATION` in `skiko-windows-x64.dll`. Its Java stack started at `RenderNode.drawInto` on `AWT-EventQueue-0`. The original frame producer drew the raw Skia image into a native canvas and explicitly closed the previous image when publishing its replacement. That lifetime could end while a recorded layer still used it. The revised producer publishes a Compose `ImageBitmap` and renders through `DrawScope.drawImage`. The intermediate raster image is closed after the conversion copies its pixels. Compose retains the bitmap for drawing.

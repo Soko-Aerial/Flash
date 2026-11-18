@@ -34,7 +34,6 @@ public object FlashHubCopy {
     public const val SEGMENT_GROUPS: String = "Groups"
 
     // --- Status strip ------------------------------------------------------------------------------------
-    public const val STRIP_UPDATING: String = "Updating…"
     public const val STRIP_WHY: String = "Why?"
     public const val STRIP_LEASE_EXPIRED: String = "Reconnect to the company network to keep colleague trust up to date"
     public const val STRIP_CLOCK_WRONG: String = "Your device clock looks wrong. Colleague trust may fail until it is fixed."
@@ -71,7 +70,7 @@ public object FlashHubCopy {
     public const val REVOKED_BODY: String =
         "Organisation news, people and groups are no longer available. Chats with people you paired with directly are not affected."
     public const val SIGN_OUT_ORG: String = "Sign out of organisation"
-    public const val LOADING: String = "Loading"
+    public const val LOADING: String = "Loading Hub"
 
     // --- News (Plan A3 section 9) ------------------------------------------------------------------------
     public const val NEWS_TITLE: String = "News"

@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,6 +33,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.common.id.UuidIdGenerator
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
@@ -41,6 +43,7 @@ import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import kotlinx.coroutines.launch
 
 /** One selectable trusted peer in the create-group sheet. */
 public data class FlashCreateGroupPeerUi(
@@ -82,6 +85,7 @@ public object FlashCreateGroupMath {
  * fail-closed by construction. Calls [onCreate] once with the normalized title and the selected
  * peer ids (the local device is implicit and never listed).
  */
+@OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
 @Composable
 public fun FlashCreateGroupSheet(
     peers: List<FlashCreateGroupPeerUi>,
@@ -94,7 +98,7 @@ public fun FlashCreateGroupSheet(
     onFindDevicesClick: (() -> Unit)? = null,
     allowPersonalHubLink: Boolean = true,
     canCreateHubGroup: Boolean = false,
-    onCreateHubGroup: ((title: String, memberIds: Set<String>) -> Unit)? = null,
+    onCreateHubGroup: (suspend (title: String, memberIds: Set<String>, requestId: String) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -102,13 +106,16 @@ public fun FlashCreateGroupSheet(
     var selected by remember { mutableStateOf(emptySet<String>()) }
     var linkToHub by rememberSaveable { mutableStateOf(initialUseHub && allowPersonalHubLink) }
     var createOnHub by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var creatingHubGroup by remember { mutableStateOf(false) }
+    val requestId = rememberSaveable(FlashCreateGroupMath.normalizedTitle(title), selected) { UuidIdGenerator.newId() }
     val canCreate = if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
         FlashCreateGroupMath.normalizedTitle(title) != null
     } else {
         FlashCreateGroupMath.canCreate(title, selected)
     }
     FlashSheetHost(
-        onDismiss = onDismiss,
+        onDismiss = { if (!creatingHubGroup) onDismiss() },
         containerColor = colors.backgroundSurface,
         modifier = modifier,
     ) {
@@ -336,15 +343,24 @@ public fun FlashCreateGroupSheet(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                androidx.compose.material3.TextButton(onClick = onDismiss) {
+                androidx.compose.material3.TextButton(onClick = onDismiss, enabled = !creatingHubGroup) {
                     Text("Cancel", color = colors.textSecondary)
                 }
                 androidx.compose.material3.TextButton(
-                    enabled = canCreate,
+                    enabled = canCreate && !creatingHubGroup,
                     onClick = {
+                        if (creatingHubGroup) return@TextButton
                         FlashCreateGroupMath.normalizedTitle(title)?.let { normalized ->
                             if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
-                                onCreateHubGroup(normalized, selected)
+                                creatingHubGroup = true
+                                val selectedMembers = selected
+                                scope.launch {
+                                    try {
+                                        onCreateHubGroup(normalized, selectedMembers, requestId)
+                                    } finally {
+                                        creatingHubGroup = false
+                                    }
+                                }
                             } else if (onCreateWithHub != null) {
                                 onCreateWithHub(normalized, selected, allowPersonalHubLink && linkToHub)
                             } else {
@@ -353,7 +369,10 @@ public fun FlashCreateGroupSheet(
                         }
                     },
                 ) {
-                    Text("Create", color = if (canCreate) colors.textLink else colors.textTertiary)
+                    Text(
+                        if (creatingHubGroup) "Creating..." else "Create",
+                        color = if (canCreate && !creatingHubGroup) colors.textLink else colors.textTertiary,
+                    )
                 }
             }
         }

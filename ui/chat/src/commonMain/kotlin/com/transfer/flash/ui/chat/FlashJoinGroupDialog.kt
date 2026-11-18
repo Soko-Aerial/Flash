@@ -62,6 +62,8 @@ public fun FlashJoinGroupDialog(
         if (inputUrl.isNotBlank()) FlashGroupInviteJoinMath.parseInviteUrl(inputUrl) else null
     }
 
+    val hubInvite = remember(inputUrl) { FlashGroupInviteJoinMath.isHubGroupInvite(inputUrl) }
+
     FlashConfirmHost(
         onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
@@ -81,7 +83,7 @@ public fun FlashJoinGroupDialog(
                 )
             } else {
                 FlashText(
-                    text = "Join with invite link",
+                    text = if (hubInvite) "Join Hub group?" else "Join with invite link",
                     style = FlashTheme.typography.headingMedium,
                     color = colors.textPrimary,
                 )
@@ -140,6 +142,13 @@ public fun FlashJoinGroupDialog(
                             textAlign = TextAlign.Center,
                         )
                     }
+                } else if (hubInvite) {
+                    FlashText(
+                        text = "This link uses your current Hub enrollment. The group may need an administrator to approve your request.",
+                        style = FlashTheme.typography.bodyDefault,
+                        color = colors.textSecondary,
+                        textAlign = TextAlign.Center,
+                    )
                 } else {
                     // Link input state
                     FlashText(
@@ -240,7 +249,7 @@ public fun FlashJoinGroupDialog(
                         androidx.compose.material3.Text("Cancel request", color = colors.textError)
                     }
                 }
-            } else if (parsedInvite != null) {
+            } else if (parsedInvite != null || hubInvite) {
                 TextButton(onClick = { onJoin(inputUrl) }) {
                     androidx.compose.material3.Text("Join group", color = colors.textLink)
                 }

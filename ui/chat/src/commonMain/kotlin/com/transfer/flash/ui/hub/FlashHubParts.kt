@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -47,7 +48,6 @@ import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
@@ -163,22 +163,32 @@ internal fun FlashHubTopBar(
 }
 
 @Composable
-internal fun FlashHubIconButton(icon: FlashIconSpec, description: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+internal fun FlashHubIconButton(
+    icon: FlashIconSpec,
+    description: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    busy: Boolean = false,
+) {
     Box(
         modifier = modifier
             .size(FlashDimensions.minTouchTarget)
             .clip(HubShapes.control)
             .hubClickable(enabled = enabled, onClick = onClick)
-            .semantics { contentDescription = description },
+            .semantics {
+                contentDescription = description
+                liveRegion = LiveRegionMode.Polite
+            },
         contentAlignment = Alignment.Center,
     ) {
-        FlashIcon(icon = icon, contentDescription = null)
+        if (busy) FlashHubActivityIcon() else FlashIcon(icon = icon, contentDescription = null)
     }
 }
 
 /**
  * The status strip (design doc "States"): a tone wash with an icon, the text and an optional action, announced politely when
- * it changes. The text crossfades when the state changes; "Updating…" shows a turning arrow.
+ * it changes.
  */
 @Composable
 internal fun FlashHubStatusStripView(
@@ -186,6 +196,7 @@ internal fun FlashHubStatusStripView(
     onWhy: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    retryEnabled: Boolean = true,
 ) {
     val tone = when (strip.tone) {
         FlashHubStripTone.CALM -> HubTone.SUCCESS
@@ -193,14 +204,11 @@ internal fun FlashHubStatusStripView(
         FlashHubStripTone.WARNING -> HubTone.WARNING
     }
     val tint = tone.color()
-    val updating = strip.text == FlashHubCopy.STRIP_UPDATING
     val icon = when {
-        updating -> FlashIcons.Retry
         strip.tone == FlashHubStripTone.CALM -> FlashIcons.Verified
         strip.tone == FlashHubStripTone.INFO -> FlashIcons.Wifi
         else -> FlashIcons.Failed
     }
-    val turn = rememberHubPhase(periodMs = 1100)
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -211,14 +219,12 @@ internal fun FlashHubStatusStripView(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
-        Box(Modifier.graphicsLayer { rotationZ = if (updating) turn.value * 360f else 0f }) {
-            FlashIcon(icon = icon, contentDescription = null, tint = tint, size = FlashDimensions.iconSm)
-        }
+        FlashIcon(icon = icon, contentDescription = null, tint = tint, size = FlashDimensions.iconSm)
         FlashText(strip.text, modifier = Modifier.weight(1f), style = FlashTheme.typography.metadataDefault, color = FlashTheme.colors.textPrimary)
         when (strip.action) {
             FlashHubStripAction.NONE -> Unit
             FlashHubStripAction.WHY -> FlashHubTextAction(FlashHubCopy.STRIP_WHY, onWhy)
-            FlashHubStripAction.RETRY -> FlashHubTextAction(FlashHubCopy.RETRY, onRetry)
+            FlashHubStripAction.RETRY -> FlashHubTextAction(FlashHubCopy.RETRY, onRetry, enabled = retryEnabled)
         }
     }
 }
@@ -491,40 +497,35 @@ internal fun FlashHubEmptyState(
     }
 }
 
-/**
- * Placeholder blocks for the first load: a masthead block and ruled rows, with a soft highlight sweeping across in the full
- * mode and flat blocks otherwise. Decorative: hidden from TalkBack except one "Loading" label.
- */
 @Composable
-internal fun FlashHubSkeleton(modifier: Modifier = Modifier, rows: Int = 8) {
-    val colors = FlashTheme.colors
-    val sweep = rememberHubPhase(periodMs = 1500, still = 0.5f)
-    val shimmer = hubLoopAllowed()
-    val base: Color = colors.backgroundSurfaceStrong.copy(alpha = 0.55f)
-    val highlight = colors.textPrimary.copy(alpha = 0.07f)
-    @Composable
-    fun block(width: Dp?, height: Dp, mod: Modifier = Modifier) {
-        Box(
-            mod.then(if (width != null) Modifier.width(width) else Modifier.fillMaxWidth()).height(height)
-                .clip(HubShapes.control).background(base).hubShimmer(highlight, sweep, shimmer),
-        )
+private fun FlashHubActivityIcon() {
+    if (!hubLoopAllowed()) {
+        FlashIcon(FlashIcons.Clock, contentDescription = null, tint = FlashTheme.colors.textLink)
+        return
     }
-    Column(
-        modifier = modifier.fillMaxWidth().semantics { contentDescription = FlashHubCopy.LOADING; liveRegion = LiveRegionMode.Polite },
-    ) {
-        block(null, 48.dp, Modifier.padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12).clearAndSetSemantics { })
-        repeat(rows.coerceIn(1, 12)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().height(64.dp).padding(horizontal = FlashSpacing.space16).clearAndSetSemantics { },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                block(40.dp, 40.dp)
-                Spacer(Modifier.width(FlashSpacing.space12))
-                Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                    block(140.dp, 14.dp)
-                    block(96.dp, 12.dp)
-                }
-            }
+    val turn = rememberHubPhase(periodMs = 1100)
+    Box(Modifier.graphicsLayer { rotationZ = turn.value * 360f }) {
+        FlashIcon(FlashIcons.Retry, contentDescription = null, tint = FlashTheme.colors.textLink)
+    }
+}
+
+/** Keeps a quick local snapshot read from flashing a placeholder. */
+@Composable
+internal fun FlashHubLoading(modifier: Modifier = Modifier) {
+    var showFeedback by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(160L)
+        showFeedback = true
+    }
+    if (showFeedback) {
+        Row(
+            modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
+                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            FlashHubActivityIcon()
+            FlashText(FlashHubCopy.LOADING, style = FlashTheme.typography.bodyEmphasis, color = FlashTheme.colors.textSecondary)
         }
     }
 }

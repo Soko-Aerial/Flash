@@ -13,6 +13,8 @@ import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.enterprise.HubLinkState
 import com.transfer.flash.core.messaging.model.*
+import com.transfer.flash.core.messaging.util.sampleFlashConversationState
+import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.hub.*
 import com.transfer.flash.ui.adaptive.FlashNavigationRail
 import com.transfer.flash.ui.adaptive.FlashNavigationRailTab
@@ -59,15 +61,28 @@ class FlashHubWorkspaceRenderTest {
             onOpenGroup = {}, onRetryGroups = {}, onDismissTip = {}, onRouteConsumed = {},
         )
         data class Case(val name: String, val width: Int, val height: Int, val dark: Boolean = false,
-            val data: FlashHubScreenData = base, val selection: FlashHubSelection = FlashHubSelection(), val fontScale: Float = 1f)
+            val data: FlashHubScreenData = base, val selection: FlashHubSelection = FlashHubSelection(), val fontScale: Float = 1f,
+            val splitChat: Boolean = false)
         val cases = listOf(
             Case("phone-people", 390, 844),
             Case("phone-dark", 390, 844, dark = true),
             Case("phone-admin-news", 390, 844, data = base.copy(state = base.state.copy(myRole = HubPersonRole.ADMIN), posting = HubPostingRights.OrgWide()), selection = FlashHubSelection(segment = FlashHubSegment.NEWS)),
             Case("phone-offline", 390, 844, data = base.copy(link = HubLinkState.OFFLINE, state = base.state.copy(syncStatus = HubSyncStatus.FAILED_OFFLINE))),
-            Case("phone-loading", 390, 844, data = base.copy(state = base.state.copy(loaded = false))),
+            Case(
+                "phone-loading", 390, 844,
+                data = base.copy(
+                    people = emptyList(),
+                    state = base.state.copy(syncStatus = HubSyncStatus.NEVER, peopleCount = 0, lastSyncedAtMs = null, isRefreshing = true),
+                ),
+            ),
+            Case("phone-refreshing-dark", 390, 844, dark = true, data = base.copy(state = base.state.copy(isRefreshing = true))),
+            Case(
+                "phone-loading-large-text", 390, 844, fontScale = 2f,
+                data = base.copy(people = emptyList(), state = base.state.copy(loaded = false)),
+            ),
             Case("phone-large-text", 390, 844, fontScale = 2f),
             Case("desktop-departments", 1200, 800, selection = FlashHubSelection(segment = FlashHubSegment.DEPARTMENTS)),
+            Case("desktop-hub-chat", 1200, 800, dark = true, splitChat = true),
             Case("desktop-person", 1200, 800, data = base.copy(openedPerson = base.people.first()), selection = FlashHubSelection(personId = base.people.first().deviceId)),
             Case("phone-empty", 390, 844, data = base.copy(people = emptyList(), state = base.state.copy(peopleCount = 0))),
             Case("phone-groups-error", 390, 844, data = base.copy(groups = emptyList(), groupsLoadError = "Groups could not be loaded. Try again."), selection = FlashHubSelection(segment = FlashHubSegment.GROUPS)),
@@ -80,7 +95,22 @@ class FlashHubWorkspaceRenderTest {
                         if (case.width >= 840) {
                             Row(Modifier.fillMaxSize().background(FlashTheme.colors.backgroundApp)) {
                                 FlashNavigationRail(tabs, FlashDestination.Hub, {}, localDisplayName = "You")
-                                Box(Modifier.weight(1f)) { FlashHubScreen(case.data, case.selection, {}, actions) }
+                                if (case.splitChat) {
+                                    DesktopTwoPane(
+                                        listPane = { FlashHubScreen(case.data, case.selection, {}, actions) },
+                                        detailPane = {
+                                            FlashConversationScreen(
+                                                state = sampleFlashConversationState(),
+                                                onBack = {},
+                                                onSendText = {},
+                                                onAttachmentClick = {},
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                                    )
+                                } else {
+                                    Box(Modifier.weight(1f)) { FlashHubScreen(case.data, case.selection, {}, actions) }
+                                }
                             }
                         } else {
                             Box(Modifier.fillMaxSize().background(FlashTheme.colors.backgroundApp)) {

@@ -40,7 +40,9 @@ public fun FlashInlineInviteCard(
 ) {
     val colors = FlashTheme.colors
     val parsedInvite = remember(inviteUrl) { FlashGroupInviteJoinMath.parseInviteUrl(inviteUrl) }
-    if (parsedInvite == null) return
+    val hubInvite = remember(inviteUrl) { FlashGroupInviteJoinMath.isHubGroupInvite(inviteUrl) }
+    if (parsedInvite == null && !hubInvite) return
+    val name = parsedInvite?.groupName?.ifBlank { "Group" } ?: "Hub group"
 
     Box(
         modifier = modifier
@@ -56,8 +58,8 @@ public fun FlashInlineInviteCard(
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         ) {
             FlashAvatar(
-                initials = parsedInvite.groupName.take(2).uppercase().ifEmpty { "GP" },
-                seed = parsedInvite.groupId,
+                initials = name.take(2).uppercase(),
+                seed = parsedInvite?.groupId ?: "hub-group",
                 size = 40.dp,
             )
 
@@ -66,7 +68,7 @@ public fun FlashInlineInviteCard(
                 verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
             ) {
                 FlashText(
-                    text = parsedInvite.groupName.ifBlank { "Group" },
+                    text = name,
                     style = FlashTheme.typography.bodyEmphasis,
                     color = colors.textPrimary,
                     maxLines = 1,

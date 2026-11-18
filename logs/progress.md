@@ -1,5 +1,29 @@
 # Progress Log
 
+## 2026-11-18 — Hub refresh and Windows conversation pane
+
+Hub entry uses one shared refresh. Directory, groups and news run concurrently and publish independently. The engine owns the in-flight task, so leaving and reopening joins the same task. Cached content stays visible, first load uses one delayed status row, and warm refresh uses the header action without a second progress indicator. Manual retry bypasses the automatic cooldown and observes directory rate limiting.
+
+Windows now uses the existing split layout for Hub. An active conversation stays mounted when switching between Chats and Hub. Opening a person or group from Hub uses the Hub tab's conversation route. Narrow windows retain a single-pane conversation with Back to Hub. The former Never Synced test fixture accidentally contained a successful timestamp. The revised case checks both a true first load and an empty cached snapshot.
+
+Verification passed 35 Hub facade tests, 210 Hub UI JVM tests, 17 focused desktop tests including the render fixture, and Android debug APK assembly. Inspected the native first-load, reduced-motion, cached refresh, 200% text and Windows Hub-chat split renders under build/reports/hub-refresh. The pre-existing shared bottom navigation truncation at 200% remains tracked by HUBWORK-04. Live latency, scroll/draft retention, resize and device accessibility are tracked by HUBWORK-06/07.
+
+## 2026-11-18 — Hub group fixes from the module IF review
+
+Implemented IF-01, IF-02, IF-03, IF-05 and IF-06 on local dev at 364109bd with existing worktree changes. Required group encryption is enforced at the relay. Settings changes refresh policy for the active enrollment, and stale policy uses the conservative defaults. Hub group creation validates and persists the initial roster together, blocks double submission, and reuses the request ID after a lost response. Hub directory invite links resolve through the enrolled Hub, preserving the group's scope and approval rules. IF-04 now describes the baseline generator's startup-only scope. See [ADR-365](../docs/decisions.md).
+
+The locked verification gate passed in 3m 51s. Server and JVM reports show 2,218 tests (server 713, core/common 21, core/enterprise 284, core/messaging 398, ui/chat 802) with zero failures. Android debug APK assembly and Windows compilation passed. The 87 Admin UI tests passed, and a script-level browser check covered the Hub group link, local peer link, and malformed link. Initial build corrections added the missing FlashResult extension import, corrected a test certificate role constant, and scoped the UI opt-in for the existing ID generator. Final verification output is in build/if-review-final.log.
+
+Live Hub deployment and installed Android and Windows checks remain in IFREV-01..06. Next, use matching Hub and client builds for those checks.
+
+## 2026-11-18 — Module IF review against current source
+
+Reviewed the 100-case checklist for each Gradle project and the included WebRTC build on local dev at 364109bd with the pre-existing worktree edits. The [review matrix](../docs/audit/2026-11-17-module-if-review.md) records 308 PASS, 22 FAIL, 191 PARTIAL, 1,208 N/A, and 971 UNVERIFIED rows. Verdicts name the module boundary. The confirmed Hub group findings include the relay's missing required-mode refusal, stale policy on clients, partial roster success, and repeated creation from one submission. The matrix also reconciles C1–C4 and S1–S3 with the Nov. 16 commits. Hub directory membership invite links and additional radio modes remain pending.
+
+The external drive was disconnected. Used existing source, test cases and historical XML, with no Gradle run, test execution, device changes, or deployment. Verified the document has 27 modules with 100 unique rows each. Product source, previous audit and existing worktree changes were preserved.
+
+Next, address IF-01/02/05/06 in the review, then verify IFREV-01..04 from the backlog on matching builds. Leave runtime, hardware and environment checks open until exercised.
+
 ## 2026-11-16 — Test Hub update and invite-link verification
 
 Built `:server:installDist` from `4c17a0a02821` and updated the `myserver` test Hub. The test tunnel stayed up on the same hostname. The previous app, database, data key and configuration are paired in `~/flash-hub/deployments/dev-4c17a0a02821-l43itK`. The Hub reported healthy and the public realm ID stayed the same. The new distribution still reports `2.2.0-beta.1`.
@@ -22115,4 +22139,23 @@ Compared the shared screens with Chats, Hub, Settings, Radio and call controls. 
 ADR-356 unifies completion-time placement for direct, Hub and swarm downloads under the configured root. Names are categorized, duplicate filenames get reserved suffixes, and nested folder structure is retained. A direct placement failure preserves the assembled file and its path. Desktop records exact categorized files for storage clear. New sent voice messages move into persistent app-owned storage before sending. Existing history paths stay valid where their files are still available.
 
 The final locked gate passed in 37s, 319 tasks. JUnit XML recorded 38 engine JVM, 10 transfer Android-host, 27 shared UI JVM and 8 desktop tests including the native fixture, all green. Android debug assembly succeeded. The first full native pass produced 47 cases. The final pass added a pointer-opened paired menu capture for 48 images in `docs/ui/transfers-nearby-compact/`. Checked 1200 dp desktop, 390 dp phone, narrow and 200% text captures. `git diff --check` passed. ERROR-994 and ERROR-995 describe repaired compile and fixture problems. Device checks TABREF-04 and RECEIVE-CAT-01/02 remain owed. Working tree is uncommitted atop Hub `f999b5a5`.
+
+## 2026-11-17 — 100-if module audit initialized
+
+Created `docs/audit/2026-11-17-module-if-review.md` for the requested module-by-module review. It contains 100 explicit conditional checks for each of the 27 root/included modules, for 2,700 total evidence rows covering input validation, reliability, durability, UX, lifecycle, errors, cleanup, protocol, security/data, and quality.
+
+The initial matrix intentionally marks every row `UNVERIFIED`; a successful compile or unit test is not treated as proof of device, runtime, security, accessibility, or production support. Existing Hub-group defects C1-C4 and S1-S3 remain linked as confirmed findings.
+
+### Verification
+- Repository inventory confirmed all projects in `settings.gradle.kts` plus `third_party/webrtc-kmp`.
+- Existing dirty worktree was preserved.
+- The audit document was generated with exactly 100 questions and 27 module sections.
+- Locked baseline `tools\flash-gradle.cmd` run completed successfully in 4m 58s for the available JVM/server test targets (`:core:*:jvmTest`, `:ui:*:jvmTest`, `:desktop:jvmTest`, `:server:test`, and `:app:testDebugUnitTest`). This establishes build/test health only; it does not mark runtime, device, security, accessibility, or packaging questions as passed.
+
+### Remaining
+- Run bounded evidence passes per module and replace `UNVERIFIED` with verdicts and citations.
+- Add reproducible defects to `logs/errors.md` and manual/device checks to `docs/testing/TEST-BACKLOG.md`.
+
+### Next AI
+Start with build/dependency/test evidence, then trace security, persistence, protocol, lifecycle, UI, platform, and packaging cases. Do not mark runtime or device behavior `PASS` from compilation alone.
 

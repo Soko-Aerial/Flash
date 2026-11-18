@@ -510,7 +510,7 @@ class RelayDeliveryContractTest {
         val alice = connect(fixture, "alice")
         val bob = connect(fixture, "bob") // carol stays offline
 
-        alice.send(RelayFrame.Send(id = "g1", type = "MSG_TEXT", sentAt = now.get(), payload = "{\"t\":\"hello team\"}", group = "team"))
+        alice.send(RelayFrame.Send(id = "g1", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = now.get(), payload = "{\"t\":\"hello team\"}", group = "team"))
 
         awaitUntil("bob delivery") { bob.all<RelayFrame.Deliver>().any { it.id == "g1" } }
         assertEquals("team", bob.all<RelayFrame.Deliver>().first().group)
@@ -522,7 +522,7 @@ class RelayDeliveryContractTest {
         assertEquals(1, hub.mailbox.pendingCount("carol"))
 
         val outsider = connect(fixture, "outsider")
-        outsider.send(RelayFrame.Send(id = "g2", type = "MSG_TEXT", sentAt = now.get(), payload = "{}", group = "team"))
+        outsider.send(RelayFrame.Send(id = "g2", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = now.get(), payload = "{}", group = "team"))
         awaitUntil("refused") { outsider.all<RelayFrame.Ack>().any { it.id == "g2" } }
         assertEquals(AckStatus.REJECTED, outsider.all<RelayFrame.Ack>().first { it.id == "g2" }.status)
         assertEquals(1, hub.mailbox.pendingCount("carol"), "the outsider's message went nowhere")

@@ -2,6 +2,7 @@
 
 package com.transfer.flash.server.relay
 
+import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.relay.AckStatus
@@ -60,7 +61,7 @@ class RelayByteBudgetTest {
     private suspend fun FakeWebSocketSession.acks(n: Int): List<RelayFrame.Ack> = List(n) { nextOf<RelayFrame.Ack>() }
 
     private fun groupSend(id: String, bytes: Int) =
-        RelayFrameCodec.encode(RelayFrame.Send(id = id, type = "MSG_TEXT", sentAt = 1L, payload = "x".repeat(bytes), group = "grp-big"))
+        RelayFrameCodec.encode(RelayFrame.Send(id = id, type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = 1L, payload = "x".repeat(bytes), group = "grp-big"))
 
     @Test
     fun aGroupFloodWithinTheFrameLimitIsRefusedByTheByteLimit() = runBlocking<Unit> {

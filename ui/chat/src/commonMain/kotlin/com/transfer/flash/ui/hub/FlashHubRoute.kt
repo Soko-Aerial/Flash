@@ -172,7 +172,7 @@ public fun FlashHubRoute(
     }
 
     // Opening the tab fetches what is new (the facade skips it within 15 s of the last attempt).
-    LaunchedEffect(Unit) { repository.refreshHub(userInitiated = false) }
+    LaunchedEffect(repository) { repository.refreshHub(userInitiated = false) }
 
     // The first time the tab has content: News when something is unread, otherwise the segment used last.
     // Expired announcements do not count, exactly like every badge (FlashHubMath.unreadCount).

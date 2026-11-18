@@ -49,7 +49,7 @@ class E2eGroupAndLimitsContractTest {
         FlashEnvelope(id = id, type = "MSG_TEXT", payloadJson = "opaque-$id", senderId = sender, sentAt = System.currentTimeMillis())
 
     private fun groupSend(id: String, group: String) =
-        RelayFrame.Send(to = "", id = id, type = "MSG_TEXT", sentAt = System.currentTimeMillis(), payload = "group-$id", group = group)
+        RelayFrame.Send(to = "", id = id, type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = System.currentTimeMillis(), payload = "group-$id", group = group)
 
     @Test
     fun aGroupMessageReachesLiveMembersQueuesForOfflineOnesAndRefusesANonMember() = runBlocking<Unit> {

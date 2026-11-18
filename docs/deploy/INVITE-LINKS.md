@@ -14,6 +14,12 @@ Set `-PflashInviteLinkHost=<group-link-hostname>` or `FLASH_INVITE_LINK_HOST` wh
 
 The group invite sheet shares and encodes the same URL in an offline QR. The link opens the invitation on any network. To complete a local group join, the recipient still needs to reach a member through Flash's existing local join flow. Without a configured hostname, the app shares the existing `flash://g/1/…` link. In Flash, use **Join group** to paste a local invite and **Enrol in Organization** to paste a Hub invite. After installing or updating, reopen the original link or copy it into the app.
 
+## Hub directory group links
+
+A group manager can share a join link from a listed Hub group with Open or Request approval enabled. Links use the Hub's `/invite/group` page and contain an opaque token in the fragment. The browser's **Open in Flash** action hands off `flash://g/2/…`. The recipient confirms in Flash using their existing enrollment in the issuing Hub. Open groups follow their scope rules, and requests for approval still go to a group admin. The token expires after 24 hours or when the group version changes. Hidden and admin-only groups use direct assignment. The Hub must be updated alongside the clients.
+
+Android uses the existing group intent filter for the native link. Auto-opening HTTPS still depends on the build's configured group hostname, domain verification, and the device's link settings. [Android deep links](https://developer.android.com/training/app-links/create-deeplinks)
+
 ## Desktop and verification
 
 Windows MSI/EXE and the Linux DEB declare the `flash://` handler. The browser asks the OS to launch it when the user selects **Open in Flash**. Flash forwards the invite over its existing local activation channel when another instance is already running. A portable build can open an invite supplied as one command-line argument, or paste it from the browser.

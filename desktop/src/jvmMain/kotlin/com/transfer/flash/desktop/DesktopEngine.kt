@@ -324,7 +324,7 @@ public class DesktopEngine(
     @Volatile
     private var orgSnapshotCoordinatorRef: com.transfer.flash.core.enterprise.OrgSnapshotCoordinator? = null
     private val offLanCallSignalSeq = java.util.concurrent.atomic.AtomicLong(0L)
-    private val hubGroupPolicyRef = MutableStateFlow(com.transfer.flash.core.enterprise.HubGroupPolicy())
+    private val hubGroupPolicyRef = MutableStateFlow(com.transfer.flash.core.enterprise.HubGroupPolicyMonitor.SAFE_DEFAULT)
     public val hubGroupPolicy: StateFlow<com.transfer.flash.core.enterprise.HubGroupPolicy> = hubGroupPolicyRef.asStateFlow()
 
     /** Pull-to-refresh and Hub tab opening: ask for a directory sync (honours the 60 s minimum unless [force]). */
@@ -1651,6 +1651,16 @@ public class DesktopEngine(
                 revocationsProvider = { hubRevocations.current() },
                 scope = scope,
             )
+            val groupPolicyMonitor = com.transfer.flash.core.enterprise.HubGroupPolicyMonitor(
+                credentials = enterpriseTrustStore.credentials,
+                connected = { hub.relay.state.value.canSend },
+                fetchPolicy = hub.directory::fetchHubGroupPolicy,
+            )
+            scope.launch {
+                groupPolicyMonitor.watch(hub.relay.state.map { it.canSend }.distinctUntilChanged()) { policy ->
+                    hubGroupPolicyRef.value = policy
+                }
+            }
             val orgSnapshotCoordinator = com.transfer.flash.core.enterprise.OrgSnapshotCoordinator(
                 credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
                 relayConnected = hub.relay.state.map { it.canSend },
@@ -1674,13 +1684,6 @@ public class DesktopEngine(
                 scope = scope,
                 onOutcome = { reason, outcome ->
                     FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}")
-                    scope.launch {
-                        val url = enterpriseTrustStore.getCredentials()?.hubUrl ?: return@launch
-                        val res = hub.directory.fetchHubGroupPolicy(url)
-                        if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
-                            hubGroupPolicyRef.value = res.value
-                        }
-                    }
                 },
                 getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
             )
@@ -1688,7 +1691,10 @@ public class DesktopEngine(
             orgSnapshotCoordinator.start()
             scope.launch {
                 hub.relay.metaEvents.collect { meta ->
-                    if (meta.action == "DIR_SYNC" && meta.conversationId == "__dir__") {
+                    if (meta.from != null || meta.to != null) return@collect
+                    if (meta.action == "GROUP_POLICY_CHANGED") {
+                        groupPolicyMonitor.invalidate()
+                    } else if (meta.action == "DIR_SYNC" && meta.conversationId == "__dir__") {
                         orgSnapshotCoordinator.requestSync("ws_dir_bump", force = true)
                     }
                 }
@@ -1907,8 +1913,8 @@ public class DesktopEngine(
                         cfg.offLanCallingSupported &&
                         cfg.iceServers.isNotEmpty()
                 },
-                allowPersonalHubLink = { hubGroupPolicyRef.value.allowPersonalHubLink },
-                groupE2eeMode = { hubGroupPolicyRef.value.groupE2eeMode },
+                allowPersonalHubLink = { groupPolicyMonitor.currentPolicy().allowPersonalHubLink },
+                groupE2eeMode = { groupPolicyMonitor.currentPolicy().groupE2eeMode },
                 onRequestOrgSync = { reason, force -> orgSnapshotCoordinator.requestSync(reason, force) },
             )
             hubRosterChat = chatImpl

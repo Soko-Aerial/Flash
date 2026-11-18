@@ -120,6 +120,9 @@ POST /api/v1/enroll/renew
 POST /api/v1/files
 POST /api/v1/files/{fileId}/complete
 POST /api/v1/groups
+POST /api/v1/groups/create-with-members
+POST /api/v1/groups/join-links
+POST /api/v1/groups/join-links/resolve
 POST /api/v1/groups/join-request
 POST /api/v1/groups/join-requests/decision
 POST /api/v1/groups/members

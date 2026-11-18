@@ -917,6 +917,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-18 — Hub group audit fixes.** ADR-365 records relay encryption policy enforcement, enrollment-scoped policy refresh, atomic and replay-safe group creation, and Hub directory group invite links. Server, shared JVM and UI tests, Android debug APK assembly and desktop compile passed. IFREV-01..06 track the live Hub and installed app checks.
+
 **2026-11-15 — Windows inline video and media timeline refresh.** ADR-364 and UI-018 document the Media Foundation bridge, the shared timeline, and Android's ten-second double-tap gesture. Installed Windows and physical Android acceptance are tracked by MEDIA-PLAY-03/04.
 
 **2026-11-15 — Desktop direct-transfer restart recovery and unified Android media viewer.** See ADR-362/363 and `logs/handoff.md`. Desktop uses encrypted transfer rows and validated LAN checkpoints. Android shares the preview and playback controls. Device acceptance is DESK-RESUME-01 and MEDIA-PLAY-01/02. The desktop player recommendation is recorded in UI-018.

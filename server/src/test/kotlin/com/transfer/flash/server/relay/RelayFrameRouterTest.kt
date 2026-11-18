@@ -640,7 +640,7 @@ class RelayFrameRouterTest {
         val directory = rig.router.directory!!
         directory.addMemberToGroup("grp-dev", "alice", isOrgAdmin = true)
 
-        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(id = "g1", type = "MSG_TEXT", sentAt = 1L, payload = "{\"t\":1}", group = "grp-dev")))
+        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(id = "g1", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = 1L, payload = "{\"t\":1}", group = "grp-dev")))
 
         val deliver = bobWs.nextOf<RelayFrame.Deliver>()
         assertEquals("alice", deliver.from)
@@ -855,6 +855,35 @@ class RelayFrameRouterTest {
         assertTrue(audited[0].contains("alice|relay.group.inspect|"), audited[0])
         assertTrue(audited[0].contains("target=grp-dev"), audited[0])
         assertTrue(audited[0].contains("preview=hello group"), audited[0])
+    }
+
+    @Test
+    fun requiredPolicyRefusesReadableGroupRoutingAndReplay() = runBlocking<Unit> {
+        val store = mailbox()
+        val dir = directoryWithGroup()
+        val rig = rig(store, directory = dir)
+        dir.addMemberToGroup("grp-dev", "alice", isOrgAdmin = true)
+        val (alice, sender) = rig.connect("alice")
+        val (bob, recipient) = rig.connect("bob")
+
+        val direct = RelayFrame.Send(to = "bob", id = "direct", type = HubContract.GROUP_FRAME_TYPE, sentAt = 1L, payload = "group message")
+        val fanout = direct.copy(to = "", id = "fanout", group = "grp-dev")
+        val legacy = direct.copy(to = "charlie", id = "legacy", type = HubContract.LEGACY_GROUP_FRAME_TYPE)
+        for (message in listOf(direct, fanout, legacy)) {
+            rig.router.processFrame(alice, RelayFrameCodec.encode(message))
+            val ack = sender.nextOf<RelayFrame.Ack>()
+            assertEquals(AckStatus.REJECTED, ack.status)
+            assertEquals(HubErrorCodes.ERR_FORBIDDEN, ack.reason)
+        }
+        assertEquals(emptyList(), recipient.drainNow())
+        assertEquals(0, store.pendingCount("charlie"))
+
+        store.enqueue(MailboxMessage("alice", "bob", "old", HubContract.GROUP_FRAME_TYPE, "previously queued", 1L))
+        assertEquals(0, rig.router.drainMailboxForDevice(bob))
+        assertEquals(emptyList(), recipient.drainNow())
+
+        rig.router.broadcastGroupPolicyChanged()
+        assertEquals(RelayFrame.Meta.ACTION_GROUP_POLICY_CHANGED, recipient.nextOf<RelayFrame.Meta>().action)
     }
 
     private suspend fun awaitCondition(what: String, timeoutMs: Long = 5_000L, condition: suspend () -> Boolean) {

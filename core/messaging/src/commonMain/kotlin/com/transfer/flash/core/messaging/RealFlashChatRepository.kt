@@ -3,6 +3,8 @@
 package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.id.UuidIdGenerator
+import com.transfer.flash.core.common.protocol.InviteAppLink
+import com.transfer.flash.core.enterprise.HubUrlPolicy
 import com.transfer.flash.core.enterprise.files.HubFileText
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashProbe
@@ -641,7 +643,7 @@ public class RealFlashChatRepository(
                 }
                 allowed
             },
-            groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
+            groupLinked = ::canRouteGroupViaHub,
             groupE2ee = hubGroupE2ee,
             groupMembershipProvider = { groupId ->
                 val members = groupMemberDao?.activeMembers(groupId)?.mapTo(HashSet()) { it.deviceId }.orEmpty()
@@ -821,7 +823,7 @@ public class RealFlashChatRepository(
         if (lan) return@GroupTransportSink true
         val chatLevel = frame is GroupWireFrame.Message || frame is GroupWireFrame.Receipt ||
             frame is GroupWireFrame.Read || frame is GroupWireFrame.DeleteForEveryone
-        if (!chatLevel || enterpriseTrustStore?.isGroupLinkedToHub(frame.groupId) != true || !hubBridge.canCarry(target, group = true)) {
+        if (!chatLevel || !canRouteGroupViaHub(frame.groupId) || !hubBridge.canCarry(target, group = true)) {
             return@GroupTransportSink false
         }
         hubBridge.sendGroup(target, hubGroupFrameId(frame), timeSource.nowMs(), frame)
@@ -1830,7 +1832,11 @@ public class RealFlashChatRepository(
                     val isAdmin = isOwner || (isMemberActive && selfMember?.role == "admin")
                     val isV2 = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL
                     val currentSettings = if (isV2) signedGroups?.currentSettings(conversationId) ?: GroupSettings.defaults(conversationId) else null
-                    val canShare = isMemberActive && isV2 && (isOwner || isAdmin || currentSettings?.inviteSharers == GroupSettings.SHARERS_ALL)
+                    val canShare = isMemberActive && if (isHubRosterGroup(conversationId)) {
+                        isAdmin
+                    } else {
+                        isV2 && (isOwner || isAdmin || currentSettings?.inviteSharers == GroupSettings.SHARERS_ALL)
+                    }
                     val canAdd = isMemberActive && !isHubRosterGroup(conversationId) && (!isV2 || isOwner || isAdmin || currentSettings?.membersMayAdd == true)
                     val pendingReqs = if (isV2 && (isOwner || isAdmin)) getPendingJoinRequests(conversationId) else emptyList()
                     val localPrefs = if (isV2) getGroupLocalPreferences(conversationId) else null
@@ -2211,6 +2217,7 @@ public class RealFlashChatRepository(
 
     override suspend fun inviteFor(groupId: String): FlashResult<String> =
         withContext(ioDispatcher) {
+            if (isHubRosterGroup(groupId)) return@withContext createHubGroupInvite(groupId)
             if (!isV2Group(groupId)) {
                 return@withContext FlashResult.Failure(
                     FlashError.Unknown("Only groups made with the latest Flash version support invite links"),
@@ -2278,8 +2285,51 @@ public class RealFlashChatRepository(
             FlashResult.Success(encoded)
         }
 
+    private suspend fun createHubGroupInvite(groupId: String): FlashResult<String> {
+        val client = enterpriseDirectoryClient
+            ?: return FlashResult.Failure(FlashError.Unknown("Hub group invitations are unavailable."))
+        val enrolled = enterpriseTrustStore?.getCredentials()
+            ?: return FlashResult.Failure(FlashError.Unknown("Enroll in the Hub to invite someone."))
+        return when (val result = client.createGroupJoinLink(enrolled.hubUrl, groupId)) {
+            is FlashResult.Failure -> result
+            is FlashResult.Success -> {
+                val invite = InviteAppLink.hubGroupInvite(result.value.token)
+                    ?: return FlashResult.Failure(FlashError.Unknown("The Hub returned an invalid group invite."))
+                val origin = HubUrlPolicy.baseUrl(enrolled.hubUrl)
+                val sharedLink = origin.takeIf { it.startsWith("https://") }
+                    ?.let { InviteAppLink.wrap(it.removePrefix("https://"), invite) }
+                FlashResult.Success(sharedLink ?: invite)
+            }
+        }
+    }
+
+    private suspend fun acceptHubGroupInvite(token: String): FlashResult<String> {
+        val client = enterpriseDirectoryClient
+            ?: return FlashResult.Failure(FlashError.Unknown("Hub group invitations are unavailable."))
+        val enrolled = enterpriseTrustStore?.getCredentials()
+            ?: return FlashResult.Failure(FlashError.Unknown("Enroll in the organization that issued this link first."))
+        val target = when (val result = client.resolveGroupJoinLink(enrolled.hubUrl, token)) {
+            is FlashResult.Failure -> return result
+            is FlashResult.Success -> result.value
+        }
+        if (enterpriseTrustStore.getCredentials() != enrolled) {
+            return FlashResult.Failure(FlashError.Unknown("Your Hub enrollment changed. Reopen the invite to join."))
+        }
+        return when (val joined = joinEnterpriseGroup(target.groupId, target.name)) {
+            is FlashResult.Failure -> joined
+            is FlashResult.Success -> when (joined.value.status) {
+                EnterpriseJoinStatus.JOINED, EnterpriseJoinStatus.PENDING -> FlashResult.Success(target.groupId)
+                EnterpriseJoinStatus.REJECTED -> FlashResult.Failure(
+                    FlashError.Unknown(joined.value.reason ?: "The Hub declined this join request."),
+                )
+            }
+        }
+    }
+
     override suspend fun acceptInvite(inviteUri: String): FlashResult<String> =
         withContext(ioDispatcher) {
+            val hubToken = InviteAppLink.hubGroupJoinToken(inviteUri.trim())
+            if (hubToken != null) return@withContext acceptHubGroupInvite(hubToken)
             val invite = GroupInviteCodec.decode(inviteUri)
                 ?: return@withContext FlashResult.Failure(FlashError.Unknown(GroupMembershipStatusText.INVALID_INVITE))
             val members = groupMemberDao
@@ -2372,6 +2422,9 @@ public class RealFlashChatRepository(
         peerNameResolver(deviceId)?.ifBlank { null }
 
     override suspend fun inviteStatusSentence(groupId: String): String? = withContext(ioDispatcher) {
+        enterpriseTrustStore?.pendingJoins?.value?.get(groupId)?.let { name ->
+            return@withContext GroupMembershipStatusText.waitingForAdmin(name)
+        }
         val members = groupMemberDao
         if (members?.member(groupId, localDeviceId)?.isActive == true) {
             return@withContext "Joined"
@@ -8160,6 +8213,9 @@ public class RealFlashChatRepository(
         }
     }
 
+    private fun canRouteGroupViaHub(groupId: String): Boolean =
+        enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true && (allowPersonalHubLink() || isHubRosterGroup(groupId))
+
     private suspend fun sendGroupViaPaths(
         lan: GroupTransportSink,
         linked: Boolean,
@@ -8171,12 +8227,12 @@ public class RealFlashChatRepository(
         val bridge = hubBridge
         if (isRevokedForHubGroup(frame.groupId, memberId)) return false
         val lanOk = lan.send(memberId, frame)
-        if (bridge == null || !linked) return lanOk
+        if (bridge == null || !linked || !canRouteGroupViaHub(frame.groupId)) return lanOk
         if (!lanOk) return bridge.canCarry(memberId, group = true) && bridge.sendGroup(memberId, messageId, sentAt, frame)
         scheduleHubFallback("$messageId|$memberId", pending = {
             groupDeliveryDao?.pendingForMessage(messageId)?.any { it.memberId == memberId } == true
         }) {
-            if (!isRevokedForHubGroup(frame.groupId, memberId) &&
+            if (!isRevokedForHubGroup(frame.groupId, memberId) && canRouteGroupViaHub(frame.groupId) &&
                 bridge.canCarry(memberId, group = true) && !bridge.isHubAccepted(messageId)
             ) bridge.sendGroup(memberId, messageId, sentAt, frame)
         }
@@ -8271,6 +8327,13 @@ public class RealFlashChatRepository(
         name: String,
         memberIds: Set<String>,
         departmentId: String,
+    ): FlashResult<String> = createHubGroupForRequest(name, memberIds, UuidIdGenerator.newId(), departmentId)
+
+    override suspend fun createHubGroupForRequest(
+        name: String,
+        memberIds: Set<String>,
+        requestId: String,
+        departmentId: String,
     ): FlashResult<String> = withContext(ioDispatcher) {
         val groupName = GroupPolicy.normalizedName(name)
             ?: return@withContext FlashResult.Failure(
@@ -8289,29 +8352,27 @@ public class RealFlashChatRepository(
                 me.departmentId.ifBlank { me.adminOfDepartments.firstOrNull() ?: credentials.department.orEmpty() }
             else -> ""
         }
-        val groupId = UuidIdGenerator.newId()
+        val groupId = requestId
+        val initialMembers = memberIds - localDeviceId - credentials.deviceId
         when (
-            val created = client.createHubGroup(
+            val created = client.createHubGroupWithMembers(
                 hubUrl = credentials.hubUrl,
                 id = groupId,
                 name = groupName,
                 departmentId = resolvedDept,
-                adminDeviceIds = listOf(credentials.deviceId),
+                memberIds = initialMembers,
             )
         ) {
             is FlashResult.Failure -> return@withContext created
             is FlashResult.Success -> Unit
         }
-        for (memberId in memberIds) {
-            if (memberId == localDeviceId || memberId == credentials.deviceId) continue
-            val added = client.setHubGroupMember(credentials.hubUrl, groupId, memberId, add = true)
-            if (added is FlashResult.Failure) {
-                FlashLog.w("CHAT", "Hub group $groupId created, failed to add member $memberId: ${added.error}")
-            }
+        if (trust.getCredentials() != credentials) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("Your Hub enrollment changed. Open Hub to refresh your groups."))
         }
         val now = timeSource.nowMs()
         groupTitleCache[groupId] = groupName
         runInTransaction {
+            if (conversationDao.get(groupId) != null) return@runInTransaction
             upsertLegacyGroupConversation(
                 groupId = groupId,
                 title = groupName,
@@ -8331,7 +8392,7 @@ public class RealFlashChatRepository(
                     isActive = true,
                 ),
             )
-            memberIds.filter { it != localDeviceId }.forEach { memberId ->
+            initialMembers.forEach { memberId ->
                 groupMemberDao?.upsert(
                     GroupMemberEntity(
                         groupId = groupId,

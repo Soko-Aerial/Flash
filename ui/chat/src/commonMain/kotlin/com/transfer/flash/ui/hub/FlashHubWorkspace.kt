@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -51,6 +50,7 @@ internal fun FlashHubWorkspaceHeader(
     onStatus: () -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    firstLoad: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     Column(modifier.fillMaxWidth().background(colors.backgroundSurface).padding(horizontal = FlashSpacing.space16)) {
@@ -96,15 +96,12 @@ internal fun FlashHubWorkspaceHeader(
                 FlashText(hubWorkspaceConnection(data.link), modifier = Modifier.weight(1f, fill = false), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
                 FlashIcon(FlashIcons.ChevronDown, contentDescription = null, tint = colors.textSecondary, size = FlashDimensions.iconSm)
             }
-            if (LocalDensity.current.fontScale >= 1.3f) FlashHubIconButton(
+            FlashHubIconButton(
                 FlashIcons.Retry,
-                if (data.state.isRefreshing) FlashHubCopy.REFRESHING else FlashHubCopy.STATUS_REFRESH,
+                if (data.state.isRefreshing && !firstLoad) FlashHubCopy.REFRESHING else FlashHubCopy.STATUS_REFRESH,
                 onRefresh,
-                enabled = !data.state.isRefreshing,
-            ) else FlashHubTextAction(
-                if (data.state.isRefreshing) FlashHubCopy.REFRESHING else FlashHubCopy.STATUS_REFRESH,
-                onRefresh,
-                enabled = !data.state.isRefreshing,
+                enabled = !data.state.isRefreshing && !firstLoad,
+                busy = data.state.isRefreshing && !firstLoad,
             )
         }
     }

@@ -225,7 +225,7 @@ public class RelayFrameRouter(
     // FLASH_RELAY
     // =====================================================================================================
 
-    private enum class RouteKind { LIVE, QUEUED, DUPLICATE, QUOTA, UNKNOWN_RECIPIENT, UNAVAILABLE, FAILED }
+    private enum class RouteKind { LIVE, QUEUED, DUPLICATE, QUOTA, UNKNOWN_RECIPIENT, POLICY, UNAVAILABLE, FAILED }
 
     private suspend fun handleSend(origin: RelaySession, send: RelayFrame.Send) {
         val group = send.group
@@ -233,12 +233,28 @@ public class RelayFrameRouter(
             handleGroupSend(origin, send, group)
             return
         }
+        if (rejectGroupPolicy(origin, send, send.to)) return
         if (!withinByteBudget(origin, send, send.to, copies = 1)) return
         if (send.type == HubContract.GROUP_FRAME_TYPE && groupE2eeMode() == HubContract.GROUP_E2EE_HUB_INSPECTABLE) {
             auditInspectableGroupFrame(origin.deviceId, target = send.to, send = send)
         }
         val kind = routeOne(origin.deviceId, send.to, send.id, send.type, send.sentAt, send.payload, group = null)
         offerFrame(origin, ackFor(kind, send.id, send.to))
+    }
+
+    private fun blocksGroupContent(type: String, group: String?): Boolean =
+        groupE2eeMode() != HubContract.GROUP_E2EE_HUB_INSPECTABLE &&
+            type != HubContract.GROUP_SEALED_ENVELOPE_TYPE &&
+            (group != null || type == HubContract.GROUP_FRAME_TYPE || type == HubContract.LEGACY_GROUP_FRAME_TYPE)
+
+    private fun rejectGroupPolicy(origin: RelaySession, send: RelayFrame.Send, target: String): Boolean {
+        if (!blocksGroupContent(send.type, send.group)) return false
+        metrics.inc(RelayMetrics.MESSAGES, 1, "outcome" to "rejected")
+        offerFrame(
+            origin,
+            RelayFrame.Ack(id = send.id, to = target, status = AckStatus.REJECTED, ts = clock(), reason = HubErrorCodes.ERR_FORBIDDEN),
+        )
+        return true
     }
 
     /**
@@ -268,6 +284,7 @@ public class RelayFrameRouter(
             )
             return
         }
+        if (rejectGroupPolicy(origin, send, groupId)) return
         val recipients = members.filter { it != origin.deviceId }
         if (!withinByteBudget(origin, send, groupId, copies = recipients.size)) return
         if (groupE2eeMode() == HubContract.GROUP_E2EE_HUB_INSPECTABLE && send.type != HubContract.GROUP_SEALED_ENVELOPE_TYPE) {
@@ -294,11 +311,12 @@ public class RelayFrameRouter(
             failed == 0 -> AckStatus.QUEUED
             live + queued > 0 -> AckStatus.QUEUED // partial: accepted, `failed` says how many members were refused
             outcomes.all { it == RouteKind.QUOTA } -> AckStatus.QUOTA_EXCEEDED
-            outcomes.all { it == RouteKind.UNKNOWN_RECIPIENT } -> AckStatus.REJECTED
+            outcomes.all { it == RouteKind.UNKNOWN_RECIPIENT || it == RouteKind.POLICY } -> AckStatus.REJECTED
             else -> AckStatus.ERROR
         }
         val reason = when {
             failed > 0 && live + queued > 0 -> "partial"
+            status == AckStatus.REJECTED && RouteKind.POLICY in outcomes -> HubErrorCodes.ERR_FORBIDDEN
             status == AckStatus.REJECTED -> HubErrorCodes.ERR_UNKNOWN_RECIPIENT
             status == AckStatus.QUOTA_EXCEEDED -> HubErrorCodes.ERR_QUOTA_EXCEEDED
             status == AckStatus.ERROR -> HubErrorCodes.ERR_INTERNAL
@@ -327,6 +345,7 @@ public class RelayFrameRouter(
         group: String?,
         preEncodedJson: String? = null,
     ): RouteKind {
+        if (blocksGroupContent(type, group)) return RouteKind.POLICY
         val target = connectionPool.get(recipientId)
         if (target != null) {
             val json = preEncodedJson ?: RelayFrameCodec.encode(
@@ -381,6 +400,7 @@ public class RelayFrameRouter(
         RouteKind.DUPLICATE -> RelayFrame.Ack(id = id, to = to, status = AckStatus.DUPLICATE_QUEUED, ts = clock())
         RouteKind.QUOTA -> RelayFrame.Ack(id = id, to = to, status = AckStatus.QUOTA_EXCEEDED, ts = clock(), reason = HubErrorCodes.ERR_QUOTA_EXCEEDED)
         RouteKind.UNKNOWN_RECIPIENT -> RelayFrame.Ack(id = id, to = to, status = AckStatus.REJECTED, ts = clock(), reason = HubErrorCodes.ERR_UNKNOWN_RECIPIENT)
+        RouteKind.POLICY -> RelayFrame.Ack(id = id, to = to, status = AckStatus.REJECTED, ts = clock(), reason = HubErrorCodes.ERR_FORBIDDEN)
         RouteKind.UNAVAILABLE -> RelayFrame.Ack(id = id, to = to, status = AckStatus.OFFLINE_UNDELIVERABLE, ts = clock())
         RouteKind.FAILED -> RelayFrame.Ack(id = id, to = to, status = AckStatus.ERROR, ts = clock(), reason = HubErrorCodes.ERR_INTERNAL)
     }
@@ -458,6 +478,9 @@ public class RelayFrameRouter(
      * authenticated sender. Meta is ephemeral: a recipient whose queue is full simply misses it.
      */
     private fun handleInboundMeta(origin: RelaySession, meta: RelayFrame.Meta) {
+        if (meta.action == RelayFrame.Meta.ACTION_GROUP_POLICY_CHANGED || meta.action == RelayFrame.Meta.ACTION_DIR_SYNC) {
+            return
+        }
         val sender = origin.deviceId
         val forwarded = RelayFrameCodec.encode(meta.copy(from = sender))
 
@@ -600,7 +623,7 @@ public class RelayFrameRouter(
             // A page of only quarantined rows (the fetch gave up skipping) is not the end: ask again, the marked rows are excluded now.
             if (page.isEmpty() && fetched.quarantined.isEmpty()) break
             for (row in page) {
-                if (!mailboxQueue.mayReplay(row)) {
+                if (blocksGroupContent(row.type, row.group) || !mailboxQueue.mayReplay(row)) {
                     session.cursor = row.seq
                     continue
                 }
@@ -819,6 +842,10 @@ public class RelayFrameRouter(
 
     private suspend fun spill(deviceId: String, pending: List<Pair<String, InFlight>>) {
         for ((msgId, flight) in pending) {
+            if (blocksGroupContent(flight.type, flight.group)) {
+                notifyDropped(flight.origin, deviceId, msgId)
+                continue
+            }
             val result = try {
                 mailboxQueue.enqueue(MailboxMessage(flight.origin, deviceId, msgId, flight.type, flight.payload, flight.sentAt, flight.group))
             } catch (e: CancellationException) {
@@ -932,6 +959,13 @@ public class RelayFrameRouter(
             ),
         )
         return connectionPool.broadcastText(text) { true }
+    }
+
+    internal fun broadcastGroupPolicyChanged() {
+        val text = RelayFrameCodec.encode(
+            RelayFrame.Meta(action = RelayFrame.Meta.ACTION_GROUP_POLICY_CHANGED, ts = clock()),
+        )
+        connectionPool.broadcastText(text) { true }
     }
 
     private fun auditInspectableGroupFrame(senderId: String, target: String, send: RelayFrame.Send) {

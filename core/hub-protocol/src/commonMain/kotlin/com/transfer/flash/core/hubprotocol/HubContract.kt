@@ -119,6 +119,9 @@ public object HubContract {
 
     /** `POST` create ([com.transfer.flash.core.hubprotocol.rest.CreateGroupBody]), `PUT /{id}` update, `DELETE /{id}` delete; Bearer, group/department/organisation admin as the directory rules say. */
     public const val PATH_GROUPS: String = "$PATH_API/groups"
+    public const val PATH_GROUP_CREATE_WITH_MEMBERS: String = "$PATH_GROUPS/create-with-members"
+    public const val PATH_GROUP_JOIN_LINKS: String = "$PATH_GROUPS/join-links"
+    public const val PATH_GROUP_JOIN_LINK_RESOLVE: String = "$PATH_GROUP_JOIN_LINKS/resolve"
 
     /** `POST`, Bearer, group admin: [com.transfer.flash.core.hubprotocol.rest.GroupMemberBody] adds or removes a member. */
     public const val PATH_GROUP_MEMBERS: String = "$PATH_API/groups/members"
@@ -136,6 +139,7 @@ public object HubContract {
     public const val FEATURE_GROUP_E2EE: String = "hge1"
     public const val GROUP_SEALED_ENVELOPE_TYPE: String = "GROUP_SEALED_V1"
     public const val GROUP_FRAME_TYPE: String = "GROUP_FRAME"
+    public const val LEGACY_GROUP_FRAME_TYPE: String = "GROUP_MSG"
     public const val GROUP_E2EE_REQUIRED: String = "E2EE_REQUIRED"
     public const val GROUP_E2EE_HUB_INSPECTABLE: String = "HUB_INSPECTABLE"
 

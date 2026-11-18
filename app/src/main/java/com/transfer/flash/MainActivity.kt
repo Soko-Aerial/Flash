@@ -1355,11 +1355,6 @@ private fun FlashShell(
     LaunchedEffect(ready, settings.isEnterpriseEnrolled) {
         if (ready) nav.updateHubEnrolled(settings.isEnterpriseEnrolled)
     }
-    LaunchedEffect(nav.current.destination) {
-        if (nav.current.destination == FlashDestination.Hub) {
-            DiscoveryEngineHolder.requestOrgSync("hub_tab_opened")
-        }
-    }
     // UI-058 H9: a route from a notification or a cold start. It waits until the engine is ready (enrolment unknown before
     // that), selects the Hub when enrolled, otherwise lands on Chats with a one-line notice. The Hub reports it consumed.
     val hubRoute by pendingHubRoute.collectAsState()
@@ -3948,24 +3943,22 @@ private fun FlashShell(
                 isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
                 allowPersonalHubLink = hubGroupPolicy.allowPersonalHubLink,
                 canCreateHubGroup = canCreateHubGroup,
-                onCreateHubGroup = { title, memberIds ->
-                    scope.launch {
-                        val result = chatRepository.createHubGroup(title, memberIds)
-                        val groupId = result.getOrNull()
-                        if (groupId != null) {
-                            showCreateGroup = false
-                            selectedChatConversationId = groupId
-                            chatRepository.openConversation(groupId)
-                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
-                        } else {
-                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
-                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                            Toast.makeText(
-                                toastContext,
-                                reason ?: "Couldn't create the Hub group",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        }
+                onCreateHubGroup = { title, memberIds, requestId ->
+                    val result = chatRepository.createHubGroupForRequest(title, memberIds, requestId)
+                    val groupId = result.getOrNull()
+                    if (groupId != null) {
+                        selectedChatConversationId = groupId
+                        chatRepository.openConversation(groupId)
+                        nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        showCreateGroup = false
+                    } else {
+                        val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                            as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                        Toast.makeText(
+                            toastContext,
+                            reason ?: "Couldn't create the Hub group",
+                            Toast.LENGTH_LONG,
+                        ).show()
                     }
                 },
                 onFindDevicesClick = {

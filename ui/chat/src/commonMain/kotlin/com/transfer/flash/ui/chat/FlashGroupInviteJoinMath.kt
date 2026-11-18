@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.chat
 
+import com.transfer.flash.core.common.protocol.InviteAppLink
 import com.transfer.flash.core.security.group.GroupInvite
 import com.transfer.flash.core.security.group.GroupInviteCodec
 
@@ -9,11 +10,13 @@ import com.transfer.flash.core.security.group.GroupInviteCodec
  */
 public object FlashGroupInviteJoinMath {
 
-    private val INVITE_URI_REGEX = Regex("""(?:flash://g/1/|https://[A-Za-z0-9.-]+/invite/group#)[A-Za-z0-9_-]+""")
+    private val INVITE_URI_REGEX = Regex("""(?:flash://g/[12]/|https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/invite/group#)[A-Za-z0-9_-]+""")
 
     /** Safely decodes an invite link into a [GroupInvite], or null if malformed or untrusted. */
     public fun parseInviteUrl(raw: String): GroupInvite? =
         GroupInviteCodec.decode(raw.trim())
+
+    public fun isHubGroupInvite(raw: String): Boolean = InviteAppLink.hubGroupJoinToken(raw.trim()) != null
 
     /** True if [raw] begins with or contains a valid Flash group invite URI. */
     public fun isInviteUrl(raw: String): Boolean =

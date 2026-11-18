@@ -135,6 +135,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
@@ -277,7 +278,7 @@ object DiscoveryEngineHolder {
     private val hubContentViaHubFlag = kotlinx.coroutines.flow.MutableStateFlow(false)
     private val announcementNotificationsFlag = kotlinx.coroutines.flow.MutableStateFlow(true)
     private val hubGroupPolicyRef = kotlinx.coroutines.flow.MutableStateFlow(
-        com.transfer.flash.core.enterprise.HubGroupPolicy(),
+        com.transfer.flash.core.enterprise.HubGroupPolicyMonitor.SAFE_DEFAULT,
     )
     val hubGroupPolicy: kotlinx.coroutines.flow.StateFlow<com.transfer.flash.core.enterprise.HubGroupPolicy> =
         hubGroupPolicyRef.asStateFlow()
@@ -1436,6 +1437,16 @@ object DiscoveryEngineHolder {
             revocationsProvider = { hubRevocations.current() },
             scope = appScope,
         )
+        val groupPolicyMonitor = com.transfer.flash.core.enterprise.HubGroupPolicyMonitor(
+            credentials = enterpriseTrustStore.credentials,
+            connected = { hub.relay.state.value.canSend },
+            fetchPolicy = hub.directory::fetchHubGroupPolicy,
+        )
+        appScope.launch {
+            groupPolicyMonitor.watch(hub.relay.state.map { it.canSend }.distinctUntilChanged()) { policy ->
+                hubGroupPolicyRef.value = policy
+            }
+        }
         val orgSnapshotCoordinator = com.transfer.flash.core.enterprise.OrgSnapshotCoordinator(
             credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
             relayConnected = hub.relay.state.map { it.canSend },
@@ -1459,13 +1470,6 @@ object DiscoveryEngineHolder {
             scope = appScope,
             onOutcome = { reason, outcome ->
                 Log.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}")
-                appScope.launch {
-                    val url = enterpriseTrustStore.getCredentials()?.hubUrl ?: return@launch
-                    val res = hub.directory.fetchHubGroupPolicy(url)
-                    if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
-                        hubGroupPolicyRef.value = res.value
-                    }
-                }
             },
             getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
         )
@@ -1473,7 +1477,10 @@ object DiscoveryEngineHolder {
         orgSnapshotCoordinator.start()
         appScope.launch {
             hub.relay.metaEvents.collect { meta ->
-                if (meta.action == "DIR_SYNC" && meta.conversationId == "__dir__") {
+                if (meta.from != null || meta.to != null) return@collect
+                if (meta.action == "GROUP_POLICY_CHANGED") {
+                    groupPolicyMonitor.invalidate()
+                } else if (meta.action == "DIR_SYNC" && meta.conversationId == "__dir__") {
                     orgSnapshotCoordinator.requestSync("ws_dir_bump", force = true)
                 }
             }
@@ -1742,8 +1749,8 @@ object DiscoveryEngineHolder {
                     cfg.offLanCallingSupported &&
                     cfg.iceServers.isNotEmpty()
             },
-            allowPersonalHubLink = { hubGroupPolicyRef.value.allowPersonalHubLink },
-            groupE2eeMode = { hubGroupPolicyRef.value.groupE2eeMode },
+            allowPersonalHubLink = { groupPolicyMonitor.currentPolicy().allowPersonalHubLink },
+            groupE2eeMode = { groupPolicyMonitor.currentPolicy().groupE2eeMode },
             onRequestOrgSync = { reason, force -> orgSnapshotCoordinator.requestSync(reason, force) },
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->

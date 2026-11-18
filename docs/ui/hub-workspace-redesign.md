@@ -115,3 +115,15 @@ The existing shared bottom navigation truncates labels at 200% font and its fixe
 scale; these are outside the Hub layout and remain tracked in HUBWORK-04. Keyboard interaction, long real organization
 names, runtime role changes, phone landscape, real error recovery and list-position behavior still require HUBWORK-01..05.
 The implementation is **not ACCEPTED/device-verified** until those checks and owner visual review are recorded.
+
+## 2026-11-18 refresh refinement
+
+The first load keeps organization identity and section navigation in place. A brief grace period gives the local read a chance to finish before the selected section shows one labeled loading row. A warm refresh keeps cached content and the recovery notice in place. Refresh stays in one position, announces its current state, and uses a static activity icon with reduced motion. The pull gesture retains its preview indicator and hands off to the header once the refresh begins.
+
+The shared route starts one refresh on entry. Directory, groups, and news requests run concurrently and publish as each finishes. Manual retries bypass the automatic cooldown and respect server backoff. Leaving the tab ends that caller's wait while the engine finishes the refresh.
+
+The custom pull-to-refresh indicator slot was checked on 2026-11-18. [Android Developers](https://developer.android.com/develop/ui/compose/components/pull-to-refresh)
+
+### Desktop conversation pane
+
+At the desktop split-layout breakpoint, Hub occupies the resizable left pane. The conversation pane keeps the active chat and its state when the user moves between Chats and Hub. Opening a person or group from Hub changes the right pane and leaves the Hub tab selected. The right pane prompts for a chat when no conversation is active. Narrow windows use a single pane with Back returning to Hub for conversations opened there.

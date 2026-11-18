@@ -61,7 +61,7 @@ public object SingleInstanceController {
         }
         return link.takeIf {
             it.length <= MAX_LINE_CHARS && it.none { char -> char.isWhitespace() || char.isISOControl() || char == '"' } &&
-                (it.startsWith("flash://g/1/") || it.startsWith("flash://enroll?"))
+                (com.transfer.flash.core.common.protocol.InviteAppLink.isGroupInvite(it) || it.startsWith("flash://enroll?"))
         }
     }
 

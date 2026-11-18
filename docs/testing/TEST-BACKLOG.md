@@ -8738,3 +8738,69 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 - **Pass:** Each video gesture advances by up to ten seconds, briefly shows the jump and preserves pause. The timeline clamps at the end, responds to drag and accessibility actions, and keeps both time labels readable. Photo zoom and album paging still work.
 - **Source:** UI-018.
 - **Status:** TODO
+
+## 2026-11-18 — Module IF review follow-up
+
+### IFREV-01 — Required group encryption at the Hub boundary
+
+- **Setup:** An isolated test Hub and two enrolled test clients. Include the supported encrypted group workflow and a compatibility fixture for a readable group message.
+- **Steps:** Set group encryption to required and verify the relay contract with a recipient online and offline. Check server delivery, mailbox outcome and the sender response.
+- **Pass:** Readable group traffic is refused before forwarding or queuing, with a policy result. Encrypted group traffic still reaches members.
+- **Source:** ERROR-1031 and IF-01.
+- **Status:** TODO
+
+### IFREV-02 — Live group policy change and delayed refresh
+
+- **Setup:** An isolated Hub and enrolled Android and Windows clients connected in inspectable mode.
+- **Steps:** Change to required while both clients are open. Delay the next policy response and exercise a reconnect and enrollment change against the test setup.
+- **Pass:** Connected clients converge on current policy. Delayed responses cannot restore a superseded or wrong-enrollment policy. A refresh failure preserves confidentiality and shows an accurate state.
+- **Source:** ERROR-1032 and IF-02.
+- **Status:** TODO
+
+### IFREV-03 — Partly successful member addition
+
+- **Setup:** An enrolled creator with two selected Hub members. Remove one member from the test directory before sending the create request.
+- **Steps:** Submit the initial roster. Compare the creator's view with the Hub, then submit a valid roster and check both hosts.
+- **Pass:** The invalid roster returns an error and creates no Hub group or local conversation. The valid request creates one group with the full roster and both hosts converge.
+- **Source:** ERROR-1033 and IF-05.
+- **Status:** TODO
+
+### IFREV-04 — Repeated Create while the Hub is slow
+
+- **Setup:** An enrolled group creator on Android or Windows and an isolated Hub fixture with a delayed create response.
+- **Steps:** Tap Create repeatedly while submitting one group. Repeat with Retry after a simulated lost response.
+- **Pass:** The action indicates an in-flight request and the directory contains exactly one group for that creation intent. A separate later creation remains possible.
+- **Source:** ERROR-1034 and IF-06.
+- **Status:** TODO
+
+### IFREV-05 — Live Hub directory group regression
+
+- **Setup:** Android and Windows clients and a test Hub built from matching source containing 070cd00a and c1afba21 or later.
+- **Steps:** Create a directory group on each host, observe cross-client roster update without manually refreshing, join through open and approval-based routes, and remove a previously preauthorized member. Verify roster version after auto-join enrollment and reject an unknown admin ID.
+- **Pass:** Host group list, header and member states agree. Join and removal produce the current signed roster on each connected client. Pending approval remains visible until decided, and a removed preauthorized device needs authorization under the current group rules.
+- **Source:** C1–C4 and S1–S3 in the [module audit](../audit/2026-11-17-module-if-review.md#earlier-hub-groups-audit-against-current-source).
+- **Status:** TODO
+
+### IFREV-06 — Hub directory invite browser and app handoff
+
+- **Setup:** A matching test Hub, Android build and installed Windows build. Have one listed Open group, one listed Request approval group, a different Hub enrollment and a device without enrollment.
+- **Steps:** Share the group link from a manager device and open it from a browser and from chat. Confirm on the enrolled device. Exercise the wrong enrollment, an expired link and a link after a roster change.
+- **Pass:** The landing page exposes Open in Flash. Flash opens confirmation and follows current group visibility, scope and approval policy. Wrong, expired and outdated tokens cannot resolve. Local peer invites still open and join through the peer flow.
+- **Source:** IF-03 and ADR-365. Android and Windows association checks are INVITE-LINK-01/02.
+- **Status:** TODO
+
+### HUBWORK-06 — Hub entry, refresh, and retry on Android and Windows
+
+- **Setup:** One enrolled device with no directory snapshot and one with a saved snapshot. Use a test Hub with a slow directory response and working Groups and News endpoints.
+- **Steps:** Open the Hub cold, switch sections, leave while refreshing, and reopen. Refresh from the header and by pulling down on Android. Test offline and recovery, then repeat with reduced motion and large text.
+- **Pass:** Cold entry shows one clear loading state. Saved content and list position survive a refresh. Groups and news can appear before the directory completes, reopening joins the existing refresh, and a retry starts without waiting for the automatic cooldown. Capture the `hub.ui.refresh` duration and directory time from the device log.
+- **Source:** The [Hub workspace refresh refinement](../ui/hub-workspace-redesign.md#2026-11-18-refresh-refinement).
+- **Status:** TODO
+
+### HUBWORK-07 — Windows Hub beside the active conversation
+
+- **Setup:** An enrolled Windows build, one existing chat, and one person or group available in Hub.
+- **Steps:** Type an unsent draft in the existing chat, scroll its messages, and choose Hub from the rail. Open a person and a group from Hub. Return to Chats, then repeat with a narrow window and use Back after opening a chat from Hub.
+- **Pass:** In the split layout, the active chat, draft, message position and divider stay in place when Hub opens. Hub stays selected when a chat opens from it. In a narrow window Back returns to Hub. Resizing never shows the wrong chat or silently loses the draft.
+- **Source:** The [desktop conversation pane refinement](../ui/hub-workspace-redesign.md#desktop-conversation-pane).
+- **Status:** TODO

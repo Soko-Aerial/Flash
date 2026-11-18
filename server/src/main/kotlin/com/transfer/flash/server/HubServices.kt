@@ -447,6 +447,9 @@ class HubServices private constructor(
                         limits = limits,
                         delegationChain = { delegations.current?.let { listOf(it) } ?: emptyList() },
                         offlineGraceDays = { admins.getSetting("offlineGraceDays")?.toIntOrNull() ?: 30 },
+                        groupJoinLinks = if (dataSecrets.isActive) {
+                            com.transfer.flash.server.directory.HubGroupJoinLinks(dataSecrets, clock)
+                        } else null,
                     )
                     sealingKeyRoutes(
                         identities = identities,

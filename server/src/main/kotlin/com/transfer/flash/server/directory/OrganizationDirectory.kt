@@ -644,6 +644,7 @@ class OrganizationDirectory(
         joinMode: JoinMode,
         adminDeviceIds: List<String>,
         actor: DirectoryActor,
+        initialMembers: Set<String>? = null,
     ): GroupCharter {
         requireId(id, "Group id")
         requireName(name, "Group name")
@@ -659,8 +660,6 @@ class OrganizationDirectory(
                     )
                 }
             }
-            if (groups.containsKey(id.trim())) throw DirectoryConflictException("Group '${id.trim()}' already exists")
-
             val requestedAdmins = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
             val unknownAdmins = requestedAdmins.filter { !members.containsKey(it) }
             if (unknownAdmins.isNotEmpty()) {
@@ -669,6 +668,20 @@ class OrganizationDirectory(
             val allAdmins = (requestedAdmins + actor.deviceId)
                 .filter { it != DirectoryActor.CONSOLE.deviceId }
                 .distinct()
+            val memberIds = allAdmins.toSet() + initialMembers.orEmpty()
+            if (initialMembers != null) {
+                require(memberIds.size <= GroupRosterStatement.MAX_MEMBERS) { "Too many group members" }
+                require(memberIds.all(members::containsKey)) { "One or more selected members are no longer in the directory" }
+            }
+            val existing = groups[id.trim()]
+            if (existing != null) {
+                if (initialMembers != null && actor.deviceId in existing.adminDeviceIds &&
+                    existing.name == name.trim() && existing.departmentId == departmentId.trim() &&
+                    existing.visibility == visibility && existing.joinMode == joinMode &&
+                    existing.adminDeviceIds.toSet() == allAdmins.toSet() && existing.memberDeviceIds.toSet() == memberIds
+                ) return@writeLocked existing
+                throw DirectoryConflictException("Group '${id.trim()}' already exists")
+            }
             val newVer = bumpVersionLocked()
             val group = GroupCharter(
                 id = id.trim(),
@@ -677,7 +690,7 @@ class OrganizationDirectory(
                 visibility = visibility,
                 joinMode = joinMode,
                 adminDeviceIds = allAdmins,
-                memberDeviceIds = allAdmins,
+                memberDeviceIds = memberIds.toList(),
                 version = newVer,
             )
             persist { c ->

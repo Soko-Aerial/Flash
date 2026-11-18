@@ -332,9 +332,9 @@ class DesktopShellBehaviorTest {
     }
 
     @Test
-    fun `full width destinations exclude Settings and Hub from list detail split`() {
+    fun `Settings is full width and Hub shares the split with chats`() {
         assertTrue(isFullWidthDesktopDestination(FlashDestination.Settings))
-        assertTrue(isFullWidthDesktopDestination(FlashDestination.Hub))
+        assertFalse(isFullWidthDesktopDestination(FlashDestination.Hub))
         assertFalse(isFullWidthDesktopDestination(FlashDestination.ChatList))
         assertFalse(isFullWidthDesktopDestination(FlashDestination.Conversation))
         assertFalse(isFullWidthDesktopDestination(FlashDestination.Transfers))
@@ -423,7 +423,6 @@ class DesktopShellBehaviorTest {
         // Case 1: Chat opened from ChatList in two-pane -> clicking Chats closes it instead of trapping it.
         val navFromChats = FlashNavigationState(FlashDestination.ChatList)
         navFromChats.navigate(FlashDestination.Conversation, conversationId = "peer-1")
-        var opened: String? = null
         var closedCount = 0
         var clearedCount = 0
 
@@ -432,24 +431,22 @@ class DesktopShellBehaviorTest {
             nav = navFromChats,
             twoPane = true,
             selectedChatConversationId = "peer-1",
-            onOpenConversation = { opened = it },
             onCloseConversation = { closedCount++ },
             onClearSelections = { clearedCount++ },
         )
 
         assertEquals(FlashDestination.ChatList, navFromChats.current.destination)
         assertNull(navFromChats.current.conversationId)
-        assertNull(opened)
         assertEquals(1, closedCount)
         assertEquals(1, clearedCount)
 
-        // Case 2: Chat opened from Hub in two-pane -> clicking Chats promotes it to Chats tab.
+        // A conversation opened under Hub remains open when the user selects Chats.
         val navFromHub = FlashNavigationState(FlashDestination.ChatList)
         navFromHub.updateHubEnrolled(true)
         navFromHub.selectTab(FlashDestination.Hub)
         navFromHub.navigate(FlashDestination.Conversation, conversationId = "peer-hub")
         assertTrue(navFromHub.conversationOpenedFromHub)
-        var reopenedFromHub: String? = null
+        assertEquals(FlashDestination.Hub, navFromHub.shellTab)
         var closedFromHub = 0
 
         selectDesktopShellTab(
@@ -457,12 +454,10 @@ class DesktopShellBehaviorTest {
             nav = navFromHub,
             twoPane = true,
             selectedChatConversationId = "peer-hub",
-            onOpenConversation = { reopenedFromHub = it },
             onCloseConversation = { closedFromHub++ },
             onClearSelections = {},
         )
 
-        assertEquals("peer-hub", reopenedFromHub)
         assertEquals(0, closedFromHub)
         assertEquals(FlashDestination.Conversation, navFromHub.current.destination)
         assertEquals("peer-hub", navFromHub.current.conversationId)
@@ -475,24 +470,20 @@ class DesktopShellBehaviorTest {
             nav = navFromHub,
             twoPane = true,
             selectedChatConversationId = "peer-hub",
-            onOpenConversation = {},
             onCloseConversation = {},
             onClearSelections = { clearedOnTabSwitch++ },
         )
         assertEquals(1, clearedOnTabSwitch)
         assertEquals(FlashDestination.NearbyDevices, navFromHub.current.destination)
 
-        var reopenedAfterSwitch: String? = null
         selectDesktopShellTab(
             destination = FlashDestination.ChatList,
             nav = navFromHub,
             twoPane = true,
             selectedChatConversationId = null,
-            onOpenConversation = { reopenedAfterSwitch = it },
             onCloseConversation = {},
             onClearSelections = {},
         )
-        assertNull(reopenedAfterSwitch)
         assertEquals(FlashDestination.ChatList, navFromHub.current.destination)
 
         // Transfers remains reachable via openTransfers() even when hub-enrolled.
@@ -501,11 +492,29 @@ class DesktopShellBehaviorTest {
             nav = navFromHub,
             twoPane = true,
             selectedChatConversationId = null,
-            onOpenConversation = {},
             onCloseConversation = {},
             onClearSelections = {},
         )
         assertEquals(FlashDestination.Transfers, navFromHub.current.destination)
+    }
+
+    @Test
+    fun `wide Hub entry and return preserve the selected chat without closing it`() {
+        val nav = FlashNavigationState(FlashDestination.ChatList)
+        nav.updateHubEnrolled(true)
+        nav.navigate(FlashDestination.Conversation, conversationId = "peer-1")
+        for (destination in listOf(FlashDestination.Hub, FlashDestination.ChatList)) {
+            selectDesktopShellTab(
+                destination = destination,
+                nav = nav,
+                twoPane = true,
+                selectedChatConversationId = "peer-1",
+                onCloseConversation = { error("Conversation closed") },
+                onClearSelections = { error("Selection cleared") },
+            )
+            assertEquals(destination, nav.shellTab)
+        }
+        assertEquals("peer-1", nav.current.conversationId)
     }
 
     @Test

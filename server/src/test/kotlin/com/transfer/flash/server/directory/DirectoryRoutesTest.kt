@@ -4,6 +4,11 @@ import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import com.transfer.flash.core.hubprotocol.rest.CreateDepartmentBody
 import com.transfer.flash.core.hubprotocol.rest.CreateGroupBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupWithMembersBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupJoinLinkBody
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkTarget
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkToken
+import com.transfer.flash.server.auth.SecretBox
 import com.transfer.flash.core.hubprotocol.rest.DepartmentDto
 import com.transfer.flash.core.hubprotocol.rest.ErrorBody
 import com.transfer.flash.core.hubprotocol.rest.GroupDto
@@ -37,6 +42,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** SEC-03, REL-10: the directory trusts only the authenticated principal. */
@@ -65,9 +71,9 @@ class DirectoryRoutesTest {
         }
     }
 
-    private fun ApplicationTestBuilder.mount(w: World) {
+    private fun ApplicationTestBuilder.mount(w: World, joinLinks: HubGroupJoinLinks? = null) {
         routing {
-            directoryRoutes(w.dir, BearerPrincipalResolver(w.tokens), isOnline = { it in w.online }, audit = AuditSink { actor, action, details -> w.audit += "$actor|$action|$details" })
+            directoryRoutes(w.dir, BearerPrincipalResolver(w.tokens), isOnline = { it in w.online }, audit = AuditSink { actor, action, details -> w.audit += "$actor|$action|$details" }, groupJoinLinks = joinLinks)
         }
     }
 
@@ -82,6 +88,51 @@ class DirectoryRoutesTest {
         }
 
     private fun groupIds(r: HttpResponse, text: String) = HubRestCodec.decodeList<GroupDto>(text).map { it.id }.sorted()
+
+    @Test
+    fun atomicGroupCreateRejectsAnInvalidRosterAndReplaysTheSameRequest() = testApplication {
+        val w = World()
+        w.dir.addDepartmentMember("dept-gh", "dadmin-01", "Admin")
+        mount(w)
+        val admin = w.token("dadmin-01", DeviceCert.ROLE_ADMIN)
+        val path = "/api/v1/groups/create-with-members"
+        val request = CreateGroupWithMembersBody("new-group", "Project", "dept-gh", setOf("member-01"))
+        assertEquals(HttpStatusCode.BadRequest, client.postAs(path, admin, request.copy(memberDeviceIds = setOf("missing"))).status)
+        assertNull(w.dir.getGroup(request.id))
+        assertEquals(HttpStatusCode.Created, client.postAs(path, admin, request).status)
+        val original = assertNotNull(w.dir.getGroup(request.id))
+        assertEquals(setOf("dadmin-01", "member-01"), original.memberDeviceIds.toSet())
+        assertEquals(HttpStatusCode.Created, client.postAs(path, admin, request).status)
+        assertEquals(original.version, w.dir.getGroup(request.id)?.version)
+        assertEquals(HttpStatusCode.Conflict, client.postAs(path, admin, request.copy(name = "Other")).status)
+        assertEquals(original, w.dir.getGroup(request.id))
+    }
+
+    @Test
+    fun groupJoinLinkRequiresEnrollmentAndPreservesApprovalPolicy() = testApplication {
+        val w = World()
+        var now = 1_000L
+        mount(w, HubGroupJoinLinks(SecretBox.ofKey(ByteArray(32) { 7 }), clock = { now }))
+        val issue = "/api/v1/groups/join-links"
+        val resolve = "$issue/resolve"
+        val admin = w.token("dadmin-01", DeviceCert.ROLE_ADMIN)
+        val member = w.token("member-01")
+        val body = CreateGroupJoinLinkBody("grp-approval")
+        assertEquals(HttpStatusCode.NotFound, client.postAs(issue, member, body).status)
+        val issued = client.postAs(issue, admin, body)
+        assertEquals(HttpStatusCode.Created, issued.status)
+        val token = HubRestCodec.decode<GroupJoinLinkToken>(issued.bodyAsText())
+        assertEquals(HttpStatusCode.Unauthorized, client.postAs(resolve, null, token).status)
+        assertEquals(HttpStatusCode.NotFound, client.postAs(resolve, member, GroupJoinLinkToken("invalid")).status)
+        val resolved = client.postAs(resolve, member, token)
+        assertEquals(HttpStatusCode.OK, resolved.status)
+        val target = HubRestCodec.decode<GroupJoinLinkTarget>(resolved.bodyAsText())
+        val request = client.postAs("/api/v1/groups/join-request", member, JoinRequestBody(target.groupId))
+        assertEquals(HttpStatusCode.Accepted, request.status)
+        assertFalse(w.dir.getGroup(target.groupId)!!.hasMember("member-01"))
+        now += 24 * 60 * 60 * 1000L
+        assertEquals(HttpStatusCode.NotFound, client.postAs(resolve, member, token).status)
+    }
 
     @Test
     fun everyDirectoryRouteRefusesAnUnauthenticatedCaller() = testApplication {

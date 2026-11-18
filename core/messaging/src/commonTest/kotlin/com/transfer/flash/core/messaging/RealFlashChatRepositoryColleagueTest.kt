@@ -8,7 +8,7 @@ import com.transfer.flash.core.enterprise.OrgLease
 import com.transfer.flash.core.enterprise.OrgPeer
 import com.transfer.flash.core.enterprise.OrgPeerResolver
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
-import com.transfer.flash.core.messaging.model.FlashPeerPresence
+import com.transfer.flash.core.common.model.FlashPeerPresence
 import kotlinx.coroutines.flow.first
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
@@ -1799,14 +1799,15 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun C3_createHubGroupCallsHubApiAddsMembersAndSyncs() = runTest {
+    fun groupCreateFailureLeavesNoLocalRosterAndRetryKeepsRequestId() = runTest {
         val trust = com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore()
         trust.saveCredentials(testCredentials())
         val convDao = FakeConversationDao()
         val members = FakeGroupMemberDao()
         val syncReasons = mutableListOf<Pair<String, Boolean>>()
         val createdGroups = mutableListOf<String>()
-        val addedMembers = mutableListOf<Pair<String, String>>()
+        val addedMembers = mutableListOf<Set<String>>()
+        var refuse = true
         val fakeDir = object : com.transfer.flash.core.enterprise.HubDirectoryApi {
             override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?) =
                 FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup>())
@@ -1826,30 +1827,26 @@ class RealFlashChatRepositoryColleagueTest {
                     role = com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues.ROLE_ORG_ADMIN,
                 ),
             )
-            override suspend fun createHubGroup(
+            override suspend fun createHubGroupWithMembers(
                 hubUrl: String,
                 id: String,
                 name: String,
                 departmentId: String,
-                visibility: String,
-                joinMode: String,
-                adminDeviceIds: List<String>,
+                memberIds: Set<String>,
             ): FlashResult<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup> {
                 createdGroups += id
+                addedMembers += memberIds
+                if (refuse) return FlashResult.Failure(FlashError.Unknown("A selected member is no longer enrolled"))
                 return FlashResult.Success(
                     com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup(
                         groupId = id,
                         name = name,
                         department = departmentId,
-                        visibility = visibility,
-                        joinMode = joinMode,
-                        memberCount = 1,
+                        visibility = "LISTED",
+                        joinMode = "REQUEST_APPROVAL",
+                        memberCount = memberIds.size + 1,
                     ),
                 )
-            }
-            override suspend fun setHubGroupMember(hubUrl: String, groupId: String, deviceId: String, add: Boolean): FlashResult<Unit> {
-                addedMembers += groupId to deviceId
-                return FlashResult.Success(Unit)
             }
         }
         val repo = RealFlashChatRepository(
@@ -1872,10 +1869,19 @@ class RealFlashChatRepositoryColleagueTest {
         reposToClose.add(repo)
 
         assertTrue(repo.canCreateHubGroup())
-        val res = repo.createHubGroup("Security Team", setOf(colleagueAlice))
+        val requestId = "same-group-attempt"
+        val selected = setOf(colleagueAlice)
+        val failed = repo.createHubGroupForRequest("Security Team", selected, requestId)
+        assertTrue(failed is FlashResult.Failure)
+        assertEquals(null, convDao.get(requestId))
+        assertTrue(members.activeMembers(requestId).isEmpty())
+        assertFalse(trust.isGroupLinkedToHub(requestId))
+        refuse = false
+        val res = repo.createHubGroupForRequest("Security Team", selected, requestId)
         val gid = (res as FlashResult.Success).value
-        assertEquals(listOf(gid), createdGroups)
-        assertEquals(listOf(gid to colleagueAlice), addedMembers)
+        assertEquals(requestId, gid)
+        assertEquals(listOf(gid, gid), createdGroups)
+        assertEquals(listOf(selected, selected), addedMembers)
         assertEquals(listOf("group_created" to true), syncReasons)
         assertTrue(trust.isGroupLinkedToHub(gid))
         assertEquals(setOf(localDeviceId, colleagueAlice), members.activeMembers(gid).map { it.deviceId }.toSet())

@@ -17,7 +17,7 @@ function showInvite() {
     try {
       const bytes = Uint8Array.from(atob(fragment.replaceAll("-", "+").replaceAll("_", "/")), ch => ch.charCodeAt(0));
       const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      const format = group ? /^flash:\/\/g\/1\/[A-Za-z0-9_-]+$/ : /^flash:\/\/enroll\?[^\s\x00-\x1f\x7f#]+$/;
+      const format = group ? /^flash:\/\/g\/[12]\/[A-Za-z0-9_-]+$/ : /^flash:\/\/enroll\?[^\s\x00-\x1f\x7f#]+$/;
       if (format.test(decoded)) invite = decoded;
     } catch {
       // A malformed invitation has no open or copy action.

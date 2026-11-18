@@ -10,6 +10,10 @@ import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.rest.ApprovalDto
 import com.transfer.flash.core.hubprotocol.rest.ApprovalSubmitBody
 import com.transfer.flash.core.hubprotocol.rest.CreateGroupBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupWithMembersBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupJoinLinkBody
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkTarget
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkToken
 import com.transfer.flash.core.hubprotocol.rest.DepartmentDto
 import com.transfer.flash.core.hubprotocol.rest.GroupDto
 import com.transfer.flash.core.hubprotocol.rest.GroupMemberBody
@@ -164,6 +168,22 @@ public interface HubDirectoryApi {
         adminDeviceIds: List<String> = emptyList(),
     ): FlashResult<EnterpriseDirectoryGroup> =
         FlashResult.Failure(FlashError.Unknown("createHubGroup not implemented"))
+
+    /** Creates the group and its entire initial roster in one Hub request. */
+    public suspend fun createHubGroupWithMembers(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String,
+        memberIds: Set<String>,
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        FlashResult.Failure(FlashError.Unknown("This Hub does not support group creation with members."))
+
+    public suspend fun createGroupJoinLink(hubUrl: String, groupId: String): FlashResult<GroupJoinLinkToken> =
+        FlashResult.Failure(FlashError.Unknown("This Hub does not support group join links."))
+
+    public suspend fun resolveGroupJoinLink(hubUrl: String, token: String): FlashResult<GroupJoinLinkTarget> =
+        FlashResult.Failure(FlashError.Unknown("This Hub does not support group join links."))
 
     /** Adds or removes a member in a Hub group (`POST /api/v1/groups/members`). */
     public suspend fun setHubGroupMember(
@@ -450,6 +470,32 @@ public class EnterpriseDirectoryClient(
         ) { body ->
             HubRestCodec.decodeOrNull<GroupDto>(body)?.toDirectoryGroup()
         }
+
+    override suspend fun createHubGroupWithMembers(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String,
+        memberIds: Set<String>,
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        hubPost(
+            hubUrl = hubUrl,
+            path = HubContract.PATH_GROUP_CREATE_WITH_MEMBERS,
+            body = HubRestCodec.encode(CreateGroupWithMembersBody(id, name, departmentId, memberIds)),
+            refusalMayCarryBody = false,
+        ) { HubRestCodec.decodeOrNull<GroupDto>(it)?.toDirectoryGroup()?.takeIf { group -> group.groupId == id } }
+
+    override suspend fun createGroupJoinLink(hubUrl: String, groupId: String): FlashResult<GroupJoinLinkToken> =
+        hubPost(
+            hubUrl, HubContract.PATH_GROUP_JOIN_LINKS, HubRestCodec.encode(CreateGroupJoinLinkBody(groupId)),
+            refusalMayCarryBody = false,
+        ) { HubRestCodec.decodeOrNull<GroupJoinLinkToken>(it) }
+
+    override suspend fun resolveGroupJoinLink(hubUrl: String, token: String): FlashResult<GroupJoinLinkTarget> =
+        hubPost(
+            hubUrl, HubContract.PATH_GROUP_JOIN_LINK_RESOLVE, HubRestCodec.encode(GroupJoinLinkToken(token)),
+            refusalMayCarryBody = false,
+        ) { HubRestCodec.decodeOrNull<GroupJoinLinkTarget>(it) }
 
     override suspend fun setHubGroupMember(
         hubUrl: String,

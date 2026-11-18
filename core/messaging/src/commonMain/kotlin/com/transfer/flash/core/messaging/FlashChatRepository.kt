@@ -100,6 +100,14 @@ public interface FlashChatRepository {
     ): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Hub group creation unavailable"))
 
+    /** Creates a group with a stable, caller-owned request id for retries of the same draft. */
+    public suspend fun createHubGroupForRequest(
+        name: String,
+        memberIds: Set<String>,
+        requestId: String,
+        departmentId: String = "",
+    ): FlashResult<String> = createHubGroup(name, memberIds, departmentId)
+
     /** Returns true when this device's directory role allows creating Hub groups (ORG_ADMIN or DEPT_ADMIN). */
     public suspend fun canCreateHubGroup(): Boolean = false
 

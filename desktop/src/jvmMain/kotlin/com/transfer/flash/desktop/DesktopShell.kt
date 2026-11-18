@@ -225,7 +225,7 @@ public fun DesktopShell(
         }
     }
     LaunchedEffect(nav.current.destination) {
-        if (nav.current.destination != FlashDestination.ChatList &&
+        if (!desktopTabBesideConversation(nav.current.destination) &&
             nav.current.destination != FlashDestination.Conversation
         ) {
             selectedChatConversationId = null
@@ -239,13 +239,10 @@ public fun DesktopShell(
         if (nav.current.destination != FlashDestination.Settings) {
             showRadioGateway = false
         }
-        if (nav.current.destination == FlashDestination.Hub) {
-            engine.requestOrgSync("hub_tab_opened")
-        }
     }
     LaunchedEffect(trayNavTick) {
         if (trayNavTick > 0) {
-            selectedChatConversationId = null
+            if (nav.current.destination != FlashDestination.Hub) selectedChatConversationId = null
             selectedTransferId = null
             selectedNearbyPeerId = null
             showRadioGateway = false
@@ -259,13 +256,20 @@ public fun DesktopShell(
     val chatRepository = remember(engine, ready) { engine.chats }
     val openConversationEntry = when {
         nav.current.destination == FlashDestination.Conversation -> nav.current.conversationId
-        twoPane && nav.current.destination == FlashDestination.ChatList -> selectedChatConversationId
+        twoPane && desktopTabBesideConversation(nav.current.destination) -> selectedChatConversationId
         else -> null
     }
     var lastOpenConversationEntry by remember { mutableStateOf<String?>(null) }
+    var collapsedHubConversation by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(openConversationEntry) {
         if (openConversationEntry == null && lastOpenConversationEntry != null) {
+            collapsedHubConversation = lastOpenConversationEntry.takeIf { nav.current.destination == FlashDestination.Hub }
             chatRepository.closeConversation()
+        } else if (openConversationEntry != null) {
+            if (nav.current.destination == FlashDestination.Hub && collapsedHubConversation == openConversationEntry) {
+                chatRepository.openConversation(openConversationEntry)
+            }
+            collapsedHubConversation = null
         }
         lastOpenConversationEntry = openConversationEntry
     }
@@ -304,6 +308,7 @@ public fun DesktopShell(
     }
 
     // ── Group creation (Item 3) ──
+    val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
     var showCreateGroup by remember { mutableStateOf(false) }
     val hubGroupPolicy by engine.hubGroupPolicy.collectAsState()
     var canCreateHubGroup by remember { mutableStateOf(false) }
@@ -322,7 +327,7 @@ public fun DesktopShell(
     LaunchedEffect(ready, activationInvite) {
         val invite = activationInvite ?: return@LaunchedEffect
         if (!ready) return@LaunchedEffect
-        if (invite.startsWith("flash://g/1/")) {
+        if (com.transfer.flash.core.common.protocol.InviteAppLink.isGroupInvite(invite)) {
             activeJoinLink = invite
             showJoinGroupDialog = true
         } else {
@@ -666,8 +671,7 @@ public fun DesktopShell(
     // actions stay hidden.
     // Trust is a plain lookup against the list the Nearby rows use, so the two screens cannot
     // disagree about whether a peer is paired.
-    val activeConversationId = nav.current.conversationId
-        ?: if (twoPane && nav.current.destination == FlashDestination.ChatList) selectedChatConversationId else null
+    val activeConversationId = openConversationEntry
     val trustedConversationPeer = trustedPeersByCoordinator.firstOrNull { it.id == activeConversationId }
     val conversationIdIsTrusted = trustedConversationPeer != null
     val conversationIdIsVerified = trustedConversationPeer?.verified == true
@@ -1224,7 +1228,6 @@ public fun DesktopShell(
     val desktopSettings by engine.settings.collectAsState()
     var showRenameDialog by remember { mutableStateOf(false) }
     var showEncryptionSheet by remember { mutableStateOf(false) }
-    val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
     // The organisation hub (ADR-120): live status for the hub destination.
     val hubObject = remember(ready) { engine.enterpriseHub }
     val hubStatusFlow = remember(hubObject) {
@@ -1302,7 +1305,7 @@ public fun DesktopShell(
     }
     val closeDeletedConversationIfActive: (Set<String>) -> Unit = { deletedIds ->
         if (nav.current.conversationId in deletedIds || selectedChatConversationId in deletedIds) {
-            val backToHub = nav.conversationOpenedFromHub
+            val backToHub = nav.shellTab == FlashDestination.Hub
             selectedChatConversationId = null
             chatRepository.closeConversation()
             if (twoPane) {
@@ -1429,7 +1432,7 @@ public fun DesktopShell(
     var hubReselectTick by remember { mutableStateOf(0) }
 
     fun closeActiveConversation() {
-        val backToHub = nav.conversationOpenedFromHub
+        val backToHub = nav.shellTab == FlashDestination.Hub
         selectedChatConversationId = null
         chatRepository.closeConversation()
         if (twoPane) {
@@ -1440,12 +1443,14 @@ public fun DesktopShell(
     }
 
     fun selectDesktopShellTab(destination: FlashDestination) {
+        if (twoPane && destination == FlashDestination.Hub) {
+            nav.current.conversationId?.let { selectedChatConversationId = it }
+        }
         selectDesktopShellTab(
             destination = destination,
             nav = nav,
             twoPane = twoPane,
             selectedChatConversationId = selectedChatConversationId,
-            onOpenConversation = { id -> chatRepository.openConversation(id) },
             onCloseConversation = { chatRepository.closeConversation() },
             onClearSelections = {
                 selectedChatConversationId = null
@@ -2397,7 +2402,7 @@ public fun DesktopShell(
     val detailPaneContent: @Composable () -> Unit = {
         val detailConvId = activeConversationId
         when {
-            (nav.current.destination == FlashDestination.Conversation || (twoPane && nav.current.destination == FlashDestination.ChatList && detailConvId != null)) && detailConvId != null -> {
+            detailConvId != null -> {
                 conversationPaneContent()
             }
             nav.current.destination == FlashDestination.Transfers && selectedTransferItem != null -> {
@@ -2406,6 +2411,10 @@ public fun DesktopShell(
             nav.current.destination == FlashDestination.NearbyDevices && selectedNearbyPeer != null -> {
                 renderNearbyDetail(selectedNearbyPeer, false)
             }
+            nav.current.destination == FlashDestination.Hub ->
+                com.transfer.flash.ui.adaptive.FlashPlaceholderDetailPane(
+                    subtitle = "Open a chat from People or Groups.",
+                )
             else -> PlaceholderDetailPane(
                 onFindDevices = if (nav.current.destination != FlashDestination.NearbyDevices) {
                     { nav.selectTab(FlashDestination.NearbyDevices) }
@@ -2552,23 +2561,21 @@ public fun DesktopShell(
                 isEnterpriseEnrolled = enterpriseCredentials != null,
                 allowPersonalHubLink = hubGroupPolicy.allowPersonalHubLink,
                 canCreateHubGroup = canCreateHubGroup,
-                onCreateHubGroup = { title, memberIds ->
-                    scope.launch {
-                        val result = chatRepository.createHubGroup(title, memberIds)
-                        val groupId = result.getOrNull()
-                        if (groupId != null) {
-                            showCreateGroup = false
-                            selectedChatConversationId = groupId
-                            chatRepository.openConversation(groupId)
-                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
-                        } else {
-                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
-                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                            snackbarHostState.showSnackbar(
-                                message = reason ?: "Couldn't create the Hub group",
-                                duration = SnackbarDuration.Long,
-                            )
-                        }
+                onCreateHubGroup = { title, memberIds, requestId ->
+                    val result = chatRepository.createHubGroupForRequest(title, memberIds, requestId)
+                    val groupId = result.getOrNull()
+                    if (groupId != null) {
+                        selectedChatConversationId = groupId
+                        chatRepository.openConversation(groupId)
+                        nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        showCreateGroup = false
+                    } else {
+                        val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                            as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                        snackbarHostState.showSnackbar(
+                            message = reason ?: "Couldn't create the Hub group",
+                            duration = SnackbarDuration.Long,
+                        )
                     }
                 },
                 onFindDevicesClick = {
@@ -3405,15 +3412,13 @@ internal fun selectDesktopShellTab(
     nav: FlashNavigationState,
     twoPane: Boolean,
     selectedChatConversationId: String?,
-    onOpenConversation: (String) -> Unit,
     onCloseConversation: () -> Unit,
     onClearSelections: () -> Unit,
     onHubReselect: () -> Unit = {},
 ) {
     if (destination == FlashDestination.ChatList) {
-        if (twoPane && nav.conversationOpenedFromHub && selectedChatConversationId != null) {
-            onOpenConversation(selectedChatConversationId)
-            nav.selectChatsTab(selectedChatConversationId)
+        if (twoPane && nav.shellTab == FlashDestination.Hub) {
+            nav.selectChatsTab(nav.current.conversationId ?: selectedChatConversationId)
         } else if (nav.current.destination == FlashDestination.Conversation) {
             onCloseConversation()
             onClearSelections()
@@ -3423,9 +3428,9 @@ internal fun selectDesktopShellTab(
             nav.selectTab(FlashDestination.ChatList)
         }
     } else {
-        if (destination == FlashDestination.Hub && nav.current.destination == FlashDestination.Hub) {
+        if (destination == FlashDestination.Hub && nav.shellTab == FlashDestination.Hub) {
             onHubReselect()
-        } else {
+        } else if (destination != FlashDestination.Hub || !twoPane || nav.shellTab != FlashDestination.ChatList) {
             onClearSelections()
         }
         if (destination == FlashDestination.Transfers) {
@@ -3517,8 +3522,11 @@ internal fun resolveDesktopShortcut(
     }
 }
 
+private fun desktopTabBesideConversation(destination: FlashDestination): Boolean =
+    destination == FlashDestination.ChatList || destination == FlashDestination.Hub
+
 internal fun isFullWidthDesktopDestination(destination: FlashDestination): Boolean =
-    destination == FlashDestination.Settings || destination == FlashDestination.Hub
+    destination == FlashDestination.Settings
 
 // OPT-O03-10: Dedicated settings destination isolating high-frequency background/telemetry flows
 // (radioUiState at 1-5 Hz, hubDropped, hubSealingKeyState, orgLease, storage usage scan) from

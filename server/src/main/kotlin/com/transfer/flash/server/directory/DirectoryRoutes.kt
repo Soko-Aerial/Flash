@@ -6,6 +6,10 @@ import com.transfer.flash.core.hubprotocol.certs.DelegationCert
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import com.transfer.flash.core.hubprotocol.rest.CreateDepartmentBody
 import com.transfer.flash.core.hubprotocol.rest.CreateGroupBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupWithMembersBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupJoinLinkBody
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkTarget
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkToken
 import com.transfer.flash.core.hubprotocol.rest.DepartmentDto
 import com.transfer.flash.core.hubprotocol.rest.GroupDto
 import com.transfer.flash.core.hubprotocol.rest.GroupMemberBody
@@ -70,6 +74,7 @@ fun Route.directoryRoutes(
     limits: HubRateLimits = HubRateLimits.unlimited(),
     delegationChain: () -> List<DelegationCert> = { emptyList() },
     offlineGraceDays: () -> Int = { 30 },
+    groupJoinLinks: HubGroupJoinLinks? = null,
 ) {
     route(HubContract.PATH_API) {
         route("/directory") {
@@ -337,6 +342,30 @@ fun Route.directoryRoutes(
                 }
             }
 
+            post("/create-with-members") {
+                val principal = call.requirePrincipal(principalResolver) ?: return@post
+                val body = call.receiveBody<CreateGroupWithMembersBody>() ?: return@post
+                if (!isValidEntityId(body.id)) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_ID)
+                    return@post
+                }
+                call.guarded {
+                    val actor = principal.toActor()
+                    val group = directory.createGroup(
+                        id = body.id,
+                        name = body.name,
+                        departmentId = body.departmentId,
+                        visibility = GroupVisibility.LISTED,
+                        joinMode = JoinMode.REQUEST_APPROVAL,
+                        adminDeviceIds = emptyList(),
+                        actor = actor,
+                        initialMembers = body.memberDeviceIds,
+                    )
+                    audit.record(principal.deviceId, "directory.group.create", "id=${group.id} department=${group.departmentId}")
+                    call.respondJson(group.toDto(actor, directory, isOnline), HttpStatusCode.Created)
+                }
+            }
+
             // PUT /api/v1/groups/{id}
             put("/{id}") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@put
@@ -381,6 +410,36 @@ fun Route.directoryRoutes(
                     audit.record(principal.deviceId, if (body.add) "directory.group.member.add" else "directory.group.member.remove", "group=${group.id} device=${body.deviceId}")
                     call.respondJson(group.toDto(actor, directory, isOnline))
                 }
+            }
+
+            post("/join-links") {
+                val principal = call.requirePrincipal(principalResolver) ?: return@post
+                val links = groupJoinLinks ?: return@post call.respondError(
+                    HttpStatusCode.ServiceUnavailable, HubErrorCodes.ERR_INTERNAL, "Group join links are unavailable.",
+                )
+                val body = call.receiveBody<CreateGroupJoinLinkBody>() ?: return@post
+                val group = directory.getGroup(body.groupId)
+                if (group == null || !directory.canManage(group, principal.toActor())) {
+                    return@post call.respondNotFound()
+                }
+                if (group.visibility == GroupVisibility.HIDDEN || group.joinMode == JoinMode.ADMIN_ONLY) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "This group requires a direct member assignment.")
+                }
+                val token = links.issue(group)
+                audit.record(principal.deviceId, "directory.group.join_link.create", "group=${group.id}")
+                call.respondJson(GroupJoinLinkToken(token), HttpStatusCode.Created)
+            }
+            post("/join-links/resolve") {
+                val principal = call.requirePrincipal(principalResolver) ?: return@post
+                val links = groupJoinLinks ?: return@post call.respondError(
+                    HttpStatusCode.ServiceUnavailable, HubErrorCodes.ERR_INTERNAL, "Group join links are unavailable.",
+                )
+                val body = call.receiveBody<GroupJoinLinkToken>() ?: return@post
+                val group = links.resolve(body.token, directory)
+                if (group == null || group.visibility == GroupVisibility.HIDDEN || !directory.canSee(group, principal.toActor())) {
+                    return@post call.respondNotFound()
+                }
+                call.respondJson(GroupJoinLinkTarget(group.id, group.name))
             }
 
             // POST /api/v1/groups/join-request

@@ -23,6 +23,8 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -170,7 +172,13 @@ public fun FlashHubScreen(
     bottomInset: Dp = 0.dp,
 ) {
     val colors = FlashTheme.colors
-    val mode = FlashHubMath.mode(data.state, data.link)
+    val hasSectionContent = when (selection.segment) {
+        FlashHubSegment.NEWS -> data.news.isNotEmpty()
+        FlashHubSegment.PEOPLE -> data.people.isNotEmpty()
+        FlashHubSegment.DEPARTMENTS -> data.departments.isNotEmpty()
+        FlashHubSegment.GROUPS -> data.groups.isNotEmpty()
+    }
+    val mode = FlashHubMath.mode(data.state, data.link, hasSectionContent)
     BoxWithConstraints(modifier = modifier.fillMaxSize().background(colors.backgroundApp)) {
         val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(FlashAdaptiveMath.windowSizeForWidth(maxWidth.value))
         when (mode) {
@@ -360,6 +368,7 @@ private fun FlashHubBody(
     // --- Lists ------------------------------------------------------------------------------------------
     val listStates = FlashHubSegment.entries.associateWith { rememberLazyListState() }
     val searchState = rememberLazyListState()
+    val pullState = rememberPullToRefreshState()
     // Tapping the tab you are on: the first tap returns the list to the top, a second one in a row jumps to News.
     val currentSelection by rememberUpdatedState(selection)
     var handledReselect by remember { mutableIntStateOf(reselectSignal) }
@@ -419,9 +428,10 @@ private fun FlashHubBody(
                     onStatus = { statusOpen = true },
                     onRefresh = actions.onRefresh,
                     modifier = Modifier.statusBarsPadding(),
+                    firstLoad = mode == FlashHubMode.LOADING,
                 )
                 LaunchedEffect(selection.searchOpen) { if (selection.searchOpen) runCatching { searchFocus.requestFocus() } }
-                FlashHubStrip(data, mode, actions, onWhy = { whyOpen = true })
+                FlashHubStrip(data, actions, onWhy = { whyOpen = true })
                 if (!selection.searchOpen) {
                     FlashHubSegments(selection.segment, ::select, unreadNews = unread)
                 }
@@ -430,7 +440,10 @@ private fun FlashHubBody(
                 val compactBottomPad = if (twoPane) 0.dp else bottomInset
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                     when (mode) {
-                        FlashHubMode.LOADING -> FlashHubSkeleton(Modifier.padding(bottom = compactBottomPad))
+                        FlashHubMode.LOADING -> Column(Modifier.fillMaxWidth().padding(bottom = compactBottomPad)) {
+                            if (!selection.searchOpen) FlashHubWorkspaceSection(selection.segment, count = null)
+                            FlashHubLoading()
+                        }
                         FlashHubMode.NEVER_SYNCED_OFFLINE -> FlashHubEmptyState(
                             icon = FlashIcons.Hub,
                             headline = FlashHubCopy.NEVER_SYNCED_TITLE,
@@ -440,7 +453,19 @@ private fun FlashHubBody(
                             actionBusy = state.isRefreshing,
                             modifier = Modifier.padding(bottom = compactBottomPad),
                         )
-                        else -> PullToRefreshBox(isRefreshing = state.isRefreshing, onRefresh = actions.onRefresh, modifier = Modifier.fillMaxSize()) {
+                        else -> PullToRefreshBox(
+                            isRefreshing = state.isRefreshing,
+                            onRefresh = actions.onRefresh,
+                            state = pullState,
+                            modifier = Modifier.fillMaxSize(),
+                            indicator = {
+                                if (!state.isRefreshing) PullToRefreshDefaults.Indicator(
+                                    state = pullState,
+                                    isRefreshing = false,
+                                    modifier = Modifier.align(Alignment.TopCenter),
+                                )
+                            },
+                        ) {
                             AnimatedContent(
                                 targetState = page,
                                 modifier = Modifier.fillMaxSize(),
@@ -701,13 +726,13 @@ internal fun NoticeLine(text: String) {
 }
 
 @Composable
-private fun FlashHubStrip(data: FlashHubScreenData, mode: FlashHubMode, actions: FlashHubActions, onWhy: () -> Unit) {
+private fun FlashHubStrip(data: FlashHubScreenData, actions: FlashHubActions, onWhy: () -> Unit) {
     val strip = FlashHubMath.strip(data.state, data.link, data.nowMs) ?: return
     // The header carries the healthy connection state; strips are reserved for recovery and warnings.
     if (strip.tone == FlashHubStripTone.CALM) return
     val motion = FlashTheme.motion
     AnimatedContent(targetState = strip, transitionSpec = { motion.statusCrossfade() }, label = "hubStrip") { s ->
-        FlashHubStatusStripView(s, onWhy = onWhy, onRetry = actions.onRefresh)
+        FlashHubStatusStripView(s, onWhy = onWhy, onRetry = actions.onRefresh, retryEnabled = !data.state.isRefreshing)
     }
 }
 

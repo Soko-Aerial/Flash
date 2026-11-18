@@ -978,6 +978,9 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
             }
             if (!call.stepUpOk(d, session, StepUpActions.SETTINGS_CHANGE, "${b.key}=${b.value}")) return@put
             d.admins.putSetting(b.key, b.value, session.username)
+            if (b.key == SETTING_ALLOW_PERSONAL_HUB_LINK || b.key == SETTING_GROUP_E2EE_MODE) {
+                d.router?.broadcastGroupPolicyChanged()
+            }
             d.audit.log(session.username, "settings.change", "${b.key}=${b.value}")
             call.respondJson(OkDto())
         }

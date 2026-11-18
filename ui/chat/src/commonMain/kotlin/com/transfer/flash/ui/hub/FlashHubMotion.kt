@@ -30,13 +30,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
@@ -227,27 +225,6 @@ internal fun HubTickMeter(
                 size = Size(tick, size.height),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()),
             )
-        }
-    }
-}
-
-/** Soft sweep over a skeleton block: a moving highlight in the full mode, nothing otherwise (the flat block remains). */
-@Composable
-internal fun Modifier.hubShimmer(highlight: Color, phase: State<Float>, enabled: Boolean): Modifier {
-    if (!enabled) return this
-    // The gradient is built once per size and translated each frame, not rebuilt (a new shader) every frame.
-    return drawWithCache {
-        val w = size.width
-        val brush = Brush.horizontalGradient(
-            colors = listOf(Color.Transparent, highlight, Color.Transparent),
-            startX = -w * 0.5f,
-            endX = w * 0.5f,
-        )
-        val band = Size(w, size.height)
-        onDrawBehind {
-            translate(left = (phase.value * 2.2f - 0.6f) * w) {
-                drawRect(brush = brush, topLeft = Offset(-w * 0.5f, 0f), size = band)
-            }
         }
     }
 }

@@ -47,6 +47,16 @@ public data class CreateGroupBody(
     public val adminDeviceIds: List<String> = emptyList(),
 )
 
+/** Atomically creates a Hub group with the given initial membership. The id also identifies a retry. */
+@FlashInternalApi
+@Serializable
+public data class CreateGroupWithMembersBody(
+    public val id: String,
+    public val name: String,
+    public val departmentId: String = "",
+    public val memberDeviceIds: Set<String> = emptySet(),
+)
+
 /** Body of `PUT /api/v1/groups/{id}`: a null field is left unchanged. */
 @FlashInternalApi
 @Serializable
@@ -65,3 +75,17 @@ public data class GroupMemberBody(
     /** True adds the device, false removes it. */
     public val add: Boolean = true,
 )
+
+@FlashInternalApi
+@Serializable
+public data class CreateGroupJoinLinkBody(public val groupId: String)
+
+@FlashInternalApi
+@Serializable
+public data class GroupJoinLinkToken(public val token: String) {
+    override fun toString(): String = "GroupJoinLinkToken(redacted)"
+}
+
+@FlashInternalApi
+@Serializable
+public data class GroupJoinLinkTarget(public val groupId: String, public val name: String)
