@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-11-18 — Android test install and matching Hub rollout
+
+Committed the Hub group policy, group creation and invite fixes, concurrent workspace refresh and Windows conversation pane on `dev` as `d3c50b78`. The focused release test gate completed in 9m 56s. Gradle reports contain 2,778 passes and two platform skips across the server, common, Hub protocol, enterprise, messaging, chat UI, desktop and Android app suites. The 87 Admin UI tests, Android debug lint and APK assembly, and Hub distribution assembly passed. The Gradle output is under `build/release-test-gate.log`.
+
+Updated the `myserver` test Hub to the matching distribution. The service and public HTTPS health checks passed. The TLS hostname, public server ID, REST and relay protocol versions, organization data and running tunnel were preserved. The deployed JAR matched the local digest. The local admin console returned 200, the public console remained unavailable, and anonymous detail, metrics and group mutations were denied. The two invite pages, Android association and four cases on the deployed invite script passed. The prior app, data and keys, configuration and environment are paired under `~/flash-hub/deployments/dev-d3c50b783149-cih1jLBC`.
+
+Installed the arm64 debug APK for the test hostname on the Infinix X6882B running Android 14 at 18:04 UTC. The update used `adb install -r`, retained the installation date and matched the built APK digest. Package name `com.transfer.flash`, version 2.2.0 (code 5). Android verified the hostname and resolved both invite paths and the `flash://g/2` scheme to Flash.
+
+The builds are ready for owner testing. Release acceptance still needs the recipient attachment run, enrolled Hub group and invite flow, Android media gestures, and installed Windows Hub, playback and restart recovery runs. See UXPOL-16/17, IFREV-01..06, HUBWORK-06/07, MEDIA-PLAY-01..04 and DESK-RESUME-01. Prepare and test the versioned, signed release artifacts after device acceptance. The test build uses the temporary test Hub hostname.
+
 ## 2026-11-18 — Hub refresh and Windows conversation pane
 
 Hub entry uses one shared refresh. Directory, groups and news run concurrently and publish independently. The engine owns the in-flight task, so leaving and reopening joins the same task. Cached content stays visible, first load uses one delayed status row, and warm refresh uses the header action without a second progress indicator. Manual retry bypasses the automatic cooldown and observes directory rate limiting.

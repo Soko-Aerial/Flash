@@ -1,5 +1,7 @@
 # Current Handoff
 
+> **2026-11-18 — Test build installed and test Hub updated.** Product commit `d3c50b78` on `dev` passed the 2,778-pass Gradle gate, Android debug lint and APK assembly, and 87 Admin UI tests. Its test-host APK is installed in place on the Infinix X6882B (Android 14). The APK digest and Android URL associations verified. The test Hub on `myserver` runs the matching distribution with the same public server ID and tunnel. Rollback artifacts are in `~/flash-hub/deployments/dev-d3c50b783149-cih1jLBC`. The next step is enrolled device acceptance for the checks in the test backlog. Signed public release artifacts still need their own upgrade and install pass.
+
 > **2026-11-18 — Hub refresh and Windows split tested.** Hub loads its sections concurrently, uses a single first-load row and shows warm activity in the header. Windows keeps the active conversation beside Hub and routes Hub-opened chats within that tab. Focused JVM/desktop gate, Android debug APK, and native previews passed. See the Hub workspace refinement and HUBWORK-06/07 for live checks.
 
 > **2026-11-18 — Hub group fixes verified on the local dev worktree at 364109bd.** ADR-365 covers relay enforcement, per-enrollment policy refresh, atomic and replay-safe group creation, and Hub directory group links. Host verification passed 2,218 Gradle tests and 87 Admin UI tests, plus Android debug APK assembly, desktop compilation and the browser fallback script check. The prior IF matrix remains the audit baseline. Live Hub rollout and Android/Windows acceptance remain IFREV-01..06.

@@ -2901,6 +2901,12 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-18 — Test Hub rollout and Android installation
+
+- **Build and device.** `d3c50b78` on `dev`. Infinix X6882B on Android 14 with Flash 2.2.0 debug, build code 5. The matching Hub distribution runs on `myserver`.
+- **Verified.** In-place update and matching APK digest. Android verified the test hostname and resolved both HTTPS invite routes and `flash://g/2` to Flash. The Hub kept its server identity and passed health, invite landing and access checks. The deployed build matches the local Hub artifact.
+- **Owed.** INVITE-LINK-01 and IFREV-06 still require a real invite to reach confirmation from the browser or camera. IFREV-01..05, HUBWORK-06/07, UXPOL-16/17, MEDIA-PLAY-01..04 and DESK-RESUME-01 still need their functional device steps. See the [rollout entry](../../logs/progress.md#2026-11-18--android-test-install-and-matching-hub-rollout).
+
 ### 2026-11-08 — Release 2.2.0 signed-device pass, blockers and a functional batch (Infinix + Samsung)
 
 - **Requested:** FLASH-REL22-DEVICE; run the signed 2.2.0 release checks first, then up to eight useful
