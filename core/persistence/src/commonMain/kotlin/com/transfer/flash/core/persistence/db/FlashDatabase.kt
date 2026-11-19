@@ -121,11 +121,15 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public var trimRegistration: AutoCloseable? = null
 
-    /** Closes the database and unregisters any active memory-trim listener. */
+    public var queryCallbackRegistration: AutoCloseable? = null
+
+    /** Closes the database, unregisters any active memory-trim listener, and shuts down query callbacks. */
     public fun closeWithTrim() {
         trimRegistration?.close()
         trimRegistration = null
         close()
+        queryCallbackRegistration?.close()
+        queryCallbackRegistration = null
     }
 
     public abstract fun messageDao(): MessageDao

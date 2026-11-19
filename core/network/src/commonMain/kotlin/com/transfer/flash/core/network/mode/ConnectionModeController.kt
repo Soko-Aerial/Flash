@@ -121,7 +121,7 @@ public class ConnectionModeController(
             lastPolicy = p
             if (previous != null) {
                 log("Connection mode ${previous.strategy} -> ${p.strategy} ping=${p.transport.pingIntervalMs}ms")
-                runCatching { onPolicyChanged(p) }.onFailure { log("Connection mode change failed: ${it.message}") }
+                runSuspendCatching { onPolicyChanged(p) }.onFailure { log("Connection mode change failed: ${it.message}") }
             }
         }
         val view = snapshot()

@@ -4,6 +4,7 @@ package com.transfer.flash.core.network.tcp
 
 import android.content.Context
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.runSuspendCatching
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -46,7 +47,7 @@ public class LanConnectionProbe(
         peerDeviceId: String? = null,
         onDisconnected: (LanProbeHello, String) -> Unit,
     ): Result<LanSession> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val network = findLanNetwork()
             logger.log(
                 LanSessionLogger.INFO,
@@ -83,7 +84,7 @@ public class LanConnectionProbe(
     }
 
     public suspend fun notifyDisconnect(hostAddress: String, port: Int, peerDeviceId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val network = findLanNetwork()
             logger.log(
                 LanSessionLogger.INFO,

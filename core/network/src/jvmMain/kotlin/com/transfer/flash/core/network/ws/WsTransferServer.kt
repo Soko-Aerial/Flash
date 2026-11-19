@@ -3,6 +3,7 @@
 package com.transfer.flash.core.network.ws
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.logging.FlashLog
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -116,7 +117,7 @@ public class WsTransferServer(
 
     private suspend fun acceptLoop(socket: ServerSocket) = withContext(Dispatchers.IO) {
         while (isActive && !socket.isClosed) {
-            val client = runCatching { socket.accept() }.getOrElse { break }
+            val client = runSuspendCatching { socket.accept() }.getOrElse { break }
             // SEC-D24-01: bound the sockets that may sit in the handshake; a refused one is closed at once.
             val remoteHost = client.inetAddress?.hostAddress ?: "?"
             if (!handshakeAdmission.tryAdmit(remoteHost)) {
@@ -137,7 +138,7 @@ public class WsTransferServer(
                 // handshake() below, then carried on the WsConnection for the post-HELLO binding.
                 var clientLeaf: String? = null
                 try {
-                    runCatching {
+                    runSuspendCatching {
                         // TLS mode: track stream access so any pre-wrap touch fails closed, then
                         // wrap BEFORE the WS handshake reads a single byte. Lazy server handshake:
                         // the first read inside handshake() drives it (SecureSocketUpgrader KDoc).

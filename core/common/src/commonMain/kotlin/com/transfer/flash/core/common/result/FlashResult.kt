@@ -1,5 +1,7 @@
 package com.transfer.flash.core.common.result
 
+import kotlin.coroutines.cancellation.CancellationException
+
 /**
  * Functional monadic result wrapper representing either a [Success] with value [T]
  * or a [Failure] with a typed [FlashError].
@@ -14,6 +16,8 @@ public sealed interface FlashResult<out T> {
     public companion object {
         public inline fun <T> runCatching(block: () -> T): FlashResult<T> = try {
             Success(block())
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             Failure(FlashError.Unknown(t.message ?: "Unknown exception occurred", t))
         }

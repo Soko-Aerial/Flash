@@ -8,6 +8,7 @@ import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ChunkSource
 import com.transfer.flash.core.transfer.chunked.Chunker
@@ -606,9 +607,9 @@ public class RealFlashTransferRepository(
     ) {
         // Tell the peer to stop its side too; the row is ours to fail, but a paused receiver would otherwise wait.
         emitOutgoing(transferId, peerDeviceId, ACTION_CANCEL)
-        runCatching { store?.clearDoneChunks(transferId) }
-        runCatching { store?.setBytesDone(transferId, 0L) }
-        runCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
+        runSuspendCatching { store?.clearDoneChunks(transferId) }
+        runSuspendCatching { store?.setBytesDone(transferId, 0L) }
+        runSuspendCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
         updateTransferState(transferId) {
             it.copy(
                 bytesDone = 0L,
@@ -636,7 +637,7 @@ public class RealFlashTransferRepository(
                 etaSeconds = 0L,
             )
         }
-        runCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
+        runSuspendCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
         runCatching { FlashLog.w("TRANSFER", "send refused transferId=$transferId reason=$message") }
     }
 
@@ -691,11 +692,11 @@ public class RealFlashTransferRepository(
         // chunks, so a changed file must fail with a sentence and be sent again as a new transfer.
         val doneIndexes = store?.doneChunks(transferId) ?: emptyList()
         val currentIdentity = sourceIdentityProvider?.let { provider ->
-            runCatching { withContext(workerDispatcher) { provider.identity(fileUri) } }.getOrNull()
+            runSuspendCatching { withContext(workerDispatcher) { provider.identity(fileUri) } }.getOrNull()
         }
         val currentFingerprint = currentIdentity?.formatFingerprint()
         if (currentIdentity != null) {
-            val storedIdentity = runCatching { store?.sourceIdentity(transferId) }.getOrNull()
+            val storedIdentity = runSuspendCatching { store?.sourceIdentity(transferId) }.getOrNull()
             val check = checkSourceIdentity(storedIdentity, currentIdentity)
             // A brand-new send has no stored identity and no confirmed chunks; the picker/measured total is the
             // authority there, and some providers report 0 for a size they do not know. Only a real resume can be
@@ -734,7 +735,7 @@ public class RealFlashTransferRepository(
                     return
                 }
             }
-            runCatching { store?.saveSourceIdentity(transferId, currentIdentity) }
+            runSuspendCatching { store?.saveSourceIdentity(transferId, currentIdentity) }
         } else {
             runCatching {
                 FlashLog.w("TRANSFER", "source identity unavailable transferId=$transferId; resume is unverified")
@@ -1118,13 +1119,13 @@ public class RealFlashTransferRepository(
             val sourceUri = transfer.sourceUri
             val currentIdentity = sourceUri?.let { uri ->
                 sourceIdentityProvider?.let { provider ->
-                    runCatching { withContext(workerDispatcher) { provider.identity(uri) } }.getOrNull()
+                    runSuspendCatching { withContext(workerDispatcher) { provider.identity(uri) } }.getOrNull()
                 }
             }
             if (currentIdentity != null) {
-                val storedIdentity = runCatching { store?.sourceIdentity(transferId.value) }.getOrNull()
+                val storedIdentity = runSuspendCatching { store?.sourceIdentity(transferId.value) }.getOrNull()
                 val check = checkSourceIdentity(storedIdentity, currentIdentity)
-                val confirmed = runCatching { store?.doneChunks(transferId.value) }.getOrNull().orEmpty()
+                val confirmed = runSuspendCatching { store?.doneChunks(transferId.value) }.getOrNull().orEmpty()
                 val refuse = check == SourceIdentityCheck.Changed ||
                     (check == SourceIdentityCheck.Unverifiable && confirmed.isNotEmpty())
                 if (refuse) {
@@ -1265,7 +1266,7 @@ public class RealFlashTransferRepository(
             if (measured != transfer.bytesTotal) {
                 updateTransferState(transferId) { it.copy(bytesTotal = measured) }
             }
-            runCatching { store?.setStatus(transferId, FlashTransferState.Queued.name) }
+            runSuspendCatching { store?.setStatus(transferId, FlashTransferState.Queued.name) }
             executeSend(
                 transferId = transferId,
                 // Stable wire identity: the receiver's session is keyed on (transferId, fileId);
@@ -1290,7 +1291,7 @@ public class RealFlashTransferRepository(
      */
     public suspend fun sourceFingerprintFor(fileUri: String): String? {
         val provider = sourceIdentityProvider ?: return null
-        val current = runCatching { withContext(workerDispatcher) { provider.identity(fileUri) } }.getOrNull() ?: return null
+        val current = runSuspendCatching { withContext(workerDispatcher) { provider.identity(fileUri) } }.getOrNull() ?: return null
         return current.formatFingerprint()
     }
 
@@ -1299,12 +1300,12 @@ public class RealFlashTransferRepository(
         val sourceUri = transfer.sourceUri ?: return true
         val fileId = transfer.wireFileId ?: transferId
         val currentIdentity = sourceIdentityProvider?.let { provider ->
-            runCatching { withContext(workerDispatcher) { provider.identity(sourceUri) } }.getOrNull()
+            runSuspendCatching { withContext(workerDispatcher) { provider.identity(sourceUri) } }.getOrNull()
         }
         if (currentIdentity != null) {
-            val storedIdentity = runCatching { store?.sourceIdentity(transferId) }.getOrNull()
+            val storedIdentity = runSuspendCatching { store?.sourceIdentity(transferId) }.getOrNull()
             val check = checkSourceIdentity(storedIdentity, currentIdentity)
-            val confirmed = runCatching { store?.doneChunks(transferId) }.getOrNull().orEmpty()
+            val confirmed = runSuspendCatching { store?.doneChunks(transferId) }.getOrNull().orEmpty()
             val sizeDisagrees = transfer.bytesTotal > 0L &&
                 currentIdentity.sizeBytes != null &&
                 currentIdentity.sizeBytes != transfer.bytesTotal
@@ -1352,7 +1353,7 @@ public class RealFlashTransferRepository(
         updateInternalTransfers { list -> list.filterNot { it.id.value == transferId } }
         dismissedFinishedIds.update { it - transferId }
         updateMergedTransfers()
-        runCatching { store?.dismissStored(listOf(transferId)) }
+        runSuspendCatching { store?.dismissStored(listOf(transferId)) }
     }
 
     /**
@@ -1370,8 +1371,8 @@ public class RealFlashTransferRepository(
                 runningJobs.remove(id)
             }
             job?.cancel()
-            runCatching { store?.dismissStored(listOf(id)) }
-            runCatching { store?.clearDoneChunks(id) }
+            runSuspendCatching { store?.dismissStored(listOf(id)) }
+            runSuspendCatching { store?.clearDoneChunks(id) }
         }
         if (matching.isNotEmpty()) {
             val drop = matching.mapTo(HashSet(matching.size)) { it.id.value }
@@ -1398,7 +1399,7 @@ public class RealFlashTransferRepository(
         fileName: String,
         fileSize: Long,
     ): Boolean {
-        val confirmedLanBytes = runCatching {
+        val confirmedLanBytes = runSuspendCatching {
             val done = store?.doneChunks(transferId).orEmpty()
             if (done.isEmpty()) 0L else minOf(fileSize, done.size.toLong() * performanceMode().transfer.chunkSizeBytes)
         }.getOrDefault(0L)
@@ -1423,7 +1424,7 @@ public class RealFlashTransferRepository(
             val filtered = list.filterNot { it.id.value == transferId }
             filtered + row
         }
-        runCatching {
+        runSuspendCatching {
             store?.insertTransfer(transferId, measured, FlashTransferState.Queued.name)
             store?.saveIdentity(row.toStored())
         }
@@ -2423,7 +2424,7 @@ public class RealFlashTransferRepository(
     private fun persistDismissed(ids: List<String>) {
         val activeStore = store ?: return
         if (ids.isEmpty()) return
-        repositoryScope.launch { runCatching { activeStore.dismissStored(ids) } }
+        repositoryScope.launch { runSuspendCatching { activeStore.dismissStored(ids) } }
     }
 
     /** Waits for durable rows to be indexed before the host accepts inbound re-offers. */

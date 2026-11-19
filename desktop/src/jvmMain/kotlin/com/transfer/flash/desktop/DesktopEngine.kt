@@ -46,7 +46,8 @@ import com.transfer.flash.core.ptt.protocol.PttFrameCodec
 import com.transfer.flash.core.ptt.protocol.PttSessionCodec
 import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
-import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
+import com.transfer.flash.core.persistence.db.JvmDatabaseOpenResult
+import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabaseWithRecovery
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.swarm.api.FlashSwarm
 import com.transfer.flash.core.swarm.api.FlashSwarmConfig
@@ -83,6 +84,7 @@ import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.SourceIdentity
 import com.transfer.flash.core.transfer.SourceIdentityProvider
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
@@ -124,6 +126,7 @@ import java.io.File
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1039,8 +1042,8 @@ public class DesktopEngine(
      * error, never an empty chat list — proven by `JdbcCipherSQLiteDriverTest`), rather
      * than silently decrypting. A file that exists but cannot be unprotected is NOT replaced.
      */
-    private fun chatDbKey(): String =
-        ChatDbKeyStore(File(stateDir, "chat"), hubSealingVault, log = { FlashLog.i(TAG_WS, it) }).passphrase()
+    private fun loadOrMintChatDbKey(): ChatDbKeyStore.DeferredKey =
+        ChatDbKeyStore(File(stateDir, "chat"), hubSealingVault, log = { FlashLog.i(TAG_WS, it) }).loadOrMintDeferred()
 
     private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
     private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
@@ -1050,6 +1053,10 @@ public class DesktopEngine(
     private val receivedPaths = ConcurrentHashMap<String, String>()
     private val rejectedLogCache = ConcurrentHashMap.newKeySet<String>()
     private val rejectedCancelSent = ConcurrentHashMap.newKeySet<String>()
+    private val acceptingOffers = ConcurrentHashMap.newKeySet<String>()
+    private val hubAdoptedTransfers = ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var receiveDestinationResolver: ((ChunkFrame.FileStart) -> File)? = null
 
     private var sessionJobs = ConcurrentHashMap<WsSession, Job>()
 
@@ -1296,6 +1303,9 @@ public class DesktopEngine(
             openHandles.clear()
             incomingMeta.clear()
             receivedPaths.clear()
+            acceptingOffers.clear()
+            hubAdoptedTransfers.clear()
+            receiveDestinationResolver = null
             // The database closes after the scope is cancelled, so no coroutine of this engine writes to it any more.
             val db = chatDb
             val currentChat = chatImpl
@@ -1305,7 +1315,7 @@ public class DesktopEngine(
             chatDb = null
             runCatching { (currentChat as? AutoCloseable)?.close() }
             runCatching { (currentTransfer as? AutoCloseable)?.close() }
-            runCatching { db?.close() }
+            runCatching { db?.closeWithTrim() }
                 .onFailure { FlashLog.w(TAG_WS, "Closing the chat database failed: ${it.message}") }
             discoveryImpl = null
             networkImpl = null
@@ -1427,19 +1437,41 @@ public class DesktopEngine(
             FileSystem.SYSTEM.source(file.absolutePath.toPath())
         }
         val databaseFile = File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME)
-        val db = runCatching {
-            val candidate = openEncryptedFlashDatabase(databaseFile, chatDbKey())
-            try {
-                // Room opens lazily. Validate the existing encrypted file before wiring repositories.
-                runBlocking { candidate.conversationDao().get("") }
-                candidate
-            } catch (e: Exception) {
-                candidate.closeWithTrim()
-                throw e
+        val db = try {
+            val deferredKey = loadOrMintChatDbKey()
+            when (
+                val result = openEncryptedFlashDatabaseWithRecovery(
+                    file = databaseFile,
+                    key = deferredKey.passphrase,
+                    mintedNewKey = deferredKey.minted,
+                )
+            ) {
+                is JvmDatabaseOpenResult.Opened -> {
+                    deferredKey.commit()
+                    result.recoveredAction?.let { action ->
+                        FlashLog.w(TAG_WS, "Encrypted database recovery: $action")
+                    }
+                    result.database
+                }
+                is JvmDatabaseOpenResult.UnavailablePreserved -> {
+                    FlashLog.w(
+                        TAG_WS,
+                        "Encrypted database unavailable (existing files preserved); chat and restart recovery are unavailable this run",
+                        result.reason,
+                    )
+                    null
+                }
             }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            FlashLog.w(
+                TAG_WS,
+                "Encrypted database key unavailable (existing files preserved); chat and restart recovery are unavailable this run",
+                t,
+            )
+            null
         }
-            .onFailure { FlashLog.w(TAG_WS, "Encrypted database unavailable; chat and restart recovery are unavailable this run", it) }
-            .getOrNull()
         chatDb = db
         // HR8: Single disk-backed cross-route continuity coordinator shared by LAN transfer and HubFileBinding.
         val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator(
@@ -2116,6 +2148,7 @@ public class DesktopEngine(
             }
             return dest
         }
+        receiveDestinationResolver = ::receiveDestination
 
         val pipeline = ReceivePipeline(
             sink = { _, _ -> error("legacy shared sink must not be invoked with sinkFactory set") },
@@ -2123,16 +2156,18 @@ public class DesktopEngine(
                 val dest = receiveDestination(start)
                 val destDir = File(canonicalRoot, sanitize(start.transferId)).canonicalFile
                 dest.parentFile?.mkdirs()
-                runBlocking {
-                    transferImpl?.adoptHubPartialForLan(
-                        transferId = start.transferId,
-                        fileId = start.fileId,
-                        fileName = start.fileName,
-                        totalBytes = start.totalBytes,
-                        senderDeviceId = null,
-                        chunkSize = start.chunkSize,
-                        destPath = dest.absolutePath,
-                    )
+                if (!hubAdoptedTransfers.remove(start.transferId)) {
+                    runBlocking {
+                        transferImpl?.adoptHubPartialForLan(
+                            transferId = start.transferId,
+                            fileId = start.fileId,
+                            fileName = start.fileName,
+                            totalBytes = start.totalBytes,
+                            senderDeviceId = null,
+                            chunkSize = start.chunkSize,
+                            destPath = dest.absolutePath,
+                        )
+                    }
                 }
                 receivedManifest.record(canonicalRoot, destDir)
                 receivedPaths[start.transferId] = dest.absolutePath
@@ -2429,6 +2464,7 @@ public class DesktopEngine(
                         receivePipeline?.cancelSession(control.transferId)
                         incomingMeta.remove(control.transferId)
                         receivedPaths.remove(control.transferId)
+                        hubAdoptedTransfers.remove(control.transferId)
                         openHandles.remove(control.transferId)?.let { runCatching { it.close() } }
                         rejectedLogCache.remove(control.transferId)
                         rejectedCancelSent.add(control.transferId)
@@ -2701,13 +2737,47 @@ public class DesktopEngine(
         // ADR-069 / FA-2: refuse before the sink is resolved and the sender is released.
         if (!transfer.admitIncoming(transferId)) return
         val meta = incomingMeta[transferId] ?: return
-        if (receivePipeline?.acceptSession(transferId) == true) {
-            transfer.onIncomingStarted(
-                transferId, meta.fileId, meta.fileName, meta.totalBytes,
-                "peer", peerDeviceId, receivedPaths[transferId],
-            )
-            receivePipeline?.let { updateIncomingProgress(transfer, it, incomingMeta, transferId) }
-            sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_RESUME, transferId)
+        if (!acceptingOffers.add(transferId)) return
+        scope.launch(Dispatchers.IO) {
+            try {
+                // Perform Hub-to-LAN partial adoption outside ReceivePipeline.lock so a large handoff
+                // cannot stall concurrent transfers or inbound frame processing.
+                val dest = runCatching { receiveDestinationResolver?.invoke(meta) }.getOrNull()
+                if (dest != null) {
+                    dest.parentFile?.mkdirs()
+                    transfer.adoptHubPartialForLan(
+                        transferId = meta.transferId,
+                        fileId = meta.fileId,
+                        fileName = meta.fileName,
+                        totalBytes = meta.totalBytes,
+                        senderDeviceId = null,
+                        chunkSize = meta.chunkSize,
+                        destPath = dest.absolutePath,
+                    )
+                    hubAdoptedTransfers.add(transferId)
+                }
+                if (receivePipeline?.acceptSession(transferId) == true) {
+                    transfer.onIncomingStarted(
+                        transferId, meta.fileId, meta.fileName, meta.totalBytes,
+                        "peer", peerDeviceId, receivedPaths[transferId],
+                    )
+                    receivePipeline?.let { updateIncomingProgress(transfer, it, incomingMeta, transferId) }
+                    sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_RESUME, transferId)
+                } else if (incomingMeta.containsKey(transferId)) {
+                    // Session is still present in incomingMeta (not cancelled/declined), meaning sinkFactory failed.
+                    incomingMeta.remove(transferId)
+                    receivedPaths.remove(transferId)
+                    incomingOwners.remove(transferId)
+                    openHandles.remove(transferId)?.let { runCatching { it.close() } }
+                    transfer.onIncomingFailed(transferId, "write_failed")
+                    if (peerDeviceId.isNotEmpty()) {
+                        sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_CANCEL, transferId, TransferFailureText.REFUSE_WRITE_FAILED)
+                    }
+                }
+            } finally {
+                hubAdoptedTransfers.remove(transferId)
+                acceptingOffers.remove(transferId)
+            }
         }
     }
 
@@ -2722,6 +2792,7 @@ public class DesktopEngine(
         receivePipeline?.declineSession(transferId)
         incomingMeta.remove(transferId)
         receivedPaths.remove(transferId)
+        hubAdoptedTransfers.remove(transferId)
         openHandles.remove(transferId)?.let { runCatching { it.close() } }
     }
 

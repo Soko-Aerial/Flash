@@ -653,4 +653,49 @@ class ReceivePipelineTest {
         assertTrue(events.none { it is ReceiveEvent.Rejected }, "$events")
         assertNotNull(pipeline.doneIndexes(edge.transferId))
     }
+
+    @Test
+    fun `sinkFactory exception in onFrame returns WRITE_FAILED and leaves no broken session`() {
+        val pipeline = ReceivePipeline(
+            sink = RecordingSink(),
+            requireAcceptance = false,
+            sinkFactory = { throw okio.IOException("cannot create file") },
+        )
+        val events = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        val rejected = events.filterIsInstance<ReceiveEvent.Rejected>().single()
+        assertEquals(RejectReason.WRITE_FAILED, rejected.reason)
+        assertEquals(meta.transferId, rejected.transferId)
+        assertNull(pipeline.doneIndexes(meta.transferId))
+        assertFalse(meta.transferId in pipeline.activeTransferIds())
+    }
+
+    @Test
+    fun `sinkFactory exception in acceptSession returns false and drops the session`() {
+        val pipeline = ReceivePipeline(
+            sink = RecordingSink(),
+            requireAcceptance = true,
+            sinkFactory = { throw IllegalStateException("disk unavailable") },
+        )
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertFalse(pipeline.acceptSession(meta.transferId))
+        assertNull(pipeline.doneIndexes(meta.transferId))
+        assertFalse(meta.transferId in pipeline.activeTransferIds())
+    }
+
+    @Test
+    fun `cancelSession during acceptSession sink resolution prevents resurrection`() {
+        val sink = RecordingSink()
+        lateinit var pipeline: ReceivePipeline
+        pipeline = ReceivePipeline(
+            sink = sink,
+            requireAcceptance = true,
+            sinkFactory = { start ->
+                pipeline.cancelSession(start.transferId)
+                sink
+            },
+        )
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertFalse(pipeline.acceptSession(meta.transferId))
+        assertFalse(meta.transferId in pipeline.activeTransferIds())
+    }
 }

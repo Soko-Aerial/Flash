@@ -4,6 +4,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.engine.FlashPathSanitizer
@@ -218,8 +219,18 @@ public class HubFileBinding(
             val now = timeSource.nowMs()
             val pruned = dao.prune(terminalBeforeMs = now - PRUNE_FINISHED_AFTER_MS, expiredBeforeMs = now - PRUNE_EXPIRED_AFTER_MS)
             if (pruned > 0) FlashProbe.emit("hubfile.rows.pruned", "count" to pruned)
-            for (row in dao.runnable(HubFileStates.RUNNING)) launchRun(row.transferId)
-            acceptAutomatically(dao.runnable(OFFERED_ONLY))
+            val runnableRows = dao.runnable(HubFileStates.RUNNING)
+            val offeredRows = dao.runnable(OFFERED_ONLY)
+            val protectedIds = buildSet {
+                transferRepository.activeTransfers.value.mapNotNullTo(this) { it.wireFileId?.takeIf(String::isNotBlank) }
+                rows.value.mapNotNullTo(this) { it.wireFileId?.takeIf(String::isNotBlank) }
+                runnableRows.mapTo(this) { it.fileId }
+                offeredRows.mapTo(this) { it.fileId }
+            }
+            val prunedCheckpoints = continuityCoordinator.prune(protectedFileIds = protectedIds)
+            if (prunedCheckpoints > 0) FlashProbe.emit("hubfile.checkpoints.pruned", "count" to prunedCheckpoints)
+            for (row in runnableRows) launchRun(row.transferId)
+            acceptAutomatically(offeredRows)
         }
     }
 
@@ -282,7 +293,7 @@ public class HubFileBinding(
     private suspend fun record(to: Outgoing, fileUri: String, displayName: String, fileSize: Long): FlashTransferId? {
         val hub = hubUrl()?.takeIf { it.isNotBlank() } ?: return null
         val size = if (fileSize > 0L) fileSize else withContext(workerDispatcher) {
-            runCatching { StreamingHubFileSource.measure(openSource, fileUri) }.getOrDefault(0L)
+            runSuspendCatching { StreamingHubFileSource.measure(openSource, fileUri) }.getOrDefault(0L)
         }
         // An empty file (or one that cannot be read) stays on the direct path, which reports it (situation 11).
         if (size <= 0L) return null
@@ -418,7 +429,7 @@ public class HubFileBinding(
         continuityCoordinator.releaseActiveRouteIfHeld(fileId, RouteOwner.LAN)
 
         val size = if (transfer.bytesTotal > 0L) transfer.bytesTotal else withContext(workerDispatcher) {
-            runCatching { StreamingHubFileSource.measure(openSource, sourceUri) }.getOrDefault(0L)
+            runSuspendCatching { StreamingHubFileSource.measure(openSource, sourceUri) }.getOrDefault(0L)
         }
         if (size <= 0L) {
             transferRepository.failTransferFromFallback(transfer.id.value, TransferFailureText.UNREADABLE_FILE)
@@ -481,6 +492,15 @@ public class HubFileBinding(
         )
         if (inserted == -1L) {
             val existingRow = dao.get(transfer.id.value)
+            if (existingRow != null &&
+                (existingRow.state == HubFileStates.CANCELLED ||
+                    existingRow.state == HubFileStates.DONE ||
+                    existingRow.state == HubFileStates.READY ||
+                    existingRow.state == HubFileStates.QUEUED)
+            ) {
+                jobsLock.withLock { adoptedIds.remove(transfer.id.value) }
+                return true
+            }
             if (existingRow != null && existingRow.state == HubFileStates.FAILED) {
                 dao.moveState(transfer.id.value, HubFileStates.FAILED, HubFileStates.UPLOADING, null, now)
             }
@@ -517,7 +537,7 @@ public class HubFileBinding(
         val uri = row.sourceUri
         val measured = if (uri != null) {
             withContext(workerDispatcher) {
-                runCatching { StreamingHubFileSource.measure(openSource, uri) }.getOrNull()
+                runSuspendCatching { StreamingHubFileSource.measure(openSource, uri) }.getOrNull()
             }
         } else {
             null
@@ -541,9 +561,6 @@ public class HubFileBinding(
 
         stopAndJoin(transferId)
         continuityCoordinator.releaseActiveRouteIfHeld(row.fileId, RouteOwner.HUB)
-        if (row.state == HubFileStates.FAILED) {
-            outgoingRetried(transferId)
-        }
         val label = peerName(row.peerId)?.ifBlank { null } ?: row.peerId.take(8)
         val launched = transferRepository.resumeHubSendOnLan(
             transferId = row.transferId,
@@ -555,6 +572,9 @@ public class HubFileBinding(
             fileSize = row.plainBytes,
         )
         if (launched) {
+            if (row.state == HubFileStates.FAILED) {
+                outgoingRetried(transferId)
+            }
             jobsLock.withLock { adoptedIds.remove(transferId) }
             dao.delete(transferId)
             FlashProbe.emit("hubfile.handover.hub_to_lan", "id" to FlashProbe.short(row.fileId))
@@ -715,7 +735,7 @@ public class HubFileBinding(
             continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
             throw t
         } finally {
-            withContext(workerDispatcher) { runCatching { source.close() } }
+            withContext(workerDispatcher) { runSuspendCatching { source.close() } }
         }
         val now = timeSource.nowMs()
         return when (outcome) {
@@ -811,6 +831,34 @@ public class HubFileBinding(
                 )
                 if (!adoption.compatible) {
                     FlashProbe.emit("hubfile.handover.adoption_skipped", "reason" to adoption.reason)
+                    when (adoption.reason) {
+                        "cancelled" -> {
+                            continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+                            dao.moveState(id, HubFileStates.DOWNLOADING, HubFileStates.CANCELLED, null, timeSource.nowMs())
+                            transfers.discardDownload(row.fileId)
+                            return false
+                        }
+                        "already_completed" -> {
+                            continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+                            val completedPath = continuityCoordinator.snapshot(row.fileId)?.completedPath
+                            if (completedPath != null) {
+                                dao.markDownloaded(id, completedPath, timeSource.nowMs())
+                            }
+                            transfers.discardDownload(row.fileId)
+                            return false
+                        }
+                        "source_identity_mismatch",
+                        "source_digest_mismatch",
+                        "size_mismatch",
+                        "chunk_count_mismatch",
+                        "invalid_hub_layout",
+                        "invalid_identity",
+                        "tampered_partial_bytes",
+                        -> {
+                            continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
+                            return failIncoming(row, HubFileError.Integrity, sender)
+                        }
+                    }
                 }
             }
             transfers.download(
@@ -834,7 +882,7 @@ public class HubFileBinding(
         val now = timeSource.nowMs()
         return when (outcome) {
             is HubDownloadOutcome.Done -> {
-                val placed = withContext(workerDispatcher) { runCatching { place(outcome.path, row) }.getOrNull() }
+                val placed = withContext(workerDispatcher) { runSuspendCatching { place(outcome.path, row) }.getOrNull() }
                     ?: run {
                         continuityCoordinator.releaseRoute(row.fileId, claim.epoch, RouteOwner.HUB)
                         return failIncoming(row, HubFileError.LocalStorage("place"), sender)
@@ -851,7 +899,7 @@ public class HubFileBinding(
                     FlashProbe.emit("hubfile.receive.done", "id" to FlashProbe.short(row.fileId), "bytes" to outcome.plainBytes)
                 } else {
                     // Cancelled or won on another route while the last chunk arrived: discard duplicate file.
-                    withContext(workerDispatcher) { runCatching { fileSystem.delete(placed.toPath(), mustExist = false) } }
+                    withContext(workerDispatcher) { runSuspendCatching { fileSystem.delete(placed.toPath(), mustExist = false) } }
                 }
                 false
             }

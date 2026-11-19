@@ -1,6 +1,7 @@
 package com.transfer.flash.core.engine.hubfiles
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.enterprise.files.DiskHubFileStorage
 import com.transfer.flash.core.enterprise.files.FakeHubFileServer
 import com.transfer.flash.core.enterprise.files.FakeHubFilesApi
@@ -31,6 +32,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -38,6 +40,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import okio.FileSystem
+import okio.ForwardingFileSystem
+import okio.Path
+import okio.Path.Companion.toPath
 
 @OptIn(FlashInternalApi::class)
 class TransferContinuityTest {
@@ -409,5 +415,119 @@ class TransferContinuityTest {
 
         // Verify file status is still readable via FakeHubFilesApi.
         assertIs<HubFileResult.Ok<*>>(FakeHubFilesApi(server, "dev-b", hubUrl).status(hubUrl, ticket.fileId))
+    }
+
+    @Test
+    fun `checkpoint save failure leaves in-memory coordinator state unchanged`() {
+        var failSaves = false
+        val inner = FileContinuityCheckpointStore(File(tempDir, "store-fail").path)
+        val store = object : ContinuityCheckpointStore {
+            override fun loadAll(): List<ContinuityCheckpoint> = inner.loadAll()
+            override fun save(checkpoint: ContinuityCheckpoint) {
+                if (failSaves) throw okio.IOException("disk full")
+                inner.save(checkpoint)
+            }
+            override fun delete(logicalTransferId: String) = inner.delete(logicalTransferId)
+        }
+        val coord = TransferRouteCoordinator(store)
+        val id = LogicalTransferIdentity("f-fail", "dev-a", "dev-b", "a.bin", 1024L, "a".repeat(64))
+        val claim = assertNotNull(coord.tryAcquireRoute(id, RouteOwner.LAN))
+        assertTrue(coord.recordVerifiedChunks("f-fail", claim.epoch, setOf(0), 512))
+
+        failSaves = true
+        assertFailsWith<okio.IOException> {
+            coord.completeTransfer("f-fail", claim.epoch, RouteOwner.LAN, "/tmp/a.bin", "a".repeat(64))
+        }
+        val snap = assertNotNull(coord.snapshot("f-fail"))
+        assertEquals(ContinuityStatus.ACTIVE, snap.status, "failed persist must not mark memory COMPLETED")
+        assertEquals(RouteOwner.LAN, snap.activeRoute)
+        assertEquals(claim.epoch, snap.routeEpoch)
+    }
+
+    @Test
+    fun `FileContinuityCheckpointStore recovers backup without losing prior checkpoint on move failure`() {
+        val dir = File(tempDir, "atomic-store")
+        var rejectOverwrite = false
+        var failSecondMove = false
+        val fs = object : ForwardingFileSystem(FileSystem.SYSTEM) {
+            override fun atomicMove(source: Path, target: Path) {
+                if (rejectOverwrite && target.name.endsWith(".chk") && exists(target)) {
+                    throw okio.IOException("simulated non-overwriting atomicMove")
+                }
+                if (failSecondMove && source.name.endsWith(".tmp") && target.name.endsWith(".chk")) {
+                    throw okio.IOException("simulated crash before tmp->chk move")
+                }
+                super.atomicMove(source, target)
+            }
+        }
+        val store = FileContinuityCheckpointStore(dir.path, fs)
+        val id = LogicalTransferIdentity("f-atomic", "dev-a", "dev-b", "a.bin", 1024L, "b".repeat(64))
+        val cp1 = ContinuityCheckpoint(id, listOf(VerifiedByteSpan(0L, 512L)), RouteOwner.LAN, 1L, ContinuityStatus.ACTIVE, updatedAtMs = 100L)
+        store.save(cp1)
+
+        // When atomicMove throws on existing target AND second move fails, backup restores cp1.
+        rejectOverwrite = true
+        failSecondMove = true
+        val cp2 = cp1.copy(verifiedSpans = listOf(VerifiedByteSpan(0L, 1024L)), routeEpoch = 2L, updatedAtMs = 200L)
+        assertFailsWith<okio.IOException> { store.save(cp2) }
+        val loadedAfterAbort = FileContinuityCheckpointStore(dir.path).loadAll()
+        assertEquals(1, loadedAfterAbort.size)
+        assertEquals(1L, loadedAfterAbort.single().routeEpoch, "prior checkpoint must survive failed replace")
+
+        // Simulate crash leaving only .chk.bak beside missing .chk: loadAll recovers .chk.bak.
+        failSecondMove = false
+        rejectOverwrite = false
+        val chkFile = dir.listFiles()!!.single { it.name.endsWith(".chk") }
+        val bakFile = File(chkFile.parentFile, "${chkFile.name}.bak")
+        assertTrue(chkFile.renameTo(bakFile))
+        val recovered = FileContinuityCheckpointStore(dir.path).loadAll()
+        assertEquals(1, recovered.size)
+        assertEquals(1L, recovered.single().routeEpoch)
+        assertTrue(chkFile.exists(), "backup must be promoted back to .chk")
+        assertFalse(bakFile.exists())
+    }
+
+    @Test
+    fun `TransferRouteCoordinator prune removes expired terminal and obsolete checkpoints while preserving active and protected`() {
+        var now = 1_000_000L
+        val clock = object : FlashTimeSource {
+            override fun nowMs(): Long = now
+        }
+        val dir = File(tempDir, "prune-store")
+        val store = FileContinuityCheckpointStore(dir.path)
+        val coord = TransferRouteCoordinator(store, clock)
+
+        val doneOld = LogicalTransferIdentity("f-done-old", "dev-a", "dev-b", "1.bin", 512L, "1".repeat(64))
+        val c1 = assertNotNull(coord.tryAcquireRoute(doneOld, RouteOwner.LAN))
+        assertTrue(coord.completeTransfer("f-done-old", c1.epoch, RouteOwner.LAN, "/tmp/1.bin", "1".repeat(64)))
+
+        val doneProtected = LogicalTransferIdentity("f-done-prot", "dev-a", "dev-b", "2.bin", 512L, "2".repeat(64))
+        val c2 = assertNotNull(coord.tryAcquireRoute(doneProtected, RouteOwner.LAN))
+        assertTrue(coord.completeTransfer("f-done-prot", c2.epoch, RouteOwner.LAN, "/tmp/2.bin", "2".repeat(64)))
+
+        val activeOld = LogicalTransferIdentity("f-active-held", "dev-a", "dev-b", "3.bin", 512L, "3".repeat(64))
+        assertNotNull(coord.tryAcquireRoute(activeOld, RouteOwner.HUB))
+
+        val idleObsolete = LogicalTransferIdentity("f-idle-old", "dev-a", "dev-b", "4.bin", 512L, "4".repeat(64))
+        val c4 = assertNotNull(coord.tryAcquireRoute(idleObsolete, RouteOwner.LAN))
+        assertTrue(coord.releaseRoute("f-idle-old", c4.epoch, RouteOwner.LAN))
+
+        // Advance time by 31 days; create one fresh completed checkpoint for dedup.
+        now += 31L * 24 * 60 * 60 * 1000
+        val doneFresh = LogicalTransferIdentity("f-done-fresh", "dev-a", "dev-b", "5.bin", 512L, "5".repeat(64))
+        val c5 = assertNotNull(coord.tryAcquireRoute(doneFresh, RouteOwner.LAN))
+        assertTrue(coord.completeTransfer("f-done-fresh", c5.epoch, RouteOwner.LAN, "/tmp/5.bin", "5".repeat(64)))
+
+        val removed = coord.prune(protectedFileIds = setOf("f-done-prot"))
+        assertEquals(2, removed)
+        assertNull(coord.snapshot("f-done-old"))
+        assertNull(coord.snapshot("f-idle-old"))
+        assertNotNull(coord.snapshot("f-done-prot"), "protected checkpoint must stay")
+        assertNotNull(coord.snapshot("f-active-held"), "held active route must stay")
+        assertNotNull(coord.snapshot("f-done-fresh"), "recent completed checkpoint must stay for deduplication")
+
+        val reloaded = TransferRouteCoordinator(FileContinuityCheckpointStore(dir.path), clock)
+        assertNull(reloaded.snapshot("f-done-old"), "deleted checkpoints must be gone from disk")
+        assertNotNull(reloaded.snapshot("f-done-fresh"))
     }
 }

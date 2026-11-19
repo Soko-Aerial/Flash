@@ -97,6 +97,8 @@ public class ReceivePipeline(
     }
 
     private val sessions = LinkedHashMap<String, Session>()
+    private val resolvingStarts = HashMap<String, ChunkFrame.FileStart>()
+    private var clearGeneration: Long = 0L
 
     /**
      * Phase 13B-3e replaced eight `@Synchronized` annotations with [PlatformLock] blocks, because
@@ -129,7 +131,7 @@ public class ReceivePipeline(
     public fun onFrame(bytes: ByteArray): List<ReceiveEvent> {
         val frame = ChunkFrame.parse(bytes) ?: return listOf(ReceiveEvent.Rejected(RejectReason.MALFORMED_FRAME, null))
         return when (frame) {
-            is ChunkFrame.FileStart -> lock.withLock { handleFileStart(frame) }
+            is ChunkFrame.FileStart -> handleFileStart(frame)
             is ChunkFrame.Chunk -> handleChunk(frame)
             is ChunkFrame.AckBatch -> lock.withLock { listOf(reject(RejectReason.UNEXPECTED_DIRECTION, frame.transferId)) }
             is ChunkFrame.Complete -> lock.withLock { listOf(reject(RejectReason.UNEXPECTED_DIRECTION, frame.transferId)) }
@@ -195,12 +197,47 @@ public class ReceivePipeline(
      * an awaiting session existed. If the session was already open (or fully-seeded resume), this
      * is a no-op returning false.
      */
-    public fun acceptSession(transferId: String): Boolean = lock.withLock {
-        val session = sessions[transferId] ?: return@withLock false
-        if (!session.awaitingAcceptance) return@withLock false
-        session.resolvedSink = sinkFactory?.invoke(session.start) ?: sink
-        session.awaitingAcceptance = false
-        true
+    public fun acceptSession(transferId: String): Boolean {
+        val session = lock.withLock {
+            val existing = sessions[transferId] ?: return@withLock null
+            if (!existing.awaitingAcceptance || existing.resolvingSink) return@withLock null
+            existing.resolvingSink = true
+            existing
+        } ?: return false
+        val start = session.start
+        val resolved = try {
+            sinkFactory?.invoke(start) ?: sink
+        } catch (ce: CancellationException) {
+            lock.withLock {
+                if (sessions[transferId] === session) session.resolvingSink = false
+            }
+            throw ce
+        } catch (e: Exception) {
+            lock.withLock {
+                if (sessions[transferId] === session) {
+                    session.resolvingSink = false
+                    sessions.remove(transferId)
+                }
+            }
+            runCatching {
+                FlashLog.w(
+                    "STORAGE",
+                    "sinkFactory failed in acceptSession transferId=$transferId error=${e::class.simpleName}",
+                )
+            }
+            return false
+        }
+        return lock.withLock {
+            val current = sessions[transferId]
+            if (current !== session || !current.awaitingAcceptance) {
+                false
+            } else {
+                current.resolvedSink = resolved
+                current.awaitingAcceptance = false
+                current.resolvingSink = false
+                true
+            }
+        }
     }
 
     /**
@@ -214,51 +251,134 @@ public class ReceivePipeline(
         true
     }
 
-    public fun clear(): Unit = lock.withLock { sessions.clear() }
+    public fun clear(): Unit = lock.withLock {
+        clearGeneration++
+        sessions.clear()
+        resolvingStarts.clear()
+    }
+
+    private sealed interface FileStartPrep {
+        data class Immediate(val events: List<ReceiveEvent>) : FileStartPrep
+        data class ResolveSink(
+            val vector: ResumeBitVector,
+            val seededBytes: Long,
+            val fullySeeded: Boolean,
+            val generation: Long,
+            val factory: (ChunkFrame.FileStart) -> ChunkSink,
+        ) : FileStartPrep
+    }
 
     private fun handleFileStart(frame: ChunkFrame.FileStart): List<ReceiveEvent> {
-        val validationError = validateFileStart(frame)
-        if (validationError != null) return listOf(reject(validationError, frame.transferId))
+        val prep = lock.withLock {
+            val validationError = validateFileStart(frame)
+            if (validationError != null) {
+                return@withLock FileStartPrep.Immediate(listOf(reject(validationError, frame.transferId)))
+            }
 
-        val existing = sessions[frame.transferId]
-        if (existing != null) {
-            // Identical re-offer == resume restart: keep accumulated progress and re-announce the
-            // durable done-set so a sender with no local resume state (the desktop host keeps no
-            // transfer store) skips what is already on disk instead of replaying it. The
-            // announcement is refreshed only when new chunks landed since the previous one, so
-            // the N FILE_START frames of one multi-stream attempt do not repeat a large ACK.
-            // Different facts for the same id is a hard protocol conflict.
-            return if (existing.start == frame) {
-                announceResumeState(existing, frame.transferId)
-            } else {
-                listOf(reject(RejectReason.SESSION_CONFLICT, frame.transferId))
+            val existing = sessions[frame.transferId]
+            if (existing != null) {
+                // Identical re-offer == resume restart: keep accumulated progress and re-announce the
+                // durable done-set so a sender with no local resume state (the desktop host keeps no
+                // transfer store) skips what is already on disk instead of replaying it. The
+                // announcement is refreshed only when new chunks landed since the previous one, so
+                // the N FILE_START frames of one multi-stream attempt do not repeat a large ACK.
+                // Different facts for the same id is a hard protocol conflict.
+                val events = if (existing.start == frame) {
+                    announceResumeState(existing, frame.transferId)
+                } else {
+                    listOf(reject(RejectReason.SESSION_CONFLICT, frame.transferId))
+                }
+                return@withLock FileStartPrep.Immediate(events)
             }
-        }
-        evictFinishedSessions()
-        if (sessions.values.count { !it.finished } >= maxConcurrentSessions) {
-            return listOf(reject(RejectReason.SESSION_FULL, frame.transferId))
-        }
-        val vector = ResumeBitVector(frame.totalChunks)
-        var seededBytes = 0L
-        // #20: pre-mark chunks the receiver already persisted before a restart, so the vector can
-        // reach completion even though the resuming sender skips re-sending them.
-        resumeIndexesProvider?.invoke(frame)?.forEach { index ->
-            if (index in 0 until frame.totalChunks && vector.markReceived(index)) {
-                seededBytes += chunkLength(frame, index)
+            val pendingStart = resolvingStarts[frame.transferId]
+            if (pendingStart != null) {
+                val events = if (pendingStart == frame) {
+                    emptyList()
+                } else {
+                    listOf(reject(RejectReason.SESSION_CONFLICT, frame.transferId))
+                }
+                return@withLock FileStartPrep.Immediate(events)
             }
+            evictFinishedSessions()
+            if (sessions.values.count { !it.finished } + resolvingStarts.size >= maxConcurrentSessions) {
+                return@withLock FileStartPrep.Immediate(listOf(reject(RejectReason.SESSION_FULL, frame.transferId)))
+            }
+            val vector = ResumeBitVector(frame.totalChunks)
+            var seededBytes = 0L
+            // #20: pre-mark chunks the receiver already persisted before a restart, so the vector can
+            // reach completion even though the resuming sender skips re-sending them.
+            resumeIndexesProvider?.invoke(frame)?.forEach { index ->
+                if (index in 0 until frame.totalChunks && vector.markReceived(index)) {
+                    seededBytes += chunkLength(frame, index)
+                }
+            }
+            val fullySeeded = vector.isComplete()
+            // #5: a fresh offer awaits explicit acceptance — defer the sink (no destination file yet).
+            // A fully-seeded resume bypasses the gate (the user accepted pre-restart) and finalizes.
+            val awaiting = requireAcceptance && !fullySeeded
+            val factory = sinkFactory
+            if (awaiting || factory == null) {
+                val session = Session(
+                    start = frame,
+                    vector = vector,
+                    resolvedSink = if (awaiting) null else sink,
+                    awaitingAcceptance = awaiting,
+                )
+                session.doneBytes = seededBytes
+                sessions[frame.transferId] = session
+                return@withLock FileStartPrep.Immediate(buildStartEvents(session, frame, seededBytes, fullySeeded))
+            }
+            resolvingStarts[frame.transferId] = frame
+            FileStartPrep.ResolveSink(
+                vector = vector,
+                seededBytes = seededBytes,
+                fullySeeded = fullySeeded,
+                generation = clearGeneration,
+                factory = factory,
+            )
         }
-        val fullySeeded = vector.isComplete()
-        // #5: a fresh offer awaits explicit acceptance — defer the sink (no destination file yet).
-        // A fully-seeded resume bypasses the gate (the user accepted pre-restart) and finalizes.
-        val awaiting = requireAcceptance && !fullySeeded
-        val session = Session(
-            start = frame,
-            vector = vector,
-            resolvedSink = if (awaiting) null else (sinkFactory?.invoke(frame) ?: sink),
-            awaitingAcceptance = awaiting,
-        )
-        session.doneBytes = seededBytes
-        sessions[frame.transferId] = session
+        if (prep is FileStartPrep.Immediate) return prep.events
+        val resolve = prep as FileStartPrep.ResolveSink
+
+        val resolvedSink = try {
+            resolve.factory.invoke(frame)
+        } catch (ce: CancellationException) {
+            lock.withLock { resolvingStarts.remove(frame.transferId) }
+            throw ce
+        } catch (e: Exception) {
+            lock.withLock { resolvingStarts.remove(frame.transferId) }
+            runCatching {
+                FlashLog.w(
+                    "STORAGE",
+                    "sinkFactory failed in onFrame transferId=${frame.transferId} error=${e::class.simpleName}",
+                )
+            }
+            return listOf(reject(RejectReason.WRITE_FAILED, frame.transferId))
+        }
+
+        return lock.withLock {
+            resolvingStarts.remove(frame.transferId)
+            if (clearGeneration != resolve.generation || sessions.containsKey(frame.transferId)) {
+                return@withLock emptyList()
+            }
+            val session = Session(
+                start = frame,
+                vector = resolve.vector,
+                resolvedSink = resolvedSink,
+                awaitingAcceptance = false,
+            )
+            session.doneBytes = resolve.seededBytes
+            sessions[frame.transferId] = session
+            buildStartEvents(session, frame, resolve.seededBytes, resolve.fullySeeded)
+        }
+    }
+
+    private fun buildStartEvents(
+        session: Session,
+        frame: ChunkFrame.FileStart,
+        seededBytes: Long,
+        fullySeeded: Boolean,
+    ): List<ReceiveEvent> {
         val events = ArrayList<ReceiveEvent>(2)
         if (emitSessionStarted) {
             events.add(ReceiveEvent.SessionStarted(frame))
@@ -429,7 +549,7 @@ public class ReceivePipeline(
         // Lock briefly only to update bitvector and construct ACK/Complete event
         return lock.withLock {
             val currentSession = sessions[frame.transferId] ?: return@withLock emptyList()
-            if (currentSession.finished) return@withLock emptyList()
+            if (currentSession !== session || currentSession.finished) return@withLock emptyList()
             val newlyMarked = currentSession.vector.markReceived(frame.index)
             if (newlyMarked) currentSession.doneBytes += dataSize
             currentSession.pending.add(frame.index)
@@ -523,6 +643,7 @@ public class ReceivePipeline(
         var resolvedSink: ChunkSink?,
         var awaitingAcceptance: Boolean = false,
     ) {
+        var resolvingSink: Boolean = false
         /**
          * `HashSet` rather than the original `sortedSetOf` (`java.util.TreeSet`): the JDK
          * sorted-set types have no common equivalent, and the sort order this set used to supply is

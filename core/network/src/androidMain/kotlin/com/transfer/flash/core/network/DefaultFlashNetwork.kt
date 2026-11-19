@@ -1,10 +1,14 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network
 
 import android.content.Context
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.network.resilience.AndroidNetworkWatcher
 import com.transfer.flash.core.network.resilience.ConnectionHealthAggregator
 import com.transfer.flash.core.network.resilience.DuplicateSessionDecision
@@ -114,7 +118,7 @@ internal class DefaultFlashNetwork(
             logger = logger,
         )
         server = serverImpl
-        val startedPort = runCatching { serverImpl.start() }.getOrElse {
+        val startedPort = runSuspendCatching { serverImpl.start() }.getOrElse {
             running.set(false)
             return FlashResult.Failure(
                 FlashError.NetworkUnavailable("LAN server start failed: ${it.message}"),
@@ -131,7 +135,7 @@ internal class DefaultFlashNetwork(
         watcher = null
         synchronized(lock) {
             sessionsById.values.forEach { session ->
-                runCatching { session.disconnect("Network stopped") }
+                runSuspendCatching { session.disconnect("Network stopped") }
             }
             sessionsById.clear()
         }
@@ -329,7 +333,7 @@ internal class DefaultFlashNetwork(
                     return false
                 }
                 sessionsById.remove(id)
-                runCatching { existing.disconnect("Superseded by richer path") }
+                runSuspendCatching { existing.disconnect("Superseded by richer path") }
             }
             sessionsById[id] = session
         }

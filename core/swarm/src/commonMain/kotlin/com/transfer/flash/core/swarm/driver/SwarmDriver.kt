@@ -287,7 +287,7 @@ public class SwarmDriver(
         // 5. Rebuild the engine from persisted state (R4): tombstones first, then every content item.
         scope.launch(workerDispatcher) {
             try {
-                runCatching { runRetentionCleanup() }
+                runSuspendCatching { runRetentionCleanup() }
                     .onFailure { FlashLog.w("SWARM", "retention cleanup failed: ${it.message}") }
                 val tombstones = stateStore.tombstones()
                 if (tombstones.isNotEmpty()) {
@@ -709,7 +709,7 @@ public class SwarmDriver(
             val handle = getOrCreateSourceHandle(record.sourceUri)
             if (handle != null) {
                 val buf = ByteArray(len)
-                val read = runCatching { handle.readAt(offset, buf, len) }.getOrElse {
+                val read = runSuspendCatching { handle.readAt(offset, buf, len) }.getOrElse {
                     closeSourceHandle(record.sourceUri)
                     -1
                 }
@@ -726,7 +726,7 @@ public class SwarmDriver(
             val handle = getOrCreateSourceHandle(finalPath)
             if (handle != null) {
                 val buf = ByteArray(len)
-                val read = runCatching { handle.readAt(offset, buf, len) }.getOrElse {
+                val read = runSuspendCatching { handle.readAt(offset, buf, len) }.getOrElse {
                     closeSourceHandle(finalPath)
                     -1
                 }
@@ -741,7 +741,7 @@ public class SwarmDriver(
         val key = partialKeyFor(root, groupId)
         storage.openPartial(key, record?.totalSize ?: 0L)?.use { handle ->
             val buf = ByteArray(len)
-            val read = runCatching { handle.readAt(offset, buf, len) }.getOrDefault(-1)
+            val read = runSuspendCatching { handle.readAt(offset, buf, len) }.getOrDefault(-1)
             if (read == len) return buf
         }
 
@@ -758,7 +758,7 @@ public class SwarmDriver(
         }
         val cached = openPartialHandles[key]
         if (cached != null) {
-            runCatching { cached.sync() }
+            runSuspendCatching { cached.sync() }
         } else {
             storage.openPartial(key, expectedSize)?.use { it.sync() }
         }
@@ -835,7 +835,7 @@ public class SwarmDriver(
         lastSourceCheckMs[key]?.let { if (nowMs - it < SOURCE_CHECK_INTERVAL_MS) return true }
         lastSourceCheckMs[key] = nowMs
         val handle = openSourceHandles[uri] ?: getOrCreateSourceHandle(uri) ?: return false
-        val identity = runCatching { handle.identity() }.getOrNull() ?: return true
+        val identity = runSuspendCatching { handle.identity() }.getOrNull() ?: return true
         return identity.sizeBytes == record.totalSize
     }
 

@@ -2,6 +2,8 @@
 
 package com.transfer.flash.core.engine.hubfiles
 
+import com.transfer.flash.core.common.time.FlashTimeSource
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.engine.concurrent.PlatformLock
 import com.transfer.flash.core.enterprise.files.HubDownloadRequest
 import com.transfer.flash.core.enterprise.files.HubFileTransfers
@@ -94,6 +96,7 @@ public data class ContinuityCheckpoint(
     public val finalDigestHex: String? = null,
     public val lanPartialPath: String? = null,
     public val senderSourceFingerprint: String? = null,
+    public val updatedAtMs: Long = 0L,
 ) {
     public val verifiedBytes: Long
         get() = verifiedSpans.sumOf { it.length }
@@ -117,34 +120,82 @@ public class FileContinuityCheckpointStore(
     private val fileSystem: FileSystem = FileSystem.SYSTEM,
 ) : ContinuityCheckpointStore {
     private val dirPath = directory.toPath()
+    private val ioLock = PlatformLock()
 
-    override fun loadAll(): List<ContinuityCheckpoint> {
-        if (!fileSystem.exists(dirPath)) return emptyList()
-        return runCatching {
+    override fun loadAll(): List<ContinuityCheckpoint> = ioLock.withLock {
+        if (!fileSystem.exists(dirPath)) return@withLock emptyList()
+        return@withLock runCatching {
+            val entries = fileSystem.list(dirPath)
+            for (path in entries) {
+                if (path.name.endsWith(TMP_EXT)) {
+                    runCatching { fileSystem.delete(path, mustExist = false) }
+                }
+            }
+            for (path in entries) {
+                if (!path.name.endsWith(BACKUP_EXT)) continue
+                val target = path.toString().removeSuffix(BACKUP_EXT).toPath()
+                val targetValid = fileSystem.exists(target) &&
+                    runCatching { decode(fileSystem.read(target) { readUtf8() }) }.getOrNull() != null
+                if (!targetValid) {
+                    val backupValid = runCatching { decode(fileSystem.read(path) { readUtf8() }) }.getOrNull() != null
+                    if (backupValid) {
+                        runCatching {
+                            if (fileSystem.exists(target)) fileSystem.delete(target, mustExist = false)
+                            fileSystem.atomicMove(path, target)
+                        }
+                    } else {
+                        runCatching { fileSystem.delete(path, mustExist = false) }
+                    }
+                } else {
+                    runCatching { fileSystem.delete(path, mustExist = false) }
+                }
+            }
             fileSystem.list(dirPath)
                 .filter { it.name.endsWith(EXT) }
-                .mapNotNull { path -> runCatching { decode(fileSystem.read(path) { readUtf8() }) }.getOrNull() }
+                .mapNotNull { path ->
+                    runCatching {
+                        val mtime = fileSystem.metadataOrNull(path)?.lastModifiedAtMillis ?: 0L
+                        decode(fileSystem.read(path) { readUtf8() }, fallbackUpdatedAtMs = mtime)
+                    }.getOrNull()
+                }
         }.getOrDefault(emptyList())
     }
 
-    override fun save(checkpoint: ContinuityCheckpoint) {
+    override fun save(checkpoint: ContinuityCheckpoint): Unit = ioLock.withLock {
         val target = pathFor(checkpoint.identity.logicalTransferId)
-        val tmp = "$target.tmp".toPath()
+        val tmp = "$target$TMP_EXT".toPath()
+        val backup = "$target$BACKUP_EXT".toPath()
         fileSystem.createDirectories(dirPath)
         fileSystem.write(tmp) {
             writeUtf8(encode(checkpoint))
         }
         try {
             fileSystem.atomicMove(tmp, target)
-        } catch (_: okio.IOException) {
-            if (fileSystem.exists(target)) fileSystem.delete(target, mustExist = false)
-            fileSystem.atomicMove(tmp, target)
+        } catch (primaryError: okio.IOException) {
+            if (!fileSystem.exists(target)) {
+                throw primaryError
+            }
+            // Target already exists and this filesystem/FileSystem rejects atomic overwrite:
+            // move target to a recoverable backup rather than pre-deleting it before moving tmp.
+            runCatching { fileSystem.delete(backup, mustExist = false) }
+            fileSystem.atomicMove(target, backup)
+            try {
+                fileSystem.atomicMove(tmp, target)
+            } catch (replaceError: okio.IOException) {
+                runCatching { fileSystem.atomicMove(backup, target) }
+                throw replaceError
+            }
+            runCatching { fileSystem.delete(backup, mustExist = false) }
         }
     }
 
-    override fun delete(logicalTransferId: String) {
+    override fun delete(logicalTransferId: String): Unit = ioLock.withLock {
         val target = pathFor(logicalTransferId)
+        val backup = "$target$BACKUP_EXT".toPath()
+        val tmp = "$target$TMP_EXT".toPath()
         runCatching { fileSystem.delete(target, mustExist = false) }
+        runCatching { fileSystem.delete(backup, mustExist = false) }
+        runCatching { fileSystem.delete(tmp, mustExist = false) }
     }
 
     private fun pathFor(logicalTransferId: String) =
@@ -179,10 +230,11 @@ public class FileContinuityCheckpointStore(
             append("finalDigest=").append(c.finalDigestHex.orEmpty()).append('\n')
             append("lanPartialPath=").append(c.lanPartialPath.orEmpty().encodeUtf8().hex()).append('\n')
             append("sourceFp=").append(c.senderSourceFingerprint.orEmpty().encodeUtf8().hex()).append('\n')
+            append("updatedAt=").append(c.updatedAtMs).append('\n')
         }
     }
 
-    private fun decode(raw: String): ContinuityCheckpoint? {
+    private fun decode(raw: String, fallbackUpdatedAtMs: Long = 0L): ContinuityCheckpoint? {
         val map = HashMap<String, String>()
         for (line in raw.lineSequence()) {
             val eq = line.indexOf('=')
@@ -215,6 +267,7 @@ public class FileContinuityCheckpointStore(
         val finalDigest = map["finalDigest"]?.takeIf { it.isNotBlank() }
         val lanPartialPath = map["lanPartialPath"]?.takeIf { it.isNotBlank() }?.decodeHex()?.utf8()
         val sourceFp = map["sourceFp"]?.takeIf { it.isNotBlank() }?.decodeHex()?.utf8()
+        val updatedAtMs = map["updatedAt"]?.toLongOrNull() ?: fallbackUpdatedAtMs
         return ContinuityCheckpoint(
             identity = identity,
             verifiedSpans = TransferByteAlignment.normalizeSpans(spans, bytes),
@@ -225,11 +278,14 @@ public class FileContinuityCheckpointStore(
             finalDigestHex = finalDigest,
             lanPartialPath = lanPartialPath,
             senderSourceFingerprint = sourceFp,
+            updatedAtMs = updatedAtMs,
         )
     }
 
     private companion object {
         private const val EXT = ".chk"
+        private const val TMP_EXT = ".tmp"
+        private const val BACKUP_EXT = ".bak"
     }
 }
 
@@ -341,6 +397,7 @@ public object TransferByteAlignment {
  */
 public class TransferRouteCoordinator(
     private val checkpointStore: ContinuityCheckpointStore? = null,
+    private val timeSource: FlashTimeSource = SystemTimeSource,
 ) {
     private val lock = PlatformLock()
     private val checkpoints = HashMap<String, ContinuityCheckpoint>()
@@ -360,9 +417,10 @@ public class TransferRouteCoordinator(
     }
 
     private fun putLocked(checkpoint: ContinuityCheckpoint): ContinuityCheckpoint {
-        checkpoints[checkpoint.identity.logicalTransferId] = checkpoint
-        checkpointStore?.save(checkpoint)
-        return checkpoint
+        val stamped = checkpoint.copy(updatedAtMs = timeSource.nowMs())
+        checkpointStore?.save(stamped)
+        checkpoints[stamped.identity.logicalTransferId] = stamped
+        return stamped
     }
 
     public fun registerOrGet(identity: LogicalTransferIdentity): ContinuityCheckpoint? {
@@ -905,6 +963,66 @@ public class TransferRouteCoordinator(
                 ),
             )
         }
+    }
+
+    /**
+     * Removes completed/cancelled/incompatible checkpoints older than [maxTerminalAgeMs], inactive
+     * obsolete active checkpoints older than [maxInactiveActiveAgeMs], and oldest terminal
+     * checkpoints beyond [maxTotalCheckpoints], while preserving every id in [protectedFileIds] and
+     * every currently active route (`activeRoute != RouteOwner.NONE`).
+     */
+    public fun prune(
+        maxTerminalAgeMs: Long = DEFAULT_TERMINAL_RETENTION_MS,
+        maxInactiveActiveAgeMs: Long = DEFAULT_INACTIVE_ACTIVE_RETENTION_MS,
+        maxTotalCheckpoints: Int = DEFAULT_MAX_CHECKPOINTS,
+        protectedFileIds: Set<String> = emptySet(),
+    ): Int {
+        val now = timeSource.nowMs()
+        return lock.withLock {
+            var removed = 0
+            val expiredIds = ArrayList<String>()
+            for ((id, cp) in checkpoints) {
+                if (id in protectedFileIds || cp.activeRoute != RouteOwner.NONE) continue
+                val age = if (cp.updatedAtMs > 0L) now - cp.updatedAtMs else 0L
+                val expired = when (cp.status) {
+                    ContinuityStatus.COMPLETED,
+                    ContinuityStatus.CANCELLED,
+                    ContinuityStatus.INCOMPATIBLE,
+                    -> age >= maxTerminalAgeMs
+                    ContinuityStatus.ACTIVE -> age >= maxInactiveActiveAgeMs
+                }
+                if (expired) {
+                    expiredIds.add(id)
+                }
+            }
+            for (id in expiredIds) {
+                checkpointStore?.delete(id)
+                if (checkpoints.remove(id) != null) removed++
+            }
+            val overflow = checkpoints.size - maxTotalCheckpoints
+            if (overflow > 0) {
+                val evictable = checkpoints.values
+                    .filter {
+                        it.identity.logicalTransferId !in protectedFileIds &&
+                            it.activeRoute == RouteOwner.NONE &&
+                            it.status != ContinuityStatus.ACTIVE
+                    }
+                    .sortedBy { it.updatedAtMs }
+                    .take(overflow)
+                for (cp in evictable) {
+                    val id = cp.identity.logicalTransferId
+                    checkpointStore?.delete(id)
+                    if (checkpoints.remove(id) != null) removed++
+                }
+            }
+            removed
+        }
+    }
+
+    public companion object {
+        public const val DEFAULT_TERMINAL_RETENTION_MS: Long = 30L * 24 * 60 * 60 * 1000
+        public const val DEFAULT_INACTIVE_ACTIVE_RETENTION_MS: Long = 30L * 24 * 60 * 60 * 1000
+        public const val DEFAULT_MAX_CHECKPOINTS: Int = 1_000
     }
 }
 

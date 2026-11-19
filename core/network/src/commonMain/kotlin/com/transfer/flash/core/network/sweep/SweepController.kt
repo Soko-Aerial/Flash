@@ -1,5 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.sweep
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.runSuspendCatching
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CoroutineScope
@@ -114,7 +118,7 @@ public class SweepController(
     public fun start(checkIntervalMs: Long = DEFAULT_CHECK_INTERVAL_MS): Job = scope.launch {
         while (isActive) {
             delay(checkIntervalMs)
-            val current = runCatching { situation() }.getOrNull() ?: continue
+            val current = runSuspendCatching { situation() }.getOrNull() ?: continue
             val enabled = autoEnabled()
             // Observe even when disabled, so re-enabling starts the quiet period from the truth.
             val due = policy.autoDue(nowMs(), if (enabled) current else current.copy(connectionAllowsAuto = false))
@@ -125,7 +129,7 @@ public class SweepController(
     /** Runs one sweep. The caller has set [running]; this always clears it. */
     private suspend fun runSweep(manual: Boolean) {
         try {
-            val all = runCatching { subnets() }.getOrDefault(emptyList()).take(MAX_SUBNETS)
+            val all = runSuspendCatching { subnets() }.getOrDefault(emptyList()).take(MAX_SUBNETS)
             val now = nowMs()
             val targets = LinkedHashSet<String>()
             val swept = ArrayList<String>()

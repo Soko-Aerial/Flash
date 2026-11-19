@@ -122,4 +122,25 @@ class ChatDbKeyStoreTest {
         assertFalse(String(File(dir, "db-key.bin").readBytes(), Charsets.ISO_8859_1).contains(first))
         assertEquals(first, ChatDbKeyStore(dir, IdentityKeyVault.Dpapi).passphrase())
     }
+
+    @Test
+    fun deferredMintDoesNotWriteKeyFileUntilCommit() {
+        val dir = newDir()
+        val deferred = ChatDbKeyStore(dir, vault()).loadOrMintDeferred()
+        assertTrue(deferred.minted)
+        assertFalse(File(dir, "db-key.bin").exists(), "deferred key must not touch disk before commit")
+        deferred.commit()
+        assertTrue(File(dir, "db-key.bin").exists())
+        assertEquals(deferred.passphrase, ChatDbKeyStore(dir, vault()).passphrase())
+    }
+
+    @Test
+    fun nonFileKeyPathThrowsInsteadOfOverwriting() {
+        val dir = newDir()
+        val keyDir = File(dir, "db-key.bin").apply { mkdirs() }
+        File(keyDir, "keep").writeText("preserve")
+        assertFailsWith<IllegalStateException> { ChatDbKeyStore(dir, vault()).passphrase() }
+        assertTrue(keyDir.isDirectory)
+        assertEquals("preserve", File(keyDir, "keep").readText())
+    }
 }

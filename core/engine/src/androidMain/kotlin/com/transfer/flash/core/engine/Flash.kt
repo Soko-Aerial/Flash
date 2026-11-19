@@ -877,7 +877,7 @@ private class Wiring(
                             launch {
                                 while (true) {
                                     pausedIntakeIds.first { it.isEmpty() }
-                                    val data = runCatching { session.awaitBinaryFrame() }.getOrElse { break }
+                                    val data = runSuspendCatching { session.awaitBinaryFrame() }.getOrElse { break }
                                     handleInboundBinary(
                                         transferImpl, receivePipeline, session.peer.friendlyName,
                                         session.peerDeviceId.value, data,
@@ -905,10 +905,10 @@ private class Wiring(
             val started = engine.startAll(serverPort, currentIdentity)
             if (!started.isSuccess) Log.e(TAG, "Discovery startAll failed: ${(started as? FlashResult.Failure)?.error}")
 
-            dataPort = runCatching { dcServer.start(preferredPort = serverPort + 1) }.getOrElse {
+            dataPort = runSuspendCatching { dcServer.start(preferredPort = serverPort + 1) }.getOrElse {
                 Log.w(TAG, "DataChannelServer failed to bind: ${it.message}"); 0
             }
-            runCatching { transferImpl.preloadReceiverProgress() }
+            runSuspendCatching { transferImpl.preloadReceiverProgress() }
 
             // PC2 (ADR-045): the same planner and driver as the app holder and the desktop engine.
             remembered.start()
@@ -945,7 +945,7 @@ private class Wiring(
                             Log.w(TAG, "PTT control dropped: no session for $peerId")
                             false
                         } else {
-                            runCatching { session.connection.sendText(text) }
+                            runSuspendCatching { session.connection.sendText(text) }
                                 .onFailure { Log.w(TAG, "PTT control send failed peer=$peerId", it) }
                                 .getOrDefault(false)
                         }
@@ -955,7 +955,7 @@ private class Wiring(
                         if (session == null) {
                             Log.w(TAG, "PTT audio dropped: no session for $peerId")
                         } else {
-                            runCatching { session.connection.sendBinary(bytes) }
+                            runSuspendCatching { session.connection.sendBinary(bytes) }
                                 .onFailure { Log.w(TAG, "PTT audio send failed peer=$peerId", it) }
                         }
                     },
