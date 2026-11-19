@@ -90,6 +90,7 @@ data class GroupCharter(
     val adminDeviceIds: List<String> = emptyList(),
     val memberDeviceIds: List<String> = emptyList(),
     val version: Long = 0L,
+    val joinLinkRevision: Long = version,
 ) {
     val memberSet: Set<String> by lazy(LazyThreadSafetyMode.NONE) { memberDeviceIds.toSet() }
     val adminSet: Set<String> by lazy(LazyThreadSafetyMode.NONE) { adminDeviceIds.toSet() }
@@ -713,16 +714,20 @@ class OrganizationDirectory(
             requireManager(group, actor, "change")
             if (name != null) requireName(name, "Group name")
             val newVer = bumpVersionLocked()
+            val nextVisibility = visibility ?: group.visibility
+            val nextJoinMode = joinMode ?: group.joinMode
+            val policyChanged = nextVisibility != group.visibility || nextJoinMode != group.joinMode
             val updated = group.copy(
                 name = name?.trim() ?: group.name,
-                visibility = visibility ?: group.visibility,
-                joinMode = joinMode ?: group.joinMode,
+                visibility = nextVisibility,
+                joinMode = nextJoinMode,
                 version = newVer,
+                joinLinkRevision = if (policyChanged) newVer else group.joinLinkRevision,
             )
             persist { c ->
                 c.update(
-                    "UPDATE dir_groups SET name = ?, visibility = ?, join_mode = ?, version = ? WHERE id = ?",
-                    updated.name, updated.visibility.name, updated.joinMode.name, newVer, id,
+                    "UPDATE dir_groups SET name = ?, visibility = ?, join_mode = ?, version = ?, join_link_revision = ? WHERE id = ?",
+                    updated.name, updated.visibility.name, updated.joinMode.name, newVer, updated.joinLinkRevision, id,
                 )
             }
             groups[id] = updated
@@ -1283,8 +1288,8 @@ class OrganizationDirectory(
 
     private fun insertGroup(c: Connection, g: GroupCharter, now: Long) {
         c.update(
-            "INSERT INTO dir_groups(id, name, department_id, visibility, join_mode, admin_ids, created_at, version) VALUES(?,?,?,?,?,?,?,?)",
-            g.id, g.name, g.departmentId, g.visibility.name, g.joinMode.name, encodeList(g.adminDeviceIds), now, g.version,
+            "INSERT INTO dir_groups(id, name, department_id, visibility, join_mode, admin_ids, created_at, version, join_link_revision) VALUES(?,?,?,?,?,?,?,?,?)",
+            g.id, g.name, g.departmentId, g.visibility.name, g.joinMode.name, encodeList(g.adminDeviceIds), now, g.version, g.joinLinkRevision,
         )
     }
 
@@ -1509,6 +1514,7 @@ class OrganizationDirectory(
                     adminDeviceIds = decodeList(rs.getString("admin_ids")),
                     memberDeviceIds = memberRows[id].orEmpty(),
                     version = rs.getLong("version"),
+                    joinLinkRevision = rs.getLong("join_link_revision"),
                 )
             }.forEach { groups[it.id] = it }
             c.query("SELECT * FROM dir_members ORDER BY rowid") { rs ->
@@ -1682,6 +1688,12 @@ class OrganizationDirectory(
                 conn.createStatement().use { st ->
                     st.execute("ALTER TABLE directory_tombstone ADD COLUMN entity_dept TEXT")
                     st.execute("ALTER TABLE directory_tombstone ADD COLUMN entity_hidden INTEGER NOT NULL DEFAULT 0")
+                }
+            },
+            Migration(5, "directory: track join-link revision separately from roster revision") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("ALTER TABLE dir_groups ADD COLUMN join_link_revision INTEGER NOT NULL DEFAULT 0")
+                    st.execute("UPDATE dir_groups SET join_link_revision = version")
                 }
             },
         )

@@ -621,9 +621,15 @@ public class HubChatBridge(
                         _droppedUnverified.update { it + 1 }
                         return reject(d, "malformed group E2EE envelope")
                     }
-                if (!groupLinked(meta.groupId)) return reject(d, "group is not linked to the hub")
+                if (meta.senderId != d.from) return reject(d, "group envelope sender does not match the relay")
+                if (!groupLinked(meta.groupId)) return HubInboundOutcome.RETRY_LATER
                 val senderMember = groupMemberAllowed(meta.groupId, d.from)
                 val localMember = groupMemberAllowed(meta.groupId, localDeviceId)
+                if (localMember && !senderMember) {
+                    // A newly added sender can arrive before the directory update. The open
+                    // still requires active membership and a matching epoch key on every retry.
+                    return HubInboundOutcome.RETRY_LATER
+                }
                 when (val res = e2ee.openSealedGroup(
                     senderDeviceId = d.from,
                     expectedGroupId = meta.groupId,
@@ -639,14 +645,7 @@ public class HubChatBridge(
                         body = res.payload.body
                         expectedGroupId = res.payload.groupId
                     }
-                    is GroupOpenResult.MissingEpochKey -> {
-                        return if (senderMember && localMember) {
-                            HubInboundOutcome.RETRY_LATER
-                        } else {
-                            _droppedUnverified.update { it + 1 }
-                            reject(d, "missing group key for non-active member")
-                        }
-                    }
+                    is GroupOpenResult.MissingEpochKey -> return HubInboundOutcome.RETRY_LATER
                     GroupOpenResult.RetryUnavailableIdentity -> return HubInboundOutcome.RETRY_LATER
                     is GroupOpenResult.Rejected -> {
                         _droppedUnverified.update { it + 1 }
@@ -711,7 +710,7 @@ public class HubChatBridge(
                 if (!sealed || e2ee == null) return reject(d, "group key distribution must arrive sealed")
                 val dist = GroupRelaySealing.decodeKeyDist(body)
                     ?: return reject(d, "malformed group key distribution payload")
-                if (!groupLinked(dist.groupId)) return reject(d, "group is not linked to the hub")
+                if (!groupLinked(dist.groupId)) return HubInboundOutcome.RETRY_LATER
                 val senderAllowed = groupMemberAllowed(dist.groupId, d.from)
                 val currentMembership = groupMembershipProvider(dist.groupId)
                 return when (val outcome = e2ee.acceptKeyDist(
@@ -724,6 +723,7 @@ public class HubChatBridge(
                     GroupKeyAcceptOutcome.ACCEPTED_CANONICAL,
                     GroupKeyAcceptOutcome.ACCEPTED_DECRYPT_ONLY,
                     GroupKeyAcceptOutcome.DUPLICATE -> HubInboundOutcome.STORED
+                    GroupKeyAcceptOutcome.DEFERRED_ROSTER -> HubInboundOutcome.RETRY_LATER
                     GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED,
                     GroupKeyAcceptOutcome.REJECTED_STALE_ROSTER,
                     GroupKeyAcceptOutcome.REJECTED_CONFLICT -> reject(d, "group key dist refused ($outcome)")

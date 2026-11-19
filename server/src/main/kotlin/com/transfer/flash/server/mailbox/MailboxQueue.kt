@@ -386,6 +386,17 @@ class MailboxQueue(
     override suspend fun acknowledge(target: String, msgId: String, origin: String?): List<AckedRow> =
         acknowledgeBatch(target, listOf(msgId), origin)
 
+    override suspend fun dropForPolicy(row: QueuedMessage): Boolean {
+        val removed = database.ioTransaction { conn ->
+            conn.prepareStatement("DELETE FROM mailbox_envelopes WHERE seq = ? AND undeliverable_reason IS NULL").use { stmt ->
+                stmt.setLong(1, row.seq)
+                stmt.executeUpdate() == 1
+            }
+        }
+        if (removed) noteDropped()
+        return removed
+    }
+
     override suspend fun mayReplay(row: QueuedMessage): Boolean {
         if (!enforceGroupMembership || row.group == null) return true
         return database.io { conn ->

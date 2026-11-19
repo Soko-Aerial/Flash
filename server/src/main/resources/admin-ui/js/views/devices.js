@@ -395,7 +395,7 @@ export function mountDevices(container, ctx) {
         allow.addEventListener('change', () => {
           if (!allow.checked) auto.checked = false;
         });
-        groupBoxes.set(g.groupId, { allow, auto });
+        groupBoxes.set(g.id, { allow, auto });
         groupBox.appendChild(
           h(
             'div',
@@ -557,7 +557,9 @@ export function mountDevices(container, ctx) {
 
   async function openDevice(id) {
     closeDrawerQuiet();
-    const device = all.find((d) => d.deviceId === id) || (await api.get('/devices/' + encodeURIComponent(id)).catch(() => null));
+    const device = await api.get('/devices/' + encodeURIComponent(id))
+      .catch(() => all.find((d) => d.deviceId === id));
+    if (stopped || ctx.segments[1] !== id) return;
     if (!device) {
       toast(t('devices.notFound'), { kind: 'warning' });
       ctx.replaceHash(['devices']);
@@ -647,9 +649,18 @@ export function mountDevices(container, ctx) {
       });
       actions.push(un);
     }
+    const replacementLabel = {
+      IN_PROGRESS: 'devices.replace.state.inProgress',
+      INVITE_ISSUED: 'devices.replace.state.issued',
+      FAILED: 'devices.replace.state.failed',
+    }[device.replacementState];
     mount(
       body,
       h('div', { class: 'drawer-status' }, statusBadge(device.status), device.online ? badge(t('devices.online'), 'ok') : null),
+      replacementLabel ? banner({
+        tone: device.replacementState === 'FAILED' ? 'bad' : 'info',
+        text: t(replacementLabel),
+      }) : null,
       device.status === 'REVOKED' ? banner({ tone: 'bad', text: t('devices.revoked.note') }) : null,
       dl([
         [t('devices.col.role'), t('role.' + device.role)],
@@ -671,6 +682,7 @@ export function mountDevices(container, ctx) {
           [t('devices.tech.id'), mono(device.deviceId, 'wrap')],
           [t('devices.tech.serial'), mono(String(device.serial))],
           [t('devices.tech.invite'), device.inviteId ? mono(device.inviteId, 'wrap') : null],
+          [t('devices.replace.inviteId'), device.replacementInviteId ? mono(device.replacementInviteId, 'wrap') : null],
           [t('devices.tech.fingerprint'), fingerprintHost],
         ]),
       ),

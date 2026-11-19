@@ -400,15 +400,23 @@ public class HubSession(
     public suspend fun fetchCallIceConfig(): HubIceConfigDto? = withContext(ioDispatcher) {
         val creds = credentials() ?: return@withContext null
         val base = baseUrlFor(creds) ?: return@withContext null
-        val token = bearer(forceRefresh = false) ?: return@withContext null
-        val reply = runSuspendCatching {
-            val response = httpClient.get("$base${HubContract.PATH_CALL_ICE}") {
-                header("Authorization", "Bearer $token")
+        repeat(2) { attempt ->
+            if (credentials() != creds) return@withContext null
+            val token = bearer(forceRefresh = attempt == 1) ?: return@withContext null
+            if (credentials() != creds) return@withContext null
+            val reply = runSuspendCatching {
+                val response = httpClient.get("$base${HubContract.PATH_CALL_ICE}") {
+                    header("Authorization", "Bearer $token")
+                }
+                response.status to response.boundedText()
+            }.getOrNull() ?: return@withContext null
+            if (credentials() != creds) return@withContext null
+            if (reply.first == HttpStatusCode.OK) {
+                return@withContext HubRestCodec.decodeOrNull<HubIceConfigDto>(reply.second)
             }
-            response.status to response.boundedText()
-        }.getOrNull() ?: return@withContext null
-        if (reply.first != HttpStatusCode.OK) return@withContext null
-        HubRestCodec.decodeOrNull<HubIceConfigDto>(reply.second)
+            if (reply.first != HttpStatusCode.Unauthorized) return@withContext null
+        }
+        null
     }
 
     private fun baseUrlFor(creds: EnrollmentCredentials): String? =

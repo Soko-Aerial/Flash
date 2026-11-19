@@ -186,6 +186,16 @@ public object GroupRelaySealing {
         )
     }
 
+    /** Validates the outer shape and route binding without access to the group key. */
+    public fun matchesRelayEnvelope(payload: String, senderId: String, groupId: String?): Boolean {
+        val header = peekMetadata(payload) ?: return false
+        if (header.senderId != senderId || (groupId != null && header.groupId != groupId)) return false
+        val parts = payload.split('.', limit = 9)
+        return Base64Url.decodeOrNull(parts[6])?.size == NONCE_BYTES &&
+            (Base64Url.decodeOrNull(parts[7])?.size ?: 0) >= 16 &&
+            Base64Url.decodeOrNull(parts[8])?.isNotEmpty() == true
+    }
+
     /** Encrypts and signs [body] under [epochKey]. Returns null if [epochKey] cannot send or inputs are invalid. */
     public fun seal(
         crypto: FlashCrypto,

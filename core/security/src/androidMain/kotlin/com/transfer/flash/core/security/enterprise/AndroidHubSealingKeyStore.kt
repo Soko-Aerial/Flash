@@ -14,8 +14,8 @@ import kotlinx.coroutines.withContext
  * cannot do key agreement below API 31, ADR-121), so its PKCS#8 bytes need protection at rest: they are wrapped by
  * [sealer], a non-exportable AES-256-GCM key in AndroidKeystore (the same construction the pairing session keys use),
  * and only the wrapped form is written to app-private preferences. Neither the wrapped value nor the keystore alias is
- * ever in a backup (`backup_rules.xml` and `data_extraction_rules.xml` exclude `sharedpref`), and a wrapped value that
- * cannot be opened (keystore reset, restored onto another phone) reads as "no key", so a fresh one is made and published.
+ * ever in a backup (`backup_rules.xml` and `data_extraction_rules.xml` exclude `sharedpref`). An unreadable
+ * existing value is a storage failure so a temporarily unavailable keystore cannot trigger rotation.
  *
  * Trade-off, stated plainly: code running as this app can unwrap the key; the wrapping protects the file at rest (a
  * copied preferences file is not enough), not the running process. Hardware-backed non-exportable agreement keys need
@@ -35,9 +35,9 @@ public class AndroidHubSealingKeyStore(
 
     override suspend fun load(): HubSealingKeyPair? = withContext(ioDispatcher) {
         val wrapped = preferences.getString(KEY_WRAPPED, null) ?: return@withContext null
-        val bytes = runCatching { sealer.open(wrapped) }.getOrNull() ?: return@withContext null
+        val bytes = checkNotNull(sealer.open(wrapped)) { "Stored Hub sealing key cannot be opened" }
         try {
-            HubSealingKeyCodec.decode(bytes)
+            checkNotNull(HubSealingKeyCodec.decode(bytes)) { "Stored Hub sealing key is invalid" }
         } finally {
             bytes.fill(0)
         }

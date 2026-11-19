@@ -25,6 +25,8 @@ internal object OutboxDrainSchedule {
      */
     internal const val MIN_WAIT_MS: Long = 25L
 
+    internal const val FAILED_DRAIN_WAIT_MS: Long = 5_000L
+
     /**
      * Ceiling on any wait, and the whole wait when nothing is known to be pending.
      *

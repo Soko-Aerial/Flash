@@ -135,6 +135,29 @@ class DirectoryRoutesTest {
     }
 
     @Test
+    fun groupLinkSurvivesMultipleJoinsAndIsInvalidatedByPolicyChange() = testApplication {
+        val w = World()
+        mount(w, HubGroupJoinLinks(SecretBox.ofKey(ByteArray(32) { 7 }), clock = { 1_000L }))
+        val issuer = w.token("dadmin-01", DeviceCert.ROLE_ADMIN)
+        val path = "/api/v1/groups/join-links"
+        val groupId = "grp-public"
+        val issued = client.postAs(path, issuer, CreateGroupJoinLinkBody(groupId))
+        assertEquals(HttpStatusCode.Created, issued.status)
+        val token = HubRestCodec.decode<GroupJoinLinkToken>(issued.bodyAsText())
+
+        for (id in listOf("member-01", "member-02")) {
+            val member = w.token(id)
+            assertEquals(HttpStatusCode.OK, client.postAs("$path/resolve", member, token).status)
+            assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-request", member, JoinRequestBody(groupId)).status)
+        }
+
+        w.dir.updateGroup(groupId, null, null, JoinMode.ADMIN_ONLY, DirectoryActor.CONSOLE)
+        assertEquals(HttpStatusCode.NotFound, client.postAs("$path/resolve", issuer, token).status)
+        w.dir.updateGroup(groupId, null, null, JoinMode.OPEN_IN_SCOPE, DirectoryActor.CONSOLE)
+        assertEquals(HttpStatusCode.NotFound, client.postAs("$path/resolve", issuer, token).status)
+    }
+
+    @Test
     fun everyDirectoryRouteRefusesAnUnauthenticatedCaller() = testApplication {
         val w = World()
         mount(w)

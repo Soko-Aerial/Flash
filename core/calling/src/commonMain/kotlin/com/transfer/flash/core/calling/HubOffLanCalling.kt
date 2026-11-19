@@ -5,6 +5,7 @@ import com.shepeliev.webrtckmp.IceServer
 import com.shepeliev.webrtckmp.IceTransportPolicy
 import com.shepeliev.webrtckmp.RtcConfiguration
 import com.shepeliev.webrtckmp.RtcpMuxPolicy
+import com.transfer.flash.core.common.time.SystemTimeSource
 
 /**
  * Policy governing how an off-LAN Hub-signaled call constructs its WebRTC ICE transport.
@@ -158,76 +159,103 @@ public sealed interface OffLanSignalVerdict {
             STALE_SEQUENCE,
             TERMINAL_CALL,
             EMPTY_PAYLOAD,
+            REPLAY_WINDOW_FULL,
         }
     }
 }
 
 /**
- * Thread-confined / mutex-free stateful guard (callers synchronize via coordinator actor/dispatcher or lock)
- * enforcing short-lived signal TTLs, per-call replay/sequence rejection, revocation refusal, and terminal call locks.
+ * Serializes replay and sequence checks across relay, revocation and call-end callbacks.
  */
 public class OffLanCallSignalGuard(
     private val maxFutureSkewMs: Long = DEFAULT_MAX_FUTURE_SKEW_MS,
     private val maxTtlMs: Long = DEFAULT_MAX_TTL_MS,
 ) {
-    private val revokedPeers: MutableSet<String> = mutableSetOf()
-    private val seenSignalIdsByCall: MutableMap<String, MutableSet<String>> = mutableMapOf()
-    private val highestSeqByCallPeer: MutableMap<String, Long> = mutableMapOf()
-    private val terminalCalls: MutableSet<String> = mutableSetOf()
+    private class ReplayState(var expiresAt: Long) {
+        val signalIds = HashMap<String, Long>()
+        val peerSequences = HashMap<String, Long>()
+    }
 
-    public fun markPeerRevoked(peerId: String) {
+    private val monitor = PlatformMonitor()
+    private val revokedPeers = HashSet<String>()
+    private val replayByCall = HashMap<String, ReplayState>()
+    private val terminalCalls = LinkedHashMap<String, Long>()
+
+    public fun markPeerRevoked(peerId: String): Unit = monitor.withLock {
         if (peerId.isNotBlank()) revokedPeers.add(peerId)
     }
 
-    public fun clearPeerRevocation(peerId: String) {
+    public fun clearPeerRevocation(peerId: String): Unit = monitor.withLock {
         revokedPeers.remove(peerId)
     }
 
-    public fun isPeerRevoked(peerId: String): Boolean = peerId in revokedPeers
+    public fun isPeerRevoked(peerId: String): Boolean = monitor.withLock { peerId in revokedPeers }
 
-    public fun markCallTerminal(callId: String) {
-        if (callId.isNotBlank()) {
-            terminalCalls.add(callId)
-        }
+    public fun markCallTerminal(callId: String): Unit = monitor.withLock {
+        if (callId.isBlank()) return@withLock
+        replayByCall.remove(callId)
+        val now = SystemTimeSource.nowMs()
+        terminalCalls.entries.removeAll { it.value < now }
+        terminalCalls[callId] = now + maxTtlMs + maxFutureSkewMs
+        if (terminalCalls.size > MAX_TRACKED_CALLS) terminalCalls.remove(terminalCalls.keys.first())
     }
 
-    public fun isCallTerminal(callId: String): Boolean = callId in terminalCalls
+    public fun isCallTerminal(callId: String): Boolean = monitor.withLock {
+        terminalCalls[callId]?.let { it >= SystemTimeSource.nowMs() } == true
+    }
 
     public fun validateInbound(
         signal: InboundOffLanCallSignal,
         nowMs: Long,
-    ): OffLanSignalVerdict {
+    ): OffLanSignalVerdict = monitor.withLock {
         if (signal.payloadText.isBlank()) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.EMPTY_PAYLOAD)
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.EMPTY_PAYLOAD)
         }
         if (signal.fromPeerId in revokedPeers) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REVOKED_PEER)
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REVOKED_PEER)
         }
-        if (signal.callId in terminalCalls) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.TERMINAL_CALL)
+        if (terminalCalls[signal.callId]?.let { it >= nowMs } == true) {
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.TERMINAL_CALL)
         }
-        if (signal.issuedAtMs - nowMs > maxFutureSkewMs) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.CLOCK_SKEW)
+        if (signal.issuedAtMs > nowMs + maxFutureSkewMs) {
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.CLOCK_SKEW)
         }
         val effectiveTtl = signal.ttlMs.coerceIn(1L, maxTtlMs)
-        if (nowMs - signal.issuedAtMs > effectiveTtl || signal.ttlMs <= 0L || signal.ttlMs > maxTtlMs) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.EXPIRED_TTL)
+        if (signal.issuedAtMs < nowMs - effectiveTtl || signal.ttlMs <= 0L || signal.ttlMs > maxTtlMs) {
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.EXPIRED_TTL)
         }
-        val seqKey = "${signal.callId}|${signal.fromPeerId}"
-        val previousSeq = highestSeqByCallPeer[seqKey]
+        replayByCall.entries.removeAll { it.value.expiresAt < nowMs }
+        val expiresAt = nowMs + maxTtlMs + maxFutureSkewMs
+        val state = replayByCall[signal.callId] ?: run {
+            if (replayByCall.size >= MAX_TRACKED_CALLS) {
+                return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REPLAY_WINDOW_FULL)
+            }
+            ReplayState(expiresAt).also { replayByCall[signal.callId] = it }
+        }
+        val previousSeq = state.peerSequences[signal.fromPeerId]
         if (previousSeq != null && signal.seq <= previousSeq) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.STALE_SEQUENCE)
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.STALE_SEQUENCE)
         }
-        val seenIds = seenSignalIdsByCall.getOrPut(signal.callId) { mutableSetOf() }
-        if (!seenIds.add(signal.signalId)) {
-            return OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REPLAYED_SIGNAL_ID)
+        state.signalIds.entries.removeAll { it.value < nowMs }
+        if (signal.signalId in state.signalIds) {
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REPLAYED_SIGNAL_ID)
         }
-        highestSeqByCallPeer[seqKey] = signal.seq
-        return OffLanSignalVerdict.Accepted
+        if (state.signalIds.size >= MAX_SIGNALS_PER_CALL ||
+            (previousSeq == null && state.peerSequences.size >= MAX_PEERS_PER_CALL)
+        ) {
+            return@withLock OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.REPLAY_WINDOW_FULL)
+        }
+        state.signalIds[signal.signalId] = expiresAt
+        state.peerSequences[signal.fromPeerId] = signal.seq
+        state.expiresAt = expiresAt
+        OffLanSignalVerdict.Accepted
     }
 
     public companion object {
         public const val DEFAULT_MAX_FUTURE_SKEW_MS: Long = 30_000L
         public const val DEFAULT_MAX_TTL_MS: Long = 60_000L
+        private const val MAX_TRACKED_CALLS = 256
+        private const val MAX_SIGNALS_PER_CALL = 512
+        private const val MAX_PEERS_PER_CALL = 64
     }
 }

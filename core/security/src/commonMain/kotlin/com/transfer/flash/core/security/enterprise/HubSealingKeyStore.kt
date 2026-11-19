@@ -22,6 +22,7 @@ import kotlinx.coroutines.sync.withLock
  */
 @FlashInternalApi
 public interface HubSealingKeyStore {
+    /** Null means absent. Throws if an existing key cannot be read or unwrapped. */
     public suspend fun load(): HubSealingKeyPair?
 
     /** Stores [key], replacing any earlier one. Throws when the write fails. */

@@ -9,6 +9,7 @@ import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -42,6 +43,27 @@ class HubGroupPolicyMonitorTest {
         connected.value = false
         runCurrent()
         assertEquals(HubGroupPolicyMonitor.SAFE_DEFAULT, monitor.currentPolicy())
+    }
+
+    @Test
+    fun transientDisconnectDuringFetchKeepsRefreshRunning() = runTest {
+        val credentials = MutableStateFlow<EnrollmentCredentials?>(enrolled("hub"))
+        val onlineEvents = MutableStateFlow(true)
+        val policy = HubGroupPolicy(allowPersonalHubLink = true)
+        var online = true
+        var requests = 0
+        val monitor = HubGroupPolicyMonitor(credentials, { online }) {
+            if (++requests == 1) online = false
+            FlashResult.Success(policy)
+        }
+        backgroundScope.launch { monitor.watch(onlineEvents) {} }
+        runCurrent()
+        assertEquals(HubGroupPolicyMonitor.SAFE_DEFAULT, monitor.currentPolicy())
+
+        online = true
+        advanceTimeBy(5_000L)
+        runCurrent()
+        assertEquals(policy, monitor.currentPolicy())
     }
 
     private fun enrolled(name: String): EnrollmentCredentials = EnrollmentCredentials(

@@ -152,7 +152,7 @@ class DirectoryTombstoneTest {
             }
         }
         Migrator(db).apply { register(OrganizationDirectory.COMPONENT, OrganizationDirectory.MIGRATIONS); migrate() }
-        assertEquals(4, Migrator(db).currentVersion(OrganizationDirectory.COMPONENT))
+        assertEquals(5, Migrator(db).currentVersion(OrganizationDirectory.COMPONENT))
         val old = OrganizationDirectory(db).tombstones["member" to "old"]!!
         assertEquals("", old.departmentId)
         assertFalse(old.departmentHidden)

@@ -23,6 +23,9 @@ interface MailboxStore {
      */
     suspend fun fetchPageDetailed(target: String, afterSeq: Long, limit: Int): MailboxPage = MailboxPage(fetchPage(target, afterSeq, limit))
 
+    /** Removes the specific fetched copy refused by the current relay policy. */
+    suspend fun dropForPolicy(row: QueuedMessage): Boolean = false
+
     /** Revalidates a fetched group row before handing it off. Direct mail follows its existing receipt rules. */
     suspend fun mayReplay(row: QueuedMessage): Boolean = true
 

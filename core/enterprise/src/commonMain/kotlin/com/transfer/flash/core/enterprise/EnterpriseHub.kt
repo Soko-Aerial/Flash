@@ -126,6 +126,7 @@ public class EnterpriseHub(
         bearerSource = session,
         pinnedHubUrl = { trustStore.credentials.value?.hubUrl },
         allowCleartext = allowCleartext,
+        expectedServerId = { trustStore.credentials.value?.rootFingerprint },
     )
 
     public val announcements: HubAnnouncementsApi = RealHubAnnouncementsApi(

@@ -50,11 +50,17 @@ public class HubGroupPolicyMonitor(
                 publish(SAFE_DEFAULT)
                 if (enrolled == null || !online) return@collectLatest
                 while (true) {
+                    if (!connected()) {
+                        snapshot.value = null
+                        publish(SAFE_DEFAULT)
+                        delay(RETRY_MS)
+                        continue
+                    }
                     val policy = fetchPolicy(enrolled.hubUrl).getOrNull()
-                    if (credentials.value != enrolled || generation.value != revision || !connected()) break
-                    snapshot.value = policy?.let { Snapshot(enrolled, revision, it) }
+                    if (credentials.value != enrolled || generation.value != revision) break
+                    snapshot.value = policy?.takeIf { connected() }?.let { Snapshot(enrolled, revision, it) }
                     publish(currentPolicy())
-                    delay(if (policy == null) RETRY_MS else REFRESH_MS)
+                    delay(if (snapshot.value == null) RETRY_MS else REFRESH_MS)
                 }
             }
         } finally {

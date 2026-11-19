@@ -330,6 +330,32 @@ class HubGroupE2eeTest {
     }
 
     @Test
+    fun keyDistributionWaitsForTheAuthoritativeRoster() = runTest {
+        val alice = MemberNode("alice")
+        val bob = MemberNode("bob")
+        val harness = Harness(mapOf(alice.id to alice, bob.id to bob))
+        val (_, sending) = harness.bridgeFor(alice)
+        val (_, receiving) = harness.bridgeFor(bob)
+        val roster = setOf(alice.id, bob.id) to 2L
+        harness.membership["g-eng"] = roster
+        assertTrue(sending.sendGroup("bob", "after-join", now, msg("g-eng", "after-join", "alice", "hello")))
+        val key = alice.relay.sent.first { it.type == HubSealing.ENVELOPE_TYPE }
+        val content = alice.relay.sent.first { it.type == GroupRelaySealing.ENVELOPE_TYPE }
+        val keyDelivery = HubInbound("alice", key.id, key.type, key.sentAt, key.payload)
+        val contentDelivery = HubInbound("alice", content.id, content.type, content.sentAt, content.payload)
+        val sink = RecordingGroupSink(bob.received)
+
+        harness.membership["g-eng"] = setOf(bob.id) to 1L
+        assertEquals(HubInboundOutcome.RETRY_LATER, receiving.handleInbound(keyDelivery, sink))
+        assertEquals(HubInboundOutcome.RETRY_LATER, receiving.handleInbound(contentDelivery, sink))
+
+        harness.membership["g-eng"] = roster
+        assertEquals(HubInboundOutcome.STORED, receiving.handleInbound(keyDelivery, sink))
+        assertEquals(HubInboundOutcome.STORED, receiving.handleInbound(contentDelivery, sink))
+        assertEquals("hello", (bob.received.single().first as GroupWireFrame.Message).text)
+    }
+
+    @Test
     fun simultaneousRotationOutOfOrderDeliveryAndOfflineRestartAllConverge() = runTest {
         val alice = MemberNode("alice")
         val bob = MemberNode("bob")
@@ -448,7 +474,7 @@ class HubGroupE2eeTest {
             ),
         )
 
-        // 3. Mallory claims future rosterVersion=99 with current members -> rejected without promoting
+        // 3. An ahead-of-directory claim stays unacknowledged and must not change the current epoch.
         val futureRosterPayload = maxEpochPayload.copy(epoch = 2L, rosterVersion = 99L, keyId = "poison-future")
         val sealedFuture = HubSealing.seal(
             crypto = mallory.crypto,
@@ -461,7 +487,7 @@ class HubGroupE2eeTest {
             body = GroupRelaySealing.encodeKeyDist(futureRosterPayload),
         )!!
         assertEquals(
-            HubInboundOutcome.REJECTED,
+            HubInboundOutcome.RETRY_LATER,
             aliceBridge.handleInbound(
                 HubInbound("mallory", "poison-3", HubSealing.ENVELOPE_TYPE, now + 30L, sealedFuture),
                 RecordingGroupSink(alice.received),

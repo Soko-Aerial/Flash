@@ -124,7 +124,7 @@ public interface HubSealingKeyApi {
 @FlashInternalApi
 @kotlinx.serialization.Serializable
 public data class HubGroupPolicy(
-    public val allowPersonalHubLink: Boolean = true,
+    public val allowPersonalHubLink: Boolean = false,
     public val groupE2eeMode: String = GROUP_E2EE_MODE_REQUIRED,
 ) {
     public companion object {
@@ -244,12 +244,18 @@ public class EnterpriseDirectoryClient(
     /** The hub address stored in the credentials, or null when not enrolled. When non-null, every call must match its host. */
     private val pinnedHubUrl: () -> String? = { null },
     private val allowCleartext: () -> Boolean = { false },
+    private val expectedServerId: () -> String? = { null },
 ) : HubDirectoryApi, HubSealingKeyApi, DirectorySyncApi, DirectoryPrivacyApi {
 
     private class Reply(val response: HttpResponse, val body: String)
 
     /** One authenticated request with a single refresh-and-retry on 401. */
-    private suspend fun execute(hubUrl: String, send: suspend (base: String, bearer: String?) -> HttpResponse): FlashResult<Reply> {
+    private suspend fun execute(
+        hubUrl: String,
+        publicRequest: Boolean = false,
+        bodyLimit: Int = HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES,
+        send: suspend (base: String, bearer: String?) -> HttpResponse,
+    ): FlashResult<Reply> {
         val pinned = pinnedHubUrl()
         if (pinned != null && !HubUrlPolicy.sameHub(hubUrl, pinned)) {
             return FlashResult.Failure(FlashError.Unknown("This is not the hub this device is enrolled with."))
@@ -260,15 +266,15 @@ public class EnterpriseDirectoryClient(
         val base = HubUrlPolicy.baseUrl(hubUrl)
         var forceRefresh = false
         repeat(2) {
-            val bearer = bearerSource?.bearer(forceRefresh)
-            if (bearerSource != null && bearer == null) {
+            val bearer = if (publicRequest) null else bearerSource?.bearer(forceRefresh)
+            if (!publicRequest && bearerSource != null && bearer == null) {
                 return FlashResult.Failure(FlashError.NetworkUnavailable("This device could not sign in to the organisation hub."))
             }
             val reply = runSuspendCatching {
                 val response = send(base, bearer)
-                Reply(response, response.boundedText(HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES))
+                Reply(response, response.boundedText(bodyLimit))
             }.getOrElse { return FlashResult.Failure(FlashError.NetworkUnavailable("The hub could not be reached.")) }
-            if (reply.response.status == HttpStatusCode.Unauthorized && bearerSource != null && !forceRefresh) {
+            if (!publicRequest && reply.response.status == HttpStatusCode.Unauthorized && bearerSource != null && !forceRefresh) {
                 forceRefresh = true
             } else {
                 return FlashResult.Success(reply)
@@ -510,10 +516,24 @@ public class EnterpriseDirectoryClient(
             refusalMayCarryBody = false,
         ) { Unit }
 
-    override suspend fun fetchHubGroupPolicy(hubUrl: String): FlashResult<HubGroupPolicy> =
-        hubGet(hubUrl, HubContract.PATH_HUB_INFO) { body ->
-            HubRestCodec.decodeOrNull<HubGroupPolicy>(body)
+    override suspend fun fetchHubGroupPolicy(hubUrl: String): FlashResult<HubGroupPolicy> = withContext(ioDispatcher) {
+        val expected = expectedServerId()
+        val reply = when (val result = execute(hubUrl, publicRequest = true, bodyLimit = HubContract.MAX_REST_BODY_BYTES) { base, _ ->
+            httpClient.get("$base${HubContract.PATH_HUB_INFO}")
+        }) {
+            is FlashResult.Failure -> return@withContext result
+            is FlashResult.Success -> result.value
         }
+        val advertised = HubRestCodec.decodeOrNull<com.transfer.flash.core.hubprotocol.rest.HubInfo>(reply.body)
+        if (reply.response.status != HttpStatusCode.OK || advertised == null || expectedServerId() != expected ||
+            (expected != null && !advertised.serverId.equals(expected, ignoreCase = true))
+        ) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("Could not verify the Hub group policy."))
+        }
+        val policy = HubRestCodec.decodeOrNull<HubGroupPolicy>(reply.body)
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Could not read the Hub group policy."))
+        FlashResult.Success(policy)
+    }
 
     override suspend fun fetchDirectorySync(
         hubUrl: String,

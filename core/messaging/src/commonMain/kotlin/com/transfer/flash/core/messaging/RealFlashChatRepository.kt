@@ -27,6 +27,8 @@ import com.transfer.flash.core.messaging.hub.HubNoticeMath
 import com.transfer.flash.core.messaging.hub.HubWaitReason
 import com.transfer.flash.core.messaging.hub.HubFileMessages
 import com.transfer.flash.core.messaging.hub.HubFileRoute
+import com.transfer.flash.core.messaging.hub.HubInbound
+import com.transfer.flash.core.messaging.hub.HubInboundOutcome
 import com.transfer.flash.core.messaging.hub.HubInboundSink
 import com.transfer.flash.core.messaging.protocol.HubFileFrame
 import com.transfer.flash.core.messaging.hub.HubRelayPort
@@ -215,7 +217,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.produceIn
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.TimeSource.Monotonic
 
 /**
  * Functional wire transport provider for sending frames to a target conversation / peer.
@@ -1035,6 +1039,7 @@ public class RealFlashChatRepository(
 
     /** Serialises [updateGroupLocalPreferences], which reads the stored row before replacing it. */
     private val groupPreferencesLock = Mutex()
+    private val hubGroupCreateLock = Mutex()
 
     /**
      * Wake signal for [drainOutboxLoop], fed by the `outboxDao.observeCount()` collector launched
@@ -1479,7 +1484,36 @@ public class RealFlashChatRepository(
                 }
             }
             scope.launch(ioDispatcher) {
-                hubRelay.deliveries.collect { delivery -> hubBridge.handleInbound(delivery, hubSink) }
+                val incoming = hubRelay.deliveries.produceIn(this)
+                val deferred = LinkedHashMap<Pair<String, String>, HubInbound>()
+                val retryIntervalMs = 5_000L
+                var lastRetry = Monotonic.markNow()
+                while (true) {
+                    if (deferred.isNotEmpty() && lastRetry.elapsedNow().inWholeMilliseconds >= retryIntervalMs) {
+                        val retry = deferred.values.iterator()
+                        while (retry.hasNext()) {
+                            if (hubBridge.handleInbound(retry.next(), hubSink) != HubInboundOutcome.RETRY_LATER) {
+                                retry.remove()
+                            }
+                        }
+                        lastRetry = Monotonic.markNow()
+                    }
+                    val received = if (deferred.isEmpty()) {
+                        incoming.receiveCatching().also { lastRetry = Monotonic.markNow() }
+                    } else {
+                        val waitMs = (retryIntervalMs - lastRetry.elapsedNow().inWholeMilliseconds).coerceAtLeast(1L)
+                        withTimeoutOrNull(waitMs) { incoming.receiveCatching() } ?: continue
+                    }
+                    val item = received.getOrNull() ?: return@launch
+                    val key = item.from to item.id
+                    if (hubBridge.handleInbound(item, hubSink) == HubInboundOutcome.RETRY_LATER) {
+                        deferred[key] = item
+                        // Eviction leaves the delivery unacknowledged for replay from the Hub.
+                        if (deferred.size > 128) deferred.remove(deferred.keys.first())
+                    } else {
+                        deferred.remove(key)
+                    }
+                }
             }
             scope.launch(ioDispatcher) {
                 hubRelay.acks.collect { event -> runCatching { onHubAck(event) } }
@@ -6589,9 +6623,10 @@ public class RealFlashChatRepository(
                 drainOutboxOnce()
             } catch (e: CancellationException) {
                 throw e
-            } catch (t: Throwable) {
-                if (!currentCoroutineContext().isActive) return
-                throw t
+            } catch (e: Exception) {
+                FlashLog.w("CHAT", "Outbox drain failed; retrying: ${e::class.simpleName}")
+                delay(OutboxDrainSchedule.FAILED_DRAIN_WAIT_MS)
+                continue
             }
             if (batchWasFull) {
                 // More rows were already due than one batch holds, so there is nothing to wait for.
@@ -8334,6 +8369,15 @@ public class RealFlashChatRepository(
         memberIds: Set<String>,
         requestId: String,
         departmentId: String,
+    ): FlashResult<String> = hubGroupCreateLock.withLock {
+        createAndCacheHubGroup(name, memberIds, requestId, departmentId)
+    }
+
+    private suspend fun createAndCacheHubGroup(
+        name: String,
+        memberIds: Set<String>,
+        requestId: String,
+        departmentId: String,
     ): FlashResult<String> = withContext(ioDispatcher) {
         val groupName = GroupPolicy.normalizedName(name)
             ?: return@withContext FlashResult.Failure(
@@ -8352,64 +8396,75 @@ public class RealFlashChatRepository(
                 me.departmentId.ifBlank { me.adminOfDepartments.firstOrNull() ?: credentials.department.orEmpty() }
             else -> ""
         }
-        val groupId = requestId
-        val initialMembers = memberIds - localDeviceId - credentials.deviceId
-        when (
-            val created = client.createHubGroupWithMembers(
-                hubUrl = credentials.hubUrl,
-                id = groupId,
-                name = groupName,
-                departmentId = resolvedDept,
-                memberIds = initialMembers,
-            )
-        ) {
+        val confirmed = when (val created = client.createHubGroupWithMembers(
+            hubUrl = credentials.hubUrl,
+            id = requestId,
+            name = groupName,
+            departmentId = resolvedDept,
+            memberIds = memberIds - localDeviceId - credentials.deviceId,
+        )) {
             is FlashResult.Failure -> return@withContext created
-            is FlashResult.Success -> Unit
+            is FlashResult.Success -> created.value
         }
+        if (confirmed.groupId != requestId) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("The Hub returned a different group ID."))
+        }
+        val groupId = confirmed.groupId
         if (trust.getCredentials() != credentials) {
             return@withContext FlashResult.Failure(FlashError.Unknown("Your Hub enrollment changed. Open Hub to refresh your groups."))
         }
         val now = timeSource.nowMs()
-        groupTitleCache[groupId] = groupName
-        runInTransaction {
-            if (conversationDao.get(groupId) != null) return@runInTransaction
-            upsertLegacyGroupConversation(
-                groupId = groupId,
-                title = groupName,
-                sortOrder = now,
-                createdBy = localDeviceId,
-                createdAt = now,
-            )
-            groupMemberDao?.upsert(
-                GroupMemberEntity(
+        try {
+            runInTransaction {
+                if (conversationDao.get(groupId) != null) return@runInTransaction
+                upsertLegacyGroupConversation(
                     groupId = groupId,
-                    deviceId = localDeviceId,
-                    displayName = localDisplayName,
-                    role = "admin",
-                    joinedAt = now,
-                    membershipVersion = 1L,
-                    operationId = "$HUB_ROSTER_OP_PREFIX${1L}",
-                    isActive = true,
-                ),
-            )
-            initialMembers.forEach { memberId ->
+                    title = confirmed.name,
+                    sortOrder = now,
+                    createdBy = localDeviceId,
+                    createdAt = now,
+                )
                 groupMemberDao?.upsert(
                     GroupMemberEntity(
                         groupId = groupId,
-                        deviceId = memberId,
-                        displayName = orgPeerResolver?.displayName(memberId)
-                            ?: peerNameResolver(memberId)?.ifBlank { null }
-                            ?: memberId,
-                        role = "member",
+                        deviceId = localDeviceId,
+                        displayName = localDisplayName,
+                        role = "admin",
                         joinedAt = now,
                         membershipVersion = 1L,
                         operationId = "$HUB_ROSTER_OP_PREFIX${1L}",
                         isActive = true,
                     ),
                 )
+                val confirmedMembers = confirmed.memberDeviceIds.toSet() - localDeviceId - credentials.deviceId
+                confirmedMembers.forEach { memberId ->
+                    groupMemberDao?.upsert(
+                        GroupMemberEntity(
+                            groupId = groupId,
+                            deviceId = memberId,
+                            displayName = orgPeerResolver?.displayName(memberId)
+                                ?: peerNameResolver(memberId)?.ifBlank { null }
+                                ?: memberId,
+                            role = if (memberId in confirmed.adminDeviceIds) "admin" else "member",
+                            joinedAt = now,
+                            membershipVersion = 1L,
+                            operationId = "$HUB_ROSTER_OP_PREFIX${1L}",
+                            isActive = true,
+                        ),
+                    )
+                }
             }
+            trust.linkGroupToHub(groupId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            FlashLog.w("GROUP", "Hub group created but local cache write failed: ${e::class.simpleName}")
+            triggerImmediateOrgSync("group_created_cache_failed")
+            return@withContext FlashResult.Failure(
+                FlashError.Unknown("The Hub created the group. Reopen Hub to sync it to this device."),
+            )
         }
-        trust.linkGroupToHub(groupId)
+        groupTitleCache[groupId] = confirmed.name
         triggerImmediateOrgSync("group_created")
         refreshHubGroupRosters()
         touchConversationRefresh()

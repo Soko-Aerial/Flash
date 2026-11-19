@@ -510,7 +510,7 @@ class RelayDeliveryContractTest {
         val alice = connect(fixture, "alice")
         val bob = connect(fixture, "bob") // carol stays offline
 
-        alice.send(RelayFrame.Send(id = "g1", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = now.get(), payload = "{\"t\":\"hello team\"}", group = "team"))
+        alice.send(RelayFrame.Send(id = "g1", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = now.get(), payload = testGroupEnvelope("team", "alice"), group = "team"))
 
         awaitUntil("bob delivery") { bob.all<RelayFrame.Deliver>().any { it.id == "g1" } }
         assertEquals("team", bob.all<RelayFrame.Deliver>().first().group)

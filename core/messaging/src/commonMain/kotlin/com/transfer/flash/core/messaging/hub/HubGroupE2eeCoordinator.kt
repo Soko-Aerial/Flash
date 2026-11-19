@@ -76,6 +76,7 @@ public enum class GroupKeyAcceptOutcome {
     ACCEPTED_CANONICAL,
     ACCEPTED_DECRYPT_ONLY,
     DUPLICATE,
+    DEFERRED_ROSTER,
     REJECTED_UNAUTHORIZED,
     REJECTED_STALE_ROSTER,
     REJECTED_CONFLICT,
@@ -297,7 +298,6 @@ public class HubGroupE2eeCoordinator(
         currentRosterVersion: Long?,
     ): GroupKeyAcceptOutcome = lock.withLock {
         ensureLoadedLocked()
-        if (!senderAllowedInGroup) return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
         if (dist.creatorDeviceId != fromDeviceId) return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
         if (localDeviceId !in dist.memberDeviceIds || fromDeviceId !in dist.memberDeviceIds) {
             return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
@@ -306,9 +306,11 @@ public class HubGroupE2eeCoordinator(
             return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
         }
         if (currentRosterVersion != null && dist.rosterVersion > currentRosterVersion) {
-            // An ordinary member cannot claim a roster version ahead of the Hub's authoritative roster.
-            return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
+            // The local roster can lag behind a legitimate sender. Wait for the authoritative
+            // version before deciding whether that sender was allowed to distribute the key.
+            return@withLock GroupKeyAcceptOutcome.DEFERRED_ROSTER
         }
+        if (!senderAllowedInGroup) return@withLock GroupKeyAcceptOutcome.REJECTED_UNAUTHORIZED
 
         val list = keysByGroup.getOrPut(dist.groupId) { ArrayList() }
         val validKeys = list.filter { it.epoch in 1L..GroupRelaySealing.MAX_VALID_EPOCH }

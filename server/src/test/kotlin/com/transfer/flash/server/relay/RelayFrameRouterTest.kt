@@ -640,7 +640,7 @@ class RelayFrameRouterTest {
         val directory = rig.router.directory!!
         directory.addMemberToGroup("grp-dev", "alice", isOrgAdmin = true)
 
-        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(id = "g1", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = 1L, payload = "{\"t\":1}", group = "grp-dev")))
+        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(id = "g1", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = 1L, payload = testGroupEnvelope("grp-dev", "alice"), group = "grp-dev")))
 
         val deliver = bobWs.nextOf<RelayFrame.Deliver>()
         assertEquals("alice", deliver.from)
@@ -869,7 +869,8 @@ class RelayFrameRouterTest {
         val direct = RelayFrame.Send(to = "bob", id = "direct", type = HubContract.GROUP_FRAME_TYPE, sentAt = 1L, payload = "group message")
         val fanout = direct.copy(to = "", id = "fanout", group = "grp-dev")
         val legacy = direct.copy(to = "charlie", id = "legacy", type = HubContract.LEGACY_GROUP_FRAME_TYPE)
-        for (message in listOf(direct, fanout, legacy)) {
+        val invalidEnvelope = direct.copy(id = "invalid-envelope", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE)
+        for (message in listOf(direct, fanout, legacy, invalidEnvelope)) {
             rig.router.processFrame(alice, RelayFrameCodec.encode(message))
             val ack = sender.nextOf<RelayFrame.Ack>()
             assertEquals(AckStatus.REJECTED, ack.status)
@@ -880,6 +881,8 @@ class RelayFrameRouterTest {
 
         store.enqueue(MailboxMessage("alice", "bob", "old", HubContract.GROUP_FRAME_TYPE, "previously queued", 1L))
         assertEquals(0, rig.router.drainMailboxForDevice(bob))
+        assertEquals(0, store.pendingCount("bob"))
+        assertEquals(QueueEvent.DROPPED, sender.nextOf<RelayFrame.QueueState>().state)
         assertEquals(emptyList(), recipient.drainNow())
 
         rig.router.broadcastGroupPolicyChanged()
@@ -893,4 +896,13 @@ class RelayFrameRouterTest {
             delay(10)
         }
     }
+}
+
+/** A transport-shaped fixture. These router tests do not open the encrypted payload. */
+internal fun testGroupEnvelope(group: String, sender: String, cipherBytes: Int = 48): String {
+    val encoder = java.util.Base64.getUrlEncoder().withoutPadding()
+    fun encode(text: String) = encoder.encodeToString(text.encodeToByteArray())
+    fun bytes(size: Int) = encoder.encodeToString(ByteArray(size))
+    return listOf("1", encode(group), "1", encode("key"), encode(sender), encode("GROUP"),
+        bytes(12), bytes(cipherBytes), bytes(64)).joinToString(".")
 }

@@ -84,6 +84,28 @@ class HubSealingKeyManagerTest {
     }
 
     @Test
+    fun aLockedVaultKeepsTheExistingKeyAndRetriesAfterUnlock() = runTest {
+        val key = HubSealingKeyPair.generate()
+        store.save(key)
+        var locked = true
+        val vault = object : HubSealingKeyStore by store {
+            override suspend fun load(): HubSealingKeyPair? {
+                check(!locked) { "vault locked" }
+                return store.load()
+            }
+        }
+        val manager = manager(vault)
+        assertFalse(manager.ensurePublished().done)
+        assertEquals(HubSealingKeyState.STORAGE_FAILED, manager.state.value)
+        assertTrue(api.published.isEmpty())
+        assertContentEquals(key.publicKeyEncoded, store.load()!!.publicKeyEncoded)
+
+        locked = false
+        assertTrue(manager.ensurePublished().done)
+        assertEquals(Base64.encode(key.publicKeyEncoded), api.published.single().first)
+    }
+
+    @Test
     fun aKeyTheHubRetiredIsReplacedByANewOneAndNeverSentAgain() = runTest {
         val m = manager()
         m.ensurePublished()

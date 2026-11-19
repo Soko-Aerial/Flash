@@ -60,8 +60,8 @@ class RelayByteBudgetTest {
     /** The next [n] acks the hub wrote (the session's writer runs on its own coroutine, so a read right after `processFrame` can be early). */
     private suspend fun FakeWebSocketSession.acks(n: Int): List<RelayFrame.Ack> = List(n) { nextOf<RelayFrame.Ack>() }
 
-    private fun groupSend(id: String, bytes: Int) =
-        RelayFrameCodec.encode(RelayFrame.Send(id = id, type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = 1L, payload = "x".repeat(bytes), group = "grp-big"))
+    private fun groupSend(id: String, bytes: Int, sender: String = "alice") =
+        RelayFrameCodec.encode(RelayFrame.Send(id = id, type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = 1L, payload = testGroupEnvelope("grp-big", sender, cipherBytes = bytes * 3 / 4 - 52), group = "grp-big"))
 
     @Test
     fun aGroupFloodWithinTheFrameLimitIsRefusedByTheByteLimit() = runBlocking<Unit> {
@@ -121,7 +121,7 @@ class RelayByteBudgetTest {
 
         r.processFrame(alice, groupSend("a1", 60_000))
         r.processFrame(alice, groupSend("a2", 60_000))
-        r.processFrame(m1, groupSend("b1", 60_000))
+        r.processFrame(m1, groupSend("b1", 60_000, "m1"))
 
         assertEquals(AckStatus.REJECTED, aliceWs.acks(2).last().status)
         assertEquals(AckStatus.QUEUED, m1Ws.acks(1).single().status, "a neighbour's flood does not spend my budget")

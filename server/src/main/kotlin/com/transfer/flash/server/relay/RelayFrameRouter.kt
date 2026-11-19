@@ -11,6 +11,7 @@ import com.transfer.flash.core.hubprotocol.relay.QueueEvent
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
 import com.transfer.flash.core.hubprotocol.relay.RelayFrameCodec
 import com.transfer.flash.core.hubprotocol.relay.RelayLimits
+import com.transfer.flash.core.security.enterprise.GroupRelaySealing
 import com.transfer.flash.server.auth.RevocationService
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.mailbox.EnqueueResult
@@ -235,20 +236,29 @@ public class RelayFrameRouter(
         }
         if (rejectGroupPolicy(origin, send, send.to)) return
         if (!withinByteBudget(origin, send, send.to, copies = 1)) return
-        if (send.type == HubContract.GROUP_FRAME_TYPE && groupE2eeMode() == HubContract.GROUP_E2EE_HUB_INSPECTABLE) {
+        if (isReadableGroupFrame(send.type, send.group) &&
+            groupE2eeMode() == HubContract.GROUP_E2EE_HUB_INSPECTABLE
+        ) {
             auditInspectableGroupFrame(origin.deviceId, target = send.to, send = send)
         }
         val kind = routeOne(origin.deviceId, send.to, send.id, send.type, send.sentAt, send.payload, group = null)
         offerFrame(origin, ackFor(kind, send.id, send.to))
     }
 
-    private fun blocksGroupContent(type: String, group: String?): Boolean =
-        groupE2eeMode() != HubContract.GROUP_E2EE_HUB_INSPECTABLE &&
-            type != HubContract.GROUP_SEALED_ENVELOPE_TYPE &&
+    private fun isReadableGroupFrame(type: String, group: String?): Boolean =
+        type != HubContract.GROUP_SEALED_ENVELOPE_TYPE &&
             (group != null || type == HubContract.GROUP_FRAME_TYPE || type == HubContract.LEGACY_GROUP_FRAME_TYPE)
 
+    private fun blocksGroupContent(type: String, group: String?): Boolean =
+        groupE2eeMode() != HubContract.GROUP_E2EE_HUB_INSPECTABLE && isReadableGroupFrame(type, group)
+
+    private fun malformedGroupEnvelope(type: String, group: String?, origin: String, payload: String): Boolean =
+        type == HubContract.GROUP_SEALED_ENVELOPE_TYPE && !GroupRelaySealing.matchesRelayEnvelope(payload, origin, group)
+
     private fun rejectGroupPolicy(origin: RelaySession, send: RelayFrame.Send, target: String): Boolean {
-        if (!blocksGroupContent(send.type, send.group)) return false
+        if (!blocksGroupContent(send.type, send.group) &&
+            !malformedGroupEnvelope(send.type, send.group, origin.deviceId, send.payload)
+        ) return false
         metrics.inc(RelayMetrics.MESSAGES, 1, "outcome" to "rejected")
         offerFrame(
             origin,
@@ -623,7 +633,14 @@ public class RelayFrameRouter(
             // A page of only quarantined rows (the fetch gave up skipping) is not the end: ask again, the marked rows are excluded now.
             if (page.isEmpty() && fetched.quarantined.isEmpty()) break
             for (row in page) {
-                if (blocksGroupContent(row.type, row.group) || !mailboxQueue.mayReplay(row)) {
+                if (blocksGroupContent(row.type, row.group) ||
+                    malformedGroupEnvelope(row.type, row.group, row.origin, row.payload)
+                ) {
+                    if (mailboxQueue.dropForPolicy(row)) notifyDropped(row.origin, row.target, row.msgId)
+                    session.cursor = row.seq
+                    continue
+                }
+                if (!mailboxQueue.mayReplay(row)) {
                     session.cursor = row.seq
                     continue
                 }

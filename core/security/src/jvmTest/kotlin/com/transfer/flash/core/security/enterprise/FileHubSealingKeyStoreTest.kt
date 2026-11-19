@@ -16,6 +16,7 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermission
+import kotlin.test.assertFailsWith
 
 /** ADR-126: the desktop sealing key at rest, with the REAL vault construction (sealed key file) on every OS. */
 class FileHubSealingKeyStoreTest {
@@ -47,14 +48,15 @@ class FileHubSealingKeyStoreTest {
     }
 
     @Test
-    fun aTamperedFileReadsAsNoKeyNeverAsJunk() = runBlocking {
+    fun aTamperedKeyRemainsOnDiskAsAnUnreadableKey() = runBlocking {
         val s = store()
         s.save(HubSealingKeyPair.generate())
         val f = File(tmp.root, "hub/sealing.key")
         val b = f.readBytes()
         b[b.size / 2] = (b[b.size / 2].toInt() xor 0x5A).toByte()
         f.writeBytes(b)
-        assertNull(s.load())
+        assertFailsWith<Exception> { s.load() }
+        assertArrayEquals(b, f.readBytes())
     }
 
     @Test
@@ -62,7 +64,8 @@ class FileHubSealingKeyStoreTest {
         store(tmp.newFolder("a")).save(HubSealingKeyPair.generate())
         val moved = File(tmp.newFolder("b"), "hub/sealing.key").also { it.parentFile.mkdirs() }
         File(tmp.root, "a/hub/sealing.key").copyTo(moved)
-        assertNull(FileHubSealingKeyStore(moved, vault(File(tmp.root, "b"))).load())
+        assertFailsWith<Exception> { FileHubSealingKeyStore(moved, vault(File(tmp.root, "b"))).load() }
+        assertTrue(moved.exists())
     }
 
     @Test

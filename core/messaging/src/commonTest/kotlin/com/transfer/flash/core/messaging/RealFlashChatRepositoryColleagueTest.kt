@@ -1845,6 +1845,8 @@ class RealFlashChatRepositoryColleagueTest {
                         visibility = "LISTED",
                         joinMode = "REQUEST_APPROVAL",
                         memberCount = memberIds.size + 1,
+                        memberDeviceIds = (memberIds + localDeviceId).toList(),
+                        adminDeviceIds = listOf(localDeviceId),
                     ),
                 )
             }
