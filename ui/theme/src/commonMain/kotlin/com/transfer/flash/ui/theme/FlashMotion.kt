@@ -133,57 +133,75 @@ class FlashMotion internal constructor(
     fun screenExit(): ExitTransition = screenPushExit()
 
     /** Push (a screen opening on top): incoming rides in from the trailing edge. */
-    fun screenPushEnter(): EnterTransition {
+    fun screenPushEnter(): EnterTransition = screenPushEnter(isRtl = false)
+
+    fun screenPushEnter(isRtl: Boolean): EnterTransition {
         if (reduceMotion) {
             return EnterTransition.None
         }
+        val sign = if (isRtl) -1f else 1f
         return fadeIn(tween(slowMillis, easing = Decelerate)) +
-            slideInHorizontally(tween(slowMillis, easing = Standard)) { w -> (w * ScreenSlide).toInt() }
+            slideInHorizontally(tween(slowMillis, easing = Standard)) { w -> (w * ScreenSlide * sign).toInt() }
     }
 
-    fun screenPushExit(): ExitTransition {
+    fun screenPushExit(): ExitTransition = screenPushExit(isRtl = false)
+
+    fun screenPushExit(isRtl: Boolean): ExitTransition {
         if (reduceMotion) {
             return ExitTransition.None
         }
+        val sign = if (isRtl) 1f else -1f
         return fadeOut(tween(slowMillis, easing = Accelerate)) +
-            slideOutHorizontally(tween(slowMillis, easing = Accelerate)) { w -> (-w * ScreenSlide).toInt() }
+            slideOutHorizontally(tween(slowMillis, easing = Accelerate)) { w -> (w * ScreenSlide * sign).toInt() }
     }
 
     /** Pop (a screen closing): the mirror image of [screenPushEnter] / [screenPushExit]. */
-    fun screenPopEnter(): EnterTransition {
+    fun screenPopEnter(): EnterTransition = screenPopEnter(isRtl = false)
+
+    fun screenPopEnter(isRtl: Boolean): EnterTransition {
         if (reduceMotion) {
             return EnterTransition.None
         }
+        val sign = if (isRtl) 1f else -1f
         return fadeIn(tween(slowMillis, easing = Decelerate)) +
-            slideInHorizontally(tween(slowMillis, easing = Standard)) { w -> (-w * ScreenSlide).toInt() }
+            slideInHorizontally(tween(slowMillis, easing = Standard)) { w -> (w * ScreenSlide * sign).toInt() }
     }
 
-    fun screenPopExit(): ExitTransition {
+    fun screenPopExit(): ExitTransition = screenPopExit(isRtl = false)
+
+    fun screenPopExit(isRtl: Boolean): ExitTransition {
         if (reduceMotion) {
             return ExitTransition.None
         }
+        val sign = if (isRtl) -1f else 1f
         return fadeOut(tween(slowMillis, easing = Accelerate)) +
-            slideOutHorizontally(tween(slowMillis, easing = Accelerate)) { w -> (w * ScreenSlide).toInt() }
+            slideOutHorizontally(tween(slowMillis, easing = Accelerate)) { w -> (w * ScreenSlide * sign).toInt() }
     }
 
     /**
      * UI-046 lateral tab hop: a short slide (no page-push depth) so switching tabs reads like a
      * pager rather than opening a new screen. [towardEnd] follows the sign of the tab-index delta.
      */
-    fun tabEnter(towardEnd: Boolean): EnterTransition {
+    fun tabEnter(towardEnd: Boolean): EnterTransition = tabEnter(towardEnd = towardEnd, isRtl = false)
+
+    fun tabEnter(towardEnd: Boolean, isRtl: Boolean): EnterTransition {
         if (reduceMotion) {
             return EnterTransition.None
         }
-        val sign = if (towardEnd) 1f else -1f
+        val baseSign = if (towardEnd) 1f else -1f
+        val sign = if (isRtl) -baseSign else baseSign
         return fadeIn(tween(normalMillis, easing = Decelerate)) +
             slideInHorizontally(tween(normalMillis, easing = Standard)) { w -> (w * TabSlide * sign).toInt() }
     }
 
-    fun tabExit(towardEnd: Boolean): ExitTransition {
+    fun tabExit(towardEnd: Boolean): ExitTransition = tabExit(towardEnd = towardEnd, isRtl = false)
+
+    fun tabExit(towardEnd: Boolean, isRtl: Boolean): ExitTransition {
         if (reduceMotion) {
             return ExitTransition.None
         }
-        val sign = if (towardEnd) -1f else 1f
+        val baseSign = if (towardEnd) -1f else 1f
+        val sign = if (isRtl) -baseSign else baseSign
         return fadeOut(tween(fastMillis, easing = Accelerate)) +
             slideOutHorizontally(tween(normalMillis, easing = Accelerate)) { w -> (w * TabSlide * sign).toInt() }
     }

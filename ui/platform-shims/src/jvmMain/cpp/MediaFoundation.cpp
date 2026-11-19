@@ -80,6 +80,7 @@ struct Player {
     ComPtr<ID3D11Texture2D> staging;
     UINT width = 0;
     UINT height = 0;
+    double pendingSeekSeconds = -1.0;
 
     ~Player() { if (engine) engine->Shutdown(); }
 
@@ -189,11 +190,21 @@ __declspec(dllexport) Player* flash_video_open(const wchar_t* path, HRESULT* res
 }
 
 __declspec(dllexport) HRESULT flash_video_control(Player* player, BOOL playing, BOOL muted, double seekSeconds) {
-    if (!player) return E_POINTER;
+    if (!player || !player->engine) return E_POINTER;
     auto& engine = player->engine;
     if (seekSeconds >= 0) {
-        const HRESULT result = engine->SetCurrentTime(seekSeconds);
-        if (FAILED(result)) return result;
+        if (engine->GetReadyState() < MF_MEDIA_ENGINE_READY_HAVE_METADATA) {
+            player->pendingSeekSeconds = seekSeconds;
+        } else {
+            const HRESULT result = engine->SetCurrentTime(seekSeconds);
+            if (result == MF_E_INVALIDREQUEST) {
+                player->pendingSeekSeconds = seekSeconds;
+            } else if (FAILED(result)) {
+                return result;
+            } else {
+                player->pendingSeekSeconds = -1.0;
+            }
+        }
     }
     HRESULT result = engine->SetMuted(muted);
     if (FAILED(result)) return result;
@@ -201,7 +212,7 @@ __declspec(dllexport) HRESULT flash_video_control(Player* player, BOOL playing, 
 }
 
 __declspec(dllexport) HRESULT flash_video_poll(Player* player, PlaybackStatus* status, std::uint8_t* pixels, int capacity) {
-    if (!player || !status || !pixels) return E_POINTER;
+    if (!player || !player->engine || !player->context || !status || !pixels) return E_POINTER;
     auto& engine = player->engine;
     ComPtr<IMFMediaError> error;
     if (SUCCEEDED(engine->GetError(error.GetAddressOf())) && error && error->GetErrorCode() != MF_MEDIA_ENGINE_ERR_NOERROR) {
@@ -210,9 +221,21 @@ __declspec(dllexport) HRESULT flash_video_poll(Player* player, PlaybackStatus* s
     }
     const auto ready = engine->GetReadyState();
     if (ready >= MF_MEDIA_ENGINE_READY_HAVE_METADATA && !engine->HasVideo()) return MF_E_INVALIDMEDIATYPE;
+    if (ready >= MF_MEDIA_ENGINE_READY_HAVE_METADATA && player->pendingSeekSeconds >= 0.0) {
+        const double target = player->pendingSeekSeconds;
+        player->pendingSeekSeconds = -1.0;
+        const HRESULT seekResult = engine->SetCurrentTime(target);
+        if (seekResult == MF_E_INVALIDREQUEST) {
+            player->pendingSeekSeconds = target;
+        } else if (FAILED(seekResult)) {
+            return seekResult;
+        }
+    }
+    const bool hasPendingSeek = player->pendingSeekSeconds >= 0.0;
     *status = {
-        milliseconds(engine->GetDuration()), milliseconds(engine->GetCurrentTime()),
-        (engine->IsEnded() ? 1u : 0u) | (engine->IsSeeking() || ready < MF_MEDIA_ENGINE_READY_HAVE_CURRENT_DATA ? 2u : 0u),
+        milliseconds(engine->GetDuration()),
+        milliseconds(hasPendingSeek ? player->pendingSeekSeconds : engine->GetCurrentTime()),
+        (engine->IsEnded() ? 1u : 0u) | ((hasPendingSeek || engine->IsSeeking() || ready < MF_MEDIA_ENGINE_READY_HAVE_CURRENT_DATA) ? 2u : 0u),
         0, 0,
     };
     LONGLONG pts;

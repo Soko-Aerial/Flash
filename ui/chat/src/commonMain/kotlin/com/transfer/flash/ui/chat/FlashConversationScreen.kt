@@ -51,6 +51,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -540,9 +541,11 @@ fun FlashConversationScreen(
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     var selectedMessageIds by remember { mutableStateOf(emptySet<String>()) }
     var showAttachmentSheet by remember { mutableStateOf(false) }
-    var mediaViewerVisible by remember { mutableStateOf(false) }
-    var mediaViewerItems by remember { mutableStateOf(emptyList<FlashMediaViewerItem>()) }
-    var mediaViewerStartIndex by remember { mutableStateOf(0) }
+    var mediaViewerVisible by rememberSaveable { mutableStateOf(false) }
+    var mediaViewerItems by rememberSaveable(stateSaver = FlashMediaViewerItemsSaver) {
+        mutableStateOf(emptyList())
+    }
+    var mediaViewerStartIndex by rememberSaveable { mutableStateOf(0) }
 
     // UI-029: group member sheet. The roster is derived from the live header (member initials +
     // online count), not from sample data — the older "demo roster" comment here was stale.

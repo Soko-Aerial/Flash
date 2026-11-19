@@ -45,12 +45,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -273,8 +277,9 @@ fun FlashMediaViewer(
      * Fallback opener for a video page [Int]. Playback itself is in-app (badge starts the
      * embedded player); this fires only from the player's error banner ("open externally"),
      * which is currently the only playback path on platforms without an in-app surface.
+     * Null hides the "Open in system player" button when no external opener is provided.
      */
-    onPlayVideo: (Int) -> Unit = {},
+    onPlayVideo: ((Int) -> Unit)? = null,
     showActions: Boolean = true,
 ) {
     if (items.isEmpty()) return
@@ -293,11 +298,59 @@ fun FlashMediaViewer(
     val currentIndex = pagerState.currentPage
     val currentItem = items[currentIndex]
     val videoSource = currentItem.image.uri?.takeIf { currentItem.image.isVideo && it.isNotBlank() }
-    var initialVideoPending by remember { mutableStateOf(initialPlayVideo) }
+    var initialVideoPending by rememberSaveable { mutableStateOf(initialPlayVideo) }
+    var savedVideoPage by rememberSaveable { mutableIntStateOf(-1) }
+    var savedVideoId by rememberSaveable { mutableStateOf("") }
+    var savedVideoStarted by rememberSaveable { mutableStateOf(false) }
+    var savedVideoPlaying by rememberSaveable { mutableStateOf(false) }
+    var savedVideoPositionMs by rememberSaveable { mutableLongStateOf(0L) }
+    var savedVideoCompleted by rememberSaveable { mutableStateOf(false) }
+    var savedVideoMuted by rememberSaveable { mutableStateOf(false) }
+
     val playback = remember(currentIndex, currentItem.image.id, videoSource) {
-        videoSource?.let { FlashVideoPlayback(initialVideoPending && currentIndex == initialIndex) }
+        videoSource?.let {
+            val restoreSaved = savedVideoPage == currentIndex && savedVideoId == currentItem.image.id
+            if (restoreSaved) {
+                FlashVideoPlayback(
+                    autoPlay = savedVideoPlaying,
+                    initialStarted = savedVideoStarted,
+                    initialPositionMs = savedVideoPositionMs,
+                    initialCompleted = savedVideoCompleted,
+                    initialMuted = savedVideoMuted,
+                )
+            } else {
+                val startNow = initialVideoPending && currentIndex == initialIndex
+                FlashVideoPlayback(
+                    autoPlay = startNow,
+                    initialStarted = startNow,
+                    initialPositionMs = 0L,
+                    initialCompleted = false,
+                    initialMuted = savedVideoMuted,
+                )
+            }
+        }
     }
     LaunchedEffect(Unit) { initialVideoPending = false }
+    LaunchedEffect(currentIndex, currentItem.image.id, playback) {
+        if (playback == null) return@LaunchedEffect
+        snapshotFlow {
+            listOf(
+                playback.started,
+                playback.playing,
+                playback.positionMs,
+                playback.completed,
+                playback.isMuted,
+            )
+        }.collect {
+            savedVideoPage = currentIndex
+            savedVideoId = currentItem.image.id
+            savedVideoStarted = playback.started
+            savedVideoPlaying = playback.playing
+            savedVideoPositionMs = playback.positionMs
+            savedVideoCompleted = playback.completed
+            savedVideoMuted = playback.isMuted
+        }
+    }
     var chromeVisible by remember(currentIndex) { mutableStateOf(true) }
     val chromeEffective = if (playback?.started == true) {
         FlashVideoPlayerMath.showTopBar(playback.error, chromeVisible, playback.chromeMayHide)
@@ -466,7 +519,20 @@ fun FlashMediaViewer(
                     )
                 }
                 Spacer(modifier = Modifier.weight(1f))
-                Spacer(modifier = Modifier.size(FlashDimensions.minTouchTarget))
+                if (playback != null && playback.error == null) {
+                    FlashIconButtonChrome(
+                        icon = FlashIcons.Speaker,
+                        tint = if (playback.isMuted) {
+                            colors.mediaViewerChromeText.copy(alpha = 0.45f)
+                        } else {
+                            colors.mediaViewerChromeText
+                        },
+                        contentDescription = if (playback.isMuted) "Unmute video" else "Mute video",
+                        onClick = playback::toggleMute,
+                    )
+                } else {
+                    Spacer(modifier = Modifier.size(FlashDimensions.minTouchTarget))
+                }
             }
         }
 
@@ -536,7 +602,7 @@ fun FlashMediaViewer(
         if (playbackError != null) {
             FlashMediaPlaybackError(
                 message = playbackError,
-                onOpenExternally = { onPlayVideo(currentIndex) },
+                onOpenExternally = onPlayVideo?.let { opener -> { opener(currentIndex) } },
                 modifier = Modifier.align(playbackAlignment)
                     .padding(horizontal = if (isDesktopChatPlatform && pageCount > 1) 68.dp else FlashSpacing.space16),
             )
@@ -753,8 +819,8 @@ private fun FlashMediaPage(
                         val pressedCount = event.changes.count { it.pressed }
                         if (pressedCount == 0) break
 
-                        if (pressedCount >= 2) {
-                            // Claim 1: pinch owns until all pointers up.
+                        if (pressedCount >= 2 && !item.image.isVideo) {
+                            // Claim 1: pinch owns until all pointers up (images only; video surfaces do not zoom).
                             claimedPinch = true
                             claimedPan = false
                             claimedDismiss = false
@@ -999,3 +1065,46 @@ private fun FlashMediaViewerPreview() {
         )
     }
 }
+
+internal val FlashMediaViewerItemsSaver = listSaver<List<FlashMediaViewerItem>, Any?>(
+    save = { items ->
+        buildList(items.size * 11) {
+            for (item in items) {
+                val img = item.image
+                add(img.id)
+                add(img.uri)
+                add(img.thumbUri)
+                add(img.width)
+                add(img.height)
+                add(img.mimeType)
+                add(img.caption)
+                add(img.seedColor)
+                add(img.isVideo)
+                add(item.senderName)
+                add(item.timeLabel)
+            }
+        }
+    },
+    restore = { raw ->
+        val stride = 11
+        val count = raw.size / stride
+        List(count) { i ->
+            val offset = i * stride
+            FlashMediaViewerItem(
+                image = FlashImageAttachmentUi(
+                    id = raw[offset] as? String ?: "",
+                    uri = raw[offset + 1] as? String,
+                    thumbUri = raw[offset + 2] as? String,
+                    width = (raw[offset + 3] as? Number)?.toInt() ?: 0,
+                    height = (raw[offset + 4] as? Number)?.toInt() ?: 0,
+                    mimeType = raw[offset + 5] as? String ?: "image/jpeg",
+                    caption = raw[offset + 6] as? String,
+                    seedColor = (raw[offset + 7] as? Number)?.toLong() ?: 0xFF2A2D36L,
+                    isVideo = raw[offset + 8] as? Boolean ?: false,
+                ),
+                senderName = raw[offset + 9] as? String ?: "",
+                timeLabel = raw[offset + 10] as? String ?: "",
+            )
+        }
+    },
+)

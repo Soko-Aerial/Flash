@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -499,7 +500,32 @@ internal fun FlashCallDockButton(
     )
 
     Column(
-        modifier = modifier,
+        modifier = modifier
+            .defaultMinSize(
+                minWidth = FlashDimensions.minTouchTarget,
+                minHeight = FlashDimensions.minTouchTarget,
+            )
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                enabled = enabled,
+            ) {
+                haptic(if (destructive) FlashHaptic.Reject else FlashHaptic.Tick)
+                if (gesture == DockGesture.Spin && !reduce) {
+                    scope.launch {
+                        turns.animateTo(
+                            turns.targetValue + 180f,
+                            spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessLow),
+                        )
+                    }
+                }
+                onClick()
+            }
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = description
+                if (!enabled) disabled()
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // OPT-O03-18: the circle fills its weighted slot minus [slotInset], capped at BUTTON_SIZE. A `slotInset` of 0
@@ -534,28 +560,7 @@ internal fun FlashCallDockButton(
                     .flashPressScale(interaction)
                     .graphicsLayer { alpha = if (enabled) 1f else DISABLED_ALPHA }
                     .clip(CircleShape)
-                    .background(background)
-                    .clickable(
-                        interactionSource = interaction,
-                        indication = null,
-                        enabled = enabled,
-                    ) {
-                        haptic(if (destructive) FlashHaptic.Reject else FlashHaptic.Tick)
-                        if (gesture == DockGesture.Spin && !reduce) {
-                            scope.launch {
-                                turns.animateTo(
-                                    turns.targetValue + 180f,
-                                    spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessLow),
-                                )
-                            }
-                        }
-                        onClick()
-                    }
-                    .semantics {
-                        role = Role.Button
-                        contentDescription = description
-                        if (!enabled) disabled()
-                    },
+                    .background(background),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashIcon(

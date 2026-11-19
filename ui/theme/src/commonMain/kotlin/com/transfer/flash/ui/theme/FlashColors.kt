@@ -161,7 +161,7 @@ data class FlashColors(
             textOnAccent = FlashPalette.white,
             textLink = FlashPalette.pulse600,
             textError = FlashPalette.error600,
-            textSuccess = FlashPalette.success500,
+            textSuccess = FlashPalette.success700,
             backgroundApp = FlashPalette.graphite50,
             backgroundChat = FlashPalette.graphite100,
             backgroundSurface = FlashPalette.white,
@@ -205,7 +205,7 @@ data class FlashColors(
             ),
             statusOnline = FlashPalette.success500,
             statusOffline = FlashPalette.graphite500,
-            statusTransfer = FlashPalette.spark500,
+            statusTransfer = FlashPalette.spark700,
         )
 
         fun dark(): FlashColors = FlashColors(

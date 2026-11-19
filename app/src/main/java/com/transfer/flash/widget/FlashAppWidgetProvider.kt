@@ -77,7 +77,7 @@ class FlashAppWidgetProvider : AppWidgetProvider() {
         private const val REQUEST_CODE_OPEN_SEND = 1
 
         internal fun widgetDestinationAction(action: String?): String = when (action) {
-            ACTION_WIDGET_SEND -> "NearbyDevices"
+            ACTION_WIDGET_SEND -> "SendFilePicker"
             else -> "ChatList"
         }
 

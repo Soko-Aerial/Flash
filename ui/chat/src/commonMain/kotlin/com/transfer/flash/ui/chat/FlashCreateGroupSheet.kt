@@ -13,11 +13,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +46,7 @@ import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** One selectable trusted peer in the create-group sheet. */
@@ -64,9 +67,13 @@ public data class FlashCreateGroupPeerUi(
 public object FlashCreateGroupMath {
     public const val MAX_MEMBERS: Int = GroupPolicy.MAX_MEMBERS_V2
     public const val MAX_REMOTE_MEMBERS: Int = MAX_MEMBERS - 1
+    public const val MAX_TITLE_LENGTH: Int = 80
 
     public fun normalizedTitle(name: String): String? =
-        name.trim().takeIf { it.isNotEmpty() && it.length <= 80 }
+        name.trim().takeIf { it.isNotEmpty() && it.length <= MAX_TITLE_LENGTH }
+
+    public fun isTitleTooLong(name: String): Boolean =
+        name.trim().length > MAX_TITLE_LENGTH
 
     public fun canCreate(name: String, selectedPeers: Set<String>): Boolean =
         normalizedTitle(name) != null &&
@@ -113,6 +120,15 @@ public fun FlashCreateGroupSheet(
     var createOnHub by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var creatingGroup by remember { mutableStateOf(false) }
+    var syncSubmitting by remember { mutableStateOf(false) }
+    LaunchedEffect(syncSubmitting) {
+        if (syncSubmitting) {
+            delay(600L)
+            syncSubmitting = false
+        }
+    }
+    val submissionLocked = creatingGroup || syncSubmitting
+    val titleTooLong = FlashCreateGroupMath.isTitleTooLong(title)
     val requestId = rememberSaveable(FlashCreateGroupMath.normalizedTitle(title), selected) { UuidIdGenerator.newId() }
     val canCreate = if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
         FlashCreateGroupMath.normalizedTitle(title) != null
@@ -120,7 +136,7 @@ public fun FlashCreateGroupSheet(
         FlashCreateGroupMath.canCreate(title, selected)
     }
     FlashSheetHost(
-        onDismiss = { if (!creatingGroup) onDismiss() },
+        onDismiss = { if (!submissionLocked) onDismiss() },
         containerColor = colors.backgroundSurface,
         modifier = modifier,
     ) {
@@ -146,7 +162,7 @@ public fun FlashCreateGroupSheet(
                         .background(colors.composerInputBackground)
                         .border(
                             width = FlashDimensions.borderHairline,
-                            color = colors.borderDefault,
+                            color = if (titleTooLong) colors.textError else colors.borderDefault,
                             shape = FlashShapes.composerInput,
                         )
                         .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
@@ -154,7 +170,7 @@ public fun FlashCreateGroupSheet(
                 ) {
                     BasicTextField(
                         value = title,
-                        enabled = !creatingGroup,
+                        enabled = !submissionLocked,
                         onValueChange = { title = it },
                         modifier = Modifier
                             .weight(1f)
@@ -177,9 +193,9 @@ public fun FlashCreateGroupSheet(
                     if (title.isNotEmpty()) {
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
+                                .size(FlashDimensions.minTouchTarget)
                                 .clip(CircleShape)
-                                .clickable(enabled = !creatingGroup) { title = "" }
+                                .clickable(enabled = !submissionLocked) { title = "" }
                                 .semantics { role = Role.Button; contentDescription = "Clear group name" },
                             contentAlignment = Alignment.Center,
                         ) {
@@ -192,13 +208,20 @@ public fun FlashCreateGroupSheet(
                         }
                     }
                 }
+                if (titleTooLong) {
+                    FlashText(
+                        text = "Group name must be ${FlashCreateGroupMath.MAX_TITLE_LENGTH} characters or fewer (${title.trim().length}/${FlashCreateGroupMath.MAX_TITLE_LENGTH})",
+                        style = typography.captionDefault,
+                        color = colors.textError,
+                    )
+                }
             }
 
             if (canCreateHubGroup && onCreateHubGroup != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(enabled = !creatingGroup) { createOnHub = !createOnHub }
+                        .clickable(enabled = !submissionLocked) { createOnHub = !createOnHub }
                         .padding(vertical = FlashSpacing.space4),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -216,7 +239,7 @@ public fun FlashCreateGroupSheet(
                     }
                     androidx.compose.material3.Switch(
                         checked = createOnHub,
-                        enabled = !creatingGroup,
+                        enabled = !submissionLocked,
                         onCheckedChange = { createOnHub = it },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = colors.onAccentFill,
@@ -230,7 +253,7 @@ public fun FlashCreateGroupSheet(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable(enabled = !creatingGroup) { linkToHub = !linkToHub }
+                        .clickable(enabled = !submissionLocked) { linkToHub = !linkToHub }
                         .padding(vertical = FlashSpacing.space4),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -248,7 +271,7 @@ public fun FlashCreateGroupSheet(
                     }
                     androidx.compose.material3.Switch(
                         checked = linkToHub,
-                        enabled = !creatingGroup,
+                        enabled = !submissionLocked,
                         onCheckedChange = { linkToHub = it },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = colors.onAccentFill,
@@ -280,7 +303,7 @@ public fun FlashCreateGroupSheet(
                                 .heightIn(min = FlashDimensions.minTouchTarget)
                                 .clip(FlashShapes.chip)
                                 .background(colors.accentFill)
-                                .clickable(enabled = !creatingGroup, onClick = onFindDevicesClick)
+                                .clickable(enabled = !submissionLocked, onClick = onFindDevicesClick)
                                 .semantics { role = Role.Button; contentDescription = "Find devices" },
                             contentAlignment = Alignment.Center,
                         ) {
@@ -305,13 +328,15 @@ public fun FlashCreateGroupSheet(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = FlashDimensions.minTouchTarget)
-                                .clickable(
-                                    enabled = !creatingGroup && (isSelected || FlashCreateGroupMath.selectionAllowed(selected.size)),
-                                ) {
-                                    selected = if (isSelected) selected - peer.id else selected + peer.id
-                                }
-                                .padding(vertical = FlashSpacing.space4)
-                                .semantics { role = Role.Checkbox },
+                                .toggleable(
+                                    value = isSelected,
+                                    enabled = !submissionLocked && (isSelected || FlashCreateGroupMath.selectionAllowed(selected.size)),
+                                    role = Role.Checkbox,
+                                    onValueChange = { checked ->
+                                        selected = if (checked) selected + peer.id else selected - peer.id
+                                    },
+                                )
+                                .padding(vertical = FlashSpacing.space4),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                         ) {
@@ -337,7 +362,7 @@ public fun FlashCreateGroupSheet(
                             if (isSelected) {
                                 FlashIcon(
                                     icon = FlashIcons.Check,
-                                    contentDescription = "Selected",
+                                    contentDescription = null,
                                     tint = colors.accentFill,
                                 )
                             }
@@ -351,13 +376,13 @@ public fun FlashCreateGroupSheet(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                androidx.compose.material3.TextButton(onClick = onDismiss, enabled = !creatingGroup) {
+                androidx.compose.material3.TextButton(onClick = onDismiss, enabled = !submissionLocked) {
                     Text("Cancel", color = colors.textSecondary)
                 }
                 androidx.compose.material3.TextButton(
-                    enabled = canCreate && !creatingGroup,
+                    enabled = canCreate && !submissionLocked,
                     onClick = {
-                        if (creatingGroup) return@TextButton
+                        if (submissionLocked) return@TextButton
                         FlashCreateGroupMath.normalizedTitle(title)?.let { normalized ->
                             if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
                                 creatingGroup = true
@@ -381,16 +406,18 @@ public fun FlashCreateGroupSheet(
                                     }
                                 }
                             } else if (onCreateWithHub != null) {
+                                syncSubmitting = true
                                 onCreateWithHub(normalized, selected, allowPersonalHubLink && linkToHub)
                             } else {
+                                syncSubmitting = true
                                 onCreate(normalized, selected)
                             }
                         }
                     },
                 ) {
                     Text(
-                        if (creatingGroup) "Creating..." else "Create",
-                        color = if (canCreate && !creatingGroup) colors.textLink else colors.textTertiary,
+                        if (submissionLocked) "Creating..." else "Create",
+                        color = if (canCreate && !submissionLocked) colors.textLink else colors.textTertiary,
                     )
                 }
             }

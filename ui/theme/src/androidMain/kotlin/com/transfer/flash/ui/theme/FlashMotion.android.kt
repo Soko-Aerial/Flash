@@ -1,21 +1,40 @@
 package com.transfer.flash.ui.theme
 
 import android.content.Context
+import android.database.ContentObserver
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 
 @Composable
 internal actual fun isReduceMotionOnPlatform(): Boolean {
     val context = LocalContext.current
-    // `remember(context)` is not decoration: the pre-KMP `rememberFlashMotion()` cached the
-    // query per context, and two Settings + AccessibilityManager reads per recomposition would
-    // be a real regression. Keeping the cache here — rather than in commonMain — means the
-    // desktop `actual` does not pay for a slot it never needs.
-    return remember(context) { FlashMotion.isReduceMotionEnabled(context) }
+    var reduceMotion by remember(context) { mutableStateOf(FlashMotion.isReduceMotionEnabled(context)) }
+    DisposableEffect(context) {
+        val resolver = context.contentResolver
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                reduceMotion = FlashMotion.isReduceMotionEnabled(context)
+            }
+        }
+        runCatching {
+            val uri = Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)
+            if (uri != null) resolver.registerContentObserver(uri, false, observer)
+        }
+        onDispose {
+            runCatching { resolver.unregisterContentObserver(observer) }
+        }
+    }
+    return reduceMotion
 }
 
 /**

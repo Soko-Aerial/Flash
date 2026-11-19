@@ -602,16 +602,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun parseWebInvite(uri: Uri?): String? {
-        if (uri?.scheme != "https" || uri.port != -1) return null
-        val links = com.transfer.flash.core.common.protocol.InviteAppLink
-        val host = when (uri.path) {
-            links.GROUP_PATH -> BuildConfig.INVITE_LINK_HOST
-            links.ENROLL_PATH -> BuildConfig.HUB_INVITE_LINK_HOST
-            else -> return null
-        }
-        return links.unwrap(uri.toString(), host)
-    }
+    private fun parseWebInvite(uri: Uri?): String? =
+        parseWebInviteUri(uri?.toString(), BuildConfig.INVITE_LINK_HOST, BuildConfig.HUB_INVITE_LINK_HOST)
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
@@ -1415,7 +1407,7 @@ private fun FlashShell(
         derivedStateOf { chatListState.selectionMode }
     }
 
-    var selectedChatConversationId by remember { mutableStateOf<String?>(null) }
+    var selectedChatConversationId by rememberSaveable { mutableStateOf<String?>(null) }
 
     // Bug 7: the shell mirrors the open conversation into the notification manager so it
     // can suppress notifications for the thread being read right now (and clear that
@@ -4907,6 +4899,25 @@ private fun SweepState.toNearbyScan(): NearbyNetworkScan = when (this) {
             SweepRefusal.RATE_LIMITED -> NearbyScanBlock.TOO_SOON
         },
     )
+}
+
+/**
+ * Parses an incoming HTTPS web invite URI (including optional custom port) against the configured
+ * invite hosts, delegating scheme/path/fragment/origin checks to [InviteAppLink.unwrap].
+ */
+internal fun parseWebInviteUri(
+    uriString: String?,
+    groupHost: String,
+    enrollHost: String,
+): String? {
+    val raw = uriString ?: return null
+    val links = com.transfer.flash.core.common.protocol.InviteAppLink
+    val expectedHost = when {
+        raw.contains("${links.GROUP_PATH}#") -> groupHost
+        raw.contains("${links.ENROLL_PATH}#") -> enrollHost
+        else -> return null
+    }
+    return links.unwrap(raw, expectedHost)
 }
 
 internal object LaunchEntryPolicy {

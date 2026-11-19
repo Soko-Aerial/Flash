@@ -168,13 +168,15 @@ internal fun videoFitFor(presenting: Boolean): CallVideoFit = if (presenting) Ca
  */
 internal fun groupVideoShareRects(count: Int, width: Int, height: Int, gap: Int): List<TileRect> {
     if (count <= 0) return emptyList()
-    if (count == 1) return listOf(TileRect(0, 0, width, height))
+    val safeWidth = width.coerceAtLeast(0)
+    val safeHeight = height.coerceAtLeast(0)
+    if (count == 1) return listOf(TileRect(0, 0, safeWidth, safeHeight))
     val others = count - 1
-    val stageHeight = ((height - gap) * STAGE_FRACTION).toInt()
-    val rowHeight = (height - gap - stageHeight).coerceAtLeast(0)
+    val stageHeight = ((safeHeight - gap) * STAGE_FRACTION).toInt().coerceAtLeast(0)
+    val rowHeight = (safeHeight - gap - stageHeight).coerceAtLeast(0)
     val out = ArrayList<TileRect>(count)
-    out += TileRect(0, 0, width, stageHeight)
-    val tileWidth = (width - gap * (others - 1)) / others
+    out += TileRect(0, 0, safeWidth, stageHeight)
+    val tileWidth = ((safeWidth - gap * (others - 1)) / others).coerceAtLeast(0)
     repeat(others) { i -> out += TileRect(i * (tileWidth + gap), stageHeight + gap, tileWidth, rowHeight) }
     return out
 }
@@ -357,12 +359,12 @@ internal fun FlashSharePicker(
             )
         }
         val sources = loaded
+        // FlashCallPanel already wraps its body in verticalScroll; keep this container non-scrolling
+        // so Android nested scroll does not trap vertical gestures.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .widthIn(max = 480.dp)
-                .heightIn(max = 320.dp)
-                .verticalScroll(rememberScrollState()),
+                .widthIn(max = 480.dp),
         ) {
             when {
                 sources == null -> FlashText(

@@ -268,11 +268,15 @@ public fun FlashCallScreen(
                 }
 
                 val shareNotice = state.shareNotice
-                if (shareNotice != null && !ended) {
+                var shareNoticeDismissed by remember(state.callId, shareNotice) { mutableStateOf(false) }
+                if (shareNotice != null && !shareNoticeDismissed && !ended) {
                     // ADR-102: why a share stopped or did not start, once.
                     FlashCallMessagePill(
                         text = CallShareText.notice(shareNotice, sharePresenterName(state), SHARE_NOTICE_DEFAULT_CAP),
-                        onDismiss = { share?.onDismissNotice?.invoke() },
+                        onDismiss = {
+                            shareNoticeDismissed = true
+                            share?.onDismissNotice?.invoke()
+                        },
                     )
                     Spacer(Modifier.height(FlashSpacing.space12))
                 }
@@ -372,19 +376,25 @@ internal fun reactionSenderName(state: FlashCallUiState, senderId: String): Stri
 @Composable
 private fun FlashCallPictureInPicture(state: FlashCallUiState, session: FlashCallMedia?, isVideoActive: Boolean) {
     val colors = FlashTheme.colors
+    val fit = videoFitFor(state.presenterId != null)
     Box(
-        modifier = Modifier.fillMaxSize().background(if (isVideoActive) Color.Black else colors.backgroundApp),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(if (isVideoActive) Color.Black else colors.backgroundApp)
+            .semantics {
+                contentDescription = "Picture-in-picture call with ${state.peerName}"
+            },
         contentAlignment = Alignment.Center,
     ) {
         if (isVideoActive && !state.isGroup && !state.dataSaver && !state.peerCameraOff) {
             val remoteTrack = rememberVideoStreamTrack(session?.remoteVideoStreamTrack)
-            FlashCallVideoSurface(track = remoteTrack, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+            FlashCallVideoSurface(track = remoteTrack, fit = fit, modifier = Modifier.fillMaxSize())
         } else if (isVideoActive && state.isGroup && !state.dataSaver) {
             val remoteTracks = rememberRemoteVideoTracks(session?.remoteVideoTracks)
             val mainPeerId = groupVideoMainPeer(state)
             val mainTrack = mainPeerId?.let { remoteTracks[it] }
             if (mainTrack != null) {
-                FlashCallVideoSurface(track = mainTrack, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+                FlashCallVideoSurface(track = mainTrack, fit = fit, modifier = Modifier.fillMaxSize())
             } else {
                 FlashAvatar(initials = state.peerName.take(2), seed = state.peerId, size = 64.dp)
             }

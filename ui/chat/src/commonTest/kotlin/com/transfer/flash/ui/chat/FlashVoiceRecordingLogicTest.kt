@@ -195,4 +195,28 @@ class FlashVoiceRecordingLogicTest {
         // Shorter recordings render everything available
         assertEquals(listOf(1, 2, 3), FlashVoiceRecordingMath.stripSamples(listOf(1, 2, 3)))
     }
+
+    @Test
+    fun `rtl layout flips horizontal slide-to-cancel direction`() {
+        assertEquals(
+            FlashHoldSlideTarget.Cancel,
+            FlashVoiceRecordingMath.resolveHoldSlide(
+                dx = 110f,
+                dy = 0f,
+                cancelThresholdPx = FlashVoiceRecordingMath.CANCEL_SLIDE_DP,
+                lockThresholdPx = FlashVoiceRecordingMath.LOCK_SLIDE_DP,
+                isRtl = true,
+            ),
+        )
+        assertEquals(
+            FlashHoldSlideTarget.Stay,
+            FlashVoiceRecordingMath.resolveHoldSlide(
+                dx = -110f,
+                dy = 0f,
+                cancelThresholdPx = FlashVoiceRecordingMath.CANCEL_SLIDE_DP,
+                lockThresholdPx = FlashVoiceRecordingMath.LOCK_SLIDE_DP,
+                isRtl = true,
+            ),
+        )
+    }
 }

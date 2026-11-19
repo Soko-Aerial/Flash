@@ -90,6 +90,14 @@ class FlashDarkPaletteTest {
         contrastGuard(light.accentPrimary, light.chatBgIncoming, 3f)
     }
 
+    @Test
+    fun `light textSuccess and statusTransfer meet 4_5 to 1 WCAG AA on light surfaces`() {
+        contrastGuard(light.textSuccess, light.backgroundSurface, 4.5f)
+        contrastGuard(light.textSuccess, light.backgroundApp, 4.5f)
+        contrastGuard(light.statusTransfer, light.backgroundSurface, 4.5f)
+        contrastGuard(light.statusTransfer, light.backgroundApp, 4.5f)
+    }
+
     private fun contrastGuard(foreground: Color, background: Color, minimum: Float) {
         val ratio = contrastRatio(foreground, background)
         assertTrue(

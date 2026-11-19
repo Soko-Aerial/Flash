@@ -151,7 +151,7 @@ fun FlashIcon(
 ) {
     FlashIcon(
         painter = painterResource(icon.drawableRes),
-        contentDescription = contentDescription ?: icon.contentDescription,
+        contentDescription = contentDescription,
         modifier = modifier,
         state = state,
         tint = tint,

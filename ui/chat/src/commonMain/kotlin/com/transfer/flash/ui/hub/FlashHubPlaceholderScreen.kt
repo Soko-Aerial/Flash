@@ -39,9 +39,9 @@ object FlashHubPlaceholderCopy {
 }
 
 /**
- * UI-058: stand-in for the Hub tab while the data phases (H6+) are not built. It is honest about
- * being empty and keeps the one action the old chat-list top bar carried for enrolled devices,
- * so moving "Browse department groups" out of that bar (H5) does not strand it.
+ * UI-058: legacy stand-in for the Hub tab kept only for source/API compatibility after
+ * [FlashHubWorkspace] shipped. Production hosts route to [FlashHubWorkspace]; do not wire
+ * new callers to this screen (enforced by `FlashPrototypeIsolationTest`).
  *
  * Supports pull-to-refresh and manual refresh via [onRefresh].
  * [onBrowseGroups] null hides the action.

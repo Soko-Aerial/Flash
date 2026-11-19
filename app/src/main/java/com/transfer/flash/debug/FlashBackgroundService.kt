@@ -128,7 +128,13 @@ class FlashBackgroundService : Service() {
             if (transferId != null) {
                 scope.launch {
                     val transfers = DiscoveryEngineHolder.currentTransfers()
+                    val row = transfers?.activeTransfers?.value?.find { it.id.value == transferId }
+                    if (!shouldCancelTransferFromNotification(row?.groupOrigin)) {
+                        Log.w(TAG, "Refusing to cancel group file $transferId from a notification")
+                        return@launch
+                    }
                     transfers?.cancelTransfer(FlashTransferId(transferId))
+                    FlashNotificationManager.clearTransfer(applicationContext, transferId)
                 }
             }
         }
@@ -522,6 +528,9 @@ class FlashBackgroundService : Service() {
 
         const val ACTION_CANCEL_TRANSFER = "com.transfer.flash.action.CANCEL_TRANSFER"
         const val EXTRA_TRANSFER_ID = "extra_transfer_id"
+
+        internal fun shouldCancelTransferFromNotification(groupOrigin: Boolean?): Boolean =
+            groupOrigin != true
 
         private val promotionRefused = AtomicBoolean(false)
         private val timeoutCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

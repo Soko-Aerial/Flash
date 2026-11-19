@@ -60,6 +60,7 @@ public actual fun FlashVideoSurface(
 
     val playbackChanged by rememberUpdatedState(onPlaybackStateChanged)
     val reportError by rememberUpdatedState(onError)
+    val reportSeekHandled by rememberUpdatedState(onSeekHandled)
     val reportFirstFrame by rememberUpdatedState(onFirstFrame)
     val reportBuffering by rememberUpdatedState(onBuffering)
     val reportHostPaused by rememberUpdatedState(onHostPaused)
@@ -129,7 +130,7 @@ public actual fun FlashVideoSurface(
             player.volume = if (isMuted) 0f else 1f
             if (seekToMs != null) {
                 player.seekTo(seekToMs)
-                onSeekHandled()
+                reportSeekHandled()
             }
             player.playWhenReady = isPlaying && lifecycle?.currentState?.isAtLeast(Lifecycle.State.STARTED) != false
         }
@@ -146,14 +147,23 @@ public actual fun FlashVideoSurface(
         AndroidView(
             factory = { viewContext -> TextureView(viewContext).also(player::setVideoTextureView) },
             modifier = modifier.layout { measurable, constraints ->
-                val width = constraints.maxWidth
-                val height = constraints.maxHeight
-                val ratio = aspectRatio
-                val fittedWidth = if (ratio > 0f) minOf(width, (height * ratio).roundToInt()) else width
-                val fittedHeight = if (ratio > 0f) minOf(height, (width / ratio).roundToInt()) else height
-                val surface = measurable.measure(Constraints.fixed(fittedWidth, fittedHeight))
-                layout(width, height) {
-                    surface.placeRelative((width - fittedWidth) / 2, (height - fittedHeight) / 2)
+                if (!constraints.hasBoundedWidth || !constraints.hasBoundedHeight) {
+                    val fallbackWidth = if (constraints.hasBoundedWidth) constraints.maxWidth else constraints.minWidth.coerceAtLeast(1)
+                    val fallbackHeight = if (constraints.hasBoundedHeight) constraints.maxHeight else constraints.minHeight.coerceAtLeast(1)
+                    val surface = measurable.measure(constraints.copy(minWidth = 0, minHeight = 0, maxWidth = fallbackWidth, maxHeight = fallbackHeight))
+                    layout(surface.width, surface.height) {
+                        surface.placeRelative(0, 0)
+                    }
+                } else {
+                    val width = constraints.maxWidth
+                    val height = constraints.maxHeight
+                    val ratio = aspectRatio
+                    val fittedWidth = (if (ratio > 0f) minOf(width, (height * ratio).roundToInt()) else width).coerceIn(0, width)
+                    val fittedHeight = (if (ratio > 0f) minOf(height, (width / ratio).roundToInt()) else height).coerceIn(0, height)
+                    val surface = measurable.measure(Constraints.fixed(fittedWidth, fittedHeight))
+                    layout(width, height) {
+                        surface.placeRelative((width - fittedWidth) / 2, (height - fittedHeight) / 2)
+                    }
                 }
             },
             update = { it.keepScreenOn = isPlaying },

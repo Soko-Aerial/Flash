@@ -57,7 +57,7 @@ fun FlashVideoPlayer(
     modifier: Modifier = Modifier,
     autoPlay: Boolean = true,
     onClose: () -> Unit = {},
-    onOpenExternally: () -> Unit = {},
+    onOpenExternally: (() -> Unit)? = null,
 ) {
     val items = remember(uri) {
         listOf(FlashMediaViewerItem(FlashImageAttachmentUi(uri, uri, isVideo = true), "", ""))
@@ -67,30 +67,40 @@ fun FlashVideoPlayer(
         initialIndex = 0,
         initialPlayVideo = autoPlay,
         onDismiss = onClose,
-        onPlayVideo = { onOpenExternally() },
+        onPlayVideo = onOpenExternally?.let { opener -> { _ -> opener() } },
         showActions = false,
         modifier = modifier,
     )
 }
 
 @Stable
-internal class FlashVideoPlayback(autoPlay: Boolean) {
-    var started by mutableStateOf(autoPlay)
+internal class FlashVideoPlayback(
+    autoPlay: Boolean,
+    initialStarted: Boolean = autoPlay,
+    initialPositionMs: Long = 0L,
+    initialCompleted: Boolean = false,
+    initialMuted: Boolean = false,
+) {
+    var started by mutableStateOf(initialStarted)
         private set
-    var playing by mutableStateOf(autoPlay)
+    var playing by mutableStateOf(autoPlay && !initialCompleted)
         private set
     var firstFrame by mutableStateOf(false)
-    var buffering by mutableStateOf(autoPlay)
-    var completed by mutableStateOf(false)
+    var buffering by mutableStateOf(initialStarted && autoPlay && !initialCompleted)
+    var completed by mutableStateOf(initialCompleted)
+        private set
+    var isMuted by mutableStateOf(initialMuted)
         private set
     var error by mutableStateOf<String?>(null)
         private set
     var durationMs by mutableLongStateOf(0)
         private set
-    var positionMs by mutableLongStateOf(0)
+    var positionMs by mutableLongStateOf(initialPositionMs.coerceAtLeast(0L))
         private set
     var dragPositionMs by mutableStateOf<Long?>(null)
-    var seekToMs by mutableStateOf<Long?>(null)
+    var seekToMs by mutableStateOf<Long?>(
+        initialPositionMs.takeIf { initialStarted && it > 0L },
+    )
 
     val loading: Boolean
         get() = started && playing && (!firstFrame || buffering)
@@ -106,6 +116,10 @@ internal class FlashVideoPlayback(autoPlay: Boolean) {
             positionMs = it
         }
         playing = result.isPlaying
+    }
+
+    fun toggleMute() {
+        isMuted = !isMuted
     }
 
     fun update(duration: Long, position: Long, atEnd: Boolean) {
@@ -158,6 +172,7 @@ internal fun FlashMediaVideoSurface(
     FlashVideoSurface(
         uri = uri,
         isPlaying = playback.playing,
+        isMuted = playback.isMuted,
         seekToMs = playback.seekToMs,
         onPlaybackStateChanged = playback::update,
         onError = playback::fail,
@@ -277,7 +292,7 @@ internal fun FlashMediaTimeline(playback: FlashVideoPlayback) {
 @Composable
 internal fun FlashMediaPlaybackError(
     message: String,
-    onOpenExternally: () -> Unit,
+    onOpenExternally: (() -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
     val foreground = FlashTheme.colors.mediaViewerChromeText
@@ -287,14 +302,16 @@ internal fun FlashMediaPlaybackError(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         FlashText(text = message, color = foreground, style = FlashTheme.typography.bodyEmphasis)
-        Box(
-            modifier = Modifier
-                .sizeIn(minHeight = FlashDimensions.minTouchTarget)
-                .clickable(role = Role.Button, onClick = onOpenExternally)
-                .padding(horizontal = FlashSpacing.space8),
-            contentAlignment = Alignment.Center,
-        ) {
-            FlashText("Open in system player", color = foreground, style = FlashTheme.typography.metadataEmphasis)
+        if (onOpenExternally != null) {
+            Box(
+                modifier = Modifier
+                    .sizeIn(minHeight = FlashDimensions.minTouchTarget)
+                    .clickable(role = Role.Button, onClick = onOpenExternally)
+                    .padding(horizontal = FlashSpacing.space8),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText("Open in system player", color = foreground, style = FlashTheme.typography.metadataEmphasis)
+            }
         }
     }
 }

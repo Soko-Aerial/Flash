@@ -165,7 +165,9 @@ public fun main(args: Array<String> = emptyArray()) {
         kotlinx.coroutines.flow.MutableStateFlow(route)
     }
 
-    // Phase 3: Desktop notification manager — native OS balloon dispatch retired in favor of rich custom toast window
+    // Phase 3: Desktop notification manager — native OS balloon / LinuxNotifier D-Bus dispatch
+    // remains intentionally unassigned (`sendNotification = null`) in favor of DesktopTransferToastWindow
+    // while `origin/linux` branch integration is deferred.
     val notificationManager = remember {
         DesktopNotificationManager(
             engine = engine,

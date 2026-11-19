@@ -247,4 +247,42 @@ class AndroidEntryShellWiringTest {
         assertTrue(widgetXml.contains("android:layout_height=\"48dp\""))
         assertTrue(widgetXml.contains("android:padding=\"12dp\""))
     }
+
+    @Test
+    fun `web invite parser supports custom HTTPS ports and rejects cleartext HTTP`() {
+        val links = com.transfer.flash.core.common.protocol.InviteAppLink
+        val rawGroupInvite = "flash://g/2/tok_abc123"
+        val customPortLink = links.wrap("join.example.org:8443", rawGroupInvite)!!
+        assertEquals(
+            rawGroupInvite,
+            parseWebInviteUri(customPortLink, groupHost = "join.example.org:8443", enrollHost = "hub.example.org"),
+        )
+        assertEquals(
+            null,
+            parseWebInviteUri(customPortLink.replace("https://", "http://"), groupHost = "join.example.org:8443", enrollHost = "hub.example.org"),
+        )
+        assertEquals(
+            null,
+            parseWebInviteUri(customPortLink, groupHost = "join.example.org", enrollHost = "hub.example.org"),
+        )
+    }
+
+    @Test
+    fun `widget send routing and broadcast receivers enforce ANR and scope safety`() {
+        assertEquals(
+            "SendFilePicker",
+            com.transfer.flash.widget.FlashAppWidgetProvider.widgetDestinationAction(
+                com.transfer.flash.widget.FlashAppWidgetProvider.ACTION_WIDGET_SEND,
+            ),
+        )
+        assertEquals("ChatList", com.transfer.flash.widget.FlashAppWidgetProvider.widgetDestinationAction(null))
+
+        val callReceiver = repoFile("app/src/main/java/com/transfer/flash/calling/FlashCallActionReceiver.kt")
+        assertFalse(callReceiver.contains("private val scope = CoroutineScope"))
+        assertTrue(callReceiver.contains("scope.cancel()"))
+        assertTrue(callReceiver.contains("withTimeoutOrNull(ACTION_TIMEOUT_MS)"))
+
+        val xferReceiver = repoFile("app/src/main/java/com/transfer/flash/notifications/FlashTransferActionReceiver.kt")
+        assertTrue(xferReceiver.contains("withTimeoutOrNull(ACTION_TIMEOUT_MS)"))
+    }
 }

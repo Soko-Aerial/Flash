@@ -138,18 +138,22 @@ kotlin {
 if (System.getProperty("os.name").startsWith("Windows")) {
     val architecture = if (System.getProperty("os.arch") == "aarch64") "ARM64" else "x64"
     val nativeSource = layout.projectDirectory.dir("src/jvmMain/cpp")
-    val nativeBuild = layout.buildDirectory.dir("windowsMediaFoundation/$architecture")
-    val nativeLibrary = nativeBuild.map { it.file("Release/flash_media_foundation.dll") }
+    // Keep MSBuild's CMakeScratch/.tlog tree under a short path so worktree builds stay below Windows MAX_PATH (260).
+    val nativeBuild = File(
+        System.getProperty("java.io.tmpdir"),
+        "flash-mf-${layout.projectDirectory.asFile.absolutePath.hashCode().toUInt()}/$architecture",
+    )
+    val nativeLibrary = File(nativeBuild, "Release/flash_media_foundation.dll")
     val configureMediaFoundation = tasks.register<Exec>("configureWindowsMediaFoundation") {
         inputs.file(nativeSource.file("CMakeLists.txt"))
-        outputs.file(nativeBuild.map { it.file("CMakeCache.txt") })
-        commandLine("cmake", "-S", nativeSource.asFile, "-B", nativeBuild.get().asFile, "-A", architecture)
+        outputs.file(File(nativeBuild, "CMakeCache.txt"))
+        commandLine("cmake", "-S", nativeSource.asFile, "-B", nativeBuild, "-A", architecture)
     }
     val buildMediaFoundation = tasks.register<Exec>("buildWindowsMediaFoundation") {
         dependsOn(configureMediaFoundation)
         inputs.dir(nativeSource)
         outputs.file(nativeLibrary)
-        commandLine("cmake", "--build", nativeBuild.get().asFile, "--config", "Release")
+        commandLine("cmake", "--build", nativeBuild, "--config", "Release")
     }
     tasks.named<ProcessResources>("jvmProcessResources") {
         from(buildMediaFoundation) { into("com/transfer/flash/ui/shims/win32") }

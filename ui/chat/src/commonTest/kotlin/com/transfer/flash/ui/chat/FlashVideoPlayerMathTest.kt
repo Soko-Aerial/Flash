@@ -120,4 +120,25 @@ class FlashVideoPlayerMathTest {
             ),
         )
     }
+
+    @Test
+    fun `mute state toggles and restored playback seeks to saved position`() {
+        val playback = FlashVideoPlayback(
+            autoPlay = true,
+            initialStarted = true,
+            initialPositionMs = 12_500L,
+            initialCompleted = false,
+            initialMuted = true,
+        )
+        assertEquals(true, playback.started)
+        assertEquals(true, playback.playing)
+        assertEquals(12_500L, playback.positionMs)
+        assertEquals(12_500L, playback.seekToMs)
+        assertEquals(true, playback.isMuted)
+
+        playback.toggleMute()
+        assertEquals(false, playback.isMuted)
+        playback.toggleMute()
+        assertEquals(true, playback.isMuted)
+    }
 }

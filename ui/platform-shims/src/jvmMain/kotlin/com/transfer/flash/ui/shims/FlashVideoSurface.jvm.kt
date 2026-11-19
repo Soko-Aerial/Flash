@@ -12,8 +12,10 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.constrain
 import com.sun.jna.Platform
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CancellationException
@@ -53,6 +55,8 @@ public actual fun FlashVideoSurface(
     var frame by remember(uri) { mutableStateOf<ImageBitmap?>(null) }
 
     LaunchedEffect(uri) {
+        // Only Windows ships an inline Media Foundation backend in this batch; Linux/macOS
+        // truthfully report unavailable so FlashMediaViewer offers "Open in system player".
         if (!Platform.isWindows()) {
             reportError("In-app playback is unavailable on this platform")
             return@LaunchedEffect
@@ -72,7 +76,8 @@ public actual fun FlashVideoSurface(
             var wasEnded = false
             var appliedSeek: Long? = null
             var lastReport = 0L
-            val startedAt = System.nanoTime()
+            var activeLoadingNs = 0L
+            var lastTickNs = System.nanoTime()
             while (isActive) {
                 val requestPlay = playing
                 val requestMute = muted
@@ -102,6 +107,8 @@ public actual fun FlashVideoSurface(
                     }
                 }
                 val now = System.nanoTime()
+                val stepNs = (now - lastTickNs).coerceAtLeast(0L)
+                lastTickNs = now
                 if (!sample.ended) wasEnded = false
                 if (seek == null && !sample.buffering &&
                     (if (sample.ended) !wasEnded else now - lastReport >= 200_000_000L)
@@ -110,9 +117,20 @@ public actual fun FlashVideoSurface(
                     lastReport = now
                     wasEnded = sample.ended
                 }
-                if (!firstFrameReady && now - startedAt >= 15_000_000_000L) {
-                    reportError("Windows did not produce a video frame")
-                    break
+                if (!firstFrameReady) {
+                    if (sample.ended) {
+                        reportError("Windows did not produce a video frame")
+                        break
+                    }
+                    if (requestPlay) {
+                        activeLoadingNs += stepNs
+                        if (activeLoadingNs >= 8_000_000_000L) {
+                            reportError("Windows did not produce a video frame")
+                            break
+                        }
+                    } else {
+                        activeLoadingNs = 0L
+                    }
                 }
                 delay(if (requestPlay || sample.buffering || !firstFrameReady) 16L else 40L)
             }
@@ -149,6 +167,29 @@ public actual fun FlashVideoSurface(
             )
         },
     ) { _, constraints ->
-        layout(constraints.minWidth, constraints.minHeight) {}
+        val size = measureVideoSurfaceSize(
+            constraints = constraints,
+            frameWidth = frame?.width ?: 0,
+            frameHeight = frame?.height ?: 0,
+        )
+        layout(size.width, size.height) {}
     }
+}
+
+internal fun measureVideoSurfaceSize(
+    constraints: Constraints,
+    frameWidth: Int,
+    frameHeight: Int,
+): IntSize {
+    if (constraints.hasFixedWidth && constraints.hasFixedHeight) {
+        return IntSize(constraints.maxWidth, constraints.maxHeight)
+    }
+    val preferred = if (frameWidth > 0 && frameHeight > 0) {
+        IntSize(frameWidth, frameHeight)
+    } else {
+        val fallbackWidth = if (constraints.hasBoundedWidth) constraints.maxWidth else 640
+        val fallbackHeight = if (constraints.hasBoundedHeight) constraints.maxHeight else 360
+        IntSize(fallbackWidth.coerceAtLeast(1), fallbackHeight.coerceAtLeast(1))
+    }
+    return constraints.constrain(preferred)
 }

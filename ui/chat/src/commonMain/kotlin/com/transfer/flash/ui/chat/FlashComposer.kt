@@ -56,7 +56,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -137,6 +139,7 @@ fun FlashComposer(
     val typography = FlashTheme.typography
     val motion = FlashTheme.motion
     val density = androidx.compose.ui.platform.LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
     // OPT-O24-02: an attachment already marked isSending is waiting on its own send, so it must not
     // make the composer sendable again — a second tap would hand it to onSendFile a second time.
     val canSend = (draft.isNotBlank() || stagedAttachments.any { !it.isSending }) && enabled
@@ -494,7 +497,8 @@ fun FlashComposer(
                             if (FlashVoiceRecordingMath.acceptsSlide(recordingPhase, voiceCaptureStarted)) {
                                 val cancelPx = with(density) { FlashVoiceRecordingMath.CANCEL_SLIDE_DP.dp.toPx() }
                                 val lockPx = with(density) { FlashVoiceRecordingMath.LOCK_SLIDE_DP.dp.toPx() }
-                                recordingPhase = when (FlashVoiceRecordingMath.resolveHoldSlide(totalDx, totalDy, cancelPx, lockPx)) {
+                                val isRtl = layoutDirection == LayoutDirection.Rtl
+                                recordingPhase = when (FlashVoiceRecordingMath.resolveHoldSlide(totalDx, totalDy, cancelPx, lockPx, isRtl = isRtl)) {
                                     FlashHoldSlideTarget.Cancel -> FlashRecordingPhase.CancelArmed
                                     FlashHoldSlideTarget.Lock -> FlashRecordingPhase.Locked
                                     FlashHoldSlideTarget.Stay ->

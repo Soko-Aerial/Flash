@@ -56,25 +56,59 @@ internal object DesktopHelpers {
     }
 
     /**
+     * Builds the OS-native command to reveal [file] in its file manager.
+     * On Windows, paths without whitespace pass `/select,<path>` as a single token so Explorer does
+     * not misinterpret a space after the comma; paths with whitespace pass `/select,` and canonical path.
+     */
+    internal fun buildRevealCommand(osName: String, file: File): List<String>? {
+        val os = osName.lowercase()
+        val targetPath = runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+        return when {
+            os.contains("win") -> {
+                if (targetPath.none { it.isWhitespace() }) {
+                    listOf("explorer.exe", "/select,$targetPath")
+                } else {
+                    listOf("explorer.exe", "/select,", targetPath)
+                }
+            }
+            os.contains("mac") -> listOf("open", "-R", targetPath)
+            else -> {
+                val dir = file.parentFile ?: file
+                val dirPath = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+                listOf("xdg-open", dirPath)
+            }
+        }
+    }
+
+    /**
      * Opens the system file manager with [file] selected and highlighted on Windows/macOS,
      * or opens the containing directory on Linux.
      */
     fun revealInFileManager(file: File) {
         if (!file.exists()) return
-        val os = System.getProperty("os.name", "").lowercase()
+        val os = System.getProperty("os.name", "")
+        val command = buildRevealCommand(os, file)
         val success = runCatching {
             when {
-                os.contains("win") -> {
-                    Runtime.getRuntime().exec(arrayOf("explorer.exe", "/select,", file.absolutePath))
-                    true
-                }
-                os.contains("mac") -> {
-                    Runtime.getRuntime().exec(arrayOf("open", "-R", file.absolutePath))
-                    true
+                os.lowercase().contains("win") || os.lowercase().contains("mac") -> {
+                    if (command != null) {
+                        ProcessBuilder(command).start()
+                        true
+                    } else false
                 }
                 else -> {
                     if (Desktop.isDesktopSupported()) {
-                        Desktop.getDesktop().open(file.parentFile ?: file)
+                        runCatching {
+                            Desktop.getDesktop().open(file.parentFile ?: file)
+                            true
+                        }.getOrElse {
+                            if (command != null) {
+                                ProcessBuilder(command).start()
+                                true
+                            } else false
+                        }
+                    } else if (command != null) {
+                        ProcessBuilder(command).start()
                         true
                     } else false
                 }

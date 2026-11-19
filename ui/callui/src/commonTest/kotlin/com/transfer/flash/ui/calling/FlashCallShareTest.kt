@@ -173,6 +173,14 @@ class FlashCallShareTest {
         }
     }
 
+    @Test
+    fun `groupVideoShareRects clamps tile dimensions to non-negative on narrow or zero bounds`() {
+        val narrow = groupVideoShareRects(count = 6, width = 10, height = 10, gap = 8)
+        assertTrue(narrow.all { it.width >= 0 && it.height >= 0 }, narrow.toString())
+        val zero = groupVideoShareRects(count = 3, width = 0, height = 0, gap = 8)
+        assertTrue(zero.all { it.width >= 0 && it.height >= 0 }, zero.toString())
+    }
+
     // ---- when the Share row is offered
 
     @Test

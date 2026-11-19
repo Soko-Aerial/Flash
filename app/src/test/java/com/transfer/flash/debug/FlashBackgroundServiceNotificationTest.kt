@@ -134,4 +134,14 @@ class FlashBackgroundServiceNotificationTest {
         assertTrue(manager.contains("manager.activeNotifications"))
         assertTrue(manager.contains("manager.cancel(tag, notice.id)"))
     }
+
+    @Test
+    fun `background service refuses notification cancel for group origin transfers`() {
+        assertFalse(FlashBackgroundService.shouldCancelTransferFromNotification(true))
+        assertTrue(FlashBackgroundService.shouldCancelTransferFromNotification(false))
+        assertTrue(FlashBackgroundService.shouldCancelTransferFromNotification(null))
+
+        val service = repoFile("app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt")
+        assertTrue(service.contains("shouldCancelTransferFromNotification(row?.groupOrigin)"))
+    }
 }

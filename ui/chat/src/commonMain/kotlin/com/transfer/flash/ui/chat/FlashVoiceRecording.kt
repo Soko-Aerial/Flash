@@ -58,6 +58,7 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -65,6 +66,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
@@ -113,21 +115,29 @@ object FlashVoiceRecordingMath {
     /**
      * Dominant-axis slide resolution for a hold drag.
      *
-     * Leftward displacement ([dx] negative) claims [FlashHoldSlideTarget.Cancel] when it
-     * dominates vertically and passes [cancelThresholdPx]; upward displacement ([dy]
-     * negative) claims [FlashHoldSlideTarget.Lock] when it dominates horizontally and
-     * passes [lockThresholdPx]. Anything else stays.
+     * Displacement toward cancel ([dx] negative in LTR, positive in RTL) claims
+     * [FlashHoldSlideTarget.Cancel] when it dominates vertically and passes [cancelThresholdPx];
+     * upward displacement ([dy] negative) claims [FlashHoldSlideTarget.Lock] when it dominates
+     * horizontally and passes [lockThresholdPx]. Anything else stays.
      */
     fun resolveHoldSlide(
         dx: Float,
         dy: Float,
         cancelThresholdPx: Float,
         lockThresholdPx: Float,
+    ): FlashHoldSlideTarget = resolveHoldSlide(dx, dy, cancelThresholdPx, lockThresholdPx, isRtl = false)
+
+    fun resolveHoldSlide(
+        dx: Float,
+        dy: Float,
+        cancelThresholdPx: Float,
+        lockThresholdPx: Float,
+        isRtl: Boolean,
     ): FlashHoldSlideTarget {
-        val leftward = -dx
+        val towardCancel = if (isRtl) dx else -dx
         val upward = -dy
         return when {
-            leftward >= cancelThresholdPx && abs(leftward) >= abs(upward) -> FlashHoldSlideTarget.Cancel
+            towardCancel >= cancelThresholdPx && abs(towardCancel) >= abs(upward) -> FlashHoldSlideTarget.Cancel
             upward >= lockThresholdPx -> FlashHoldSlideTarget.Lock
             else -> FlashHoldSlideTarget.Stay
         }
@@ -253,10 +263,14 @@ fun FlashMicButton(
 
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
-    val slideX = if (isRecording) (dragOffsetX * 0.45f).coerceIn(-cancelThresholdPx, 0f) else 0f
+    val slideX = if (isRecording) {
+        if (isRtl) (dragOffsetX * 0.45f).coerceIn(0f, cancelThresholdPx)
+        else (dragOffsetX * 0.45f).coerceIn(-cancelThresholdPx, 0f)
+    } else 0f
     val slideY = if (isRecording) (dragOffsetY * 0.45f).coerceIn(-lockThresholdPx, 0f) else 0f
-    val isNearCancel = isRecording && -dragOffsetX >= cancelThresholdPx * 0.75f
+    val isNearCancel = isRecording && (if (isRtl) dragOffsetX else -dragOffsetX) >= cancelThresholdPx * 0.75f
     val isNearLock = isRecording && -dragOffsetY >= lockThresholdPx * 0.75f
 
     // `pressScale` stays an Animatable and is read inside `graphicsLayer` (EXP-013) so the spring
@@ -566,8 +580,13 @@ fun FlashVoiceRecordingBar(
                     }
                 }
             } else {
+                val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
                 FlashText(
-                    text = if (isCancelArmed) "Release to cancel" else "‹ Slide to cancel",
+                    text = when {
+                        isCancelArmed -> "Release to cancel"
+                        isRtl -> "Slide to cancel ›"
+                        else -> "‹ Slide to cancel"
+                    },
                     style = typography.captionDefault,
                     color = if (isCancelArmed) colors.textError else colors.textTertiary,
                     maxLines = 1,

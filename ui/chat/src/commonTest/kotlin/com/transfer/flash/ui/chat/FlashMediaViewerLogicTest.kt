@@ -166,4 +166,45 @@ class FlashMediaViewerLogicTest {
         assertEquals("Jordan Lee", item.senderName)
         assertEquals("2:15 PM", item.timeLabel)
     }
+
+    @Test
+    fun `media viewer items saver round-trips photo and video entries`() {
+        val original = listOf(
+            FlashMediaViewerItem(
+                image = FlashImageAttachmentUi(
+                    id = "p1",
+                    uri = "content://media/1",
+                    thumbUri = "content://thumb/1",
+                    width = 1920,
+                    height = 1080,
+                    mimeType = "image/png",
+                    caption = "Sunset",
+                    seedColor = 0xFF112233L,
+                    isVideo = false,
+                ),
+                senderName = "Ana",
+                timeLabel = "10:00 AM",
+            ),
+            FlashMediaViewerItem(
+                image = FlashImageAttachmentUi(
+                    id = "v1",
+                    uri = "/storage/emulated/0/clip.mp4",
+                    thumbUri = null,
+                    width = 1280,
+                    height = 720,
+                    mimeType = "video/mp4",
+                    caption = null,
+                    seedColor = 0xFF445566L,
+                    isVideo = true,
+                ),
+                senderName = "Ben",
+                timeLabel = "10:05 AM",
+            ),
+        )
+        val scope = androidx.compose.runtime.saveable.SaverScope { true }
+        val saved = with(FlashMediaViewerItemsSaver) { scope.save(original) }
+        assertTrue(saved != null)
+        val restored = FlashMediaViewerItemsSaver.restore(saved!!)
+        assertEquals(original, restored)
+    }
 }

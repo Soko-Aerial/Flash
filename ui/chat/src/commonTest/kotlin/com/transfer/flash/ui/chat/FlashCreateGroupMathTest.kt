@@ -12,6 +12,9 @@ class FlashCreateGroupMathTest {
         assertEquals("Team", FlashCreateGroupMath.normalizedTitle("  Team "))
         assertNull(FlashCreateGroupMath.normalizedTitle("   "))
         assertNull(FlashCreateGroupMath.normalizedTitle("x".repeat(81)))
+        assertFalse(FlashCreateGroupMath.isTitleTooLong("x".repeat(80)))
+        assertFalse(FlashCreateGroupMath.isTitleTooLong("  " + "x".repeat(80) + "  "))
+        assertTrue(FlashCreateGroupMath.isTitleTooLong("x".repeat(81)))
     }
 
     @Test

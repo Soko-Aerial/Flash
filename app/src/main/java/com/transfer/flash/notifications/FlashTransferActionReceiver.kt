@@ -11,14 +11,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Handles notification action button clicks for file transfers (Cancel / Resume / Accept / Decline)
  * via explicit broadcast, ensuring reliable delivery even when the app or background
  * service is not foregrounded.
  *
- * Uses [goAsync] to guarantee Android OS does not kill or freeze the receiver process
- * while the asynchronous repository operations are completing.
+ * Uses [goAsync] with an explicit [ACTION_TIMEOUT_MS] ceiling so cold-start engine initialization
+ * never exceeds Android's ~10s BroadcastReceiver ANR window.
  */
 class FlashTransferActionReceiver : BroadcastReceiver() {
 
@@ -33,51 +34,57 @@ class FlashTransferActionReceiver : BroadcastReceiver() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         scope.launch {
             try {
-                var repo = DiscoveryEngineHolder.currentTransfers()
-                if (repo == null) {
-                    runCatching { DiscoveryEngineHolder.ensureStarted(context.applicationContext) }
-                    repo = DiscoveryEngineHolder.currentTransfers()
-                }
-                if (repo == null) {
-                    // Nothing was done, so nothing is cleared: the notification stays and the button can be pressed again.
-                    Log.w(TAG, "No transfer repository found for $action on $transferId")
-                    return@launch
-                }
-
-                // The notification is cleared AFTER the work, and only if the work did not throw (audit B-10).
-                // A refused result (stale offer, unknown row) means the notification is out of date, so it goes too.
-                val done = runCatching {
-                    when (action) {
-                        ACTION_CANCEL_TRANSFER -> {
-                            val row = repo.activeTransfers.value.find { it.id.value == transferId }
-                            if (row?.groupOrigin == true) {
-                                // A stale button from before the origin cancel left the notification (audit B-04).
-                                Log.w(TAG, "Refusing to cancel group file $transferId from a notification")
-                                return@runCatching false
-                            }
-                            repo.cancelTransfer(FlashTransferId(transferId))
-                            true
-                        }
-                        ACTION_RESUME_TRANSFER -> {
-                            repo.resumeTransfer(FlashTransferId(transferId))
-                            false
-                        }
-                        ACTION_ACCEPT_TRANSFER -> {
-                            repo.acceptIncoming(FlashTransferId(transferId))
-                            true
-                        }
-                        ACTION_DECLINE_TRANSFER -> {
-                            repo.declineIncoming(FlashTransferId(transferId))
-                            true
-                        }
-                        else -> {
-                            Log.w(TAG, "Unknown action: $action")
-                            false
-                        }
+                val appContext = context.applicationContext
+                val completed = withTimeoutOrNull(ACTION_TIMEOUT_MS) {
+                    var repo = DiscoveryEngineHolder.currentTransfers()
+                    if (repo == null) {
+                        runCatching { DiscoveryEngineHolder.ensureStarted(appContext) }
+                        repo = DiscoveryEngineHolder.currentTransfers()
                     }
-                }.onFailure { Log.w(TAG, "Failed to run $action on transfer $transferId; notification kept", it) }
-                if (done.getOrDefault(false)) {
-                    FlashNotificationManager.clearTransfer(context, transferId)
+                    if (repo == null) {
+                        // Nothing was done, so nothing is cleared: the notification stays and the button can be pressed again.
+                        Log.w(TAG, "No transfer repository found for $action on $transferId")
+                        return@withTimeoutOrNull
+                    }
+
+                    // The notification is cleared AFTER the work, and only if the work did not throw (audit B-10).
+                    // A refused result (stale offer, unknown row) means the notification is out of date, so it goes too.
+                    val done = runCatching {
+                        when (action) {
+                            ACTION_CANCEL_TRANSFER -> {
+                                val row = repo.activeTransfers.value.find { it.id.value == transferId }
+                                if (row?.groupOrigin == true) {
+                                    // A stale button from before the origin cancel left the notification (audit B-04).
+                                    Log.w(TAG, "Refusing to cancel group file $transferId from a notification")
+                                    return@runCatching false
+                                }
+                                repo.cancelTransfer(FlashTransferId(transferId))
+                                true
+                            }
+                            ACTION_RESUME_TRANSFER -> {
+                                repo.resumeTransfer(FlashTransferId(transferId))
+                                false
+                            }
+                            ACTION_ACCEPT_TRANSFER -> {
+                                repo.acceptIncoming(FlashTransferId(transferId))
+                                true
+                            }
+                            ACTION_DECLINE_TRANSFER -> {
+                                repo.declineIncoming(FlashTransferId(transferId))
+                                true
+                            }
+                            else -> {
+                                Log.w(TAG, "Unknown action: $action")
+                                false
+                            }
+                        }
+                    }.onFailure { Log.w(TAG, "Failed to run $action on transfer $transferId; notification kept", it) }
+                    if (done.getOrDefault(false)) {
+                        FlashNotificationManager.clearTransfer(appContext, transferId)
+                    }
+                }
+                if (completed == null) {
+                    Log.w(TAG, "Timed out waiting for $action on transfer $transferId before ANR window")
                 }
             } finally {
                 pendingResult.finish()
@@ -88,6 +95,7 @@ class FlashTransferActionReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "XFERACT"
+        internal const val ACTION_TIMEOUT_MS = 8_000L
         const val ACTION_CANCEL_TRANSFER = "com.transfer.flash.action.CANCEL_TRANSFER"
         const val ACTION_RESUME_TRANSFER = "com.transfer.flash.action.RESUME_TRANSFER"
         const val ACTION_ACCEPT_TRANSFER = "com.transfer.flash.action.ACCEPT_TRANSFER"
