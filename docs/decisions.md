@@ -1,5 +1,13 @@
 # Decisions
 
+## ADR-367 — Independent join-link keys, per-leg call ICE resolution, and non-destructive desktop DB recovery
+
+**2026-11-19.** Extends ADR-366 across Hub join links, off-LAN/mixed-route group calling, and desktop/continuity recovery:
+
+1. **Independent join-link key lifecycle and durable tracking:** `HubGroupJoinLinks` seals v3 tokens with a dedicated `join-links.key` (retaining `join-links.prev.key` and `dataSecrets` as `fallbackSecrets`) so rotating `data.key` no longer breaks active v3 join links. Link IDs, optional `maxUses` consumption counters, and per-link/group revocations are persisted in `dir_group_join_links` (preserving reusable 24-hour `OPEN_IN_SCOPE` links when `maxUses` is omitted).
+2. **Per-leg group call ICE resolution and credential renewal:** `CallCoordinator` and `FlashGroupCallSession` resolve `CallIceResolution` (`CallRouteCapabilities.resolveCallIce`) per remote `peerId` rather than passing `groupId`, allowing LAN legs (`IceTransportPolicy.All`) and off-LAN Hub legs (TURN + `mediaPolicy`) to coexist in one group call and refusing invalid off-LAN routes explicitly. `FlashCallSession` and `FlashGroupCallSession` proactively renew TURN credentials at 75% of `ttlSeconds` and issue `iceRestart` offers when configuration changes.
+3. **Non-destructive desktop DB recovery and crash-safe checkpoints:** `ChatDbKeyStore.loadOrMintDeferred()` refuses to overwrite an existing unreadable `db-key.bin`, and `openEncryptedFlashDatabaseWithRecovery` preserves existing files on non-corruption errors, takes a forensic copy and probes a WAL-less copy with `PRAGMA integrity_check` to salvage intact history on WAL-only corruption, and quarantines unrecoverable stores to `.unrecoverable-<stamp>`. `FileContinuityCheckpointStore` persists before memory updates, uses recoverable `.bak` moves instead of pre-deleting targets, and prunes terminal/inactive checkpoints after 30 days or 1,000 entries while protecting active/referenced transfers.
+
 ## ADR-366 — Separate join-link validity from roster updates and scope announcement retries
 
 **2026-11-19.** The directory stores a join-link revision when a group is created. A visibility or join-policy change replaces that revision and invalidates outstanding v2 tokens, even if an operator later restores the previous policy. Routine roster changes preserve the revision. The token remains sealed by the Hub, expires in 24 hours, and resolves for enrolled principals subject to current visibility and join policy. Existing v1 tokens retain the old roster-version check until they expire. Per-link revocation and consumption limits remain separate capabilities.

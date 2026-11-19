@@ -917,6 +917,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-19 — Feature and module review remediation (Batches 1–4) complete on `dev`.** Landed `11e33e40`, `266a79c2`, `84d1c6a1`, `7f08bb1c`, and `9e2123ba` covering lock-free Hub-to-LAN adoption, crash-safe checkpoints and desktop/Android DB recovery, offline `E2EE_REQUIRED` row retirement, independent `join-links.key` with per-link revocation and limits, per-leg mixed-route call ICE and TURN renewal, PTT disconnect/teardown and radio ACK/reconnect recovery, media viewer rotation restoration, desktop WSOLA 1.5x/2x voice speed, accessibility/RTL/contrast fixes, and Android/Desktop host safety. Full verified gate passed 9,320 Gradle tests (9,315 passed, 5 skips), 89 Admin UI tests, `:app:assembleDebug`, and `:app:lintDebug` (0 errors). See [the remediation record](docs/audit/2026-11-19-feature-module-remediation.md), ADR-367, ERROR-1038, and MODREV-01..07.
+
 **2026-11-19 — Feature and module review remediation.** The latest changes address voice capture pause, transfer handoff, desktop database access, Android service lifecycle, Hub authorization and retry behavior, group creation, and vault recovery. See [the remediation record](docs/audit/2026-11-19-feature-module-remediation.md), ADR-366, and the MODREV device checks in the test backlog.
 
 **2026-11-18 — Hub group audit fixes.** ADR-365 records relay encryption policy enforcement, enrollment-scoped policy refresh, atomic and replay-safe group creation, and Hub directory group invite links. Server, shared JVM and UI tests, Android debug APK assembly and desktop compile passed. IFREV-01..06 track the live Hub and installed app checks.

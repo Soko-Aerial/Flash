@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-11-19 — Feature and module review remediation (Batches 1–4)
+
+### Changes
+
+- **Batch 1 (`11e33e40`, `9e2123ba`):** Moved Desktop Hub-to-LAN partial adoption out of `ReceivePipeline.lock`, made `ReceivePipeline.sinkFactory` execution lock-free with clean failure handling, added crash-safe `.bak` checkpoint replacement and 30-day/1,000-entry pruning in `TransferRouteCoordinator`, handled `ResumePlan` rejections in `HubFileBinding`, added atomic sidecar rollback in `EncryptedDatabaseRecovery` and WAL-probe/backup recovery in `JvmFlashDatabaseOpener`, propagated `CancellationException` across core suspend `runCatching` sites, and aligned the 2 stale Android-host keystore tests in `:core:security` with `aa146718`.
+- **Batch 2 (`266a79c2`):** Retired offline readable group mailbox rows immediately on `E2EE_REQUIRED` switch/startup, bounded `HubGroupE2eeCoordinator` key retention (32 keys/group + purge on leave/remove/unlink), added independent `join-links.key` + SQLite `dir_group_join_links` (per-link revocation, `maxUses`, rate limits, Admin UI revoke), handled `AnnouncementNotFoundException` 404s / uncapped preview counts / `departmentId` validation / dept-head management, removed Admin `/metrics` 500-device cap and unbounded `replaceLocks`, enforced 64 KiB default REST body caps, routed departmentless directory lookups via `fetchPeople`, and kept radio attachment refusals active during transient disconnects.
+- **Batch 3 (`84d1c6a1`):** Replaced `groupId` ICE lookup with per-leg `CallRouteCapabilities.resolveCallIce` (`callIceResolver`) for mixed LAN/off-LAN group calls, added mid-call TURN credential renewal and `iceRestart`, wired `FlashPtt.onPeerDisconnected` from Android and Desktop session teardown, fixed PTT capture/playout teardown order and `PttSessionEngine` shutdown `Stop`/`Leave` signaling, ordered `RadioChatEngine` `pendingAcks` registration before transmit, preserved `RadioChatHost` continuity across `swap()`, and added slow background recovery in `RadioGatewayManager`.
+- **Batch 4 (`7f08bb1c`):** Persisted `FlashMediaViewer` open state, playback position, and mute state across Android rotation; wired `isMuted` and nullable external opener; fixed Windows Media Foundation early seek, zero-frame/first-frame edge cases, and unconstrained `0x0` layout; added WSOLA 1x/1.5x/2x voice playback speed on `JvmAudioPlayer`; fixed `FlashIcon` `contentDescription = null`, `FlashCreateGroupSheet` sync double-tap/length/checkbox semantics, RTL gestures/transitions, live Android `ANIMATOR_DURATION_SCALE` observation, and light-mode AA contrast; hardened Android invite custom-port HTTPS parsing, widget Send routing, receiver ANR/scope leaks, and `groupOrigin` notification guard; moved desktop OS registry sync off-thread on change only and fixed Explorer `/select,` spacing; added `FlashPrototypeIsolationTest` and expanded `benchmark` CUJs.
+
+### Verification
+
+- **Admin UI Node suite (`node --no-warnings --test server/admin-ui-tests/*.test.mjs`):** `89 tests, 89 passed, 0 failed, 0 skipped`.
+- **Full Gradle test & build gate (`tools\flash-gradle.cmd ... "-Pkotlin.incremental=false" --no-daemon --max-workers=2`):** `BUILD SUCCESSFUL in 14m 3s`; **1,056 suites, 9,320 tests — 9,315 passed, 0 failed, 5 pre-existing/opt-in skips** (`FileHubSealingKeyStoreTest`, `KeyFileVaultTest`, `FlashHubWorkspaceRenderTest`, `FlashWorkspaceTabsRenderTest`, and `WindowsVideoPlayerTest` without `FLASH_WINDOWS_VIDEO_FIXTURE`), plus `:app:assembleDebug` (all 4 debug APKs), `:ui:hub-competition-claude:compileKotlinJvm`, `:benchmark:compileDebugKotlin`, `:sample:consumer:testDebugUnitTest` (10/10), and `:sample:consumer-granular:compileDebugKotlin`.
+- **Android Lint (`tools\flash-gradle.cmd :app:lintDebug --no-daemon --max-workers=1`):** `BUILD SUCCESSFUL in 3m 50s` — **0 errors**, 171 warnings, 2 hints.
+- **Combined automated total:** **9,409 tests (9,404 passed, 0 failed, 5 skips)**.
+
+### Handoff
+
+See `docs/audit/2026-11-19-feature-module-remediation.md`, `docs/decisions.md` (`ADR-367`), `logs/errors.md` (`ERROR-1038`), and `docs/testing/TEST-BACKLOG.md` (`MODREV-01..07`). No device install or Hub deployment was run in this session.
+
 ## 2026-11-19 — Feature and module review remediation
 
 ### Changes

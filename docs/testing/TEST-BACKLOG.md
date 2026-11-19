@@ -80,6 +80,22 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 - **Source:** [Module review remediation](../audit/2026-11-19-feature-module-remediation.md).
 - **Status: TODO**
 
+### MODREV-06 — Mixed-route group calling, PTT disconnect, and radio reconnect recovery
+
+- **Setup:** Three devices (two on the same LAN, one off-LAN via an enrolled Hub with TURN), a PTT-capable pair, and a paired handheld radio.
+- **Steps:** Start a 3-way group call mixing the LAN peer and off-LAN peer and sustain beyond one TURN credential renewal window. Start a PTT talk/listen session and abruptly disconnect the active peer's Wi-Fi/session. Temporarily take the radio out of range past fast retry exhaustion, then power it back on and retry a message.
+- **Pass:** LAN legs connect via host candidates while off-LAN legs use Hub ICE without `groupId` mismatches, and media survives TURN rotation. Disconnecting a PTT peer frees the listening floor immediately without a 5-second stall and `shutdown()` sends `Stop`/`Leave`. Radio reconnects automatically via slow background probe without duplicate bubbles on retry, and attachments remain refused during transient disconnects.
+- **Source:** [ADR-367](../decisions.md#adr-367--independent-join-link-keys-per-leg-call-ice-resolution-and-non-destructive-desktop-db-recovery).
+- **Status: TODO**
+
+### MODREV-07 — Media viewer rotation, Windows seek/speed, and Android notification/widget entry
+
+- **Setup:** Android phone (portrait/landscape rotation enabled), Windows desktop with an H.264/AAC MP4 video and voice notes, and Flash home-screen widget.
+- **Steps:** Open a video in Android `FlashMediaViewer`, mute it, seek mid-clip, and rotate the device. On Windows, seek immediately on video open, toggle mute, and play a voice note at 1x, 1.5x, and 2x. Tap the Flash widget Send action and tap Cancel on an active group-origin transfer notification vs a 1:1 transfer notification.
+- **Pass:** Android restores the viewer, playback position, and mute state across rotation. Windows seeks cleanly without stalling or killing playback and plays voice notes at 1.5x/2x without pitch shift. Widget Send opens the file picker; notification Cancel refuses group-origin cancellation while cancelling 1:1 transfers within the ANR window.
+- **Source:** [Module review remediation](../audit/2026-11-19-feature-module-remediation.md).
+- **Status: TODO**
+
 
 ### CALL-01 — Calls from the phone hosting the Wi-Fi hotspot (ERROR-079, ADR-054)
 - **Setup:** phone A hosts the hotspot; phone B and a desktop join it.

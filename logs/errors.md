@@ -1,5 +1,13 @@
 # Error Log
 
+## ERROR-1038 — Stale Android keystore test assertions, KSP/Lint combined invocation, and desktop incremental cache
+
+**2026-11-19 · Verifier gate (`9e2123ba`). Status: RESOLVED.**
+
+1. **Stale Android-host keystore tests (`aa146718`):** `FlashTrustStoreTest.unopenableEntry_afterKeyLoss_isDroppedNotReturned` and `AndroidHubSealingKeyStoreTest.aLostWrappingKeyReadsAsNoKey` in `:core:security:testAndroidHostTest` still asserted key deletion / `null` return after `aa146718` intentionally preserved unreadable keys on disk/preferences (matching `FileHubSealingKeyStoreTest` in `jvmTest`). Updated both assertions in `9e2123ba` (`:core:security:testAndroidHostTest` 275/275 passed).
+2. **Stale `:desktop:compileTestKotlinJvm` incremental cache:** Adding `DesktopDatabaseRecoveryTest` calling `testDesktopEngine` hit `Unresolved reference 'testDesktopEngine'` against an older `TestIdentityVaultKt.class` until compiled with `-Pkotlin.incremental=false` (`:desktop:compileTestKotlinJvm` and `:desktop:jvmTest` passed 320/322 with 2 opt-in skips).
+3. **KSP/Lint implicit dependency in combined invocation:** Running `:core:persistence:testAndroidHostTest` (`kspAndroidHostTest`) together with `:app:lintDebug` (`:core:persistence:lintAnalyzeAndroidHostTest`) in one Gradle invocation triggers a Gradle 9.5 implicit-dependency failure on `core/persistence/build/generated/ksp/android/androidHostTest/`. Running `:app:lintDebug` in its own locked command after the test gate avoids the conflict (`BUILD SUCCESSFUL`, 0 errors).
+
 ## ERROR-1035 — Voice pause captured the paused interval
 
 **2026-11-19 · Android and desktop.** The composer changed its timer and waveform state without pausing the platform recorder. The recording could include speech heard during the paused interval. Both recorders now support pause and resume, and the UI updates only after a successful transition. A failed transition discards the capture. Physical microphone acceptance is MODREV-01.
