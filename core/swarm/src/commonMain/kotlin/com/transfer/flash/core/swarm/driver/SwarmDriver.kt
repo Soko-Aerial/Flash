@@ -5,6 +5,7 @@ import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.concurrent.SyncSet
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashProbe
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.swarm.api.FlashSwarm
@@ -1073,12 +1074,12 @@ public class SwarmDriver(
 
     /** Caches the sender's name so a later non-suspending row update can say "Cancelled by Ada" (B-19). */
     private suspend fun rememberOriginName(groupId: String, originId: String) {
-        val name = runCatching { groupContext.memberName(groupId, originId) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
+        val name = runSuspendCatching { groupContext.memberName(groupId, originId) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
         originNames[groupId to originId] = name
     }
 
     private suspend fun rememberGroupTitle(groupId: String) {
-        val title = runCatching { groupContext.groupTitle(groupId) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
+        val title = runSuspendCatching { groupContext.groupTitle(groupId) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
         groupTitles[groupId] = title
     }
 

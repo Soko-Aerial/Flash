@@ -18,6 +18,9 @@ public enum class WholeFileCheck {
 
     /** The receive attempt ended before its verification could be committed. */
     ABANDONED,
+
+    /** The verified bytes could not be published to the destination. */
+    PLACEMENT_FAILED,
 }
 
 /**

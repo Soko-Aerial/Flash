@@ -2084,7 +2084,8 @@ public class RealFlashTransferRepository(
                     if (existing.id.value != transferId) {
                         existing
                     } else if (existing.state == FlashTransferState.Cancelled ||
-                        existing.state == FlashTransferState.Completed
+                        existing.state == FlashTransferState.Completed ||
+                        existing.state == FlashTransferState.Verifying
                     ) {
                         existing
                     } else {
@@ -2255,6 +2256,10 @@ public class RealFlashTransferRepository(
                         }
                         else -> localPath
                     }
+                    if (finalPath == localPath && localPath?.endsWith(".part") == true) {
+                        onIncomingFailed(transferId, "write failed")
+                        return@withLock WholeFileCheck.PLACEMENT_FAILED
+                    }
                     val wonContinuity = routeContinuity?.completeLanTransfer(
                         transferId = transferId,
                         fileId = resolvedFileId,
@@ -2268,7 +2273,7 @@ public class RealFlashTransferRepository(
                     }
                     onIncomingCompleted(transferId, verified = check == WholeFileCheck.MATCH, localPath = finalPath)
                 }
-                WholeFileCheck.ABANDONED -> Unit
+                WholeFileCheck.ABANDONED, WholeFileCheck.PLACEMENT_FAILED -> Unit
                 WholeFileCheck.MISMATCH -> {
                     routeContinuity?.failLanIntegrity(transferId, resolvedFileId)
                     if (!localPath.isNullOrBlank()) {
@@ -2440,8 +2445,8 @@ public class RealFlashTransferRepository(
                 restoreStoredTransfers(activeStore)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
-            } catch (t: Throwable) {
-                runCatching { FlashLog.w("TRANSFER", "restoring stored transfers failed: ${t::class.simpleName}") }
+            } catch (e: Exception) {
+                FlashLog.w("TRANSFER", "Restoring stored transfers failed: ${e::class.simpleName}", e)
             } finally {
                 restoredTransfers.complete(Unit)
             }
@@ -2449,8 +2454,14 @@ public class RealFlashTransferRepository(
                 for (row in rows) {
                     val signature = row.identitySignature()
                     if (persistedIdentity[row.id.value] == signature) continue
-                    persistedIdentity[row.id.value] = signature
-                    runCatching { activeStore.saveIdentity(row.toStored()) }
+                    try {
+                        activeStore.saveIdentity(row.toStored())
+                        persistedIdentity[row.id.value] = signature
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        FlashLog.w("TRANSFER", "Transfer state could not be persisted: ${e::class.simpleName}")
+                    }
                 }
             }
         }

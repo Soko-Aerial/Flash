@@ -386,7 +386,7 @@ public class WsFlashNetwork(
             val actualPort = if (port > 0) port else WsTransferServer.PREFERRED_PORT
             val resolvedPeerDeviceId = peerDeviceId ?: knownEndpoints.entries.firstOrNull { it.value.host == host && it.value.port == actualPort }?.key
 
-            val connection = runCatching {
+            val connection = runSuspendCatching {
                 client.connect(host, actualPort, resolvedPeerDeviceId)
             }.getOrElse { error ->
                 // The dial named a peer and our own TLS check refused the key that answered: the

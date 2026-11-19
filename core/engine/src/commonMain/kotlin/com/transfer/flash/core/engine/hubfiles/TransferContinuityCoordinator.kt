@@ -773,42 +773,35 @@ public class TransferRouteCoordinator(
             return ResumePlan(compatible = true, coveredTargetChunks = emptySet(), verifiedBytes = 0L)
         }
 
-        var tamperDetected = false
-        val validHubChunks = LinkedHashSet<Int>()
-        val cache = HashMap<Int, ByteArray>()
-        for (idx in coveredHubChunks.sorted()) {
-            val offset = layout.plainOffset(idx)
-            val len = layout.plainLength(idx)
-            val bytes = readLanSpan(offset, len) ?: continue
-            if (bytes.size != len) continue
-            if (verifySpanIntegrity != null && !verifySpanIntegrity(offset, bytes)) {
-                tamperDetected = true
-                break
+        var foundReadableSpan = false
+        val seeded = try {
+            transfers.seedDownloadChunksFromVerifiedBytes(request, coveredHubChunks) { _, offset, length ->
+                val bytes = readLanSpan(offset, length)?.takeIf { it.size == length }
+                    ?: return@seedDownloadChunksFromVerifiedBytes null
+                if (verifySpanIntegrity != null && !verifySpanIntegrity(offset, bytes)) {
+                    // Abort before the new bitmap is published. Existing verified chunks are kept.
+                    throw UnverifiedLanSpan()
+                }
+                foundReadableSpan = true
+                bytes
             }
-            validHubChunks.add(idx)
-            cache[idx] = bytes
-        }
-        if (tamperDetected) {
+        } catch (_: UnverifiedLanSpan) {
             return ResumePlan(compatible = false, reason = "tampered_partial_bytes")
         }
-
-        val seeded = transfers.seedDownloadFromVerifiedBytes(
-            request = request,
-            verifiedChunkIndexes = validHubChunks,
-            readChunkPlaintext = { idx, _, _ -> cache[idx] },
-        )
-        if (seeded <= 0 && validHubChunks.isNotEmpty()) {
+        if (seeded.isEmpty() && foundReadableSpan) {
             return ResumePlan(compatible = false, reason = "seed_storage_failed")
         }
 
-        val adoptedSpans = TransferByteAlignment.chunkRanges(validHubChunks, layout.plainChunkBytes, ticket.plainBytes)
+        val adoptedSpans = TransferByteAlignment.chunkRanges(seeded, layout.plainChunkBytes, ticket.plainBytes)
         return ResumePlan(
             compatible = true,
-            coveredTargetChunks = validHubChunks,
+            coveredTargetChunks = seeded,
             verifiedBytes = adoptedSpans.sumOf { it.length },
             routeEpoch = current.routeEpoch,
         )
     }
+
+    private class UnverifiedLanSpan : Exception()
 
     /**
      * Marks the logical transfer as completed atomically.
@@ -1059,7 +1052,9 @@ public class EngineTransferRouteContinuityPort(
             )
             handle?.flush()
             if (plan.compatible) plan.coveredTargetChunks.sorted() else emptyList()
-        } catch (_: Throwable) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
             emptyList()
         } finally {
             runCatching { handle?.close() }

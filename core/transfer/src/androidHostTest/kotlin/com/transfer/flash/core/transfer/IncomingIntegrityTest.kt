@@ -170,6 +170,16 @@ class IncomingIntegrityTest {
         assertTrue(staged.isFile)
     }
 
+    @Test
+    fun `a verified staging file that cannot be placed is retained as failed`() {
+        val staged = fileWith(payload, "incoming.part")
+        val repository = repo(placeReceivedFile = { _, _ -> throw java.io.IOException("disk full") })
+        repository.startInbound("placement-failed", staged.path)
+        assertEquals(WholeFileCheck.PLACEMENT_FAILED, repository.onIncomingFileAssembled("placement-failed", staged.path, payloadHex))
+        assertEquals(FlashTransferState.Failed, repository.row("placement-failed").state)
+        assertTrue(staged.isFile)
+    }
+
     // ---------------------------------------------------------------- the receiving repository
 
     @Test

@@ -6,6 +6,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.perf.FlashThermalStatus
 import com.transfer.flash.core.common.perf.ThermalGovernor
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.transfer.chunked.ChunkBufferPool
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
@@ -410,16 +411,12 @@ internal class MultiStreamDispatcher(
             // forever in feeds[i].send() (buffer full, no worker draining), so coroutineScope —
             // which joins all children — could never return and send() hung permanently.
             val channels = (0 until effectiveStreams).map { id ->
-                val channel = try {
-                    factory.open(id, peerDeviceId)
-                } catch (t: Throwable) {
-                    null
-                }
+                val channel = runSuspendCatching { factory.open(id, peerDeviceId) }.getOrNull()
                 if (channel == null) {
                     terminalLock.withLock { deadIds.add(id) }
                     return@map Pair(DeadStreamChannel(id), false)
                 }
-                val startOk = runCatching {
+                val startOk = runSuspendCatching {
                     channel.sendFrame(ChunkFrame.serialize(chunker.fileStart(meta, plan, resolvedDigest)))
                 }.getOrDefault(false)
                 if (!startOk) {
@@ -749,7 +746,7 @@ internal class MultiStreamDispatcher(
 
                 chunksSentTotal.incrementAndFetch()
                 bytesSentTotal.addAndFetch(chunkBytes(prepared.index))
-                val ok = runCatching { wire.sendFrame(prepared.frameBytes) }.getOrDefault(false)
+                val ok = runSuspendCatching { wire.sendFrame(prepared.frameBytes) }.getOrDefault(false)
                 if (ok) {
                     sentCount.incrementAndFetch()
                     continue

@@ -545,8 +545,6 @@ public class HubFileBinding(
             outgoingRetried(transferId)
         }
         val label = peerName(row.peerId)?.ifBlank { null } ?: row.peerId.take(8)
-        jobsLock.withLock { adoptedIds.remove(transferId) }
-        dao.delete(transferId)
         val launched = transferRepository.resumeHubSendOnLan(
             transferId = row.transferId,
             wireFileId = row.fileId,
@@ -557,6 +555,8 @@ public class HubFileBinding(
             fileSize = row.plainBytes,
         )
         if (launched) {
+            jobsLock.withLock { adoptedIds.remove(transferId) }
+            dao.delete(transferId)
             FlashProbe.emit("hubfile.handover.hub_to_lan", "id" to FlashProbe.short(row.fileId))
         }
         return launched
@@ -803,12 +803,15 @@ public class HubFileBinding(
         transferRepository.retireInternalByWireFileId(row.fileId, keepTransferId = id)
         val outcome = try {
             if (continuityPort != null) {
-                continuityCoordinator.adoptLanToHub(
+                val adoption = continuityCoordinator.adoptLanToHub(
                     transfers = transfers,
                     candidateIdentity = identity,
                     request = request,
                     readLanSpan = { offset, len -> continuityPort.readLanPartialSpan(row.fileId, offset, len) },
                 )
+                if (!adoption.compatible) {
+                    FlashProbe.emit("hubfile.handover.adoption_skipped", "reason" to adoption.reason)
+                }
             }
             transfers.download(
                 request,

@@ -10,6 +10,7 @@ import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
 import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
@@ -970,7 +971,7 @@ private class Wiring(
                     currentFriendlyName = trimmed
                     networkImpl.localFriendlyName = trimmed
                     scope.launch {
-                        runCatching { chatImpl.updateLocalDisplayName(trimmed) }
+                        runSuspendCatching { chatImpl.updateLocalDisplayName(trimmed) }
                     }
                     val id = localId
                     val newIdentity = FlashAdvertisedIdentity(
@@ -1320,7 +1321,7 @@ private class Wiring(
         if (toResume.isEmpty()) return
         Log.i(TAG, "Session up for $peerDeviceId: auto-resuming ${toResume.size} failed send(s)")
         toResume.forEach { transferId ->
-            runCatching { transfers.resumeTransfer(transferId) }
+            runSuspendCatching { transfers.resumeTransfer(transferId) }
                 .onFailure { error -> Log.w(TAG, "Auto-resume threw for ${transferId.value}", error) }
         }
     }

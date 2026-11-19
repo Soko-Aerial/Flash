@@ -115,9 +115,9 @@ public class ReceivePipeline(
 
     /** Snapshot of per-transfer progress vectors keyed by transferId. */
     public val progressVectors: Map<String, ResumeBitVector>
-        get() = sessions.mapValues { (_, s) -> s.vector }
+        get() = lock.withLock { sessions.mapValues { (_, s) -> s.vector } }
 
-    public fun activeTransferIds(): Set<String> = sessions.keys.toSet()
+    public fun activeTransferIds(): Set<String> = lock.withLock { sessions.keys.toSet() }
 
     /**
      * Processes one inbound frame payload.

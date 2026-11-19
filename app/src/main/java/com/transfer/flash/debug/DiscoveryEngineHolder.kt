@@ -3082,7 +3082,7 @@ object DiscoveryEngineHolder {
                     // the file and forgets the confirmed chunks, so the session goes too and the sender is told.
                     val wholeFile = transferImpl.onIncomingFileAssembled(transferId, path, expectedHex, chunksVerified)
                     if (wholeFile == WholeFileCheck.ABANDONED) return
-                    val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
+                    val completeReply = if (wholeFile == WholeFileCheck.MISMATCH || wholeFile == WholeFileCheck.PLACEMENT_FAILED) {
                         receivePipeline.cancelSession(transferId)
                         ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)
                     } else {
