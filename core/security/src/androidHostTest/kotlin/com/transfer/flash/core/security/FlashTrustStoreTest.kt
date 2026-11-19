@@ -160,16 +160,16 @@ class FlashTrustStoreTest {
     }
 
     @Test
-    fun unopenableEntry_afterKeyLoss_isDroppedNotReturned() {
+    fun unopenableEntry_afterKeyLoss_isPreservedInsteadOfDeleted() {
         val prefs = FakeSharedPreferences()
         val sealer = SoftwareSecretSealer()
         val store = AndroidPreferencesTrustStore(prefs, sealer)
         store.saveSessionKey(peer, sampleKey)
 
-        sealer.loseKey() // restore onto another device / keystore wiped
+        sealer.loseKey() // temporary keystore unavailability or restore onto another device
 
         org.junit.Assert.assertNull(store.getSessionKey(peer))
-        assertFalse("unrecoverable entry is removed", prefs.contains("session_key_peer-s4"))
+        assertTrue("sealed entry is preserved for recovery", prefs.contains("session_key_peer-s4"))
     }
 
     @Test
