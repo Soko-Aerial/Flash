@@ -1,6 +1,7 @@
 package com.transfer.flash.ui.shims
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -23,8 +24,13 @@ import org.jcodec.common.io.NIOUtils
 import org.jcodec.containers.mp4.demuxer.MP4Demuxer
 
 @Composable
-public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? =
-    remember(uri) { if (uri != null) JvmAudioPlayer(uri) else null }
+public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? {
+    val player = remember(uri) { uri?.let(::JvmAudioPlayer) }
+    DisposableEffect(player) {
+        onDispose { player?.release() }
+    }
+    return player
+}
 
 /**
  * `javax.sound.sampled.Clip`, with a pure-Java AAC fallback for voice notes.
@@ -49,6 +55,8 @@ public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? =
  */
 internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val playbackLock = Any()
+    private var released = false
 
     @Volatile
     private var clip: Clip? = null
@@ -72,13 +80,32 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
         scope.launch { finishPrepare(ensurePrepared()) }
     }
 
-    private fun finishPrepare(prepared: Clip?) {
+    private fun finishPrepare(prepared: Clip?): Unit = synchronized(playbackLock) {
         preparing = false
+        if (released) return@synchronized
         // A tap that landed during preparation starts playback here instead of on the UI thread.
         if (pendingPlay) {
             pendingPlay = false
             prepared?.let(::startClip)
         }
+    }
+
+    private fun openClip(stream: AudioInputStream): Clip? {
+        val prepared = AudioSystem.getClip()
+        try {
+            prepared.open(stream)
+            synchronized(playbackLock) {
+                if (!released) {
+                    clip = prepared
+                    return prepared
+                }
+            }
+        } catch (e: Exception) {
+            runCatching { prepared.close() }
+            throw e
+        }
+        prepared.close()
+        return null
     }
 
     private fun startClip(c: Clip) {
@@ -102,13 +129,7 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
         }
         // Tier 1: JDK-native containers.
         runCatching {
-            AudioSystem.getAudioInputStream(file).use { stream ->
-                AudioSystem.getClip().apply {
-                    open(stream)
-                    clip = this
-                }
-            }
-            return clip
+            return AudioSystem.getAudioInputStream(file).use(::openClip)
         }.exceptionOrNull()?.let { tier1 ->
             // Tier 2: AAC-in-MP4 voice notes via JCodec — but ONLY for the JDK's "I don't know
             // this container" signal. Any other failure (missing mixer/headless CI, IO error) is
@@ -138,10 +159,7 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
                 format,
                 pcm.bytes.size.toLong() / format.frameSize,
             ).use { stream ->
-                AudioSystem.getClip().apply {
-                    open(stream)
-                    clip = this
-                }
+                openClip(stream)
             }
             println(
                 "[FlashAudioPlayer] AAC voice note decoded via JCodec: " +
@@ -157,20 +175,22 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
         }
     }
 
-    override fun play() {
+    override fun play(): Unit = synchronized(playbackLock) {
+        if (released) return@synchronized
         clip?.let {
             startClip(it)
-            return
+            return@synchronized
         }
         // Not ready yet (still decoding, or the decode failed): let the preparation start playback
         // when it finishes instead of blocking the UI thread here.
         pendingPlay = true
-        if (preparing) return
+        if (preparing) return@synchronized
         preparing = true
         scope.launch { finishPrepare(ensurePrepared()) }
     }
 
-    override fun pause() {
+    override fun pause(): Unit = synchronized(playbackLock) {
+        pendingPlay = false
         runCatching { clip?.let { if (it.isRunning) it.stop() } }
     }
 
@@ -194,14 +214,13 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
     override fun isPlaying(): Boolean = runCatching { clip?.isRunning == true }.getOrDefault(false)
 
     override fun release() {
-        runCatching {
-            clip?.let {
-                it.stop()
-                it.close()
-            }
+        val oldClip = synchronized(playbackLock) {
+            released = true
+            pendingPlay = false
+            clip.also { clip = null }
         }
-        clip = null
         scope.cancel()
+        runCatching { oldClip?.close() }
     }
 }
 

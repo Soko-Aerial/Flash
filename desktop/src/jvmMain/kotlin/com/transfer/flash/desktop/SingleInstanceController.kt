@@ -4,6 +4,7 @@ package com.transfer.flash.desktop
 
 import com.transfer.flash.core.common.logging.FlashLog
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -106,6 +107,7 @@ public object SingleInstanceController {
      *         `false` if another instance is already running; in this case, an activation
      *         message has been sent to the existing instance and this process must exit.
      */
+    @Throws(IOException::class)
     public fun acquireOrActivate(
         baseDir: File = DesktopPaths.stateDir(),
         args: Array<String> = emptyArray(),
@@ -134,26 +136,17 @@ public object SingleInstanceController {
     }
 
     private fun tryAcquireLock(): Boolean {
-        return try {
-            val file = lockFile ?: return true
-            val raf = RandomAccessFile(file, "rw")
-            val channel = raf.channel
-            val lock = channel.tryLock()
-            if (lock != null && lock.isValid) {
-                lockFileChannel = channel
-                fileLock = lock
-                file.deleteOnExit()
-                true
-            } else {
-                channel.close()
-                raf.close()
-                false
-            }
+        val file = checkNotNull(lockFile)
+        val channel = RandomAccessFile(file, "rw").channel
+        try {
+            val lock = channel.tryLock() ?: return false
+            lockFileChannel = channel
+            fileLock = lock
+            return true
         } catch (_: OverlappingFileLockException) {
-            false
-        } catch (t: Throwable) {
-            FlashLog.w(TAG, "File lock probe encountered exception: ${t.message}")
-            false
+            return false
+        } finally {
+            if (lockFileChannel !== channel) channel.close()
         }
     }
 
@@ -171,7 +164,6 @@ public object SingleInstanceController {
                 restrictToOwner(file)
                 file.writeText(port.toString() + "\n" + token)
             }
-            portFile?.deleteOnExit()
 
             thread(name = "FlashSingleInstanceListener", isDaemon = true) {
                 while (!server.isClosed) {
@@ -354,6 +346,9 @@ public object SingleInstanceController {
         } catch (_: Throwable) {}
         serverSocket = null
 
+        // Remove the activation endpoint while we still own the lock. Keep the lock
+        // file itself: unlinking it can give two Unix processes different inodes to lock.
+        if (fileLock?.isValid == true) runCatching { portFile?.delete() }
         try {
             fileLock?.release()
         } catch (_: Throwable) {}
@@ -364,11 +359,7 @@ public object SingleInstanceController {
         } catch (_: Throwable) {}
         lockFileChannel = null
 
-        try {
-            portFile?.delete()
-        } catch (_: Throwable) {}
-        try {
-            lockFile?.delete()
-        } catch (_: Throwable) {}
+        portFile = null
+        lockFile = null
     }
 }

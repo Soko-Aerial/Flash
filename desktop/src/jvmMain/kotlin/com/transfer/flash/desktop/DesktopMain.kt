@@ -78,11 +78,24 @@ public fun main(args: Array<String> = emptyArray()) {
     // Enforce single-instance: if another instance is already running, forward files or activate, then exit.
     // Before the log sink on purpose (ERROR-744): the sink truncates `desktop.log`, and a duplicate launch used to
     // wipe the running instance's log, the file a bug report depends on.
-    if (!SingleInstanceController.acquireOrActivate(args = args)) {
+    val isPrimary = try {
+        SingleInstanceController.acquireOrActivate(args = args)
+    } catch (e: java.io.IOException) {
+        System.err.println("Could not acquire Flash's instance lock: ${e.message}")
+        if (!java.awt.GraphicsEnvironment.isHeadless()) {
+            javax.swing.JOptionPane.showMessageDialog(
+                null,
+                "Flash could not open its local data folder. Check access to the folder and try again.",
+                "Flash",
+                javax.swing.JOptionPane.ERROR_MESSAGE,
+            )
+        }
+        return
+    }
+    if (!isPrimary) {
         FlashLog.i("MAIN", "Flash is already running. Request forwarded to existing instance. Exiting duplicate instance.")
         return
     }
-
     installDesktopLogSink()
 
     installNativeWebRtcLogging()

@@ -45,7 +45,7 @@ private class AndroidVoiceRecorder(private val context: Context) : FlashVoiceRec
     override val isRecording: Boolean get() = recorder != null
 
     override fun start(): Boolean {
-        stopQuietly()
+        cancel()
         pruneOldVoiceFiles(context.cacheDir)
         val file = File(context.cacheDir, "flash-voice-${System.currentTimeMillis()}.m4a")
         @Suppress("DEPRECATION")
@@ -72,6 +72,17 @@ private class AndroidVoiceRecorder(private val context: Context) : FlashVoiceRec
             file.delete()
             recorder = null
             outputFile = null
+            false
+        }
+    }
+
+    override fun setPaused(paused: Boolean): Boolean {
+        val rec = recorder ?: return false
+        return try {
+            if (paused) rec.pause() else rec.resume()
+            true
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "Voice capture state change failed", e)
             false
         }
     }
@@ -112,6 +123,7 @@ private class AndroidVoiceRecorder(private val context: Context) : FlashVoiceRec
 
     override fun cancel() {
         val file = outputFile
+        outputFile = null
         stopQuietly()
         file?.delete()
     }

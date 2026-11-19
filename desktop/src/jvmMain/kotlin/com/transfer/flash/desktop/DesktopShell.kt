@@ -2582,46 +2582,24 @@ public fun DesktopShell(
                     showCreateGroup = false
                     nav.selectTab(FlashDestination.NearbyDevices)
                 },
-                onCreate = { title, memberIds ->
-                    scope.launch {
-                        val result = chatRepository.createGroup(title, memberIds)
-                        val groupId = result.getOrNull()
-                        if (groupId != null) {
-                            showCreateGroup = false
-                            selectedChatConversationId = groupId
-                            chatRepository.openConversation(groupId)
-                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
-                        } else {
-                            // The repository's own reason when it has one (ERROR-095: a member that is offline).
-                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
-                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                            snackbarHostState.showSnackbar(
-                                message = reason ?: "Couldn't create the group — check that every member is paired",
-                                duration = SnackbarDuration.Long,
-                            )
+                onCreatePersonalGroup = { title, memberIds, linkToHub ->
+                    val result = chatRepository.createGroup(title, memberIds)
+                    val groupId = result.getOrNull()
+                    if (groupId != null) {
+                        if (linkToHub) {
+                            chatRepository.linkGroupToHub(groupId)
                         }
-                    }
-                },
-                onCreateWithHub = { title, memberIds, linkToHub ->
-                    scope.launch {
-                        val result = chatRepository.createGroup(title, memberIds)
-                        val groupId = result.getOrNull()
-                        if (groupId != null) {
-                            if (linkToHub) {
-                                chatRepository.linkGroupToHub(groupId)
-                            }
-                            showCreateGroup = false
-                            selectedChatConversationId = groupId
-                            chatRepository.openConversation(groupId)
-                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
-                        } else {
-                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
-                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                            snackbarHostState.showSnackbar(
-                                message = reason ?: "Couldn't create the group — check that every member is paired",
-                                duration = SnackbarDuration.Long,
-                            )
-                        }
+                        showCreateGroup = false
+                        selectedChatConversationId = groupId
+                        chatRepository.openConversation(groupId)
+                        nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                    } else {
+                        val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                            as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                        snackbarHostState.showSnackbar(
+                            message = reason ?: "Couldn't create the group — check that every member is paired",
+                            duration = SnackbarDuration.Long,
+                        )
                     }
                 },
             )

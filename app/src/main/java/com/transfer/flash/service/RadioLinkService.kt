@@ -112,7 +112,7 @@ public class RadioLinkService : Service() {
     public companion object {
         private const val TAG = "RadioLinkService"
         private const val CHANNEL_ID = "flash_radio_gateway_channel"
-        private const val NOTIFICATION_ID = 4001
+        private const val NOTIFICATION_ID = 45
 
         public const val ACTION_START: String = "com.transfer.flash.radio.START_SERVICE"
         public const val ACTION_STOP: String = "com.transfer.flash.radio.STOP_SERVICE"
@@ -125,10 +125,16 @@ public class RadioLinkService : Service() {
                 putExtra(EXTRA_TITLE, notification.title)
                 putExtra(EXTRA_TEXT, notification.text)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "Unable to start radio foreground service", e)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Radio foreground service permission denied", e)
             }
         }
 

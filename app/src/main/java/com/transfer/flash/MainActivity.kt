@@ -1887,7 +1887,7 @@ private fun FlashShell(
     val trustedPeers by (engine.pairing?.trustedPeers ?: fallbackTrusted).collectAsState()
     // Group Phase 1A: the create-group sheet opens from the chat list's top bar; its roster comes
     // from the pairing coordinator's trusted peers only (fail-closed membership by construction).
-    var showCreateGroup by remember { mutableStateOf(false) }
+    var showCreateGroup by rememberSaveable { mutableStateOf(false) }
     val hubGroupPolicy by com.transfer.flash.debug.DiscoveryEngineHolder.hubGroupPolicy.collectAsState()
     var canCreateHubGroup by remember { mutableStateOf(false) }
     LaunchedEffect(showCreateGroup, settings.isEnterpriseEnrolled) {
@@ -3965,48 +3965,25 @@ private fun FlashShell(
                     showCreateGroup = false
                     nav.selectTab(FlashDestination.NearbyDevices)
                 },
-                onCreate = { title, memberIds ->
-                    scope.launch {
-                        val result = chatRepository.createGroup(title, memberIds)
-                        val groupId = result.getOrNull()
-                        if (groupId != null) {
-                            showCreateGroup = false
-                            selectedChatConversationId = groupId
-                            chatRepository.openConversation(groupId)
-                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
-                        } else {
-                            // The repository's own reason when it has one (ERROR-095: a member that is offline).
-                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
-                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                            Toast.makeText(
-                                toastContext,
-                                reason ?: "Couldn't create the group — check that every member is paired",
-                                Toast.LENGTH_LONG,
-                            ).show()
+                onCreatePersonalGroup = { title, memberIds, linkToHub ->
+                    val result = chatRepository.createGroup(title, memberIds)
+                    val groupId = result.getOrNull()
+                    if (groupId != null) {
+                        if (linkToHub) {
+                            chatRepository.linkGroupToHub(groupId)
                         }
-                    }
-                },
-                onCreateWithHub = { title, memberIds, linkToHub ->
-                    scope.launch {
-                        val result = chatRepository.createGroup(title, memberIds)
-                        val groupId = result.getOrNull()
-                        if (groupId != null) {
-                            if (linkToHub) {
-                                chatRepository.linkGroupToHub(groupId)
-                            }
-                            showCreateGroup = false
-                            selectedChatConversationId = groupId
-                            chatRepository.openConversation(groupId)
-                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
-                        } else {
-                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
-                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                            Toast.makeText(
-                                toastContext,
-                                reason ?: "Couldn't create the group — check that every member is paired",
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        }
+                        showCreateGroup = false
+                        selectedChatConversationId = groupId
+                        chatRepository.openConversation(groupId)
+                        nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                    } else {
+                        val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                            as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                        Toast.makeText(
+                            toastContext,
+                            reason ?: "Couldn't create the group — check that every member is paired",
+                            Toast.LENGTH_LONG,
+                        ).show()
                     }
                 },
             )

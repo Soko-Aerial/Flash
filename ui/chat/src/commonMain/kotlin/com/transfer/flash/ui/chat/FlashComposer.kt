@@ -131,6 +131,7 @@ fun FlashComposer(
     /** Task 3.2: pending attachments staged for sending. */
     stagedAttachments: List<FlashShareItemUi> = emptyList(),
     onRemoveStagedAttachment: (FlashShareItemUi) -> Unit = {},
+    onVoiceRecordPauseChanged: (Boolean) -> Boolean = { true },
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -180,6 +181,15 @@ fun FlashComposer(
         resetRecording()
     }
 
+    fun toggleRecordingPause() {
+        val paused = !recordPaused
+        if (onVoiceRecordPauseChanged(paused)) {
+            recordPaused = paused
+        } else {
+            cancelRecording()
+        }
+    }
+
     fun sendVoiceRecording() {
         if (recordElapsedMs >= FlashVoiceRecordingMath.MIN_RECORD_MS) {
             onSendVoice(
@@ -215,7 +225,6 @@ fun FlashComposer(
             if (!recordPaused) {
                 recordElapsedMs += FlashVoiceRecordingMath.TICK_MS
                 val sample = voiceAmplitudeProvider?.invoke()
-                    ?.takeIf { it > 0 }
                     ?: FlashVoiceRecordingMath.nextDemoAmplitude(last).also { last = it }
                 recordAmplitudes = (recordAmplitudes + FlashVoiceRecordingMath.smoothAmplitude(recordAmplitudes.lastOrNull() ?: sample, sample))
                     .takeLast(FlashVoiceRecordingMath.STRIP_BAR_COUNT * 3)
@@ -410,7 +419,7 @@ fun FlashComposer(
                             amplitudes = recordAmplitudes,
                             isPaused = recordPaused,
                             onCancel = { cancelRecording() },
-                            onTogglePause = { recordPaused = !recordPaused },
+                            onTogglePause = ::toggleRecordingPause,
                             onSend = { sendVoiceRecording() },
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -424,7 +433,7 @@ fun FlashComposer(
                             amplitudes = recordAmplitudes,
                             isPaused = recordPaused,
                             onCancel = { cancelRecording() },
-                            onTogglePause = { recordPaused = !recordPaused },
+                            onTogglePause = ::toggleRecordingPause,
                             onSend = { sendVoiceRecording() },
                             showInBarSend = !voiceSendVisible,
                             modifier = Modifier.fillMaxWidth(),

@@ -134,7 +134,7 @@ struct Player {
         const auto scale = std::min(1.0, static_cast<double>(maxFrameEdge) / longEdge);
         const auto nextWidth = std::max(1u, static_cast<UINT>(std::lround(requestedWidth * scale)));
         const auto nextHeight = std::max(1u, static_cast<UINT>(std::lround(requestedHeight * scale)));
-        if (nextWidth == width && nextHeight == height) return S_OK;
+        if (target && staging && nextWidth == width && nextHeight == height) return S_OK;
 
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = nextWidth;
@@ -144,13 +144,17 @@ struct Player {
         desc.Format = pixelFormat;
         desc.SampleDesc.Count = 1;
         desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-        HRESULT result = device->CreateTexture2D(&desc, nullptr, target.ReleaseAndGetAddressOf());
+        ComPtr<ID3D11Texture2D> nextTarget;
+        ComPtr<ID3D11Texture2D> nextStaging;
+        HRESULT result = device->CreateTexture2D(&desc, nullptr, nextTarget.GetAddressOf());
         if (FAILED(result)) return result;
         desc.Usage = D3D11_USAGE_STAGING;
         desc.BindFlags = 0;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-        result = device->CreateTexture2D(&desc, nullptr, staging.ReleaseAndGetAddressOf());
+        result = device->CreateTexture2D(&desc, nullptr, nextStaging.GetAddressOf());
         if (FAILED(result)) return result;
+        target.Swap(nextTarget);
+        staging.Swap(nextStaging);
         width = nextWidth;
         height = nextHeight;
         return S_OK;
@@ -174,12 +178,18 @@ std::int64_t milliseconds(double seconds) {
 
 extern "C" {
 __declspec(dllexport) Player* flash_video_open(const wchar_t* path, HRESULT* result) {
+    if (!result) return nullptr;
+    if (!path) {
+        *result = E_POINTER;
+        return nullptr;
+    }
     auto player = std::unique_ptr<Player>(new (std::nothrow) Player());
     *result = player ? player->open(path) : E_OUTOFMEMORY;
     return SUCCEEDED(*result) ? player.release() : nullptr;
 }
 
 __declspec(dllexport) HRESULT flash_video_control(Player* player, BOOL playing, BOOL muted, double seekSeconds) {
+    if (!player) return E_POINTER;
     auto& engine = player->engine;
     if (seekSeconds >= 0) {
         const HRESULT result = engine->SetCurrentTime(seekSeconds);
@@ -191,6 +201,7 @@ __declspec(dllexport) HRESULT flash_video_control(Player* player, BOOL playing, 
 }
 
 __declspec(dllexport) HRESULT flash_video_poll(Player* player, PlaybackStatus* status, std::uint8_t* pixels, int capacity) {
+    if (!player || !status || !pixels) return E_POINTER;
     auto& engine = player->engine;
     ComPtr<IMFMediaError> error;
     if (SUCCEEDED(engine->GetError(error.GetAddressOf())) && error && error->GetErrorCode() != MF_MEDIA_ENGINE_ERR_NOERROR) {

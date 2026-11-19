@@ -1177,6 +1177,11 @@ fun FlashConversationScreen(
                     voiceRecorder.cancel()
                     releaseVoiceRecordingLease()
                 },
+                onVoiceRecordPauseChanged = { paused ->
+                    voiceRecorder.setPaused(paused).also { changed ->
+                        if (!changed) showMessage("Microphone unavailable. Recording discarded.")
+                    }
+                },
                 voiceAmplitudeProvider = { voiceRecorder.maxAmplitude() },
                 onVoiceTapTooShort = {},
                 onVoiceRecordingTooShort = {},

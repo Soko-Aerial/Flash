@@ -1427,7 +1427,17 @@ public class DesktopEngine(
             FileSystem.SYSTEM.source(file.absolutePath.toPath())
         }
         val databaseFile = File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME)
-        val db = runCatching { openEncryptedFlashDatabase(databaseFile, chatDbKey()) }
+        val db = runCatching {
+            val candidate = openEncryptedFlashDatabase(databaseFile, chatDbKey())
+            try {
+                // Room opens lazily. Validate the existing encrypted file before wiring repositories.
+                runBlocking { candidate.conversationDao().get("") }
+                candidate
+            } catch (e: Exception) {
+                candidate.closeWithTrim()
+                throw e
+            }
+        }
             .onFailure { FlashLog.w(TAG_WS, "Encrypted database unavailable; chat and restart recovery are unavailable this run", it) }
             .getOrNull()
         chatDb = db

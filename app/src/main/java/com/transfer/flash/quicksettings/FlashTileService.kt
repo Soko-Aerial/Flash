@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Android Quick Settings Tile allowing users to toggle Flash discoverability
- * cleanly between Active (Discoverable) and Off from the Quick Settings shade.
+ * cleanly between Discoverable and Hidden from the Quick Settings shade.
  *
  * Long-pressing the tile opens Flash directly to the Nearby sharing screen via
  * the system [android.service.quicksettings.action.QS_TILE_PREFERENCES] intent filter.
@@ -35,20 +35,19 @@ class FlashTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        when (FlashTileMath.tapAction(DiscoveryEngineHolder.isRunning())) {
-            FlashTileTapAction.START_DISCOVERABLE -> {
-                FlashBackgroundService.start(applicationContext)
-                serviceScope.launch {
+        serviceScope.launch {
+            val running = DiscoveryEngineHolder.isRunning()
+            val mode = DiscoveryEngineHolder.currentDiscoveryMode()
+            when (FlashTileMath.tapAction(running, mode)) {
+                FlashTileTapAction.START_DISCOVERABLE -> {
                     DiscoveryEngineHolder.setDiscoveryMode(FlashDiscoveryMode.STANDARD, applicationContext)
+                    FlashBackgroundService.start(applicationContext)
+                    updateTileState(mode = FlashDiscoveryMode.STANDARD, running = true)
                 }
-                updateTileState(mode = FlashDiscoveryMode.STANDARD, running = true)
-            }
-            FlashTileTapAction.STOP -> {
-                FlashBackgroundService.stop(applicationContext)
-                serviceScope.launch {
-                    DiscoveryEngineHolder.stopAll()
+                FlashTileTapAction.HIDE -> {
+                    DiscoveryEngineHolder.setDiscoveryMode(FlashDiscoveryMode.GHOST, applicationContext)
+                    updateTileState()
                 }
-                updateTileState(mode = FlashDiscoveryMode.STANDARD, running = false)
             }
         }
     }
@@ -70,7 +69,7 @@ class FlashTileService : TileService() {
 
 internal enum class FlashTileTapAction {
     START_DISCOVERABLE,
-    STOP,
+    HIDE,
 }
 
 internal data class FlashTileUiSpec(
@@ -82,8 +81,9 @@ internal data class FlashTileUiSpec(
 }
 
 internal object FlashTileMath {
-    fun tapAction(isRunning: Boolean): FlashTileTapAction =
-        if (isRunning) FlashTileTapAction.STOP else FlashTileTapAction.START_DISCOVERABLE
+    fun tapAction(isRunning: Boolean, mode: FlashDiscoveryMode): FlashTileTapAction =
+        if (isRunning && mode != FlashDiscoveryMode.GHOST) FlashTileTapAction.HIDE
+        else FlashTileTapAction.START_DISCOVERABLE
 
     fun tileSpec(running: Boolean, mode: FlashDiscoveryMode): FlashTileUiSpec {
         if (!running) {
@@ -101,7 +101,7 @@ internal object FlashTileMath {
             FlashDiscoveryMode.RECEIVE_KIOSK -> "Receive ready"
         }
         return FlashTileUiSpec(
-            isActive = true,
+            isActive = mode != FlashDiscoveryMode.GHOST,
             label = "Flash Share",
             subtitle = subtitle,
         )

@@ -20,6 +20,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.transfer.flash.MainActivity
+import com.transfer.flash.R
 import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallUiState
@@ -63,7 +64,7 @@ import kotlinx.coroutines.launch
  */
 class FlashCallService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var callingSnapshot: FlashCalling? = null
     private var startForegroundCalled = false
 
@@ -86,8 +87,23 @@ class FlashCallService : Service() {
         // The engine outlives this service, so we hold a reference to avoid a second
         // lookup on every state tick.
         val calling = callingSnapshot ?: DiscoveryEngineHolder.currentCalling()
-        if (calling == null) {
+        val initialState = calling?.activeCall?.value
+        if (calling == null || initialState == null) {
             Log.w(TAG, "No call engine available — stopping service")
+            // Fulfil an already-delivered startForegroundService request even if the call ended
+            // before onStartCommand. Remove the transient notification immediately afterwards.
+            if (!startForegroundCalled) {
+                val notice = NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_notification_flash)
+                    .setContentTitle("Flash call")
+                    .setSilent(true)
+                    .build()
+                val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                } else FGS_TYPE_NONE
+                tryStartForeground(notice, type)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            }
             // A call notification posted by an earlier instance must not outlive the engine it controls (audit B-09).
             runCatching { notificationManager.cancel(NOTIFICATION_ID) }
             stopSelf()
@@ -100,6 +116,7 @@ class FlashCallService : Service() {
         // service is re-delivered to onStartCommand each time — without this guard each redelivery
         // added another collector, so a single state tick posted (and re-promoted) N times over.
         if (stateJob?.isActive != true) {
+            postCallNotification(initialState)
             stateJob = scope.launch {
                 calling.activeCall.collectLatest { state ->
                     if (state != null) {
@@ -437,6 +454,7 @@ class FlashCallService : Service() {
 
         /** Start the call FGS — must be called while the app is foreground. */
         fun start(context: Context) {
+            if (DiscoveryEngineHolder.currentCalling()?.activeCall?.value == null) return
             val intent = Intent(context.applicationContext, FlashCallService::class.java)
             runCatching {
                 ContextCompat.startForegroundService(context.applicationContext, intent)

@@ -4,6 +4,7 @@ package com.transfer.flash.core.persistence.db
 
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.useWriterConnection
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.SQLiteDriver
 import androidx.sqlite.execSQL
@@ -12,7 +13,13 @@ import com.transfer.flash.core.common.perf.MemoryGovernor
 import com.transfer.flash.core.common.perf.MemoryTrimLevel
 import com.transfer.flash.core.common.perf.MemoryTrimListener
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * JVM open paths for [FlashDatabase] (Phase 2, slice 1).
@@ -75,7 +82,7 @@ public fun openEncryptedFlashDatabase(file: File, key: String): FlashDatabase {
  * `:memory:` in `jvmTest` and the desktop path goes through [openEncryptedFlashDatabase].
  */
 public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase {
-    val trim = JvmDatabaseTrimRegistration()
+    val opened = AtomicBoolean(false)
     return Room.databaseBuilder<FlashDatabase>(
         name = name,
         factory = FlashDatabaseConstructor::initialize,
@@ -127,62 +134,50 @@ public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase 
                         FlashLog.w("DATABASE", "Failed to set SQLite pragma '$pragma' on Desktop: ${e.message}")
                     }
                 }
-                trim.attach(
-                    isOpen = { true },
-                    shrink = {
-                        try {
-                            connection.execSQL("PRAGMA shrink_memory;")
-                            // Hands at most `cache_size` free pages back to the filesystem; without
-                            // it the auto_vacuum setting above never reclaims anything.
-                            connection.execSQL("PRAGMA incremental_vacuum;")
-                            FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory + incremental_vacuum on Desktop")
-                        } catch (e: Throwable) {
-                            FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory on Desktop: ${e.message}")
-                        }
-                    },
-                )
+                opened.set(true)
             }
         })
         .setQueryCoroutineContext(Dispatchers.IO)
         .build()
-        .also { it.trimRegistration = trim }
+        .also { it.trimRegistration = JvmDatabaseTrimRegistration(it, opened) }
 }
 
-internal class JvmDatabaseTrimRegistration(
-    private val register: (MemoryTrimListener) -> Unit = MemoryGovernor::registerListener,
-    private val unregister: (MemoryTrimListener) -> Unit = MemoryGovernor::unregisterListener,
+private class JvmDatabaseTrimRegistration(
+    db: FlashDatabase,
+    opened: AtomicBoolean,
 ) : AutoCloseable {
-    private var current: MemoryTrimListener? = null
-    private val lock = Any()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scheduled = AtomicBoolean(false)
+    private val listener = MemoryTrimListener { level ->
+        if (level != MemoryTrimLevel.RUNNING_LOW &&
+            level != MemoryTrimLevel.RUNNING_CRITICAL &&
+            level != MemoryTrimLevel.COMPLETE
+        ) return@MemoryTrimListener
+        if (!opened.get() || !scheduled.compareAndSet(false, true)) return@MemoryTrimListener
 
-    fun attach(isOpen: () -> Boolean, shrink: () -> Unit) {
-        synchronized(lock) {
-            current?.let(unregister)
-            val listener = MemoryTrimListener { level ->
-                if (level == MemoryTrimLevel.RUNNING_LOW ||
-                    level == MemoryTrimLevel.RUNNING_CRITICAL ||
-                    level == MemoryTrimLevel.COMPLETE
-                ) {
-                    try {
-                        if (isOpen()) shrink()
-                    } catch (e: Throwable) {
-                        FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory on Desktop: ${e.message}")
+        // Lease the writer through Room. Its onOpen connection may be in use or already closed.
+        scope.launch {
+            try {
+                db.useWriterConnection { writer ->
+                    writer.usePrepared("PRAGMA shrink_memory") { it.step() }
+                    writer.usePrepared("PRAGMA incremental_vacuum") { statement ->
+                        while (statement.step()) { /* Drain the pragma result. */ }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                FlashLog.w("DATABASE", "Desktop database trim failed: ${e.message}")
             }
-            current = listener
-            register(listener)
-        }
+        }.invokeOnCompletion { scheduled.set(false) }
     }
 
-    fun detach() {
-        synchronized(lock) {
-            current?.let(unregister)
-            current = null
-        }
+    init {
+        MemoryGovernor.registerListener(listener)
     }
 
     override fun close() {
-        detach()
+        MemoryGovernor.unregisterListener(listener)
+        scope.cancel()
     }
 }

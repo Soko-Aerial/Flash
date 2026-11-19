@@ -90,7 +90,7 @@ internal class JdbcCipherStatement(
     }
 
     override fun clearBindings() {
-        runCatching { statement.clearParameters() }
+        synchronized(lock) { statement.clearParameters() }
     }
 
     // ---- binds: 1-based on both sides ----

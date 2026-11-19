@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.sp
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
-import kotlin.math.absoluteValue
+import kotlin.math.abs
 
 @Composable
 fun FlashAvatar(
@@ -32,7 +32,7 @@ fun FlashAvatar(
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography.metadataEmphasis
-    val paletteIndex = seed.hashCode().absoluteValue % colors.avatarPaletteBackgrounds.size
+    val paletteIndex = (abs(seed.hashCode().toLong()) % colors.avatarPaletteBackgrounds.size).toInt()
     val resolvedBackground = background ?: colors.avatarPaletteBackgrounds[paletteIndex]
     val resolvedForeground = foreground ?: colors.avatarPaletteForegrounds[paletteIndex]
     val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
@@ -78,6 +78,6 @@ fun avatarSeed(name: String): String = name
 @Composable
 fun flashAvatarColorsFor(seed: String): Pair<Color, Color> {
     val colors = FlashTheme.colors
-    val paletteIndex = seed.hashCode().absoluteValue % colors.avatarPaletteBackgrounds.size
+    val paletteIndex = (abs(seed.hashCode().toLong()) % colors.avatarPaletteBackgrounds.size).toInt()
     return colors.avatarPaletteBackgrounds[paletteIndex] to colors.avatarPaletteForegrounds[paletteIndex]
 }
