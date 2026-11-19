@@ -228,6 +228,9 @@ Idle ──press──▶ Holding ──release──▶ Send   (if elapsed ≥ 
              CancelArmed ──release──▶ Cancel
 Holding/CancelArmed ──drag up past LOCK threshold──▶ Locked
 Locked: trash tap = Cancel · pause toggle · send tap = Stop & Send
+
+The toggle changes the platform recorder before updating the panel. The elapsed timer stops while paused and the saved file omits the pause interval. A recorder transition failure discards the draft and shows an explanation. A quiet microphone reports zero amplitude.
+
 ```
 
 ### Thresholds (constants, unit-tested)

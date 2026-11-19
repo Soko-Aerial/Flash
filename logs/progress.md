@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-11-19 — Feature and module review remediation
+
+### Changes
+
+- Corrected voice pause and desktop audio resource ownership.
+- Streamed LAN-to-Hub adoption and preserved eligible Hub rows and staged receives when a route or destination refused a transfer.
+- Fixed desktop Room connection ownership during memory trim and made an unreadable encrypted database or instance lock failure visible.
+- Kept the Android engine running on the Hidden Quick Settings action and handled canceled call and PTT service launches.
+- Scoped announcement creation retries and hardened Hub group relay, policy refresh, join links, directory lag recovery and group creation.
+- Preserved wrapped keys during temporary storage failures, restarted failed outbox passes and bounded off-LAN call replay state.
+
+### Verification
+
+- Final locked Gradle gate passed at product commit `aced6579`. The final XML reports contain 3,644 passes, zero failures and four platform or opt-in skips. Android debug assembly and lint passed. The Windows Media Foundation decode, seek, pause and replay test passed with a local fixture in the separate shim run. The Admin UI suite passed all 87 tests. Intermediate runs exposed stale migration and key-store assertions and exercised the encrypted-content-before-roster case. The final tests cover the updated behavior.
+- Physical audio capture, foreground services, large handovers and a live Hub directory lag run remain in MODREV-01..05.
+
+### Handoff
+
+See the [remediation record](../docs/audit/2026-11-19-feature-module-remediation.md) for the unresolved review points and ADR-366 for compatibility. No test Hub or installed device state changed.
+
+
 ## 2026-11-18 — Android test install and matching Hub rollout
 
 Committed the Hub group policy, group creation and invite fixes, concurrent workspace refresh and Windows conversation pane on `dev` as `d3c50b78`. The focused release test gate completed in 9m 56s. Gradle reports contain 2,778 passes and two platform skips across the server, common, Hub protocol, enterprise, messaging, chat UI, desktop and Android app suites. The 87 Admin UI tests, Android debug lint and APK assembly, and Hub distribution assembly passed. The Gradle output is under `build/release-test-gate.log`.

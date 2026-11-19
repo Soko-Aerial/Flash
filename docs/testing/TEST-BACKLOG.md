@@ -40,6 +40,47 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 
 ## 1. Recent call fixes (2026-09-29)
 
+### MODREV-01 — Voice pause excludes audio
+
+- **Setup:** Android and Windows with working microphones and a paired recipient.
+- **Steps:** Lock a recording, say a short phrase, tap Pause, say a different phrase, resume, say a third phrase, and send. Execute once on each platform and once more with the app closed while paused.
+- **Pass:** The recipient hears the first and third phrases and the elapsed display excludes the paused time. Closing the app discards the draft and releases capture.
+- **Source:** [UI-020](../ui/voice-message.md).
+- **Status: TODO**
+
+### MODREV-02 — Android service entry and discoverability
+
+- **Setup:** Android 14 or later with Flash Quick Settings tile installed and an active chat or transfer. Enable calls, PTT, and a connected radio where available.
+- **Steps:** Hide and reshow discoverability from the tile while the app is open, then repeat from the Quick Settings shade while a file is transferring. End a call or PTT session immediately after starting it. Trigger a background radio service start.
+- **Pass:** Device advertisements toggle and active transfers keep progressing. Chats remain usable. Logcat has no foreground-service startup timeout or uncaught start refusal. Screen-share, PTT, radio, and announcement notifications occupy distinct slots.
+- **Source:** [Android platform notes](../android-platform-notes.md).
+- **Status: TODO**
+
+### MODREV-03 — Cross-route resume and destination write failure
+
+- **Setup:** A desktop, a phone, an enrolled test Hub, a multi-gigabyte file, and a constrained test save volume.
+- **Steps:** Interrupt a mostly received LAN file and retry through Hub. Repeat Hub-to-LAN once with the destination peer gone before handoff. Separately force destination placement to fail after a staged receive.
+- **Pass:** Heap remains bounded during adoption, final SHA-256 matches, the failed handoff remains recoverable, and a staging file that cannot be published shows Failed without a successful completion.
+- **Source:** [Module review remediation](../audit/2026-11-19-feature-module-remediation.md).
+- **Status: TODO**
+
+### MODREV-04 — Hub policy and lagging directory
+
+- **Setup:** Enroll a sender and two joining devices. Use a public-to-members group with open joining and a separate group that requires approval.
+- **Steps:** Use a single open-group link from both devices. Change the group's join policy and retry the old link. Apply a membership update on the sender while the recipient's directory refresh is delayed, send an encrypted message, then allow sync to complete. Open Admin Devices and replace a test device with two distinct groups selected. Rotate the phone with a group draft open, then press Create twice quickly. Repeat for a personal group.
+- **Pass:** Both open-group joins succeed, the old link stops resolving once policy changes, approval requests remain pending, and the encrypted message appears once the recipient catches up without reconnecting. Both selected replacement groups appear on the invite. The draft retains its title and members and rapid taps create one group.
+- **Source:** [ADR-366](../decisions.md#adr-366--separate-join-link-validity-from-roster-updates-and-scope-announcement-retries).
+- **Status: TODO**
+
+### MODREV-05 — Windows local store and media lifecycle
+
+- **Setup:** A disposable Windows profile and inline playback fixtures. Use a separate copy of the encrypted state for lock and key failure checks.
+- **Steps:** Reopen a running Flash instance. Repeat using a state directory that cannot be opened. Open Flash with an unreadable encrypted database copy. Play and close several voice notes and videos.
+- **Pass:** A duplicate launch activates the existing app. An inaccessible state directory surfaces an error. The unreadable database remains in place and the warning identifies chat and restart recovery as unavailable. Closing voice playback or switching chats releases the player.
+- **Source:** [Module review remediation](../audit/2026-11-19-feature-module-remediation.md).
+- **Status: TODO**
+
+
 ### CALL-01 — Calls from the phone hosting the Wi-Fi hotspot (ERROR-079, ADR-054)
 - **Setup:** phone A hosts the hotspot; phone B and a desktop join it.
 - **Steps:**

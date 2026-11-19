@@ -1,5 +1,12 @@
 # Android Platform Notes
 
+## 2026-11-19 — Voice capture, Quick Settings and foreground-service lifecycle
+
+- Voice notes use [MediaRecorder pause and resume](https://developer.android.com/reference/android/media/MediaRecorder) on Android API 24 and later. The recorder omits the pause interval from the output. Both commands must succeed before Flash changes the displayed capture state.
+- [TileService](https://developer.android.com/reference/android/service/quicksettings/TileService) receives tile taps independently of the activity. Flash applies the existing Hidden discovery mode and keeps the mesh engine available for calls, chat, and transfers.
+- Android API 31 restricts background foreground-service starts. API 34 applies foreground-service type and while-in-use permission checks. Call and PTT services promote from the current session state at entry, including the teardown edge after a start has already been requested. Radio handles refused starts. See [foreground-service launch](https://developer.android.com/develop/background-work/services/fgs/launch) and [foreground-service troubleshooting](https://developer.android.com/develop/background-work/services/fgs/troubleshooting).
+
+
 ## 2026-11-15 — Radio Radar and PTT bridge research
 
 - **API 24+ planned Radar host.** Request `ACCESS_COARSE_LOCATION` from the user's Share Position action and use the existing AndroidX Core `LocationManagerCompat` one-shot API with cancellation. On API 31+, the user can grant approximate location even when precise is requested. Show the reported accuracy and handle denied access, disabled providers and stale fixes. Reception and the manual reference position require no location-provider access. [Android runtime location access](https://developer.android.com/develop/sensors-and-location/location/permissions/runtime) · [LocationManagerCompat](https://developer.android.com/reference/androidx/core/location/LocationManagerCompat)

@@ -1,5 +1,14 @@
 # Decisions
 
+## ADR-366 — Separate join-link validity from roster updates and scope announcement retries
+
+**2026-11-19.** The directory stores a join-link revision when a group is created. A visibility or join-policy change replaces that revision and invalidates outstanding v2 tokens, even if an operator later restores the previous policy. Routine roster changes preserve the revision. The token remains sealed by the Hub, expires in 24 hours, and resolves for enrolled principals subject to current visibility and join policy. Existing v1 tokens retain the old roster-version check until they expire. Per-link revocation and consumption limits remain separate capabilities.
+
+Announcement create retries are keyed by request ID, author kind and identity, and audience. The migration reconstructs recent mappings from their existing announcement rows. This preserves retries after upgrade and prevents one audience or publisher from receiving the result of another's submission.
+
+The relay validates a group envelope's structure and binds its visible sender and destination to routing metadata. The receiving device authenticates the message and decrypts it with the group key. When the active policy prevents a queued row from being replayed, the Hub retires that copy and emits the existing dropped event to online senders.
+
+
 ## ADR-365 — Enforce Hub group policy before delivery and create the initial roster atomically
 
 2026-11-18. The Hub rejects readable group relay sends under required encryption and excludes old readable copies from replay and spill while the policy is active. Server policy updates invalidate Android and desktop state. Clients bind policy to the current enrollment and restore required encryption and disabled personal links during a failed refresh.

@@ -1,5 +1,18 @@
 # Error Log
 
+## ERROR-1035 — Voice pause captured the paused interval
+
+**2026-11-19 · Android and desktop.** The composer changed its timer and waveform state without pausing the platform recorder. The recording could include speech heard during the paused interval. Both recorders now support pause and resume, and the UI updates only after a successful transition. A failed transition discards the capture. Physical microphone acceptance is MODREV-01.
+
+## ERROR-1036 — Transfer adoption retained every covered chunk
+
+**2026-11-19 · LAN to Hub continuity.** The LAN handoff kept each reusable plaintext chunk in a map before handing it to Hub storage. Heap usage could grow with the size of a partial file. It now verifies and writes one span at a time and preserves prior verified Hub chunks. Exact disk and heap behavior on a multi-gigabyte handoff is MODREV-03.
+
+## ERROR-1037 — Quick Settings stopped the application engine
+
+**2026-11-19 · Android.** The discoverability tile closed the mesh, chats, transfers and store while the app-level readiness flag remained set. The tile now uses Hidden mode and leaves the existing engine available. Live tile and background-service acceptance is MODREV-02.
+
+
 ## ERROR-1031 — Hub required mode does not refuse readable group traffic
 
 **2026-11-18 · Hub relay · Status: OPEN.** The relay reads group encryption mode when deciding whether to audit inspectable content. Recipient-targeted and group-targeted delivery paths still route readable group frames when the configured mode requires encryption. Current clients have recipient-side checks, which run after the relay boundary. Require the appropriate group transport envelope at the Hub before live or mailbox delivery and make the refusal observable to the sender. Source is IF-01 in the [module audit](../docs/audit/2026-11-17-module-if-review.md#findings-to-act-on). Static trace only at discovery.

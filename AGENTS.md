@@ -917,6 +917,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-19 — Feature and module review remediation.** The latest changes address voice capture pause, transfer handoff, desktop database access, Android service lifecycle, Hub authorization and retry behavior, group creation, and vault recovery. See [the remediation record](docs/audit/2026-11-19-feature-module-remediation.md), ADR-366, and the MODREV device checks in the test backlog.
+
 **2026-11-18 — Hub group audit fixes.** ADR-365 records relay encryption policy enforcement, enrollment-scoped policy refresh, atomic and replay-safe group creation, and Hub directory group invite links. Server, shared JVM and UI tests, Android debug APK assembly and desktop compile passed. IFREV-01..06 track the live Hub and installed app checks.
 
 **2026-11-15 — Windows inline video and media timeline refresh.** ADR-364 and UI-018 document the Media Foundation bridge, the shared timeline, and Android's ten-second double-tap gesture. Installed Windows and physical Android acceptance are tracked by MEDIA-PLAY-03/04.
