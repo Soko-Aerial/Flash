@@ -93,6 +93,9 @@ public sealed interface PttFloorEvent {
 
     /** Mic capture failed after TALKING began: release the floor we cannot use. */
     public data object MicDenied : PttFloorEvent
+
+    /** Transport session to [peerId] dropped. */
+    public data class PeerDisconnected(val peerId: String) : PttFloorEvent
 }
 
 public enum class PttEndReason {
@@ -143,6 +146,26 @@ public object PttFloorMachine {
                 emptyList()
             }
             return PttTransition(state, effects)
+        }
+        if (event is PttFloorEvent.PeerDisconnected) {
+            return when (state) {
+                is PttFloorState.Talking -> PttTransition(
+                    state,
+                    listOf(PttFloorEffect.RemoveMember(state.sessionId, event.peerId)),
+                )
+                is PttFloorState.Listening -> if (event.peerId == state.holderId) {
+                    PttTransition(
+                        PttFloorState.Idle,
+                        listOf(
+                            PttFloorEffect.StopPlayout(state.sessionId, PttEndReason.TIMEOUT),
+                            PttFloorEffect.NotifyEnded(PttEndReason.TIMEOUT, state.holderName),
+                        ),
+                    )
+                } else {
+                    PttTransition(state, emptyList())
+                }
+                is PttFloorState.Idle -> PttTransition(state, emptyList())
+            }
         }
         return when (state) {
             is PttFloorState.Idle -> reduceIdle(event)

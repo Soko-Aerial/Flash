@@ -34,9 +34,13 @@ internal class JvmPttCapture(
     private val running = AtomicBoolean(false)
     private val packetsEnabled = AtomicBoolean(false)
     private val lossReported = AtomicBoolean(false)
+    private val inputLock = Any()
 
     @Volatile
     private var executor: ExecutorService? = null
+
+    @Volatile
+    private var workerThread: Thread? = null
 
     @Volatile
     private var input: PttPcmInput? = null
@@ -79,6 +83,7 @@ internal class JvmPttCapture(
     }
 
     private fun captureLoop(line: PttPcmInput, bytesPerPacket: Int) {
+        workerThread = Thread.currentThread()
         val chunk = ByteArray(bytesPerPacket)
         var offset = 0
         var stalledSinceMs = NOT_STALLED
@@ -113,6 +118,7 @@ internal class JvmPttCapture(
             }
         } finally {
             val unexpected = running.getAndSet(false)
+            workerThread = null
             closeInput()
             shutdownExecutorFromWorker()
             if (unexpected && lossReported.compareAndSet(false, true)) {
@@ -129,22 +135,34 @@ internal class JvmPttCapture(
     override fun stop() {
         packetsEnabled.set(false)
         running.set(false)
-        closeInput()
+        runCatching { input?.stop() }
         val service = executor
         if (service != null) {
             service.shutdown()
-            runCatching { service.awaitTermination(1L, TimeUnit.SECONDS) }
-            service.shutdownNow()
+            if (Thread.currentThread() !== workerThread) {
+                val terminated = runCatching { service.awaitTermination(1L, TimeUnit.SECONDS) }.getOrDefault(false)
+                if (!terminated) {
+                    closeInput()
+                    service.shutdownNow()
+                    runCatching { service.awaitTermination(250L, TimeUnit.MILLISECONDS) }
+                }
+            } else {
+                service.shutdownNow()
+            }
             if (executor === service) executor = null
         }
+        closeInput()
     }
 
     private fun closeInput() {
-        val current = input ?: return
+        val current = synchronized(inputLock) {
+            val existing = input ?: return
+            input = null
+            existing
+        }
         // stop() first: it is what releases a read that is blocked on the device.
         runCatching { current.stop() }
         runCatching { current.close() }
-        if (input === current) input = null
     }
 
     private fun shutdownExecutorFromWorker() {

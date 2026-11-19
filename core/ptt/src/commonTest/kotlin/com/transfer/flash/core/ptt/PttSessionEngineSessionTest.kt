@@ -550,6 +550,70 @@ class PttSessionEngineSessionTest {
         }
     }
 
+    @Test
+    fun `onPeerDisconnected frees stalled listening floor immediately without 5s timeout`() = runTest {
+        withEngine { engine ->
+            val notices = collectNotices(engine)
+            val playout = listenTo(engine)
+
+            engine.onPeerDisconnected(PEER)
+
+            awaitUntil("idle immediately on talker disconnect") { engine.state.value is PttFloorState.Idle }
+            awaitUntil("playout stopped") { playout.stopped }
+            assertTrue("Lost Ann — listening stopped" in notices.snapshot())
+        }
+    }
+
+    @Test
+    fun `onPeerDisconnected removes dropped listener from talker fan-out`() = runTest {
+        members = listOf(PEER, "peer-b")
+        withEngine { engine ->
+            engine.onPttButton()
+            awaitUntil("talking with 2 members") {
+                engine.state.value is PttFloorState.Talking && engine.stats.value?.members == 2
+            }
+
+            engine.onPeerDisconnected("peer-b")
+
+            awaitUntil("dropped listener removed from fan-out") { engine.stats.value?.members == 1 }
+            assertIs<PttFloorState.Talking>(engine.state.value)
+        }
+    }
+
+    @Test
+    fun `shutdown sends Stop while talking and Leave while listening`() = runTest {
+        val talkingEngine = newEngine()
+        talkingEngine.onPttButton()
+        awaitUntil("packets enabled") { audio.captures.snapshot().firstOrNull()?.packetsEnabled == true }
+        talkingEngine.shutdown()
+        awaitUntil("Stop sent on shutdown") { sentFrames<PttSessionFrame.Stop>().isNotEmpty() }
+
+        val listeningEngine = newEngine()
+        listenTo(listeningEngine)
+        listeningEngine.shutdown()
+        awaitUntil("Leave sent on shutdown") { sentFrames<PttSessionFrame.Leave>().isNotEmpty() }
+    }
+
+    @Test
+    fun `stale onCaptureLost callback from previous session does not end a new talk session`() = runTest {
+        withEngine { engine ->
+            engine.onPttButton()
+            awaitUntil("first capture enabled") { audio.captures.snapshot().firstOrNull()?.packetsEnabled == true }
+            val firstCapture = audio.captures.snapshot().single()
+
+            engine.stopLocal()
+            awaitUntil("idle after stop") { engine.state.value is PttFloorState.Idle }
+
+            engine.onPttButton()
+            awaitUntil("second capture enabled") { audio.captures.snapshot().size == 2 && audio.captures.snapshot()[1].packetsEnabled }
+
+            // Fire the stale capture's onCaptureLost callback while the second session is live.
+            firstCapture.lose()
+            withContext(Dispatchers.Default) { delay(100) }
+            assertIs<PttFloorState.Talking>(engine.state.value)
+        }
+    }
+
     private companion object {
         const val LOCAL_ID = "self-device"
         const val LOCAL_NAME = "Self"

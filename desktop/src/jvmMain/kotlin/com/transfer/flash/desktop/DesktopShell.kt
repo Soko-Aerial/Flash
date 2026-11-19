@@ -48,6 +48,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.calling.CallIceServerSpec
+import com.transfer.flash.core.calling.CallRouteCapabilities
+import com.transfer.flash.core.calling.OffLanCallEligibility
+import com.transfer.flash.core.calling.parseCallMediaPathPolicy
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashDeviceKind
@@ -746,14 +750,23 @@ public fun DesktopShell(
                 fallback?.transport ?: base.header.transport
             }
             val isColleaguePeer = base.header.isColleague || (fallback?.isColleague == true)
+            val isPeerRevoked = engine.trust.isRevoked(FlashDeviceId(convId))
             val offLanCallReady = engine.enterpriseHub?.let { hub ->
                 val cfg = hub.validCallIceConfig()
-                hub.relay.state.value.canSend &&
-                    cfg != null &&
-                    cfg.offLanCallingSupported &&
-                    cfg.iceServers.isNotEmpty()
+                CallRouteCapabilities(
+                    isDirectLanReachable = isDirectPeerOnline,
+                    isHubConnected = hub.relay.state.value.canSend,
+                    hubSupportsOffLanCalling = cfg?.offLanCallingSupported == true,
+                    peerSupportsOffLanCalling = isColleaguePeer || convId in hub.hubOnlinePeerIds.value,
+                    isPeerRevoked = isPeerRevoked,
+                    mediaPolicy = parseCallMediaPathPolicy(cfg?.mediaPolicy),
+                    iceServers = cfg?.iceServers.orEmpty()
+                        .filter { it.urls.isNotEmpty() }
+                        .map { CallIceServerSpec(it.urls, it.username, it.credential) },
+                ).evaluateOffLanEligibility() is OffLanCallEligibility.Supported
             } == true
-            val canShowCallActions = base.header.showCallActions &&
+            val canShowCallActions = !isPeerRevoked &&
+                base.header.showCallActions &&
                 (isDirectPeerOnline || (!isColleaguePeer && resolvedTransport != FlashNetworkTransport.Relay) || offLanCallReady)
             val header = base.header.copy(
                 title = resolvedTitle,

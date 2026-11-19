@@ -96,4 +96,19 @@ public class RadioDedupCache(private val maxSize: Int = 1000) {
     public fun clear(): Unit = synchronized(seen) {
         seen.clear()
     }
+
+    internal fun snapshot(): List<String> = synchronized(seen) {
+        seen.toList()
+    }
+
+    internal fun restore(keys: List<String>) = synchronized(seen) {
+        for (key in keys) {
+            if (key in seen) continue
+            if (seen.size >= maxSize) {
+                val first = seen.first()
+                seen.remove(first)
+            }
+            seen.add(key)
+        }
+    }
 }

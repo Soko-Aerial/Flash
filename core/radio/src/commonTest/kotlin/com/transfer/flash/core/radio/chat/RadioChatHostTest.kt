@@ -21,6 +21,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
@@ -146,5 +147,82 @@ class RadioChatHostTest {
         val receipt = withTimeout(3000) { receipts.await() }
         assertEquals("msg-1", receipt.messageId)
         host.close()
+    }
+
+    @Test
+    fun `host preserves retry frames and pending ACKs across driver swap so reconnect never creates duplicate bubbles`() = runTest {
+        val air = FakeAirChannel()
+        val storeA = PersistentRadioStore(InMemoryRadioStatePersistence())
+        val storeB = PersistentRadioStore(InMemoryRadioStatePersistence())
+
+        fun buildSession(id: String, store: PersistentRadioStore) =
+            RadioSession(localId = id, crypto = crypto, replayStore = store, counterStore = store)
+
+        val settings = MutableStateFlow(RadioChatSettings(true, RadioSecurityProfile.PROFILE_M_ENCRYPTED))
+        val driversA = MutableStateFlow<KissTncDriver?>(null)
+        val hostA = RadioChatHost(backgroundScope, driversA, settings) { sc, d ->
+            RadioChatEngine(
+                localDeviceId = "station-a",
+                scope = sc,
+                driver = d,
+                session = buildSession("station-a", storeA),
+                pairingAdapter = RadioPairingAdapter("station-a", trust, crypto),
+                authorisationStore = InMemoryRadioAuthorisationStore(auth),
+            )
+        }
+        val driverB = newDriver("b", backgroundScope, air)
+        val engineB = RadioChatEngine(
+            localDeviceId = "station-b",
+            scope = backgroundScope,
+            driver = driverB,
+            session = buildSession("station-b", storeB),
+            pairingAdapter = RadioPairingAdapter("station-b", trust, crypto),
+            authorisationStore = InMemoryRadioAuthorisationStore(auth),
+        )
+        val driverA1 = newDriver("a1", backgroundScope, air)
+        driversA.value = driverA1
+        driverA1.start()
+        driverB.start()
+        runCurrent()
+        withTimeout(3000) {
+            while (hostA.engine.value?.isConnected != true || !engineB.isConnected) delay(20)
+        }
+
+        val receivedOnB = mutableListOf<RadioChatInbound>()
+        val rxJob = backgroundScope.launch { engineB.inboundMessages.collect { receivedOnB += it } }
+        val receiptsOnA = mutableListOf<RadioChatReceipt>()
+        val receiptJob = backgroundScope.launch { hostA.deliveryReceipts.collect { receiptsOnA += it } }
+        runCurrent()
+
+        val first = hostA.engine.value!!.sendText("station-b", "msg-swap-1", "hello swap", sentAtMs = 1000L)
+        val firstCounter = assertIs<RadioChatSendOutcome.SentWaitingAck>(first).firstCounter
+        withTimeout(3000) { while (receivedOnB.isEmpty()) delay(20) }
+
+        // Transient disconnect drops driver -> null -> new driver2 (simulating reconnect).
+        driversA.value = null
+        driverA1.stop()
+        runCurrent()
+        val driverA2 = newDriver("a2", backgroundScope, air)
+        driversA.value = driverA2
+        driverA2.start()
+        runCurrent()
+        withTimeout(3000) {
+            while (hostA.engine.value?.isConnected != true) delay(20)
+        }
+
+        // Retrying the same messageId after swap() must reuse the original counter and not produce a second bubble on B.
+        val retry = hostA.engine.value!!.sendText("station-b", "msg-swap-1", "hello swap", sentAtMs = 1000L)
+        val retryCounter = assertIs<RadioChatSendOutcome.SentWaitingAck>(retry).firstCounter
+        assertEquals(firstCounter, retryCounter, "retry after swap() must reuse original counter")
+
+        withTimeout(3000) { while (receiptsOnA.isEmpty()) delay(20) }
+        delay(100)
+        assertEquals(1, receivedOnB.size, "B must only emit one message bubble across A's reconnect retry")
+        assertEquals("msg-swap-1", receiptsOnA.first().messageId)
+
+        rxJob.cancel()
+        receiptJob.cancel()
+        engineB.close()
+        hostA.close()
     }
 }

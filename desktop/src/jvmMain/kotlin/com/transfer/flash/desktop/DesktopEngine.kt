@@ -14,8 +14,13 @@ import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.CallIceResolution
+import com.transfer.flash.core.calling.CallIceServerSpec
+import com.transfer.flash.core.calling.CallRouteCapabilities
 import com.transfer.flash.core.calling.FEATURE_VIDEO_UPGRADE
 import com.transfer.flash.core.calling.FlashCalling
+import com.transfer.flash.core.calling.OffLanCallEligibility
+import com.transfer.flash.core.calling.parseCallMediaPathPolicy
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
@@ -1950,10 +1955,17 @@ public class DesktopEngine(
                 hubFileDao = db.hubFileDao(),
                 offLanCallSupported = {
                     val cfg = hub.validCallIceConfig()
-                    hub.relay.state.value.canSend &&
-                        cfg != null &&
-                        cfg.offLanCallingSupported &&
-                        cfg.iceServers.isNotEmpty()
+                    CallRouteCapabilities(
+                        isDirectLanReachable = false,
+                        isHubConnected = hub.relay.state.value.canSend,
+                        hubSupportsOffLanCalling = cfg?.offLanCallingSupported == true,
+                        peerSupportsOffLanCalling = true,
+                        isPeerRevoked = false,
+                        mediaPolicy = parseCallMediaPathPolicy(cfg?.mediaPolicy),
+                        iceServers = cfg?.iceServers.orEmpty()
+                            .filter { it.urls.isNotEmpty() }
+                            .map { CallIceServerSpec(it.urls, it.username, it.credential) },
+                    ).evaluateOffLanEligibility() is OffLanCallEligibility.Supported
                 },
                 allowPersonalHubLink = { groupPolicyMonitor.currentPolicy().allowPersonalHubLink },
                 groupE2eeMode = { groupPolicyMonitor.currentPolicy().groupE2eeMode },
@@ -2077,7 +2089,13 @@ public class DesktopEngine(
             // G2: Ethernet or the Wi-Fi band, cached (netsh is a process spawn) and never blocking.
             networkBand = DesktopNetworkBand(scope).also { it.start() }::current,
             sendFrame = { frame, peerId -> sendCallFrame(network, peerId, frame) },
-            iceConfigProvider = { peerId -> resolveIceConfigForPeer(network.activeSessions.value.containsKey(FlashDeviceId(peerId))) },
+            callIceResolver = { peerId ->
+                resolveCallIceForPeer(
+                    peerId = peerId,
+                    hasLanSession = network.activeSessions.value.containsKey(FlashDeviceId(peerId)),
+                    discoveredOnLan = discovery.discoveredEndpoints.value.any { it.deviceId.value == peerId },
+                )
+            },
             // Every terminated call becomes a row in the peer's thread (UI-050), mirroring the
             // app host. Each side writes its own row — no wire frame involved. Fires on
             // whichever thread ended the call, so this only logs + launches into the repo.
@@ -2406,6 +2424,7 @@ public class DesktopEngine(
                         peerDeviceId = stale.peerDeviceId.value,
                         onSignalingLost = { callsImpl?.onSignalingLost(it) },
                     )
+                    pttImpl?.onPeerDisconnected(stale.peerDeviceId.value)
                     FlashLog.i(
                         TAG_WS,
                         "Session gone peer='${stale.peer.friendlyName}' id=${stale.peerDeviceId.value}",
@@ -2800,26 +2819,45 @@ public class DesktopEngine(
     private fun peerIdFor(transferId: String): String =
         transferImpl?.activeTransfers?.value?.firstOrNull { it.id.value == transferId }?.peerDeviceId.orEmpty()
 
-    private suspend fun resolveIceConfigForPeer(
+    private suspend fun resolveCallIceForPeer(
+        peerId: String,
         hasLanSession: Boolean,
-    ): Pair<List<com.shepeliev.webrtckmp.IceServer>, com.shepeliev.webrtckmp.IceTransportPolicy> {
-        if (hasLanSession) {
-            return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
+        discoveredOnLan: Boolean,
+    ): CallIceResolution {
+        val isRevoked = trustStore.isRevoked(FlashDeviceId(peerId)) ||
+            (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isRevokedColleague(peerId) == true)
+        if (isRevoked) {
+            return CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.PEER_REVOKED)
         }
-        val cfg = enterpriseHubRef?.let { it.ensureFreshCallIceConfig() ?: it.validCallIceConfig() }
-            ?: return emptyList<com.shepeliev.webrtckmp.IceServer>() to com.shepeliev.webrtckmp.IceTransportPolicy.All
-        val servers = cfg.iceServers.map { server ->
-            com.transfer.flash.core.calling.CallIceServerSpec(
-                urls = server.urls,
-                username = server.username ?: "",
-                credential = server.credential ?: "",
-            ).toWebRtcIceServer()
+        if (hasLanSession || !enterpriseTrustStore.isEnrolled) {
+            return CallRouteCapabilities(
+                isDirectLanReachable = true,
+                isHubConnected = false,
+                hubSupportsOffLanCalling = false,
+                peerSupportsOffLanCalling = false,
+                isPeerRevoked = false,
+            ).resolveCallIce()
         }
-        val policy = when (cfg.mediaPolicy.uppercase()) {
-            "RELAY_ONLY" -> com.shepeliev.webrtckmp.IceTransportPolicy.Relay
-            else -> com.shepeliev.webrtckmp.IceTransportPolicy.All
+        val hub = enterpriseHubRef
+        val cfg = hub?.let { it.ensureFreshCallIceConfig() ?: it.validCallIceConfig() }
+        val caps = CallRouteCapabilities(
+            isDirectLanReachable = false,
+            isHubConnected = hub?.relay?.state?.value?.canSend == true,
+            hubSupportsOffLanCalling = cfg?.offLanCallingSupported == true,
+            peerSupportsOffLanCalling = orgPeerResolverRef?.isOrgPeer(peerId) == true ||
+                hub?.hubOnlinePeerIds?.value?.contains(peerId) == true,
+            isPeerRevoked = false,
+            mediaPolicy = parseCallMediaPathPolicy(cfg?.mediaPolicy),
+            iceServers = cfg?.iceServers.orEmpty()
+                .filter { it.urls.isNotEmpty() }
+                .map { CallIceServerSpec(it.urls, it.username, it.credential) },
+        )
+        val resolved = caps.resolveCallIce(ttlSeconds = cfg?.ttlSeconds)
+        return if (resolved is CallIceResolution.Unavailable && discoveredOnLan) {
+            caps.copy(isDirectLanReachable = true).resolveCallIce()
+        } else {
+            resolved
         }
-        return servers to policy
     }
 
     /**
@@ -2851,7 +2889,20 @@ public class DesktopEngine(
         }
         val hub = enterpriseHubRef
         val iceCfg = if (hub != null && hub.relay.state.value.canSend) hub.ensureFreshCallIceConfig() else null
-        if (hub != null && hub.relay.state.value.canSend && iceCfg != null && iceCfg.offLanCallingSupported) {
+        val offLanCaps = CallRouteCapabilities(
+            isDirectLanReachable = false,
+            isHubConnected = hub?.relay?.state?.value?.canSend == true,
+            hubSupportsOffLanCalling = iceCfg?.offLanCallingSupported == true,
+            peerSupportsOffLanCalling = (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isOrgPeer(peerId) == true) ||
+                hub?.hubOnlinePeerIds?.value?.contains(peerId) == true,
+            isPeerRevoked = trustStore.isRevoked(FlashDeviceId(peerId)) ||
+                (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isRevokedColleague(peerId) == true),
+            mediaPolicy = parseCallMediaPathPolicy(iceCfg?.mediaPolicy),
+            iceServers = iceCfg?.iceServers.orEmpty()
+                .filter { it.urls.isNotEmpty() }
+                .map { CallIceServerSpec(it.urls, it.username, it.credential) },
+        )
+        if (hub != null && offLanCaps.evaluateOffLanEligibility() is OffLanCallEligibility.Supported) {
             val sent = hub.relay.sendCallSignal(
                 com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(
                     to = peerId,

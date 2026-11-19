@@ -23,9 +23,11 @@ import com.transfer.flash.core.radio.wire.RadioKind
 import com.transfer.flash.core.radio.wire.RadioPairingAdapter
 import com.transfer.flash.core.radio.wire.RadioSession
 import com.transfer.flash.core.radio.wire.RadioWire
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Domain engine for radio text messaging, delivery tracking, multi-lane priority pacing,
@@ -109,10 +112,10 @@ public class RadioChatEngine(
      * re-ACKs a duplicate), never a lost message - see the table's own note.
      */
     private val pendingAcks = PendingAckTable()
-    private val pendingMutex = Mutex()
+    private val pendingLock = Any()
 
     /** How many texts are waiting for an ACK. Tests and diagnostics only. */
-    internal val pendingAckCount: Int get() = pendingAcks.size
+    internal val pendingAckCount: Int get() = synchronized(pendingLock) { pendingAcks.size }
 
     /**
      * One transmit's encoded frames, kept so a retry puts the SAME counters back on the air.
@@ -275,7 +278,7 @@ public class RadioChatEngine(
 
         val nowMs = timeSource.nowMs()
         // ERROR-869: a retry is the same frame again, not a re-encoded one (see [SentFrames]).
-        val repeat = pendingMutex.withLock {
+        val repeat = synchronized(pendingLock) {
             lastSentFrames[messageId]?.takeIf { it.bytes == textBytes.size && nowMs - it.atMs <= FRAME_REUSE_MS }
         }
         val ax25Frames: List<ByteArray>
@@ -325,26 +328,40 @@ public class RadioChatEngine(
             onCompleted = { deferred.complete(it) },
         )
 
-        if (priority == RadioChatPriority.EMERGENCY) {
-            laneEmergency.send(task)
-        } else {
-            laneText.send(task)
+        // Register pending ACK BEFORE submitting to the priority lane so an immediate ACK
+        // arriving right after the frame hits the wire cannot race ahead of registration.
+        synchronized(pendingLock) {
+            pendingAcks.put(firstCounter, messageId, recipientId, sentAtMs, nowMs, txAtMs = nowMs)
+            lastSentFrames[messageId] = SentFrames(ax25Frames, firstCounter, textBytes.size, nowMs)
+            while (lastSentFrames.size > MAX_REMEMBERED_FRAMES) {
+                val oldest = lastSentFrames.keys.firstOrNull() ?: break
+                lastSentFrames.remove(oldest)
+            }
         }
 
-        val txOutcome = deferred.await()
+        val txOutcome = try {
+            if (priority == RadioChatPriority.EMERGENCY) {
+                laneEmergency.send(task)
+            } else {
+                laneText.send(task)
+            }
+            deferred.await()
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) {
+                synchronized(pendingLock) {
+                    pendingAcks.remove(firstCounter, timeSource.nowMs())
+                }
+            }
+            throw e
+        }
         return when (txOutcome) {
             is TxResult.Sent -> {
                 // Measure the ACK round trip from the moment the transmitter finished, not from when
                 // the user composed the message (RADIO-PATH-01; the old figure included queueing and
                 // Profile-M refusals, which made the documented 9.4 s look like air time).
                 val txAtMs = timeSource.nowMs()
-                pendingMutex.withLock {
-                    pendingAcks.put(firstCounter, messageId, recipientId, sentAtMs, nowMs, txAtMs = txAtMs)
-                    lastSentFrames[messageId] = SentFrames(ax25Frames, firstCounter, textBytes.size, nowMs)
-                    while (lastSentFrames.size > MAX_REMEMBERED_FRAMES) {
-                        val oldest = lastSentFrames.keys.firstOrNull() ?: break
-                        lastSentFrames.remove(oldest)
-                    }
+                synchronized(pendingLock) {
+                    pendingAcks.updateTxAtMs(firstCounter, txAtMs)
                 }
                 FlashProbe.emit(
                     "radio.tx.text",
@@ -356,22 +373,28 @@ public class RadioChatEngine(
                 )
                 RadioChatSendOutcome.SentWaitingAck(firstCounter)
             }
-                    is TxResult.LinkDown -> {
-                        FlashProbe.emit(
-                            "radio.tx.fail",
-                            "peer" to FlashProbe.short(recipientId),
-                            "reason" to "link_down",
-                        )
-                        RadioChatSendOutcome.NotConnected("Radio link went down during transmit")
-                    }
-                    is TxResult.QueueFull -> {
-                        FlashProbe.emit(
-                            "radio.tx.fail",
-                            "peer" to FlashProbe.short(recipientId),
-                            "reason" to "queue_full",
-                        )
-                        RadioChatSendOutcome.Failed("Radio driver transmit queue full")
-                    }
+            is TxResult.LinkDown -> {
+                synchronized(pendingLock) {
+                    pendingAcks.remove(firstCounter, timeSource.nowMs())
+                }
+                FlashProbe.emit(
+                    "radio.tx.fail",
+                    "peer" to FlashProbe.short(recipientId),
+                    "reason" to "link_down",
+                )
+                RadioChatSendOutcome.NotConnected("Radio link went down during transmit")
+            }
+            is TxResult.QueueFull -> {
+                synchronized(pendingLock) {
+                    pendingAcks.remove(firstCounter, timeSource.nowMs())
+                }
+                FlashProbe.emit(
+                    "radio.tx.fail",
+                    "peer" to FlashProbe.short(recipientId),
+                    "reason" to "queue_full",
+                )
+                RadioChatSendOutcome.Failed("Radio driver transmit queue full")
+            }
         }
     }
 
@@ -504,7 +527,7 @@ public class RadioChatEngine(
                                 ((b[2].toLong() and 0xFF) shl 8) or
                                 (b[3].toLong() and 0xFF)
 
-                            val pending = pendingMutex.withLock {
+                            val pending = synchronized(pendingLock) {
                                 pendingAcks.remove(ackedCounter, nowMs)
                             }
                             if (pending != null) {
@@ -594,6 +617,53 @@ public class RadioChatEngine(
             // which is bounded and cheaper than dropping the ACK and making the peer resend a whole message.
             laneAck.send(task)
         }
+    }
+
+    internal class ContinuitySnapshot(
+        val localDeviceId: String,
+        val pendingAcks: List<Pair<Long, PendingAckTable.PendingOutbound>>,
+        val sentFrames: List<Pair<String, SentFramesSnapshot>>,
+        val dedupKeys: List<String>,
+    )
+
+    internal class SentFramesSnapshot(
+        val frames: List<ByteArray>,
+        val firstCounter: Long,
+        val bytes: Int,
+        val atMs: Long,
+    )
+
+    internal fun exportContinuity(): ContinuitySnapshot {
+        val nowMs = timeSource.nowMs()
+        val (acks, frames) = synchronized(pendingLock) {
+            pendingAcks.snapshot(nowMs) to lastSentFrames.entries.map { (id, f) ->
+                id to SentFramesSnapshot(f.frames, f.firstCounter, f.bytes, f.atMs)
+            }
+        }
+        return ContinuitySnapshot(
+            localDeviceId = localDeviceId,
+            pendingAcks = acks,
+            sentFrames = frames,
+            dedupKeys = dedupCache.snapshot(),
+        )
+    }
+
+    internal fun importContinuity(snapshot: ContinuitySnapshot) {
+        if (snapshot.localDeviceId != localDeviceId) return
+        val nowMs = timeSource.nowMs()
+        synchronized(pendingLock) {
+            pendingAcks.restore(snapshot.pendingAcks, nowMs)
+            for ((id, f) in snapshot.sentFrames) {
+                if (id !in lastSentFrames && nowMs - f.atMs <= FRAME_REUSE_MS) {
+                    lastSentFrames[id] = SentFrames(f.frames, f.firstCounter, f.bytes, f.atMs)
+                }
+            }
+            while (lastSentFrames.size > MAX_REMEMBERED_FRAMES) {
+                val oldest = lastSentFrames.keys.firstOrNull() ?: break
+                lastSentFrames.remove(oldest)
+            }
+        }
+        dedupCache.restore(snapshot.dedupKeys)
     }
 
     override fun close() {

@@ -2,8 +2,11 @@
 
 package com.transfer.flash.core.calling
 
+import com.shepeliev.webrtckmp.BundlePolicy
 import com.shepeliev.webrtckmp.IceServer
 import com.shepeliev.webrtckmp.IceTransportPolicy
+import com.shepeliev.webrtckmp.RtcConfiguration
+import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallLogEntry
@@ -151,6 +154,11 @@ public class CallCoordinator(
     },
     /** HR9: stateful guard for Hub-relayed ephemeral signaling (TTL, replay, sequence, terminal calls, revocations). */
     private val offLanSignalGuard: OffLanCallSignalGuard = OffLanCallSignalGuard(),
+    /**
+     * HR9: full per-peer ICE resolution using [CallRouteCapabilities] (LAN host ICE, off-LAN policy + TURN TTL,
+     * or explicit refusal when a route is unavailable). When null, falls back to [iceConfigProvider].
+     */
+    private val callIceResolver: (suspend (peerId: String) -> CallIceResolution)? = null,
 ) : FlashCalling {
     /** When each refusal line (see [logRefusal]) was last written. */
     private val refusalLoggedAt = SyncMap<String, Long>()
@@ -226,11 +234,37 @@ public class CallCoordinator(
 
     private var stateCollector: Job? = null
 
+    private suspend fun resolveCallIce(peerId: String): CallIceResolution {
+        callIceResolver?.let { return it(peerId) }
+        val (iceServers, icePolicy) = iceConfigProvider(peerId)
+        return CallIceResolution.Ready(
+            rtcConfiguration = RtcConfiguration(
+                bundlePolicy = BundlePolicy.MaxBundle,
+                rtcpMuxPolicy = RtcpMuxPolicy.Require,
+                iceTransportPolicy = icePolicy,
+                iceServers = iceServers,
+                iceCandidatePoolSize = 1,
+            ),
+            isOffLan = iceServers.isNotEmpty(),
+            mediaPolicy = if (icePolicy == IceTransportPolicy.Relay) {
+                CallMediaPathPolicy.RELAY_ONLY
+            } else {
+                CallMediaPathPolicy.DIRECT_PREFERRED_RELAY_FALLBACK
+            },
+            ttlSeconds = null,
+        )
+    }
+
     /** Outgoing call entry point (chat header call / video-call buttons). */
     override suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean {
         if (!isTrustedPeer(peerId)) return false // trust gate: only paired peers are callable
         clearEndedGroupSession()
         if (currentSession != null || currentGroupSession != null) return false // one call at a time
+        val iceRes = resolveCallIce(peerId)
+        if (iceRes is CallIceResolution.Unavailable) {
+            FlashLog.w("CALL_OFFLAN", "Outgoing call to $peerId refused: ${iceRes.reason}")
+            return false
+        }
         val resolvedName = peerNameResolver(peerId)?.ifBlank { null }
             ?: peerName.takeIf { it.isNotBlank() && it != peerId }
             ?: peerId
@@ -240,6 +274,7 @@ public class CallCoordinator(
             peerName = resolvedName,
             direction = FlashCallDirection.OUTGOING,
             video = video,
+            iceResolution = iceRes as CallIceResolution.Ready,
         )
         currentSession = session
         observeSession(session)
@@ -268,7 +303,6 @@ public class CallCoordinator(
 
         warmRosterNames(groupId)
         val callId = com.transfer.flash.core.common.id.UuidIdGenerator.newId()
-        val (iceServers, icePolicy) = iceConfigProvider(groupId)
         val session = FlashGroupCallSession(
             callId = callId,
             groupId = groupId,
@@ -287,8 +321,7 @@ public class CallCoordinator(
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
             screenCapture = screenCapture,
-            iceServers = iceServers,
-            iceTransportPolicy = icePolicy,
+            iceConfigForPeer = ::resolveCallIce,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -314,7 +347,6 @@ public class CallCoordinator(
         val groupName = groupCallUi?.groupName ?: "Group Call"
         warmRosterNames(groupId)
 
-        val (iceServers, icePolicy) = iceConfigProvider(groupId)
         val session = FlashGroupCallSession(
             callId = callId,
             groupId = groupId,
@@ -333,8 +365,7 @@ public class CallCoordinator(
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
             screenCapture = screenCapture,
-            iceServers = iceServers,
-            iceTransportPolicy = icePolicy,
+            iceConfigForPeer = ::resolveCallIce,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -503,7 +534,7 @@ public class CallCoordinator(
             innerFrame == null ||
             innerFrame.callId != signal.callId ||
             innerFrame.from != signal.fromPeerId ||
-            offLanSignalGuard.isCallTerminal(innerFrame.callId)
+            offLanSignalGuard.isCallTerminal(innerFrame.callId, nowMs)
         ) {
             FlashLog.w(
                 "CALL_OFFLAN",
@@ -684,8 +715,8 @@ public class CallCoordinator(
         peerName: String,
         direction: FlashCallDirection,
         video: Boolean,
+        iceResolution: CallIceResolution.Ready,
     ): FlashCallSession {
-        val (iceServers, icePolicy) = iceConfigProvider(peerId)
         return FlashCallSession(
             callId = callId,
             peerId = peerId,
@@ -702,8 +733,10 @@ public class CallCoordinator(
             performanceMode = performanceMode,
             peerCanUpgrade = { FEATURE_VIDEO_UPGRADE in peerFeatures(peerId) },
             screenCapture = screenCapture,
-            iceServers = iceServers,
-            iceTransportPolicy = icePolicy,
+            iceServers = iceResolution.iceServers,
+            iceTransportPolicy = iceResolution.iceTransportPolicy,
+            initialIceTtlSeconds = iceResolution.ttlSeconds,
+            refreshIceConfig = { resolveCallIce(peerId) },
             onEnded = { ended ->
                 offLanSignalGuard.markCallTerminal(ended.callId)
                 publishCallLog(ended)
@@ -804,6 +837,12 @@ public class CallCoordinator(
     }
 
     private suspend fun startIncoming(peerId: String, frame: CallWireFrame.Invite) {
+        val iceRes = resolveCallIce(peerId)
+        if (iceRes is CallIceResolution.Unavailable) {
+            FlashLog.w("CALL_OFFLAN", "Incoming call ${frame.callId} from $peerId declined: ${iceRes.reason}")
+            sendFrame(CallWireFrame.Decline(callId = frame.callId, from = localDeviceId), peerId)
+            return
+        }
         val resolvedName = peerNameResolver(peerId)?.ifBlank { null }
             ?: frame.callerName.takeIf { it.isNotBlank() && it != peerId }
             ?: peerId
@@ -813,6 +852,7 @@ public class CallCoordinator(
             peerName = resolvedName,
             direction = FlashCallDirection.INCOMING,
             video = frame.video,
+            iceResolution = iceRes as CallIceResolution.Ready,
         )
         currentSession = session
         observeSession(session)
@@ -932,8 +972,12 @@ public class CallCoordinator(
     }
 
     private suspend fun startIncomingGroup(peerId: String, frame: CallWireFrame.GroupInvite) {
+        if (resolveCallIce(peerId) is CallIceResolution.Unavailable) {
+            FlashLog.w("GROUP_CALL", "Incoming group call ${frame.callId} from $peerId declined: ICE route unavailable")
+            sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
+            return
+        }
         warmRosterNames(frame.groupId)
-        val (iceServers, icePolicy) = iceConfigProvider(frame.groupId)
         val session = FlashGroupCallSession(
             callId = frame.callId,
             groupId = frame.groupId,
@@ -952,8 +996,7 @@ public class CallCoordinator(
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
             screenCapture = screenCapture,
-            iceServers = iceServers,
-            iceTransportPolicy = icePolicy,
+            iceConfigForPeer = ::resolveCallIce,
         )
         currentGroupSession = session
         observeGroupSession(session)

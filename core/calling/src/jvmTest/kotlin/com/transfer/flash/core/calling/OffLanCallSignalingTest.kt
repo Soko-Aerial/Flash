@@ -423,4 +423,299 @@ class OffLanCallSignalingTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `resolveCallIce enforces off-LAN policy and preserves direct LAN ICE even when Hub is RELAY_ONLY`() {
+        val turnSpec = CallIceServerSpec(
+            urls = listOf("turn:turn.flash.local:3478?transport=udp"),
+            username = "1700000300:alice",
+            credential = "cred-1",
+        )
+
+        val lanPeerUnderRelayOnlyHub = CallRouteCapabilities(
+            isDirectLanReachable = true,
+            isHubConnected = true,
+            hubSupportsOffLanCalling = true,
+            peerSupportsOffLanCalling = true,
+            isPeerRevoked = false,
+            mediaPolicy = CallMediaPathPolicy.RELAY_ONLY,
+            iceServers = listOf(turnSpec),
+        ).resolveCallIce(ttlSeconds = 3600L)
+        assertTrue(lanPeerUnderRelayOnlyHub is CallIceResolution.Ready)
+        lanPeerUnderRelayOnlyHub as CallIceResolution.Ready
+        assertFalse(lanPeerUnderRelayOnlyHub.isOffLan)
+        assertEquals(IceTransportPolicy.All, lanPeerUnderRelayOnlyHub.iceTransportPolicy)
+        assertTrue(lanPeerUnderRelayOnlyHub.iceServers.isEmpty())
+
+        val offLanRelayWithoutTurn = CallRouteCapabilities(
+            isDirectLanReachable = false,
+            isHubConnected = true,
+            hubSupportsOffLanCalling = true,
+            peerSupportsOffLanCalling = true,
+            isPeerRevoked = false,
+            mediaPolicy = CallMediaPathPolicy.RELAY_ONLY,
+            iceServers = listOf(CallIceServerSpec(urls = listOf("stun:stun.flash.local:3478"))),
+        ).resolveCallIce()
+        assertEquals(
+            CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.NO_COMPATIBLE_ROUTE),
+            offLanRelayWithoutTurn,
+        )
+
+        val revokedEvenOnLan = CallRouteCapabilities(
+            isDirectLanReachable = true,
+            isHubConnected = true,
+            hubSupportsOffLanCalling = true,
+            peerSupportsOffLanCalling = true,
+            isPeerRevoked = true,
+            iceServers = listOf(turnSpec),
+        ).resolveCallIce()
+        assertEquals(
+            CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.PEER_REVOKED),
+            revokedEvenOnLan,
+        )
+    }
+
+    @Test
+    fun `group call resolves ICE per peer leg instead of passing groupId for LAN-only and mixed-route calls`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val requestedIds = mutableListOf<String>()
+        val coordinator = CallCoordinator(
+            localDeviceId = "alice",
+            localName = "Alice",
+            scope = scope,
+            sendFrame = { _, _ -> true },
+            isTrustedPeer = { true },
+            callIceResolver = { peerId ->
+                requestedIds += peerId
+                when (peerId) {
+                    "lan-bob" -> CallRouteCapabilities(
+                        isDirectLanReachable = true,
+                        isHubConnected = true,
+                        hubSupportsOffLanCalling = true,
+                        peerSupportsOffLanCalling = true,
+                        isPeerRevoked = false,
+                        mediaPolicy = CallMediaPathPolicy.RELAY_ONLY,
+                    ).resolveCallIce()
+                    "hub-carol" -> CallRouteCapabilities(
+                        isDirectLanReachable = false,
+                        isHubConnected = true,
+                        hubSupportsOffLanCalling = true,
+                        peerSupportsOffLanCalling = true,
+                        isPeerRevoked = false,
+                        mediaPolicy = CallMediaPathPolicy.RELAY_ONLY,
+                        iceServers = listOf(
+                            CallIceServerSpec(
+                                urls = listOf("turn:turn.flash.local:3478?transport=udp"),
+                                username = "u1",
+                                credential = "c1",
+                            ),
+                        ),
+                    ).resolveCallIce(ttlSeconds = 600L)
+                    else -> CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.NO_COMPATIBLE_ROUTE)
+                }
+            },
+        )
+        try {
+            val groupInvite = CallFrameCodec.encode(
+                CallWireFrame.GroupInvite(
+                    callId = "grp-mixed-1",
+                    from = "lan-bob",
+                    groupId = "group-xyz",
+                    callerName = "Bob",
+                    video = false,
+                    members = listOf("alice", "lan-bob", "hub-carol"),
+                ),
+            )
+            assertTrue(coordinator.onInboundText("lan-bob", groupInvite))
+            withTimeout(2_000L) {
+                coordinator.activeCall.first { it?.callId == "grp-mixed-1" && it.state == FlashCallState.RINGING }
+            }
+            // Inviter "lan-bob" was checked by peerId, never by "group-xyz".
+            assertFalse("groupId must not be passed to ICE resolver: $requestedIds", "group-xyz" in requestedIds)
+            assertTrue("lan-bob" in requestedIds)
+
+            // Verify FlashGroupCallSession resolves distinct per-leg ICE for mixed LAN + Hub peers.
+            val groupSession = FlashGroupCallSession(
+                callId = "grp-mixed-2",
+                groupId = "group-xyz",
+                groupName = "Team",
+                direction = com.transfer.flash.core.calling.model.FlashCallDirection.OUTGOING,
+                video = false,
+                localDeviceId = "alice",
+                localName = "Alice",
+                scope = scope,
+                sendFrame = { _, _ -> true },
+                onEnded = {},
+                iceConfigForPeer = { id ->
+                    when (id) {
+                        "lan-bob" -> CallRouteCapabilities(
+                            isDirectLanReachable = true,
+                            isHubConnected = true,
+                            hubSupportsOffLanCalling = true,
+                            peerSupportsOffLanCalling = true,
+                            isPeerRevoked = false,
+                            mediaPolicy = CallMediaPathPolicy.RELAY_ONLY,
+                        ).resolveCallIce()
+                        "hub-carol" -> CallRouteCapabilities(
+                            isDirectLanReachable = false,
+                            isHubConnected = true,
+                            hubSupportsOffLanCalling = true,
+                            peerSupportsOffLanCalling = true,
+                            isPeerRevoked = false,
+                            mediaPolicy = CallMediaPathPolicy.RELAY_ONLY,
+                            iceServers = listOf(
+                                CallIceServerSpec(
+                                    urls = listOf("turn:turn.flash.local:3478?transport=udp"),
+                                    username = "u1",
+                                    credential = "c1",
+                                ),
+                            ),
+                        ).resolveCallIce(ttlSeconds = 600L)
+                        else -> CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.NO_COMPATIBLE_ROUTE)
+                    }
+                },
+            )
+            val bobIce = groupSession.resolveLegIceForTesting("lan-bob") as CallIceResolution.Ready
+            assertFalse(bobIce.isOffLan)
+            assertEquals(IceTransportPolicy.All, bobIce.iceTransportPolicy)
+            assertTrue(bobIce.iceServers.isEmpty())
+
+            val carolIce = groupSession.resolveLegIceForTesting("hub-carol") as CallIceResolution.Ready
+            assertTrue(carolIce.isOffLan)
+            assertEquals(IceTransportPolicy.Relay, carolIce.iceTransportPolicy)
+            assertEquals(1, carolIce.iceServers.size)
+            assertEquals(600L, carolIce.ttlSeconds)
+
+            val badIce = groupSession.resolveLegIceForTesting("bad-dave")
+            assertTrue(badIce is CallIceResolution.Unavailable)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `coordinator refuses outgoing and declines incoming calls when off-LAN ICE is unavailable`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val sentFrames = mutableListOf<Pair<String, CallWireFrame>>()
+        val coordinator = CallCoordinator(
+            localDeviceId = "alice",
+            localName = "Alice",
+            scope = scope,
+            sendFrame = { frame, peerId ->
+                sentFrames += peerId to frame
+                true
+            },
+            isTrustedPeer = { true },
+            callIceResolver = {
+                CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.NO_COMPATIBLE_ROUTE)
+            },
+        )
+        try {
+            assertFalse(coordinator.startCall("bob", "Bob", video = false))
+            assertEquals(null, coordinator.activeCall.value)
+
+            val invite = CallFrameCodec.encode(
+                CallWireFrame.Invite(callId = "unavailable-in-1", from = "bob", callerName = "Bob", video = false),
+            )
+            coordinator.onInboundText("bob", invite)
+            assertEquals(null, coordinator.activeCall.value)
+            assertTrue(sentFrames.any { it.first == "bob" && it.second is CallWireFrame.Decline })
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `mid-call ICE credential renewal updates PeerConnection configuration`() = runBlocking {
+        assumeFalse(
+            "native WebRTC smoke test skipped on CI (set FLASH_HW_TESTS=1 to run)",
+            System.getenv("CI") == "true" && System.getenv("FLASH_HW_TESTS") != "1",
+        )
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var credentialVersion = 1
+        val session = FlashCallSession(
+            callId = "renew-call-1",
+            peerId = "bob",
+            peerName = "Bob",
+            direction = com.transfer.flash.core.calling.model.FlashCallDirection.OUTGOING,
+            video = false,
+            localDeviceId = "alice",
+            localName = "Alice",
+            scope = scope,
+            sendFrame = { true },
+            iceServers = listOf(
+                CallIceServerSpec(
+                    urls = listOf("turn:127.0.0.1:3478?transport=udp"),
+                    username = "v1:alice",
+                    credential = "cred-1",
+                ).toWebRtcIceServer(),
+            ),
+            iceTransportPolicy = IceTransportPolicy.Relay,
+            initialIceTtlSeconds = 60L,
+            refreshIceConfig = {
+                credentialVersion++
+                CallRouteCapabilities(
+                    isDirectLanReachable = false,
+                    isHubConnected = true,
+                    hubSupportsOffLanCalling = true,
+                    peerSupportsOffLanCalling = true,
+                    isPeerRevoked = false,
+                    mediaPolicy = CallMediaPathPolicy.RELAY_ONLY,
+                    iceServers = listOf(
+                        CallIceServerSpec(
+                            urls = listOf("turn:127.0.0.1:3478?transport=udp"),
+                            username = "v$credentialVersion:alice",
+                            credential = "cred-$credentialVersion",
+                        ),
+                    ),
+                ).resolveCallIce(ttlSeconds = 60L)
+            },
+        )
+        try {
+            assertEquals("v1:alice", session.currentIceConfigForTesting().iceServers.first().username)
+            assertTrue(session.renewIceOnceForTesting())
+            assertEquals("v2:alice", session.currentIceConfigForTesting().iceServers.first().username)
+            assertEquals("cred-2", session.currentIceConfigForTesting().iceServers.first().password)
+
+            // Verify native PeerConnection accepts mid-call setConfiguration + iceRestart offer
+            val pc = PeerConnection(session.currentIceConfigForTesting())
+            try {
+                pc.createDataChannel("renew-smoke")
+                assertTrue(
+                    pc.setConfiguration(
+                        session.currentIceConfigForTesting().copy(
+                            iceServers = listOf(
+                                CallIceServerSpec(
+                                    urls = listOf("turn:127.0.0.1:3478?transport=udp"),
+                                    username = "v3:alice",
+                                    credential = "cred-3",
+                                ).toWebRtcIceServer(),
+                            ),
+                        ),
+                    ),
+                )
+                val restartOffer = pc.createOffer(OfferAnswerOptions(iceRestart = true))
+                assertEquals(SessionDescriptionType.Offer, restartOffer.type)
+            } finally {
+                pc.close()
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun `offLan signal guard rejects blank identifiers and supports deterministic terminal clock`() {
+        val guard = OffLanCallSignalGuard()
+        val now = 1_700_000_000_000L
+        val blankSigId = guard.validateInbound(
+            InboundOffLanCallSignal("", "c1", "bob", 1L, now, 10_000L, "payload"),
+            nowMs = now,
+        )
+        assertEquals(OffLanSignalVerdict.Rejected(OffLanSignalVerdict.Rejected.RejectionReason.EMPTY_PAYLOAD), blankSigId)
+
+        guard.markCallTerminal("c1", nowMs = now)
+        assertTrue(guard.isCallTerminal("c1", nowMs = now))
+        assertFalse(guard.isCallTerminal("c1", nowMs = now + 200_000L))
+    }
 }

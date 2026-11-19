@@ -626,4 +626,106 @@ class RadioGatewayManagerTest {
 
         manager.disable()
     }
+
+    @Test
+    fun `transient disconnect past maxRetryAttempts recovers automatically via slow background probe`() = runTest {
+        val remembered = RememberedRadio("38:D2:00:01:35:B5", "VR-N76")
+        var linkAvailable = true
+        var currentPair: Pair<InMemoryLink, InMemoryLink>? = inMemoryLinkPair("transient-initial")
+
+        val discovery = FakeRadioDeviceDiscovery(
+            linkSupplier = {
+                if (!linkAvailable) throw RuntimeException("Radio temporarily out of range")
+                val pair = currentPair ?: inMemoryLinkPair("transient-recovered").also { currentPair = it }
+                pair.first
+            },
+        )
+        val manager = RadioGatewayManager(
+            scope = backgroundScope,
+            discovery = discovery,
+            rememberedStore = InMemoryRememberedRadioStore(remembered),
+            authorisationStore = InMemoryRadioAuthorisationStore(null),
+            driverFactory = { openLink ->
+                KissTncDriver(
+                    scope = backgroundScope,
+                    openLink = openLink,
+                    config = KissTncConfig(reconnectBaseMs = 10L, reconnectCapMs = 20L),
+                )
+            },
+            maxRetryAttempts = 3,
+            slowRecoveryIntervalMs = 200L,
+        )
+
+        manager.enable()
+        runCurrent()
+        assertTrue(manager.state.value.isConnectedAndReady)
+
+        // Drop the link and keep it offline past maxRetryAttempts (3 Waiting ticks).
+        linkAvailable = false
+        currentPair?.first?.breakLink()
+        currentPair = null
+        advanceTimeBy(150L)
+        runCurrent()
+
+        assertTrue(manager.state.value.isRetryingStopped, "fast retries paused at limit")
+        assertNull(manager.driver.value, "dead driver cleared when fast retries pause")
+
+        // Bring the radio back online and advance past slowRecoveryIntervalMs.
+        linkAvailable = true
+        advanceTimeBy(250L)
+        runCurrent()
+
+        assertTrue(manager.state.value.isConnectedAndReady, "manager must recover automatically after transient outage")
+        assertFalse(manager.state.value.isRetryingStopped)
+        assertNotNull(manager.driver.value)
+        manager.disable()
+    }
+
+    @Test
+    fun `repeated transient disconnects under maxRetryAttempts reset counter on each recovery`() = runTest {
+        val remembered = RememberedRadio("38:D2:00:01:35:B5", "VR-N76")
+        var failNextOpens = 0
+        var currentPair: Pair<InMemoryLink, InMemoryLink>? = inMemoryLinkPair("repeat-0")
+
+        val discovery = FakeRadioDeviceDiscovery(
+            linkSupplier = {
+                if (failNextOpens > 0) {
+                    failNextOpens--
+                    throw RuntimeException("Transient drop")
+                }
+                val pair = currentPair ?: inMemoryLinkPair("repeat-rec").also { currentPair = it }
+                pair.first
+            },
+        )
+        val manager = RadioGatewayManager(
+            scope = backgroundScope,
+            discovery = discovery,
+            rememberedStore = InMemoryRememberedRadioStore(remembered),
+            authorisationStore = InMemoryRadioAuthorisationStore(null),
+            driverFactory = { openLink ->
+                KissTncDriver(
+                    scope = backgroundScope,
+                    openLink = openLink,
+                    config = KissTncConfig(reconnectBaseMs = 10L, reconnectCapMs = 20L),
+                )
+            },
+            maxRetryAttempts = 3,
+        )
+
+        manager.enable()
+        runCurrent()
+        assertTrue(manager.state.value.isConnectedAndReady)
+
+        // Three separate transient disconnects of 2 failures each (total 6 > maxRetryAttempts=3), recovering each time.
+        repeat(3) {
+            failNextOpens = 1
+            currentPair?.first?.breakLink()
+            currentPair = null
+            advanceTimeBy(100L)
+            runCurrent()
+            assertTrue(manager.state.value.isConnectedAndReady, "recovery #$it must succeed")
+            assertFalse(manager.state.value.isRetryingStopped)
+        }
+        manager.disable()
+    }
 }

@@ -127,6 +127,8 @@ public class FlashGroupCallSession(
     /** HR9: ICE servers + transport policy for off-LAN group calls (default empty = host/LAN candidates only). */
     private val iceServers: List<IceServer> = emptyList(),
     private val iceTransportPolicy: IceTransportPolicy = IceTransportPolicy.All,
+    /** HR9: Per-peer ICE resolver so LAN and off-LAN legs in the same group call use their own route policy. */
+    private val iceConfigForPeer: (suspend (peerId: String) -> CallIceResolution)? = null,
 ) : FlashCallMedia {
 
     private fun resolveName(peerId: String, fallback: String? = null): String {
@@ -330,6 +332,9 @@ public class FlashGroupCallSession(
         var trackJob: Job? = null,
         var connJob: Job? = null,
         var signalingGraceJob: Job? = null,
+        var iceRenewalJob: Job? = null,
+        var iceConfig: com.shepeliev.webrtckmp.RtcConfiguration? = null,
+        var iceTtlSeconds: Long? = null,
         val pendingIce: ArrayDeque<IceCandidate> = ArrayDeque(),
         var remoteDescriptionSet: Boolean = false,
         var audioSender: RtpSender? = null,
@@ -1150,9 +1155,47 @@ public class FlashGroupCallSession(
         }
     }
 
+    internal suspend fun resolveLegIceForTesting(peerId: String): CallIceResolution = resolveLegIce(peerId)
+
+    private suspend fun resolveLegIce(peerId: String): CallIceResolution {
+        val resolver = iceConfigForPeer
+        if (resolver != null) {
+            return try {
+                resolver(peerId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                FlashLog.w("GROUP_CALL", "Per-leg ICE resolution failed peer=$peerId: ${t.message}")
+                CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.NO_COMPATIBLE_ROUTE)
+            }
+        }
+        return CallIceResolution.Ready(
+            rtcConfiguration = RtcConfiguration(
+                iceServers = iceServers,
+                iceTransportPolicy = iceTransportPolicy,
+                bundlePolicy = BundlePolicy.MaxBundle,
+                rtcpMuxPolicy = RtcpMuxPolicy.Require,
+                iceCandidatePoolSize = 1,
+            ),
+            isOffLan = iceServers.isNotEmpty(),
+            mediaPolicy = if (iceTransportPolicy == IceTransportPolicy.Relay) {
+                CallMediaPathPolicy.RELAY_ONLY
+            } else {
+                CallMediaPathPolicy.DIRECT_PREFERRED_RELAY_FALLBACK
+            },
+            ttlSeconds = null,
+        )
+    }
+
     /** Ensures a WebRTC leg is established with [peerId]. Pinned: PC create + offer are native. */
     private suspend fun ensureLegConnected(peerId: String) {
         val leg = legs[peerId] ?: return
+        val iceRes = resolveLegIce(peerId)
+        if (iceRes is CallIceResolution.Unavailable) {
+            FlashLog.w("GROUP_CALL", "Skipping leg $peerId: ICE unavailable (${iceRes.reason})")
+            return
+        }
+        iceRes as CallIceResolution.Ready
         leg.legMutex.withLock {
             onMediaThread {
             // Once the session has ended nothing may build a connection: endSession closes each
@@ -1166,7 +1209,7 @@ public class FlashGroupCallSession(
             }
 
             val stream = localStream ?: return@onMediaThread
-            val pc = createPeerConnectionForLeg(leg, stream)
+            val pc = createPeerConnectionForLeg(leg, stream, iceRes)
             leg.peerConnection = pc
 
             // Glare prevention tie-breaker:
@@ -1188,18 +1231,12 @@ public class FlashGroupCallSession(
         }
     }
 
-    private fun createPeerConnectionForLeg(leg: GroupLeg, stream: MediaStream): PeerConnection {
+    private fun createPeerConnectionForLeg(leg: GroupLeg, stream: MediaStream, iceRes: CallIceResolution.Ready): PeerConnection {
         // Callers (ensureLegConnected / handleInboundOffer) already run pinned; the collectors
         // below are pinned at launch so no leg continuation escapes the media thread.
-        val pc = PeerConnection(
-            RtcConfiguration(
-                iceServers = iceServers,
-                iceTransportPolicy = iceTransportPolicy,
-                bundlePolicy = BundlePolicy.MaxBundle,
-                rtcpMuxPolicy = RtcpMuxPolicy.Require,
-                iceCandidatePoolSize = 1,
-            ),
-        )
+        leg.iceConfig = iceRes.rtcConfiguration
+        leg.iceTtlSeconds = iceRes.ttlSeconds
+        val pc = PeerConnection(iceRes.rtcConfiguration)
         leg.pcGeneration++
         leg.pcCreatedAtMs = SystemTimeSource.nowMs()
         // A new connection counts its packets from zero: a stale baseline would hide the first seconds of loss from the governor.
@@ -1280,6 +1317,7 @@ public class FlashGroupCallSession(
                         leg.state = FlashCallParticipantState.CONNECTED
                         leg.recoveryAttempts = 0
                         armStatsPolling()
+                        armLegIceRenewal(leg, pc, generation, leg.iceTtlSeconds)
                         sessionMutex.withLock {
                             cancelSoloWaiting()
                             updateUi {
@@ -1343,6 +1381,7 @@ public class FlashGroupCallSession(
 
     private suspend fun handleInboundOffer(peerId: String, sdp: String) {
         val leg = legs.getOrPut(peerId) { GroupLeg(peerId = peerId, peerName = resolveName(peerId)) }
+        val iceRes = resolveLegIce(peerId)
         leg.legMutex.withLock {
             // Pinned: PC create + setRemote/createAnswer/setLocal are native.
             onMediaThread {
@@ -1357,14 +1396,25 @@ public class FlashGroupCallSession(
                 leg.beginConnecting()
                 existing = null
             }
+            if (existing == null && iceRes is CallIceResolution.Unavailable) {
+                FlashLog.w("GROUP_CALL", "Offer from $peerId refused: ICE unavailable (${iceRes.reason})")
+                return@onMediaThread
+            }
             if (existing != null) {
                 FlashLog.i(
                     "GROUP_CALL",
                     "Offer from $peerId on existing pc#${leg.pcGeneration} signaling=${existing.signalingState} " +
                         "connection=${existing.connectionState} remoteSet=${leg.remoteDescriptionSet}",
                 )
+                if (iceRes is CallIceResolution.Ready && iceRes.rtcConfiguration != leg.iceConfig) {
+                    runCatching { existing.setConfiguration(iceRes.rtcConfiguration) }
+                    leg.iceConfig = iceRes.rtcConfiguration
+                    leg.iceTtlSeconds = iceRes.ttlSeconds
+                }
             }
-            val pc = existing ?: createPeerConnectionForLeg(leg, stream).also { leg.peerConnection = it }
+            val pc = existing ?: createPeerConnectionForLeg(leg, stream, iceRes as CallIceResolution.Ready).also {
+                leg.peerConnection = it
+            }
 
             try {
                 setRemoteDescriptionTuned(pc, SessionDescriptionType.Offer, sdp)
@@ -1614,6 +1664,64 @@ public class FlashGroupCallSession(
         }
     }
 
+    private fun armLegIceRenewal(
+        leg: GroupLeg,
+        pc: PeerConnection,
+        generation: Int,
+        initialTtlSeconds: Long?,
+    ) {
+        if (iceConfigForPeer == null || initialTtlSeconds == null || initialTtlSeconds <= 0L) return
+        leg.iceRenewalJob?.cancel()
+        leg.iceRenewalJob = scope.launch {
+            var ttlSeconds: Long = initialTtlSeconds
+            while (!isEnded && leg.pcGeneration == generation && leg.peerConnection === pc) {
+                val waitMs = (ttlSeconds * 750L).coerceAtLeast(MIN_ICE_RENEWAL_INTERVAL_MS)
+                delay(waitMs)
+                if (isEnded || leg.pcGeneration != generation || leg.peerConnection !== pc) break
+                val next = resolveLegIce(leg.peerId)
+                if (next is CallIceResolution.Unavailable) {
+                    FlashLog.w("GROUP_CALL", "Off-LAN ICE renewal unavailable for leg ${leg.peerId}: ${next.reason}")
+                    continue
+                }
+                next as CallIceResolution.Ready
+                var offerToSend: String? = null
+                leg.legMutex.withLock {
+                    if (isEnded || leg.pcGeneration != generation || leg.peerConnection !== pc) return@withLock
+                    if (next.rtcConfiguration != leg.iceConfig) {
+                        onMediaThread {
+                            runCatching { pc.setConfiguration(next.rtcConfiguration) }
+                            leg.iceConfig = next.rtcConfiguration
+                            leg.iceTtlSeconds = next.ttlSeconds
+                            if (localDeviceId > leg.peerId && leg.state == FlashCallParticipantState.CONNECTED) {
+                                try {
+                                    val offer = pc.createOffer(
+                                        OfferAnswerOptions(
+                                            iceRestart = true,
+                                            offerToReceiveAudio = true,
+                                            offerToReceiveVideo = video,
+                                        ),
+                                    )
+                                    offerToSend = setLocalDescriptionTuned(pc, offer).sdp
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (t: Throwable) {
+                                    FlashLog.w("GROUP_CALL", "Mid-call ICE restart failed for leg ${leg.peerId}: ${t.message}")
+                                }
+                            }
+                        }
+                    }
+                }
+                offerToSend?.let { sdp ->
+                    sendFrame(
+                        CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = sdp),
+                        leg.peerId,
+                    )
+                }
+                ttlSeconds = next.ttlSeconds?.takeIf { it > 0L } ?: ttlSeconds
+            }
+        }
+    }
+
     private fun countConnectedLegs(): Int =
         legs.valuesSnapshot().count { it.state == FlashCallParticipantState.CONNECTED }
 
@@ -1633,6 +1741,8 @@ public class FlashGroupCallSession(
         leg.trackJob?.cancel()
         leg.connJob?.cancel()
         leg.signalingGraceJob?.cancel()
+        leg.iceRenewalJob?.cancel()
+        leg.iceRenewalJob = null
         leg.pendingIce.clear()
         leg.remoteDescriptionSet = false
         try {
@@ -3104,6 +3214,9 @@ public class FlashGroupCallSession(
 
         /** A pending offer younger than this is not re-sent on a repeated accept/join: the peer is still answering it. */
         const val OFFER_RESEND_MIN_AGE_MS = 3_000L
+
+        /** Minimum interval between proactive mid-call TURN credential renewals per leg. */
+        const val MIN_ICE_RENEWAL_INTERVAL_MS = 15_000L
 
         /** Participants whose video can be asked for (G3): in the call, or briefly unreachable. */
         val VIDEO_PRESENT = setOf(
