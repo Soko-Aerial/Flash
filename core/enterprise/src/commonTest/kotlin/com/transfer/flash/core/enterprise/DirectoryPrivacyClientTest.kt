@@ -83,4 +83,38 @@ class DirectoryPrivacyClientTest {
         val offline = HubPeerDirectory(fake, { null }, clock = { 0L })
         assertEquals(HubPeerStanding.UNAVAILABLE, offline.standing("nobody-01"))
     }
+
+    @Test
+    fun departmentlessCallerUsesPeopleListingWithoutSendingBlankDepartmentMembersRequest() = kotlinx.coroutines.test.runTest {
+        val people = listOf(
+            EnterpriseDirectoryMember("alice-01", "Alice", ""),
+            EnterpriseDirectoryMember("bob-01", "Bob", "dept-b"),
+        )
+        var memberCalls = 0
+        var peopleCalls = 0
+        val fake = object : HubDirectoryApi, DirectoryPrivacyApi {
+            override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?): FlashResult<List<EnterpriseDirectoryGroup>> =
+                FlashResult.Success(emptyList())
+            override suspend fun fetchDepartmentMembers(hubUrl: String, departmentId: String): FlashResult<List<EnterpriseDirectoryMember>> {
+                memberCalls++
+                return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("400 bad request"))
+            }
+            override suspend fun fetchDepartments(hubUrl: String): FlashResult<List<EnterpriseDepartment>> = FlashResult.Success(emptyList())
+            override suspend fun requestJoin(hubUrl: String, groupId: String, message: String?) = throw UnsupportedOperationException()
+            override suspend fun fetchJoinRequests(hubUrl: String, groupId: String?): FlashResult<List<EnterpriseJoinRequest>> =
+                FlashResult.Success(emptyList())
+            override suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String?) = throw UnsupportedOperationException()
+            override suspend fun fetchPeople(hubUrl: String, cursor: String?, limit: Int, q: String?, departmentId: String?): FlashResult<PeoplePage> {
+                peopleCalls++
+                return FlashResult.Success(PeoplePage(people, null))
+            }
+            override suspend fun lookupPerson(hubUrl: String, deviceId: String): FlashResult<EnterpriseDirectoryMember?> =
+                FlashResult.Success(people.firstOrNull { it.deviceId == deviceId })
+        }
+        val dir = HubPeerDirectory(fake, { "https://hub.example" }, clock = { 0L }, departmentId = { "" })
+        assertEquals(HubPeerStanding.MEMBER, dir.standing("alice-01"))
+        assertEquals(0, memberCalls, "departmentless caller must not send blank departmentId to /members")
+        assertEquals(1, peopleCalls)
+        assertEquals(HubPeerStanding.UNKNOWN, dir.standing("ghost-01"))
+    }
 }

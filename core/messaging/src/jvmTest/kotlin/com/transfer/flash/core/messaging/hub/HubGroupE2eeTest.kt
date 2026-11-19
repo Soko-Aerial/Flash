@@ -533,4 +533,88 @@ class HubGroupE2eeTest {
         ))
         assertEquals("inspectable-hello-2", (bob.received.last().first as GroupWireFrame.Message).text)
     }
+
+    @Test
+    fun leaveOrRemovalPurgesGroupKeysWhilePreservingOtherGroups() = runTest {
+        val alice = MemberNode("alice")
+        val bob = MemberNode("bob")
+        val h = Harness(
+            mapOf("alice" to alice, "bob" to bob),
+            linkedGroups = mutableSetOf("g-eng", "g-ops"),
+            membership = mutableMapOf(
+                "g-eng" to (setOf("alice", "bob") to 1L),
+                "g-ops" to (setOf("alice", "bob") to 1L),
+            ),
+        )
+        val (aliceE2ee, aliceBridge) = h.bridgeFor(alice)
+        val (bobE2ee, bobBridge) = h.bridgeFor(bob)
+
+        assertTrue(aliceBridge.sendGroup("bob", "m-eng-1", now, msg("g-eng", "m-eng-1", "alice", "eng")))
+        assertTrue(aliceBridge.sendGroup("bob", "m-ops-1", now, msg("g-ops", "m-ops-1", "alice", "ops")))
+        h.routeOutbox(alice, bob, bobBridge)
+        assertEquals(1L, bobE2ee.currentEpochFor("g-eng"))
+        assertEquals(1L, bobE2ee.currentEpochFor("g-ops"))
+
+        // Bob is removed from g-eng -> Bob's g-eng keys are purged, g-ops keys remain intact
+        h.membership["g-eng"] = setOf("alice") to 2L
+        bobE2ee.onMembershipChanged("g-eng", setOf("alice"), 2L)
+        assertEquals(0L, bobE2ee.currentEpochFor("g-eng"))
+        assertTrue(bob.keyStore.loadAll().none { it.groupId == "g-eng" })
+        assertEquals(1L, bobE2ee.currentEpochFor("g-ops"))
+        assertTrue(bob.keyStore.loadAll().any { it.groupId == "g-ops" })
+        assertEquals(1L, aliceE2ee.currentEpochFor("g-eng"))
+    }
+
+    @Test
+    fun keyRetentionIsBoundedAcrossManyRotationsWithoutBreakingRecentDecryption() = runTest {
+        val alice = MemberNode("alice")
+        val bob = MemberNode("bob")
+        val carol = MemberNode("carol")
+        val h = Harness(
+            mapOf("alice" to alice, "bob" to bob, "carol" to carol),
+            membership = mutableMapOf("g-eng" to (setOf("alice", "bob") to 1L)),
+        )
+        val (aliceE2ee, aliceBridge) = h.bridgeFor(alice)
+        val (bobE2ee, bobBridge) = h.bridgeFor(bob)
+
+        val totalRotations = HubGroupE2eeCoordinator.MAX_KEYS_PER_GROUP + 8
+        val sentByEpoch = LinkedHashMap<Long, FakeHubRelay.Sent>()
+        for (i in 1..totalRotations) {
+            val roster = if (i % 2 == 1) setOf("alice", "bob") else setOf("alice", "bob", "carol")
+            val version = i.toLong()
+            h.membership["g-eng"] = roster to version
+            aliceE2ee.onMembershipChanged("g-eng", roster, version)
+            bobE2ee.onMembershipChanged("g-eng", roster, version)
+            alice.resetSent()
+            val msgId = "m-rot-$i"
+            assertTrue(aliceBridge.sendGroup("bob", msgId, now + i, msg("g-eng", msgId, "alice", "body-$i")))
+            val sealed = alice.freshSent().last { it.type == GroupRelaySealing.ENVELOPE_TYPE }
+            sentByEpoch[version] = sealed
+            val keyDist = alice.freshSent().first { it.type == HubSealing.ENVELOPE_TYPE }
+            assertEquals(
+                HubInboundOutcome.STORED,
+                bobBridge.handleInbound(HubInbound("alice", keyDist.id, keyDist.type, keyDist.sentAt, keyDist.payload), RecordingGroupSink(bob.received)),
+            )
+        }
+
+        val aliceStored = alice.keyStore.loadAll().filter { it.groupId == "g-eng" }
+        val bobStored = bob.keyStore.loadAll().filter { it.groupId == "g-eng" }
+        assertEquals(HubGroupE2eeCoordinator.MAX_KEYS_PER_GROUP, aliceStored.size)
+        assertEquals(HubGroupE2eeCoordinator.MAX_KEYS_PER_GROUP, bobStored.size)
+
+        // Most recent epoch still decrypts cleanly
+        val latest = sentByEpoch.getValue(totalRotations.toLong())
+        assertEquals(
+            HubInboundOutcome.STORED,
+            bobBridge.handleInbound(HubInbound("alice", latest.id, latest.type, latest.sentAt, latest.payload), RecordingGroupSink(bob.received)),
+        )
+        assertEquals("body-$totalRotations", (bob.received.last().first as GroupWireFrame.Message).text)
+
+        // Oldest evicted epoch cannot decrypt with pruned key
+        val evicted = sentByEpoch.getValue(1L)
+        assertEquals(
+            HubInboundOutcome.RETRY_LATER,
+            bobBridge.handleInbound(HubInbound("alice", evicted.id, evicted.type, evicted.sentAt, evicted.payload), RecordingGroupSink(bob.received)),
+        )
+    }
 }

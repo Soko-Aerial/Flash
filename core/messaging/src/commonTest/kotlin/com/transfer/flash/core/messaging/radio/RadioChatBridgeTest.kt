@@ -258,6 +258,24 @@ class RadioChatBridgeTest {
         // For non-radio peer, no radio refusal (LAN/Hub transport handles it)
         val noRefusal = bridge.checkAttachmentRefusal("peer-lan")
         assertNull(noRefusal)
+
+        // Temporary disconnect while gateway is enabled and peer is paired by radio still refuses attachments
+        val pairedWhileDisconnectedPort = object : RadioOutboxPort by port {
+            override val isConnected: Boolean = false
+            override fun isRadioReachable(recipientDeviceId: String): Boolean = false
+            override fun hasRadioPairingKey(recipientDeviceId: String): Boolean = recipientDeviceId == "peer-radio"
+        }
+        val disconnectedBridge = RadioChatBridge(
+            port = pairedWhileDisconnectedPort,
+            scope = backgroundScope,
+            onInboundMessage = { _, _, _, _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
+            onMessageFailed = {},
+        )
+        assertEquals("Photos and files cannot be sent by radio", disconnectedBridge.checkAttachmentRefusal("peer-radio"))
+
+        port.isGatewayEnabledValue = false
+        assertNull(disconnectedBridge.checkAttachmentRefusal("peer-radio"))
     }
 
     @Test

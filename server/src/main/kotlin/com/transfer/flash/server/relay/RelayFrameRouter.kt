@@ -985,6 +985,16 @@ public class RelayFrameRouter(
         connectionPool.broadcastText(text) { true }
     }
 
+    /** Retires queued readable group rows even for offline recipients when policy forbids readable group mail. */
+    public suspend fun retireReadableGroupRows(): Int {
+        if (groupE2eeMode() == HubContract.GROUP_E2EE_HUB_INSPECTABLE) return 0
+        val retired = mailboxQueue.retireReadableGroupRows()
+        for (row in retired) {
+            notifyDropped(row.origin, row.target, row.msgId)
+        }
+        return retired.size
+    }
+
     private fun auditInspectableGroupFrame(senderId: String, target: String, send: RelayFrame.Send) {
         val preview = send.payload.replace('\n', ' ').replace('\r', ' ').take(256)
         logger.info("GROUP_INSPECT sender={} target={} id={} type={} bytes={}", senderId, target, send.id, send.type, send.payload.length)

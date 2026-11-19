@@ -39,6 +39,7 @@ public class HubPeerDirectory(
     private val clock: () -> Long = { SystemTimeSource.nowMs() },
     private val ttlMs: Long = DEFAULT_TTL_MS,
     private val minRefreshMs: Long = DEFAULT_MIN_REFRESH_MS,
+    private val departmentId: (() -> String?)? = null,
 ) {
     private val lock = Mutex()
     private var members: Map<String, EnterpriseDirectoryMember> = emptyMap()
@@ -76,10 +77,25 @@ public class HubPeerDirectory(
         if (lastAttemptMs != Long.MIN_VALUE && now - lastAttemptMs < minRefreshMs) return
         lastAttemptMs = now
         val url = hubUrl() ?: return
-        // A blank department asks for every member in the caller's scope.
-        val result = directory.fetchDepartmentMembers(url, "")
+        val dept = departmentId?.invoke()?.trim()
+        if (dept != null && dept.isEmpty()) {
+            refreshFromPeopleLocked(url, now)
+            return
+        }
+        val result = directory.fetchDepartmentMembers(url, dept.orEmpty())
         if (result is FlashResult.Success) {
             members = result.value.associateBy { it.deviceId }
+            loadedAtMs = now
+        } else if (dept == null) {
+            refreshFromPeopleLocked(url, now)
+        }
+    }
+
+    private suspend fun refreshFromPeopleLocked(url: String, now: Long) {
+        val privacy = directory as? DirectoryPrivacyApi ?: return
+        val result = privacy.fetchPeople(url, limit = 500)
+        if (result is FlashResult.Success && !result.value.hubTooOld) {
+            members = result.value.people.associateBy { it.deviceId }
             loadedAtMs = now
         }
     }

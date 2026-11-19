@@ -26,6 +26,13 @@ interface MailboxStore {
     /** Removes the specific fetched copy refused by the current relay policy. */
     suspend fun dropForPolicy(row: QueuedMessage): Boolean = false
 
+    /**
+     * Retires every queued readable group row (`undeliverable_reason IS NULL`) so switching to required
+     * group encryption removes older readable mail even for offline recipients and prevents replay if the
+     * policy later relaxes.
+     */
+    suspend fun retireReadableGroupRows(): List<QuarantinedRow> = emptyList()
+
     /** Revalidates a fetched group row before handing it off. Direct mail follows its existing receipt rules. */
     suspend fun mayReplay(row: QueuedMessage): Boolean = true
 

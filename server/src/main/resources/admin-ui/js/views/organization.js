@@ -461,6 +461,30 @@ export function mountOrganization(container, ctx) {
           }
         },
       });
+      const revokeLinksBtn = group.visibility !== 'HIDDEN' && group.joinMode !== 'ADMIN_ONLY'
+        ? button({
+            label: t('org.group.revokeLinks'),
+            variant: 'secondary',
+            size: 'sm',
+            on: {
+              click: async () => {
+                const ok = await confirmDialog({
+                  title: t('org.group.revokeLinks.title', { name: group.name }),
+                  message: t('org.group.revokeLinks.text'),
+                  confirmLabel: t('org.group.revokeLinks'),
+                  danger: true,
+                });
+                if (!ok) return;
+                try {
+                  replace(await api.put('/groups/' + encodeURIComponent(group.id), { revokeJoinLinks: true }));
+                  toast(t('org.group.revokeLinks.done'), { kind: 'success' });
+                } catch (e) {
+                  toastError(e);
+                }
+              },
+            },
+          })
+        : null;
       const del = button({ label: t('org.group.delete'), icon: 'trash', variant: 'danger', on: { click: () => deleteGroup() } });
       async function deleteGroup() {
         const ok = await confirmDialog({ title: t('org.group.delete.title', { name: group.name }), message: t('org.group.delete.text'), confirmLabel: t('org.group.delete'), danger: true, confirmText: group.name });
@@ -477,7 +501,7 @@ export function mountOrganization(container, ctx) {
       mount(
         body,
         h('div', { class: 'drawer-status' }, joinModeBadge(group.joinMode), badge(t('org.vis.' + group.visibility), 'neutral'), group.pendingCount ? badge(t('org.group.pending', { n: group.pendingCount }), 'warn') : null),
-        nf.el, vf.el, jf.el, h('div', { class: 'form-actions start' }, save),
+        nf.el, vf.el, jf.el, h('div', { class: 'form-actions start' }, save, revokeLinksBtn),
         h('h3', { class: 'subhead', text: t('org.group.admins') }), admins, adminPicker.el,
         h('h3', { class: 'subhead', text: t('org.group.members') + ' (' + group.memberDeviceIds.length + ')' }), members, memberPicker.el,
         h('details', { class: 'tech' }, h('summary', { text: t('devices.tech') }), mono(group.id, 'wrap')),

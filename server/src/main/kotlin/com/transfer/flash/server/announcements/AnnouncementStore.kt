@@ -736,14 +736,15 @@ public class AnnouncementStore(
         actorDeptId: String?,
         actorRef: String,
     ) {
-        val isOrgAdmin = actorRole == "admin" || actorRole == "ORG_ADMIN"
+        val isOrgAdmin = actorRole.equals("admin", ignoreCase = true) || actorRole.equals("ORG_ADMIN", ignoreCase = true)
         if (isOrgAdmin) return
 
-        val isDeptHead = actorRole == "dept_admin" || actorRole == "DEPT_HEAD"
+        val isDeptHead = actorRole.equals("dept_admin", ignoreCase = true) || actorRole.equals("DEPT_HEAD", ignoreCase = true)
         if (isDeptHead) {
             // A head can only edit announcements in their own department that were authored by a head
             val inOwnDept = announcement.scope == "department" && announcement.departmentId == actorDeptId
-            val authoredByHead = announcement.authorRole == "dept_admin" || announcement.authorRole == "DEPT_HEAD"
+            val authoredByHead = announcement.authorRole.equals("dept_admin", ignoreCase = true) ||
+                announcement.authorRole.equals("DEPT_HEAD", ignoreCase = true)
             if (inOwnDept && authoredByHead) {
                 return
             }

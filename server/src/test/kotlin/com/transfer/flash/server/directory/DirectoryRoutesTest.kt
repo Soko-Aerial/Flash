@@ -20,6 +20,7 @@ import com.transfer.flash.core.hubprotocol.rest.JoinRequestDto
 import com.transfer.flash.core.hubprotocol.rest.JoinResponse
 import com.transfer.flash.core.hubprotocol.rest.MeDto
 import com.transfer.flash.core.hubprotocol.rest.MemberDto
+import com.transfer.flash.core.hubprotocol.rest.UpdateGroupBody
 import com.transfer.flash.server.auth.AuditSink
 import com.transfer.flash.server.auth.BearerPrincipalResolver
 import com.transfer.flash.server.auth.BearerTokenStore
@@ -351,5 +352,62 @@ class DirectoryRoutesTest {
         assertEquals(HttpStatusCode.OK, client.delete("/api/v1/groups/grp-public") { header("Authorization", "Bearer ${w.token("dadmin-01", DeviceCert.ROLE_DEPT_ADMIN)}") }.status)
         assertEquals(null, w.dir.getGroup("grp-public"))
         assertTrue(w.audit.any { it == "dadmin-01|directory.group.delete|id=grp-public" })
+    }
+
+    @Test
+    fun joinLinkSurvivesDataKeyRotationAndSupportsPerLinkRevocationAndMaxUses() = testApplication {
+        val w = World()
+        val now = 1_000L
+        val oldDataKey = com.transfer.flash.server.auth.SecretBox.ofKey(ByteArray(32) { 1 })
+        val independentLinkKey = com.transfer.flash.server.auth.SecretBox.ofKey(ByteArray(32) { 7 })
+        val links = HubGroupJoinLinks(
+            secrets = independentLinkKey,
+            clock = { now },
+            fallbackSecrets = listOf(oldDataKey),
+            database = w.db,
+        )
+        mount(w, links)
+        val admin = w.token("dadmin-01", DeviceCert.ROLE_DEPT_ADMIN)
+        val member1 = w.token("member-01")
+        val member2 = w.token("member-02")
+
+        // Legacy v2 token sealed with old data.key still resolves via fallbackSecrets.
+        val group = w.dir.getGroup("grp-public")!!
+        val legacyV2Payload = "${group.id}\n${group.joinLinkRevision}\n${now + 60_000L}".encodeToByteArray()
+        val legacyV2Token = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(oldDataKey.sealBytes(legacyV2Payload, "flash-hub:group-join-link:v2"))
+        assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-links/resolve", member1, GroupJoinLinkToken(legacyV2Token)).status)
+
+        // Independent v3 tokens: issue two reusable tokens for grp-public; revoking one leaves the other active.
+        val tokA = HubRestCodec.decode<GroupJoinLinkToken>(client.postAs("/api/v1/groups/join-links", admin, CreateGroupJoinLinkBody("grp-public")).bodyAsText())
+        val tokB = HubRestCodec.decode<GroupJoinLinkToken>(client.postAs("/api/v1/groups/join-links", admin, CreateGroupJoinLinkBody("grp-public")).bodyAsText())
+        val linkIdA = links.linkIdOf(tokA.token)!!
+
+        // Simulate data.key rotation (drop oldDataKey from fallbackSecrets); independent v3 tokens still work!
+        val rotated = HubGroupJoinLinks(
+            secrets = independentLinkKey,
+            clock = { now },
+            fallbackSecrets = emptyList(),
+            database = w.db,
+        )
+        assertNotNull(rotated.resolve(tokA.token, w.dir))
+        assertNotNull(rotated.resolve(tokB.token, w.dir))
+
+        // Revoke only link A via PUT /api/v1/groups/{id} -> tokA fails, tokB stays valid for multi-join.
+        assertEquals(HttpStatusCode.OK, client.put("/api/v1/groups/grp-public") {
+            header("Authorization", "Bearer $admin"); contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(UpdateGroupBody(revokeLinkId = linkIdA)))
+        }.status)
+        assertEquals(HttpStatusCode.NotFound, client.postAs("/api/v1/groups/join-links/resolve", member1, tokA).status)
+        assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-links/resolve", member1, tokB).status)
+        assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-links/resolve", member2, tokB).status)
+
+        // Single-use link (maxUses = 1) rejects invalid maxUses <= 0 and stops after 1 resolve.
+        assertEquals(HttpStatusCode.BadRequest, client.postAs("/api/v1/groups/join-links", admin, CreateGroupJoinLinkBody("grp-public", maxUses = 0)).status)
+        val singleUse = HubRestCodec.decode<GroupJoinLinkToken>(
+            client.postAs("/api/v1/groups/join-links", admin, CreateGroupJoinLinkBody("grp-public", maxUses = 1)).bodyAsText(),
+        )
+        assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-links/resolve", member1, singleUse).status)
+        assertEquals(HttpStatusCode.NotFound, client.postAs("/api/v1/groups/join-links/resolve", member2, singleUse).status)
     }
 }

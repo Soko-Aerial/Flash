@@ -114,6 +114,15 @@ public class HubGroupE2eeCoordinator(
         keyStore.clear()
     }
 
+    /** Removes all stored epoch keys and distribution state for [groupId] (e.g. on leave, removal, or unlink). */
+    public suspend fun removeGroup(groupId: String): Unit = lock.withLock {
+        ensureLoadedLocked()
+        val removed = keysByGroup.remove(groupId) != null
+        val prefix = "$groupId|"
+        distributedTo.keys.removeAll { it.startsWith(prefix) }
+        if (removed) persistLocked()
+    }
+
     public suspend fun currentEpochFor(groupId: String): Long = lock.withLock {
         ensureLoadedLocked()
         keysByGroup[groupId]?.maxOfOrNull { it.epoch } ?: 0L
@@ -174,7 +183,8 @@ public class HubGroupE2eeCoordinator(
     /**
      * Updates key send-eligibility when a group's membership changes (member add, remove, leave, or rejoin).
      * Previously held keys remain decrypt-only (`canSend = false`) for historical/in-flight epochs that this
-     * device belonged to, while future sends rotate to a fresh epoch.
+     * device belonged to while still an active member, while future sends rotate to a fresh epoch.
+     * When this device is no longer an active member (leave/removal), keys for [groupId] are purged.
      */
     public suspend fun onMembershipChanged(
         groupId: String,
@@ -183,15 +193,26 @@ public class HubGroupE2eeCoordinator(
     ): Unit = lock.withLock {
         ensureLoadedLocked()
         val list = keysByGroup[groupId] ?: return
-        var dirty = false
         val localInGroup = localDeviceId in activeMembers
+        if (!localInGroup) {
+            keysByGroup.remove(groupId)
+            val prefix = "$groupId|"
+            distributedTo.keys.removeAll { it.startsWith(prefix) }
+            persistLocked()
+            return@withLock
+        }
+        var dirty = false
         for (i in list.indices) {
             val k = list[i]
-            val obsolete = !localInGroup || k.memberDeviceIds != activeMembers || k.rosterVersion < rosterVersion
+            val obsolete = k.memberDeviceIds != activeMembers || k.rosterVersion < rosterVersion
             if (obsolete && k.canSend) {
                 list[i] = k.copy(canSend = false)
+                distributedTo.remove(distMapKey(groupId, k.epoch, k.keyId))
                 dirty = true
             }
+        }
+        if (pruneGroupKeysLocked(groupId, list)) {
+            dirty = true
         }
         if (dirty) persistLocked()
     }
@@ -223,7 +244,10 @@ public class HubGroupE2eeCoordinator(
             }
             if (canonical == null) {
                 for (i in list.indices) {
-                    if (list[i].canSend) list[i] = list[i].copy(canSend = false)
+                    if (list[i].canSend) {
+                        distributedTo.remove(distMapKey(groupId, list[i].epoch, list[i].keyId))
+                        list[i] = list[i].copy(canSend = false)
+                    }
                 }
                 val currentHighestEpoch = list
                     .filter { it.epoch in 1L..GroupRelaySealing.MAX_VALID_EPOCH }
@@ -244,6 +268,7 @@ public class HubGroupE2eeCoordinator(
                     canSend = true,
                 )
                 list += canonical
+                pruneGroupKeysLocked(groupId, list)
                 persistLocked()
             }
             val sealed = GroupRelaySealing.seal(
@@ -352,7 +377,10 @@ public class HubGroupE2eeCoordinator(
 
         if (promoteSend) {
             for (i in list.indices) {
-                if (list[i].canSend) list[i] = list[i].copy(canSend = false)
+                if (list[i].canSend) {
+                    distributedTo.remove(distMapKey(dist.groupId, list[i].epoch, list[i].keyId))
+                    list[i] = list[i].copy(canSend = false)
+                }
             }
         }
         list += GroupEpochKey(
@@ -366,6 +394,7 @@ public class HubGroupE2eeCoordinator(
             createdAtMs = dist.createdAtMs,
             canSend = promoteSend,
         )
+        pruneGroupKeysLocked(dist.groupId, list)
         persistLocked()
         if (promoteSend) GroupKeyAcceptOutcome.ACCEPTED_CANONICAL else GroupKeyAcceptOutcome.ACCEPTED_DECRYPT_ONLY
     }
@@ -440,5 +469,37 @@ public class HubGroupE2eeCoordinator(
         return keyId.compareTo(other.keyId)
     }
 
+    private fun pruneGroupKeysLocked(groupId: String, list: MutableList<GroupEpochKey>): Boolean {
+        if (list.size <= MAX_KEYS_PER_GROUP) return false
+        val canonical = list.firstOrNull { it.canSend }
+        val retained = ArrayList<GroupEpochKey>(MAX_KEYS_PER_GROUP)
+        if (canonical != null) retained += canonical
+        val remaining = list
+            .asSequence()
+            .filter { it !== canonical }
+            .sortedWith(
+                compareByDescending<GroupEpochKey> { it.epoch }
+                    .thenByDescending { it.rosterVersion }
+                    .thenByDescending { it.createdAtMs }
+                    .thenByDescending { it.keyId },
+            )
+            .take(MAX_KEYS_PER_GROUP - retained.size)
+            .toList()
+        retained += remaining
+        val keepSet = retained.mapTo(HashSet(retained.size)) { it.epoch to it.keyId }
+        for (k in list) {
+            if ((k.epoch to k.keyId) !in keepSet) {
+                distributedTo.remove(distMapKey(groupId, k.epoch, k.keyId))
+            }
+        }
+        list.clear()
+        list.addAll(retained)
+        return true
+    }
+
     private fun distMapKey(groupId: String, epoch: Long, keyId: String): String = "$groupId|$epoch|$keyId"
+
+    public companion object {
+        public const val MAX_KEYS_PER_GROUP: Int = 32
+    }
 }

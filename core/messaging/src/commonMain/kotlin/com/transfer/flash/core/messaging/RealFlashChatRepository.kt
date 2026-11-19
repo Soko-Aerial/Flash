@@ -3482,7 +3482,7 @@ public class RealFlashChatRepository(
             val radioAllowed = (radioPolicyNow.value[conversationId]
                 ?: FlashRadioPolicy.fromStorage(conversation?.radioPolicy)) == FlashRadioPolicy.AUTO
             val hubCanCarryFile = hubFileRoute(conversationId) == HubFileRoute.READY
-            if (radioAllowed && radio != null && radio.canCarry(conversationId) && !isPeerOnline(conversationId) && !hubCanCarryFile) {
+            if (radioAllowed && radio != null && !isPeerOnline(conversationId) && !hubCanCarryFile) {
                 val refusal = radio.checkAttachmentRefusal(conversationId)
                 if (refusal != null) {
                     FlashLog.w("CHAT", "Attachment rejected: $refusal")
@@ -8480,7 +8480,8 @@ public class RealFlashChatRepository(
             ?: return FlashResult.Failure(FlashError.Unknown("Enterprise trust store unavailable"))
         trust.unlinkGroupFromHub(groupId)
         groupMemberDao?.let { deactivateHubRosterRows(it, groupId) }
-        notifyGroupE2eeMembershipChanged(groupId)
+        hubGroupE2ee?.removeGroup(groupId)
+        hubBridge?.evaluateGroupE2ee(groupId)
         return FlashResult.Success(Unit)
     }
 
@@ -8520,11 +8521,17 @@ public class RealFlashChatRepository(
         enterpriseTrustStore?.pendingJoins ?: MutableStateFlow(emptyMap())
 
     private suspend fun triggerImmediateOrgSync(reason: String) {
-        val custom = onRequestOrgSync
-        if (custom != null) {
-            runCatching { custom(reason, true) }
-        } else {
-            runCatching { hubTabSourcesRef?.requestSync?.invoke(true) }
+        try {
+            val custom = onRequestOrgSync
+            if (custom != null) {
+                custom(reason, true)
+            } else {
+                hubTabSourcesRef?.requestSync?.invoke(true)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w("GROUP", "Post-create org sync ($reason) failed: ${t::class.simpleName}")
         }
     }
 

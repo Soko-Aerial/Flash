@@ -146,7 +146,12 @@ public class EnterpriseHub(
         allowCleartext = allowCleartext,
     )
 
-    public val peers: HubPeerDirectory = HubPeerDirectory(directory, { trustStore.credentials.value?.hubUrl }, clock)
+    public val peers: HubPeerDirectory = HubPeerDirectory(
+        directory = directory,
+        hubUrl = { trustStore.credentials.value?.hubUrl },
+        clock = clock,
+        departmentId = { trustStore.credentials.value?.department.orEmpty() },
+    )
 
     /** The lifecycle of this device's sealing key: made on first enrol, published after enrol and renewal, wiped on leave. */
     public val sealingKeys: HubSealingKeyManager? = sealingKeyStore?.let { store ->

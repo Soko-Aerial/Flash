@@ -76,6 +76,7 @@ class AdminApiDeps(
     /** The sealed file store (ADR-215); null on a hub built without one (tests that do not need it). */
     val files: com.transfer.flash.server.files.FileStore? = null,
     val router: com.transfer.flash.server.relay.RelayFrameRouter? = null,
+    val groupJoinLinks: com.transfer.flash.server.directory.HubGroupJoinLinks? = null,
 )
 
 internal const val ERR_STEP_UP = "ERR_STEP_UP"
@@ -412,7 +413,7 @@ internal fun DeviceRecord.toDto(online: Boolean, replacement: DeviceReplacementR
 )
 
 private fun Route.deviceRoutes(d: AdminApiDeps) {
-    val replaceLocks = ConcurrentHashMap<String, Mutex>()
+    val replaceLocks = Array(64) { Mutex() }
     route("/devices") {
         get {
             val session = call.adminSession(d) ?: return@get
@@ -568,7 +569,7 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
             }
             if (!call.stepUpOk(d, session, StepUpActions.REPLACE_DEVICE, id)) return@post
 
-            val lock = replaceLocks.computeIfAbsent(id) { Mutex() }
+            val lock = replaceLocks[(id.hashCode() and 0x7fffffff) % replaceLocks.size]
             lock.withLock {
                 call.guarded {
                     val now = d.clock()
@@ -978,6 +979,9 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
             }
             if (!call.stepUpOk(d, session, StepUpActions.SETTINGS_CHANGE, "${b.key}=${b.value}")) return@put
             d.admins.putSetting(b.key, b.value, session.username)
+            if (b.key == SETTING_GROUP_E2EE_MODE && b.value != com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_HUB_INSPECTABLE) {
+                d.router?.retireReadableGroupRows()
+            }
             if (b.key == SETTING_ALLOW_PERSONAL_HUB_LINK || b.key == SETTING_GROUP_E2EE_MODE) {
                 d.router?.broadcastGroupPolicyChanged()
             }
@@ -1093,7 +1097,7 @@ private fun Route.metricsRoutes(d: AdminApiDeps) {
             MetricsDto(
                 serverTimeMs = now,
                 uptimeSeconds = ((now - d.startedAtMs) / 1000L).coerceAtLeast(0),
-                onlineDevices = d.identities.listDevices(DeviceStatus.ACTIVE, limit = 500).count { d.directory.isOnline(it.deviceId) },
+                onlineDevices = d.identities.activeDeviceIds().count { d.directory.isOnline(it) },
                 queueDepth = stats.queuedCount(),
                 queueBytes = stats.queuedBytes(),
                 oldestWaitingMs = stats.oldestAgesMs(1).values.firstOrNull(),

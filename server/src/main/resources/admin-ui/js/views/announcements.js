@@ -16,6 +16,15 @@ import { setActiveTable } from '../shortcuts.js';
 import { icon } from '../icons.js';
 import { expiryFields, toLocalInput } from '../announcement-expiry.js';
 
+export function canManageAnnouncement(item, orgAdmin, headDepts = []) {
+  if (orgAdmin) return true;
+  if (!item || item.scope !== 'department') return false;
+  const inHeadScope = (headDepts || []).some((d) => (typeof d === 'string' ? d : d && d.id) === item.departmentId);
+  if (!inHeadScope) return false;
+  const role = String(item.authorRole || '').toUpperCase();
+  return role === 'DEPT_HEAD' || role === 'DEPT_ADMIN';
+}
+
 export function mountAnnouncements(container, ctx) {
   let items = [];
   let departments = [];
@@ -256,8 +265,7 @@ export function mountAnnouncements(container, ctx) {
   }
 
   function showDetails(it) {
-    const isAuthor = it.authorRef === session.user;
-    const canManage = isOrgAdmin() || isAuthor;
+    const canManage = canManageAnnouncement(it, isOrgAdmin(), headDepts);
 
     const editBtn = button({
       label: t('announcements.action.edit'),

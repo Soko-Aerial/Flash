@@ -64,6 +64,8 @@ public data class UpdateGroupBody(
     public val name: String? = null,
     public val visibility: String? = null,
     public val joinMode: String? = null,
+    public val revokeJoinLinks: Boolean = false,
+    public val revokeLinkId: String? = null,
 )
 
 /** Body of `POST /api/v1/groups/members`. */
@@ -78,7 +80,10 @@ public data class GroupMemberBody(
 
 @FlashInternalApi
 @Serializable
-public data class CreateGroupJoinLinkBody(public val groupId: String)
+public data class CreateGroupJoinLinkBody(
+    public val groupId: String,
+    public val maxUses: Int? = null,
+)
 
 @FlashInternalApi
 @Serializable

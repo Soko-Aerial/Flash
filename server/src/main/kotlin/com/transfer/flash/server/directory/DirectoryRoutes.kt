@@ -376,7 +376,17 @@ fun Route.directoryRoutes(
                 call.guarded {
                     val actor = principal.toActor()
                     hideFromStrangers(directory, id, actor)
-                    val group = directory.updateGroup(id, body.name, visibility, joinMode, actor)
+                    val before = directory.getGroup(id)
+                    var group = directory.updateGroup(id, body.name, visibility, joinMode, actor)
+                    if (before != null && (group.visibility != before.visibility || group.joinMode != before.joinMode)) {
+                        groupJoinLinks?.revokeAllForGroup(id, principal.deviceId)
+                    }
+                    if (body.revokeJoinLinks) {
+                        group = directory.rotateJoinLinkRevision(id, actor)
+                        groupJoinLinks?.revokeAllForGroup(id, principal.deviceId)
+                    } else if (!body.revokeLinkId.isNullOrBlank()) {
+                        groupJoinLinks?.revokeLink(body.revokeLinkId!!, principal.deviceId)
+                    }
                     audit.record(principal.deviceId, "directory.group.update", "id=$id")
                     call.respondJson(group.toDto(actor, directory, isOnline))
                 }
@@ -390,6 +400,7 @@ fun Route.directoryRoutes(
                     val actor = principal.toActor()
                     hideFromStrangers(directory, id, actor)
                     directory.deleteGroup(id, actor)
+                    groupJoinLinks?.revokeAllForGroup(id, principal.deviceId)
                     audit.record(principal.deviceId, "directory.group.delete", "id=$id")
                     call.respondJson(OkResponse())
                 }
@@ -414,10 +425,18 @@ fun Route.directoryRoutes(
 
             post("/join-links") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@post
+                if (!limits.joinLinks.tryAcquire(principal.deviceId)) {
+                    val retryAfter = limits.joinLinks.retryAfterSeconds(principal.deviceId)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                    return@post call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many join link requests")
+                }
                 val links = groupJoinLinks ?: return@post call.respondError(
                     HttpStatusCode.ServiceUnavailable, HubErrorCodes.ERR_INTERNAL, "Group join links are unavailable.",
                 )
                 val body = call.receiveBody<CreateGroupJoinLinkBody>() ?: return@post
+                if (body.maxUses != null && body.maxUses!! <= 0) {
+                    return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "maxUses must be positive.")
+                }
                 val group = directory.getGroup(body.groupId)
                 if (group == null || !directory.canManage(group, principal.toActor())) {
                     return@post call.respondNotFound()
@@ -425,18 +444,23 @@ fun Route.directoryRoutes(
                 if (group.visibility == GroupVisibility.HIDDEN || group.joinMode == JoinMode.ADMIN_ONLY) {
                     return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "This group requires a direct member assignment.")
                 }
-                val token = links.issue(group)
+                val token = links.issue(group, issuerDeviceId = principal.deviceId, maxUses = body.maxUses)
                 audit.record(principal.deviceId, "directory.group.join_link.create", "group=${group.id}")
                 call.respondJson(GroupJoinLinkToken(token), HttpStatusCode.Created)
             }
             post("/join-links/resolve") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@post
+                if (!limits.joinLinks.tryAcquire(principal.deviceId)) {
+                    val retryAfter = limits.joinLinks.retryAfterSeconds(principal.deviceId)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                    return@post call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many join link requests")
+                }
                 val links = groupJoinLinks ?: return@post call.respondError(
                     HttpStatusCode.ServiceUnavailable, HubErrorCodes.ERR_INTERNAL, "Group join links are unavailable.",
                 )
                 val body = call.receiveBody<GroupJoinLinkToken>() ?: return@post
                 val group = links.resolve(body.token, directory)
-                if (group == null || group.visibility == GroupVisibility.HIDDEN || !directory.canSee(group, principal.toActor())) {
+                if (group == null || group.visibility == GroupVisibility.HIDDEN || group.joinMode == JoinMode.ADMIN_ONLY || !directory.canSee(group, principal.toActor())) {
                     return@post call.respondNotFound()
                 }
                 call.respondJson(GroupJoinLinkTarget(group.id, group.name))

@@ -127,9 +127,11 @@ class HubRateLimits(
     val fileWrite: TokenBucketLimiter = TokenBucketLimiter(120, 20.0, clock = clock),
     /** Per device on `GET /api/v1/files...`: burst 240, then 40 per second (a 50 MB file is 50 chunk reads). */
     val fileRead: TokenBucketLimiter = TokenBucketLimiter(240, 40.0, clock = clock),
+    /** Per authenticated device on `POST /api/v1/groups/join-links*`: burst 20, then 1 every 3 s. */
+    val joinLinks: TokenBucketLimiter = TokenBucketLimiter(20, 1.0 / 3.0, clock = clock),
 ) {
     fun sweepAll() {
-        auth.sweep(); verify.sweep(); verifyIp.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep(); directoryPeople.sweep(); announcementPost.sweep(); announcementRead.sweep(); fileWrite.sweep(); fileRead.sweep()
+        auth.sweep(); verify.sweep(); verifyIp.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep(); directoryPeople.sweep(); announcementPost.sweep(); announcementRead.sweep(); fileWrite.sweep(); fileRead.sweep(); joinLinks.sweep()
     }
 
     companion object {
@@ -151,6 +153,7 @@ class HubRateLimits(
                 announcementRead = big(),
                 fileWrite = big(),
                 fileRead = big(),
+                joinLinks = big(),
             )
         }
     }

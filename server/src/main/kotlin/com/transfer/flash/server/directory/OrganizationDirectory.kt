@@ -734,6 +734,23 @@ class OrganizationDirectory(
             updated
         }
 
+    /** Rotates [GroupCharter.joinLinkRevision] without changing roster membership or policy, revoking active v2/v3 links. */
+    fun rotateJoinLinkRevision(id: String, actor: DirectoryActor): GroupCharter =
+        writeLocked {
+            val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")
+            requireManager(group, actor, "change")
+            val newVer = bumpVersionLocked()
+            val updated = group.copy(version = newVer, joinLinkRevision = newVer)
+            persist { c ->
+                c.update(
+                    "UPDATE dir_groups SET version = ?, join_link_revision = ? WHERE id = ?",
+                    newVer, newVer, id,
+                )
+            }
+            groups[id] = updated
+            updated
+        }
+
     fun deleteGroup(id: String, actor: DirectoryActor) {
         writeLocked {
             val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")

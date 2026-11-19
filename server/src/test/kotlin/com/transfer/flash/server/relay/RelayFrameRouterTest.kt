@@ -889,6 +889,88 @@ class RelayFrameRouterTest {
         assertEquals(RelayFrame.Meta.ACTION_GROUP_POLICY_CHANGED, recipient.nextOf<RelayFrame.Meta>().action)
     }
 
+    @Test
+    fun hubInspectableModeAuditsDirectLegacyAndGroupFrames() = runBlocking<Unit> {
+        val dir = directoryWithGroup()
+        val audited = mutableListOf<String>()
+        val rig = Rig(
+            RelayFrameRouter(
+                connectionPool = RelayConnectionPool(),
+                mailboxQueue = mailbox(),
+                directory = dir,
+                audit = AuditSink { actor, action, details -> audited += "$actor|$action|$details" },
+                groupE2eeMode = { HubContract.GROUP_E2EE_HUB_INSPECTABLE },
+            ),
+        )
+        val (alice, aliceWs) = rig.connect("alice")
+        rig.connect("bob")
+
+        rig.router.processFrame(
+            alice,
+            RelayFrameCodec.encode(RelayFrame.Send(to = "bob", id = "leg-1", type = HubContract.LEGACY_GROUP_FRAME_TYPE, sentAt = 1L, payload = "legacy group msg")),
+        )
+        assertIs<RelayFrame.Ack>(aliceWs.nextOf<RelayFrame.Ack>())
+        assertEquals(1, audited.size)
+        assertTrue(audited[0].contains("alice|relay.group.inspect|"), audited[0])
+        assertTrue(audited[0].contains("type=${HubContract.LEGACY_GROUP_FRAME_TYPE}"), audited[0])
+        assertTrue(audited[0].contains("preview=legacy group msg"), audited[0])
+    }
+
+    @Test
+    fun switchingToRequiredGroupE2eeRetiresOfflineReadableRowsAndPreventsReplayOnRevert() = runBlocking<Unit> {
+        val store = mailbox()
+        val dir = directoryWithGroup()
+        dir.addMemberToGroup("grp-dev", "alice", isOrgAdmin = true)
+        dir.addMemberToGroup("grp-dev", "bob", isOrgAdmin = true)
+        var mode = HubContract.GROUP_E2EE_HUB_INSPECTABLE
+        val rig = Rig(
+            RelayFrameRouter(
+                connectionPool = RelayConnectionPool(),
+                mailboxQueue = store,
+                directory = dir,
+                groupE2eeMode = { mode },
+            ),
+        )
+        val (alice, sender) = rig.connect("alice")
+
+        // Queue readable group frames, a legacy group frame, a sealed group envelope, and a 1:1 direct message while Bob is offline.
+        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(to = "", id = "grp-plain", type = HubContract.GROUP_FRAME_TYPE, sentAt = 1L, payload = "plain fanout", group = "grp-dev")))
+        assertEquals(AckStatus.QUEUED, sender.nextOf<RelayFrame.Ack>().status)
+
+        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(to = "bob", id = "grp-legacy", type = HubContract.LEGACY_GROUP_FRAME_TYPE, sentAt = 2L, payload = "legacy plain")))
+        assertEquals(AckStatus.QUEUED, sender.nextOf<RelayFrame.Ack>().status)
+
+        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(to = "", id = "grp-sealed", type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = 3L, payload = testGroupEnvelope("grp-dev", "alice"), group = "grp-dev")))
+        assertEquals(AckStatus.QUEUED, sender.nextOf<RelayFrame.Ack>().status)
+
+        rig.router.processFrame(alice, RelayFrameCodec.encode(RelayFrame.Send(to = "bob", id = "direct-1", type = "TEXT", sentAt = 4L, payload = "direct hello")))
+        assertEquals(AckStatus.QUEUED, sender.nextOf<RelayFrame.Ack>().status)
+
+        assertEquals(4, store.pendingCount("bob"))
+
+        // Switch to E2EE_REQUIRED while Bob and Charlie remain offline -> readable group rows (Bob + Charlie fanout + Bob legacy) are retired immediately.
+        mode = HubContract.GROUP_E2EE_REQUIRED
+        val retiredCount = rig.router.retireReadableGroupRows()
+        assertEquals(3, retiredCount)
+        assertEquals(2, store.pendingCount("bob"))
+        assertEquals(1, store.pendingCount("charlie"))
+
+        val droppedEvents = listOf(
+            sender.nextOf<RelayFrame.QueueState>(),
+            sender.nextOf<RelayFrame.QueueState>(),
+            sender.nextOf<RelayFrame.QueueState>(),
+        )
+        assertTrue(droppedEvents.all { it.state == QueueEvent.DROPPED })
+        assertEquals(setOf("grp-plain", "grp-legacy"), droppedEvents.map { it.id }.toSet())
+
+        // Switch back to HUB_INSPECTABLE before Bob comes online -> retired rows must NOT replay!
+        mode = HubContract.GROUP_E2EE_HUB_INSPECTABLE
+        val (bob, recipient) = rig.connect("bob")
+        assertEquals(2, rig.router.drainMailboxForDevice(bob))
+        val replayed = recipient.drainNow().filterIsInstance<RelayFrame.Deliver>().map { it.id }.toSet()
+        assertEquals(setOf("grp-sealed", "direct-1"), replayed)
+    }
+
     private suspend fun awaitCondition(what: String, timeoutMs: Long = 5_000L, condition: suspend () -> Boolean) {
         val deadline = System.nanoTime() + timeoutMs * 1_000_000L
         while (!condition()) {

@@ -150,7 +150,18 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
                 val existing = d.directory.getGroup(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
                 if (!scope.allowsGroup(existing)) return@guarded call.notFound()
                 var updated = d.directory.updateGroup(id, b.name, visibility, joinMode, CONSOLE)
+                if (updated.visibility != existing.visibility || updated.joinMode != existing.joinMode) {
+                    d.groupJoinLinks?.revokeAllForGroup(id, session.username)
+                }
                 if (b.adminDeviceIds != null) updated = d.directory.setGroupAdmins(id, b.adminDeviceIds, CONSOLE)
+                if (b.revokeJoinLinks) {
+                    updated = d.directory.rotateJoinLinkRevision(id, CONSOLE)
+                    d.groupJoinLinks?.revokeAllForGroup(id, session.username)
+                    d.audit.log(session.username, "group.join_links.revoke", "group=$id")
+                } else if (!b.revokeLinkId.isNullOrBlank()) {
+                    d.groupJoinLinks?.revokeLink(b.revokeLinkId, session.username)
+                    d.audit.log(session.username, "group.join_link.revoke", "group=$id link=${b.revokeLinkId}")
+                }
                 d.audit.log(session.username, "group.update", "group=$id")
                 call.respondJson(updated.toAdminDto(d))
             }
@@ -164,6 +175,7 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
                 val existing = d.directory.getGroup(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
                 if (!scope.allowsGroup(existing)) return@guarded call.notFound()
                 d.directory.deleteGroup(id, CONSOLE)
+                d.groupJoinLinks?.revokeAllForGroup(id, session.username)
                 d.audit.log(session.username, "group.delete", "group=$id")
                 call.respondJson(OkDto())
             }

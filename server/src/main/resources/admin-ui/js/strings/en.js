@@ -612,6 +612,10 @@ export default {
   'org.group.delete.title': 'Delete {name}?',
   'org.group.delete.text': 'The group is removed for everyone. Messages already on devices stay there.',
   'org.group.deleted': 'The group was deleted.',
+  'org.group.revokeLinks': 'Revoke join links',
+  'org.group.revokeLinks.title': 'Revoke join links for {name}?',
+  'org.group.revokeLinks.text': 'Existing shareable join links for this group will stop working immediately. You can issue new links afterward.',
+  'org.group.revokeLinks.done': 'Active join links were revoked.',
   'org.group.pending': {
     one: '{n} request waiting',
     other: '{n} requests waiting',

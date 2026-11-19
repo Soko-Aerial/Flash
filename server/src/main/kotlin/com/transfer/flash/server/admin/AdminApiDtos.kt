@@ -254,6 +254,8 @@ data class GroupBody(
     val visibility: String? = null,
     val joinMode: String? = null,
     val adminDeviceIds: List<String>? = null,
+    val revokeJoinLinks: Boolean = false,
+    val revokeLinkId: String? = null,
 )
 
 @Serializable

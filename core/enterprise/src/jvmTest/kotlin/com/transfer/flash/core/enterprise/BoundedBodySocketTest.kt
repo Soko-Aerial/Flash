@@ -79,4 +79,51 @@ class BoundedBodySocketTest {
             serverJob.cancel()
         }
     }
+
+    @Test
+    fun directoryClientCapsOrdinaryRestReadsWhileAllowingLargePeoplePages() = runBlocking {
+        val fakeHub = FakeHub()
+        val people = (0 until 500).map {
+            com.transfer.flash.core.hubprotocol.rest.PersonDto(
+                deviceId = "device-%05d-with-a-realistic-length-id".format(it),
+                displayName = "Colleague Name $it",
+                departmentId = "dept-engineering",
+                departmentName = "Engineering and Platform",
+                online = true,
+            )
+        }
+        val largePeopleBody = com.transfer.flash.core.hubprotocol.rest.HubRestCodec.encode(
+            com.transfer.flash.core.hubprotocol.rest.PeoplePageDto(people, nextCursor = null),
+        )
+        assertTrue(largePeopleBody.length > com.transfer.flash.core.hubprotocol.HubContract.MAX_REST_BODY_BYTES)
+
+        val largeDeptsBody = "[" + (0 until 1500).joinToString(",") {
+            """{"departmentId":"dept-$it","name":"Department Number $it With Extra Padding"}"""
+        } + "]"
+        assertTrue(largeDeptsBody.length > com.transfer.flash.core.hubprotocol.HubContract.MAX_REST_BODY_BYTES)
+
+        fakeHub.respond(
+            "GET",
+            com.transfer.flash.core.hubprotocol.HubContract.PATH_DIRECTORY_DEPARTMENTS,
+            io.ktor.http.HttpStatusCode.OK,
+            largeDeptsBody,
+        )
+        fakeHub.respond(
+            "GET",
+            com.transfer.flash.core.hubprotocol.HubContract.PATH_DIRECTORY_PEOPLE,
+            io.ktor.http.HttpStatusCode.OK,
+            largePeopleBody,
+        )
+
+        val directory = EnterpriseDirectoryClient(
+            httpClient = fakeHub.client(),
+            allowCleartext = { true },
+        )
+        val deptsResult = directory.fetchDepartments("https://hub.example.test")
+        assertTrue(deptsResult is com.transfer.flash.core.common.result.FlashResult.Failure)
+
+        val peopleResult = directory.fetchPeople("https://hub.example.test", cursor = null, limit = 500, q = null, departmentId = null)
+        assertTrue(peopleResult is com.transfer.flash.core.common.result.FlashResult.Success)
+        assertEquals(500, peopleResult.value.people.size)
+    }
 }

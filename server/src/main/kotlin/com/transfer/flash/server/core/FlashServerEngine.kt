@@ -313,6 +313,7 @@ public class FlashServerEngine(
                     router = relayFrameRouter,
                     audit = auditLogger,
                     clock = clock,
+                    directory = directory,
                 )
             }
 
@@ -503,6 +504,16 @@ public class FlashServerEngine(
             config.adminPort,
             config.tlsMode,
         )
+        if (mailboxQueue !== MailboxStore.None &&
+            com.transfer.flash.server.admin.effectiveGroupE2eeMode(adminAuthService, config) != HubContract.GROUP_E2EE_HUB_INSPECTABLE
+        ) {
+            try {
+                val retired = runBlocking { relayFrameRouter.retireReadableGroupRows() }
+                if (retired > 0) logger.info("Retired {} readable group mailbox row(s) under required group E2EE", retired)
+            } catch (t: Throwable) {
+                logger.warn("Startup readable group mailbox retirement failed: {}", t.toString())
+            }
+        }
         ttlSweeper?.start()
         try {
             engine.start(wait = wait)

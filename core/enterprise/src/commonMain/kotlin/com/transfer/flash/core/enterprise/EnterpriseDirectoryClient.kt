@@ -253,7 +253,7 @@ public class EnterpriseDirectoryClient(
     private suspend fun execute(
         hubUrl: String,
         publicRequest: Boolean = false,
-        bodyLimit: Int = HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES,
+        bodyLimit: Int = HubContract.MAX_REST_BODY_BYTES,
         send: suspend (base: String, bearer: String?) -> HttpResponse,
     ): FlashResult<Reply> {
         val pinned = pinnedHubUrl()
@@ -382,7 +382,7 @@ public class EnterpriseDirectoryClient(
         departmentId: String?,
     ): FlashResult<PeoplePage> = withContext(ioDispatcher) {
         val reply = when (
-            val r = execute(hubUrl) { base, bearer ->
+            val r = execute(hubUrl, bodyLimit = HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES) { base, bearer ->
                 httpClient.get("$base${HubContract.PATH_DIRECTORY_PEOPLE}") {
                     if (!cursor.isNullOrBlank()) parameter("cursor", cursor)
                     parameter("limit", limit.coerceIn(1, 500).toString())
@@ -543,7 +543,7 @@ public class EnterpriseDirectoryClient(
         limit: Int,
     ): DirectorySyncPageResult = withContext(ioDispatcher) {
         val reply = when (
-            val r = execute(hubUrl) { base, bearer ->
+            val r = execute(hubUrl, bodyLimit = HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES) { base, bearer ->
                 httpClient.get("$base${HubContract.PATH_DIRECTORY_SYNC}") {
                     parameter("since", since.toString())
                     if (!epoch.isNullOrBlank()) parameter("epoch", epoch)

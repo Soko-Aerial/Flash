@@ -217,7 +217,7 @@ public class RadioChatBridge(
      * If the peer has no live LAN or hub path and is radio-only, attachment sending is refused.
      */
     public fun checkAttachmentRefusal(peerId: String): String? {
-        return if (canCarry(peerId)) {
+        return if (port.isGatewayEnabled && port.hasRadioPairingKey(peerId)) {
             RadioDeliveryNote.REFUSAL_ATTACHMENT
         } else {
             null
