@@ -27,7 +27,7 @@ Flash is designed around four foundational architectural principles:
 
 ## 2. Multi-Module Hierarchy & Dependency Graph
 
-Flash enforces acyclic dependencies. This diagram groups modules by role rather than listing every dependency:
+Flash enforces acyclic dependencies across **18 Flash library modules** (`14` `:core:*` modules and `4` `:ui:*` modules), plus the vendored `webrtc-kmp` fork (`third_party/webrtc-kmp`), producing **19 published artifacts**. All `:core:*` modules compile with Android `compileSdk 35` while `:ui:*` and `:app` compile against `compileSdk 37` (local builds pin JDK 25 via `gradle/gradle-daemon-jvm.properties`, JitPack removes that file and builds on JDK 17, and JVM consumers/runtime target JDK 21 / `JVM_11` bytecode). This diagram groups modules by role rather than listing every dependency:
 
 ```text
   ┌────────────────────────────────────────────────────────┐
@@ -103,4 +103,4 @@ WebRTC dependencies are notoriously heavy. Flash isolates calling behind an opti
 - `:core:engine` exports common, security, discovery, network, enterprise, transfer, messaging, persistence, swarm and PTT on Android and JVM. It has no dependency on `:core:radio`. Hub protocol arrives through security and enterprise.
 - UI: `:ui:chat` uses messaging, security, network, enterprise, transfer, theme and platform shims, plus `:core:radio` for its radio UI adapter; `:ui:callui` exports `:core:calling` and `:core:ptt`.
 - `:desktop` and `:app` are applications, not libraries. Both **hand-wire** calling (`CallCoordinator`), push-to-talk and the swarm in their own engine classes (`DesktopEngine`, `DiscoveryEngineHolder`) rather than going through `Flash.create`; the `attachCalling` seam is for third-party hosts.
-- `:sample:consumer` and `:sample:consumer-granular` compile against Android project dependencies. `:sample:consumer-desktop` checks JVM variant resolution from a local Maven publication. Independent Android and JVM builds verified the public JitPack tag under [REL22-04](../../testing/TEST-BACKLOG.md#rel22-04--published-beta-resolves-from-the-current-jitpack-coordinate).
+- `:sample:consumer` and `:sample:consumer-granular` compile against Android project dependencies (`:core:engine` and `:core:network` respectively). `:sample:consumer-desktop` checks JVM (`-jvm`) variant resolution from a local Maven publication (`com.transfer.flash:core-engine:2.3.0-beta.1` and `core-network`). Independent Android and JVM builds verified the public JitPack tag under [REL22-04](../../testing/TEST-BACKLOG.md#rel22-04--published-beta-resolves-from-the-current-jitpack-coordinate).

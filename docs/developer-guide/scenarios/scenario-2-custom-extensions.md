@@ -32,6 +32,11 @@ that channel dead and its un-ACKed chunks go back to the shared pool; at least o
 There is no `close()` on the channel. ACKs come back as `ACK_BATCH` frames on the session, not from `sendFrame`.
 
 ```kotlin
+import com.transfer.flash.core.transfer.multistream.StreamChannel
+import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
 class BluetoothStreamChannel(
     override val id: Int,
     private val out: java.io.OutputStream,
@@ -54,8 +59,7 @@ The factory goes to `RealFlashTransferRepository(streamChannelFactory = factory,
 
 **What a transport must also provide:** the receiving side needs the same frames delivered to `FlashInboundRouter`, chat and
 control frames travel on the same session, and pairing/identity checks happen in `:core:network`, not in the transfer module. A
-new link is therefore a new *session* type, not just a channel factory. The radio / Bluetooth work is specified in
-`docs/network/RADIO-WIRE-FORMAT.md` (ADR-101, PROPOSED, not built).
+new link is therefore a new *session* type, not just a channel factory. Note that the experimental KISS/AX.25 radio module (`:core:radio`, see [core-radio](../modules/core/core-radio.md)) is already shipped as a standalone Android/JVM library for radio text chat and gateway hardware links (`RadioGatewayManager`, `ByteLink`, `RadioChatHost`), rather than as a `StreamChannel` bulk-file transport.
 
 ---
 
@@ -72,11 +76,13 @@ public interface RandomAccessSinkHandle : AutoCloseable {
 }
 ```
 
-The shipped implementation is `FileRandomAccessSinkHandle(file, totalBytes)` (okio `FileHandle`, one code path for Android and
-desktop). Chunks arrive out of order, so `writeAt` must accept any offset and tolerate a re-sent chunk. An in-memory example,
+The multiplatform `commonMain` implementation is **`OkioRandomAccessSinkHandle(path: okio.Path, expectedTotalBytes: Long, fileSystem: okio.FileSystem = FileSystem.SYSTEM)`** (using `okio.FileHandle`, shared across desktop and Android). On Android, **`FileRandomAccessSinkHandle(file: java.io.File, expectedTotalBytes: Long)`** (`DestinationPolicy.kt`) is an Android-only convenience wrapper that delegates to `OkioRandomAccessSinkHandle(file.toOkioPath(), expectedTotalBytes)`. Chunks arrive out of order, so `writeAt` must accept any offset and tolerate a re-sent chunk. An in-memory example,
 only suitable for small files because it holds everything in RAM (AGENTS.md section 18 forbids that for real transfers):
 
 ```kotlin
+import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
+import kotlin.concurrent.Volatile
+
 class InMemorySinkHandle(totalBytes: Int) : RandomAccessSinkHandle {
     private val buffer = ByteArray(totalBytes)
     @Volatile override var isOpen = true
@@ -90,7 +96,7 @@ class InMemorySinkHandle(totalBytes: Int) : RandomAccessSinkHandle {
 ```
 
 It is plugged in where the host builds its receive sink: `RandomAccessChunkSink(handle, start.chunkSize)` inside the
-`FlashInboundRouter` wiring (see `Flash.kt` around the `FileRandomAccessSinkHandle` line, and the desktop equivalent). That is host
+`FlashInboundRouter` wiring (see `Flash.kt` around the `FileRandomAccessSinkHandle` line on Android, and `DesktopEngine.kt` using `OkioRandomAccessSinkHandle` on desktop). That is host
 wiring, not a `FlashConfig` option. Keep the path-traversal check that precedes it in those hosts.
 
 ---
@@ -128,6 +134,11 @@ Changing the identity key changes the device id, so every existing pairing is lo
 pass the values as parameters. `FlashColors` is a data class, so start from `FlashColors.dark()` / `light()` and `copy(...)`:
 
 ```kotlin
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+import com.transfer.flash.ui.theme.FlashColors
+import com.transfer.flash.ui.theme.FlashTheme
+
 val brand = FlashColors.dark().copy(
     accentPrimary = Color(0xFF0284C7),
     accentSecondary = Color(0xFF38BDF8),

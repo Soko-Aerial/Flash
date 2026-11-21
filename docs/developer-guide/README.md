@@ -1,6 +1,6 @@
 # Flash Developer Guide & Architecture Manual
 
-Welcome to the comprehensive Flash developer documentation. This guide covers the complete Kotlin Multiplatform architecture, individual module contracts, setup instructions, integration examples, extreme low-resource device deployment, custom platform extensions, and the open peer-to-peer wire protocol.
+Welcome to the comprehensive Flash developer documentation. This guide covers the complete Kotlin Multiplatform architecture (**18 Flash library modules** — `14` `:core:*` and `4` `:ui:*` — plus the vendored `webrtc-kmp` fork = **19 published artifacts**), individual module contracts, setup instructions, integration examples, extreme low-resource device deployment, custom platform extensions, and the open peer-to-peer wire protocol.
 
 ---
 
@@ -42,7 +42,7 @@ docs/developer-guide/
 └── scenarios/
     ├── scenario-1-ultra-low-resource.md       # Building for extreme resource-constrained devices (<512MB RAM, IoT, POS)
     ├── scenario-2-custom-extensions.md        # Custom implementations: Transports (BLE/LoRa), Storage, Crypto, UI
-    └── scenario-3-open-protocol-interop.md    # Open wire protocol spec & runnable client samples (Python, Rust, Go)
+    └── scenario-3-open-protocol-interop.md    # Open wire protocol spec, interop requirements & untested Python handshake sketch
 ```
 
 ---
@@ -54,4 +54,4 @@ docs/developer-guide/
 * **Integrating a specific module?** Check the dedicated guides in [modules/core/](modules/core/) or [modules/ui/](modules/ui/).
 * **Building for low-RAM / embedded hardware (<512MB RAM)?** Read [scenarios/scenario-1-ultra-low-resource.md](scenarios/scenario-1-ultra-low-resource.md).
 * **Extending Flash with custom transports (e.g. BLE, LoRa) or custom storage?** Read [scenarios/scenario-2-custom-extensions.md](scenarios/scenario-2-custom-extensions.md).
-* **Writing a Python, Rust, or Go client to talk to Flash?** Read [scenarios/scenario-3-open-protocol-interop.md](scenarios/scenario-3-open-protocol-interop.md).
+* **Interoperating with Flash from Python, Rust, or Go?** Read [scenarios/scenario-3-open-protocol-interop.md](scenarios/scenario-3-open-protocol-interop.md).

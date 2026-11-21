@@ -10,42 +10,44 @@ Flash modules are designed to be composable and independent. You do not need to 
 
 ## 1. Using `:core:security` for frame encryption and fingerprints
 
-`E2eFrameCodec` and `FlashFingerprint` are plain public objects that need only a 32-byte AES key and a public key. Getting that key by
+`FlashFingerprint` is a plain public object, whereas `E2eFrameCodec` is annotated `@FlashInternalApi` (opt in with `@OptIn(FlashInternalApi::class)`). Both need only a 32-byte AES key and a public key. Getting that key by
 ECDH needs a `FlashCrypto`: on Android that is `KeystoreFlashCrypto(context)` (public); on the JVM the only implementation,
 `PersistedFlashCrypto`, is `@FlashInternalApi` (opt in with `@OptIn(FlashInternalApi::class)`), because the desktop app owns identity storage.
 
 ```kotlin
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto // Android
 
-// Peer A and peer B each: crypto.generateEphemeralEcdhKeyPair() -> exchange crypto-encoded public keys ->
-// val sessionKey = crypto.ecdhSessionKey(selfEphemeral, peerEphemeralPublicKey)   // 32 bytes, HKDF-SHA256
-val sessionKey: ByteArray = ...
+@OptIn(FlashInternalApi::class)
+fun sealAndVerifyExample(sessionKey: ByteArray, peerPublicKeyEncoded: ByteArray) {
+    // Peer A and peer B each: crypto.generateEphemeralEcdhKeyPair() -> exchange crypto-encoded public keys ->
+    // val sessionKey = crypto.ecdhSessionKey(selfEphemeral, peerEphemeralPublicKey)   // 32 bytes, HKDF-SHA256
+    val wire = E2eFrameCodec.encryptToWireFrame("TRANSFER_AUTH_TOKEN: 849204", sessionKey)   // "FLASH_SEC payload=<base64>"
+    val back: String? = E2eFrameCodec.decryptWireFrame(wire, sessionKey)                     // null on a bad tag / wrong key
+    println(back)
 
-val wire = E2eFrameCodec.encryptToWireFrame("TRANSFER_AUTH_TOKEN: 849204", sessionKey)   // "FLASH_SEC payload=<base64>"
-val back: String? = E2eFrameCodec.decryptWireFrame(wire, sessionKey)                     // null on a bad tag / wrong key
-println(back)
-
-// A human-comparable fingerprint of a public key
-val fp = FlashFingerprint.fingerprint(peerPublicKeyEncoded)       // SHA-256
-println(FlashFingerprint.formatHexGroups(fp))
+    // A human-comparable fingerprint of a public key
+    val fp = FlashFingerprint.fingerprint(peerPublicKeyEncoded)       // SHA-256
+    println(FlashFingerprint.formatHexGroups(fp))
+}
 ```
 
 ---
 
 ## 2. Using `:core:discovery` for zero-conf LAN discovery
 
-Discovery needs a transport. `core-discovery` ships the Android NSD transport (`NsdFlashDiscovery`, needs a `Context`) and the JVM
-`JmdnsTransport`; `CompositeDiscovery(transports = listOf(...))` merges them. The simplest way to get a ready `FlashDiscovery` is the
-engine (`engine.discovery`); given one, observation looks like this:
+Discovery needs a transport. `core-discovery` ships `NsdTransport` (Android `FlashRadioTransport`, needs a `Context`) and `JmdnsTransport` (JVM `FlashRadioTransport`); `CompositeDiscovery(transports = listOf(...))` merges them (legacy standalone Android `NsdFlashDiscovery` is also shipped). The simplest way to get a ready `FlashDiscovery` is the
+engine (`engine.discovery`); given one, browse-only observation looks like this:
 
 ```kotlin
 import com.transfer.flash.core.discovery.FlashDiscovery
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
-fun discoverLocalPeers(discovery: FlashDiscovery, listenPort: Int, scope: CoroutineScope) {
+fun discoverLocalPeers(discovery: FlashDiscovery, scope: CoroutineScope) {
     scope.launch {
-        discovery.startAdvertising(listenPort)   // be visible to others (optional for a browse-only tool)
         discovery.startDiscovery()               // browse
 
         discovery.discoveredEndpoints.collect { endpoints ->
@@ -57,6 +59,8 @@ fun discoverLocalPeers(discovery: FlashDiscovery, listenPort: Int, scope: Corout
     }
 }
 ```
+
+> **Advertising with `CompositeDiscovery`:** Do **not** call `CompositeDiscovery.startAdvertising(listenPort)` before calling `startAll(port, identity)`. `CompositeDiscovery` requires a `FlashAdvertisedIdentity` to build TXT records; calling `startAdvertising(listenPort)` before `startAll(port, identity)` fails immediately with `FlashResult.Failure("No advertised identity set; call startAll(port, identity) first")`. Call `startAll(listenPort, identity)` to start both advertising and browsing together.
 
 ---
 
