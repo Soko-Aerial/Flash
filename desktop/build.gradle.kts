@@ -284,6 +284,10 @@ abstract class PackageFlashInviteInstaller : DefaultTask() {
     @get:InputFile
     abstract val packager: RegularFileProperty
 
+    @get:InputDirectory
+    @get:Optional
+    abstract val wixDir: DirectoryProperty
+
     @get:OutputDirectory
     abstract val destination: DirectoryProperty
 
@@ -313,6 +317,17 @@ abstract class PackageFlashInviteInstaller : DefaultTask() {
             execOperations.exec {
                 executable(jpackage)
                 args(arguments)
+                if (windows) {
+                    wixDir.orNull?.asFile?.takeIf { it.isDirectory }?.let { wix ->
+                        val pathEntry = environment.entries.firstOrNull { it.key.equals("PATH", ignoreCase = true) }
+                        val pathKey = pathEntry?.key ?: "PATH"
+                        val currentPath = pathEntry?.value?.toString().orEmpty()
+                        environment(
+                            pathKey,
+                            if (currentPath.isBlank()) wix.absolutePath else "${wix.absolutePath}${File.pathSeparator}$currentPath",
+                        )
+                    }
+                }
             }
             val installer = stagedDirectory.listFiles().orEmpty().single { it.extension == format.get() }
             val output = outputDirectory.resolve(installer.name)
@@ -335,6 +350,10 @@ for (installerFormat in inviteInstallerFormats) {
     val suffix = installerFormat.replaceFirstChar(Char::uppercaseChar)
     val buildInviteInstaller = tasks.register<PackageFlashInviteInstaller>("buildFlash${suffix}WithInviteHandler") {
         dependsOn("createDistributable")
+        if (windowsInviteInstaller) {
+            dependsOn(":unzipWix")
+            wixDir.set(rootProject.layout.buildDirectory.dir("wix311"))
+        }
         image.set(layout.buildDirectory.dir("compose/binaries/main/app/Flash"))
         resources.set(layout.projectDirectory.dir("src/packaging/" + if (windowsInviteInstaller) "windows" else "linux"))
         icon.set(layout.projectDirectory.file("src/jvmMain/resources/icons/" + if (windowsInviteInstaller) "flash.ico" else "flash.png"))

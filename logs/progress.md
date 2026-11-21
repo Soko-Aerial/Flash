@@ -1,46 +1,49 @@
 # Progress Log
 
-## 2026-11-21 — Flash 2.3.0 release verification, builds, and library dry-run (`cd77a439..34c48f42`)
+## 2026-11-21 — Flash 2.3.0 release verification, builds, library dry-run, and `ERROR-1039..1041` fixes
 
 ### Worked on
-Ran full automated test verification, `:app:lintRelease`, Hub server `2.3.0-beta.1` distribution assembly, Android & Desktop `2.3.0` release builds, and KMP `2.3.0-beta.1` library publish + `:sample:consumer-desktop` dry-run on `dev` atop `34c48f42` (commits `cd77a439..34c48f42`).
+Ran full automated test verification, `:app:lintRelease`, Hub server `2.3.0-beta.1` distribution assembly, Android & Desktop `2.3.0` release builds, and KMP `2.3.0-beta.1` library publish + `:sample:consumer-desktop` dry-run on `dev` (atop `cd77a439..34c48f42`), then fixed and re-verified `ERROR-1039`, `ERROR-1040`, and `ERROR-1041`.
+
+### Changes
+- `server/src/main/kotlin/com/transfer/flash/server/Main.kt` & `MainCommandsTest.kt` (`ERROR-1039`): Extracted `internal fun runMainCommand(args: Array<String>): Int` and kept `--help` routed to `usage(0)` instead of defaulting to `serve`; added `helpFlagsAndUnknownCommandReturnExpectedExitCodesAndUsage`.
+- `desktop/build.gradle.kts` (`ERROR-1041`): Added `@get:InputDirectory @get:Optional abstract val wixDir: DirectoryProperty` to `PackageFlashInviteInstaller`, wired `dependsOn(":unzipWix")` and `wixDir.set(rootProject.layout.buildDirectory.dir("wix311"))` on Windows, and prepended `wixDir` to `PATH` inside `execOperations.exec`.
+- `gradle/verification-metadata.xml` (`ERROR-1040`): Regenerated SHA-256 verification metadata for the published `2.3.0-beta.1` KMP modules via `--write-verification-metadata sha256` against `build\scratch-m2` (zero deletions).
 
 ### Verification
 
 - **Admin UI Node suite (`node --no-warnings --test server/admin-ui-tests/*.test.mjs`):** `89 tests, 89 passed, 0 failed, 0 skipped` (1,264.67 ms).
 - **Full Gradle test & debug assembly gate:**
   - Invoking unqualified `test` without `-x :sample:consumer-desktop:test` failed task-graph resolution before `2.3.0-beta.1` was published to `mavenLocal()`.
-  - `tools\flash-gradle.cmd allTests testDebugUnitTest test assembleDebug -x :sample:consumer-desktop:test "-Pkotlin.incremental=false" --no-daemon --max-workers=2 --continue --stacktrace` hit two timing-sensitive coroutine timeouts under concurrent load (`ExternalSourcesAndInterceptorTest > attaching a source again replaces only that source and the old flow stops counting` in `:core:transfer:testAndroidHostTest`, and `RealFlashChatRepositoryTest > delete for everyone sends direct action only for the local author` in `:core:messaging:testAndroidHostTest`; initial XML totals: 1,063 suites, 9,416 tests — 9,409 passed, 2 failed, 5 skips).
-  - Reran `:core:transfer:testAndroidHostTest :core:messaging:testAndroidHostTest --rerun-tasks --no-daemon --max-workers=1 --stacktrace`: `:core:transfer:testAndroidHostTest` passed, while `:core:messaging:testAndroidHostTest` hit a `delay(200)` timing flake in `RealFlashChatRepositoryTest > HUBFILE-U45` (699 tests, 1 failed). Solo rerun `tools\flash-gradle.cmd :core:messaging:testAndroidHostTest --rerun-tasks --no-daemon --max-workers=1 --stacktrace` passed (`BUILD SUCCESSFUL in 11m 52s`, exit 0).
-  - Final parsed JUnit XML totals across **1,063 suites**: **9,416 tests — 9,411 passed, 0 failed, 0 errors, 5 skips** (`core\security`: 2 skips, `desktop`: 2 skips, `ui\platform-shims`: 1 skip; `app` 122, `core\calling` 719, `core\common` 173, `core\discovery` 275, `core\engine` 326, `core\enterprise` 462, `core\hub-protocol` 246, `core\messaging` 1,102, `core\network` 767, `core\persistence` 147, `core\ptt` 301, `core\radio` 475, `core\security` 458, `core\swarm` 363, `core\transfer` 414, `desktop` 322, `sample\consumer` 10, `server` 726, `ui\callui` 210, `ui\chat` 1,586, `ui\platform-shims` 72, `ui\theme` 140).
-  - **Combined automated total:** **9,505 tests (9,500 passed, 0 failed, 5 skips)** after the isolated `--max-workers=1` reruns.
+  - `tools\flash-gradle.cmd allTests testDebugUnitTest test assembleDebug -x :sample:consumer-desktop:test "-Pkotlin.incremental=false" --no-daemon --max-workers=2 --continue --stacktrace` hit two timing-sensitive coroutine timeouts under concurrent load (`ERROR-1042`); `--max-workers=1` reruns passed (`:core:transfer:testAndroidHostTest` on first rerun; `:core:messaging:testAndroidHostTest` after a `HUBFILE-U45` `delay(200)` flake on combined rerun passed solo in 11m 52s).
+  - After the `Main.kt` / `MainCommandsTest.kt` fix, `tools\flash-gradle.cmd :server:test :server:installDist --no-daemon --max-workers=1 --stacktrace` passed (`BUILD SUCCESSFUL in 6m 46s`; `server`: `77 suites, 727 tests, 0 failures, 0 errors, 0 skipped`; `MainCommandsTest` 3/3).
+  - Updated JUnit XML totals across **1,063 suites** (latest run per module): **9,417 tests — 9,412 passed, 0 failed, 0 errors, 5 skips** (`core\security`: 2 skips, `desktop`: 2 skips, `ui\platform-shims`: 1 skip; `app` 122, `core\calling` 719, `core\common` 173, `core\discovery` 275, `core\engine` 326, `core\enterprise` 462, `core\hub-protocol` 246, `core\messaging` 1,102, `core\network` 767, `core\persistence` 147, `core\ptt` 301, `core\radio` 475, `core\security` 458, `core\swarm` 363, `core\transfer` 414, `desktop` 322, `sample\consumer` 10, `server` 727, `ui\callui` 210, `ui\chat` 1,586, `ui\platform-shims` 72, `ui\theme` 140).
+  - **Combined automated total:** **9,506 tests (9,501 passed, 0 failed, 5 skips)**.
 - **Android Release Lint (`tools\flash-gradle.cmd :app:lintRelease --no-daemon --max-workers=1 --stacktrace`, run sequentially per `ERROR-1038`):** `BUILD SUCCESSFUL in 9m 24s` — `app/build/reports/lint-results-release.html`: **0 errors, 169 warnings, 2 hints**.
-- **Hub Server distribution (`tools\flash-gradle.cmd :server:installDist --no-daemon --max-workers=1`):** `BUILD SUCCESSFUL in 1m 58s`.
+- **Hub Server CLI & distribution (`:server:installDist`):**
   - `server/build/resources/main/flash-server-version.txt` reports `2.3.0-beta.1`.
-  - `server/build/install/server/bin/server.bat help` and `-h` print usage including `keytool revoke` and exit 0; however `server.bat --help` falls through to `serve` (`ERROR-1039`, `Main.kt:37`).
-- **Android & Desktop `2.3.0` release builds (`tools\build-release.ps1 -NoDaemon`):**
-  - Initial run failed in `:desktop:buildFlashExeWithInviteHandler` and `:desktop:buildFlashMsiWithInviteHandler` because `PackageFlashInviteInstaller` invokes `jpackage.exe` without `build\wix311` on `PATH` (`ERROR-1041`).
-  - With `C:\Users\KaliOxygen\Downloads\Flash\build\wix311` prepended to `PATH`, `build-release.ps1 -NoDaemon` succeeded (`BUILD SUCCESSFUL in 1m 40s`, script `Done in 01:53`).
-  - `versionCode: 6` (shared by split set); all 4 signed APKs verified via `apksigner verify --print-certs` (`CN=Flash, OU=Release, O=Flash Project`, SHA-256 cert digest `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`).
-  - Outputs in `dist\2.3.0\` (10 artifacts + `SHA256SUMS.txt`):
-    - `Flash-2.3.0.apk` (55,482,893 bytes, SHA-256 `17d7e77a782783ad56dd874617676e2872d11fc39b2714da595697fa662f35ac`)
-    - `Flash-2.3.0-unsigned.apk` (55,454,680 bytes, SHA-256 `6ef20c337e4c7d42abbb97c09bfd84c968d7f7643c641ccb949669936365b877`)
-    - `Flash-2.3.0-arm64-v8a.apk` (18,404,900 bytes, SHA-256 `86007f1779d9134a66f821e826133695cf96c12e3cc5e90896cb466528df9ba6`)
-    - `Flash-2.3.0-arm64-v8a-unsigned.apk` (18,376,383 bytes, SHA-256 `d47a43411fee2a71f18e9b0ce66623879e46bcb41f07b8bced16b85169e66486`)
-    - `Flash-2.3.0-x86_64.apk` (19,879,448 bytes, SHA-256 `0332d400d0cc2ec31b02d7b8457fe05ed2fb1c76775e8376ae98659e9c4bf762`)
-    - `Flash-2.3.0-x86_64-unsigned.apk` (19,851,235 bytes, SHA-256 `6eda5f0ca7b9439968882ca9d9f00bceb6b07bfac17f2bcb94f2ed798a6593e9`)
-    - `Flash-2.3.0-armeabi-v7a.apk` (12,502,572 bytes, SHA-256 `c53e429465862c7f676f1157515ceaf210f603d91de5900437e7866a8885ea56`)
-    - `Flash-2.3.0-armeabi-v7a-unsigned.apk` (12,473,091 bytes, SHA-256 `1e9e0a8c64d1b99c73b61d9003f01fc79f8eeba319b78a7cf6cfbdb925f26e49`)
-    - `Flash-2.3.0.msi` (111,031,689 bytes, SHA-256 `294bebe41324add67ba6dada3264860f9297e59d8bfa4e7b093cfcc8523cf273`)
-    - `Flash-2.3.0.exe` (111,633,920 bytes, SHA-256 `c0b5416c1b6ae01046de4fa1ba17e989f3c41b3daffe66b0aa9f6adb2057aa6d`)
+  - `server/build/install/server/bin/server.bat --help` (and `help` / `-h`) prints usage including `keytool revoke` and exits `0` (`EXIT_CODE=0`).
+- **KMP library publish & desktop consumer dry-run (`2.3.0-beta.1` via `build\scratch-m2`, deleted afterwards):**
+  - All 19 `publishToMavenLocal` tasks from `jitpack.yml` succeeded (`BUILD SUCCESSFUL in 1m 24s`), publishing 57 Maven artifact directories/POMs under `build\scratch-m2\com\transfer\flash\`.
+  - After updating `gradle/verification-metadata.xml` (`ERROR-1040`), `tools\flash-gradle.cmd :sample:consumer-desktop:compileKotlin :sample:consumer-desktop:test --no-daemon --rerun-tasks "-Dmaven.repo.local=...\build\scratch-m2"` succeeded under strict dependency verification (`BUILD SUCCESSFUL in 1m 10s`). Deleted `build\scratch-m2` afterwards (`scratch_m2_exists=False`); `~/.m2` untouched.
+- **Android & Desktop `2.3.0` release builds (`tools\build-release.ps1 -NoDaemon` in clean-`PATH` environment, `path_has_wix=0`):**
+  - `BUILD SUCCESSFUL in 3m 19s` (script `Done in 03:36`); `:downloadWix`, `:unzipWix`, `:desktop:buildFlashMsiWithInviteHandler`, `:desktop:buildFlashExeWithInviteHandler`, and `:app:assembleRelease` all succeeded without manual `PATH` edits.
+  - `versionCode: 6` (shared by split set); `apksigner verify --print-certs dist\2.3.0\Flash-2.3.0.apk` (and all 4 signed APKs) verified `CN=Flash, OU=Release, O=Flash Project`, SHA-256 cert digest `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`.
+  - Final outputs in `dist\2.3.0\` (10 artifacts + `SHA256SUMS.txt`):
+    - `Flash-2.3.0.apk` (55,482,893 bytes, SHA-256 `4a9561316e21134f3a6477d453607bed8f97ca50d54326194a254641f6ff6e25`)
+    - `Flash-2.3.0-unsigned.apk` (55,454,680 bytes, SHA-256 `446508b9ec55fdd7c235fcc9ba1636ee277d437c7cc0b90fb2caf6b485e08f9f`)
+    - `Flash-2.3.0-arm64-v8a.apk` (18,404,900 bytes, SHA-256 `f1fe0bb608a1bc6077805042585053a77e860bbdc07ee25b32e276b53737b8c0`)
+    - `Flash-2.3.0-arm64-v8a-unsigned.apk` (18,376,383 bytes, SHA-256 `8159b1d5f199423cc9baa3aed72b47674ed6a0adf864d6d49017933acea31b47`)
+    - `Flash-2.3.0-x86_64.apk` (19,879,448 bytes, SHA-256 `6a42e827f78fbb4bab0f943a39d036b3cd5073632d7e487947e214b7ca80b030`)
+    - `Flash-2.3.0-x86_64-unsigned.apk` (19,851,235 bytes, SHA-256 `d0d22ab8d41860a4638cd5bd93212f8a170fc7896d98325596667f11126baeb1`)
+    - `Flash-2.3.0-armeabi-v7a.apk` (12,502,572 bytes, SHA-256 `121532d2a70a8ec19b5038a299cb17303307c7af6a344bd64d731d86cbae1540`)
+    - `Flash-2.3.0-armeabi-v7a-unsigned.apk` (12,473,091 bytes, SHA-256 `9f3edb21012857188b247c7bd061501c00756db0fe0ecb1e24d247a870d88982`)
+    - `Flash-2.3.0.msi` (111,031,689 bytes, SHA-256 `da0ccec9e8b9a23a1018b207f8fad48086b31ffe351922634cc1679181b61aa0`)
+    - `Flash-2.3.0.exe` (111,633,920 bytes, SHA-256 `2f10a100dfa7f64a0894db141306ae97b5c54f55f8d5d22de181c63eba48168b`)
     - `SHA256SUMS.txt` (924 bytes)
-- **KMP library publish & desktop consumer dry-run (`2.3.0-beta.1` via `build\scratch-m2`, cleaned up afterwards):**
-  - All 19 `publishToMavenLocal` tasks from `jitpack.yml` succeeded (`BUILD SUCCESSFUL in 1m 11s`), publishing 57 Maven artifact directories/POMs under `build\scratch-m2\com\transfer\flash\`.
-  - `:sample:consumer-desktop:compileKotlin` with `-Dmaven.repo.local=...\build\scratch-m2` resolved `2.3.0-beta.1` from `MavenLocal` and failed strict dependency verification on 24 `.module` artifacts (`ERROR-1040`, `gradle/verification-metadata.xml` stops at `2.2.0-beta.3`).
-  - Re-running `:sample:consumer-desktop:compileKotlin` with `--dependency-verification=off` succeeded (`BUILD SUCCESSFUL in 46s`). Deleted `build\scratch-m2` afterwards; `~/.m2` untouched.
 
 ### Remaining / Next AI
-- Resolve open `2.3.0` release issues before tagging: `ERROR-1039` (`Main.kt:37` `--help` -> `serve` fallthrough), `ERROR-1040` (regenerate `gradle/verification-metadata.xml` for `2.3.0-beta.1` and re-verify `:sample:consumer-desktop:compileKotlin` with strict verification), and `ERROR-1041` (`PackageFlashInviteInstaller` WiX PATH wiring & coroutine test waits).
+- Hardening the fixed wall-clock waits in `ERROR-1042` (`ExternalSourcesAndInterceptorTest`, `RealFlashChatRepositoryTest`) remains open for `--max-workers=2` runs.
 - Physical-device, installed Windows, Linux (`origin/linux`), live Hub, and JitPack checks remain owed in `docs/testing/TEST-BACKLOG.md`: `MODREV-01..07`, `IFREV-01..06`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `INVITE-LINK-01..02`, `HUBWORK-06..07`, and `REL22-04`. No device install, Hub deployment, or remote push was performed.
 
 ## 2026-11-19 — Feature and module review remediation (Batches 1–4)

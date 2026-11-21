@@ -34,9 +34,17 @@ internal const val ROOT_PASSPHRASE_ENV = "FLASH_ROOT_PASSPHRASE"
  * - `admin-recovery --username <name>`: break-glass reset of an admin (prints a new password and authenticator secret once).
  */
 fun main(args: Array<String>) {
-    val command = args.firstOrNull()?.takeUnless { it.startsWith("--") } ?: "serve"
-    val rest = if (args.firstOrNull()?.startsWith("--") == false) args.drop(1).toTypedArray() else args
-    val code = try {
+    val code = runMainCommand(args)
+    if (code != 0) exitProcess(code)
+}
+
+/** Dispatches CLI arguments to the Hub subcommand and returns the process exit code. */
+internal fun runMainCommand(args: Array<String>): Int {
+    val first = args.firstOrNull()
+    val isServeFlag = first != null && first.startsWith("--") && first != "--help"
+    val command = if (first == null || isServeFlag) "serve" else first
+    val rest = if (first == null || isServeFlag) args else args.drop(1).toTypedArray()
+    return try {
         when (command) {
             "serve" -> serve(rest)
             "keytool" -> runKeyTool(rest.toList())
@@ -53,7 +61,6 @@ fun main(args: Array<String>) {
         System.err.println("FLASH HUB: invalid configuration: ${e.message}")
         2
     }
-    if (code != 0) exitProcess(code)
 }
 
 private fun usage(code: Int): Int {
