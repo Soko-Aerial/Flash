@@ -16,18 +16,18 @@ On JVM, `:core:radio` brings in `jserialcomm` (serial/RFCOMM ports) and `jna` / 
 
 ---
 
-## 2. Package Layout & Key Public / `@FlashInternalApi` Types
+## 2. Package Layout & Key Public Types
 
 All packages live under `com.transfer.flash.core.radio`:
 
 | Package | Key types |
 |---|---|
-| `...radio.gateway` | `RadioGatewayManager` (`@FlashInternalApi` — `enable()`, `disable()`, `state: StateFlow<RadioGatewayState>`, `driver: StateFlow<KissTncDriver?>`, `requestTestMessage(...)`), `RadioGatewayState`, `TestMessageResult`. |
-| `...radio.chat` | `RadioChatHost` (`engine`, `enabled`, `status`, `inboundMessages`, `deliveryReceipts`), `RadioChatEngine` (`@FlashInternalApi` — segmented text up to 3,008 bytes, cryptographic ACKs, multi-lane priority `EMERGENCY > TEXT > ACK > LOCATION`), `RadioChatSettings`, `RadioChatInbound`, `RadioChatReceipt`, `RadioChatStatus`. |
-| `...radio.link` | `ByteLink`, `RadioDeviceDiscovery`, `DiscoveredDevice`, `PairResult`, `RadioServiceIdentity`; Android `AndroidRadioDiscovery` / `AndroidBluetoothCatalog`; JVM `WindowsRadioDiscovery` / `WindowsRfcommLink` / `WindowsComPortMapper` / `JvmSerialPortCatalog`. |
+| `...radio.gateway` | `RadioGatewayManager` (`enable()`, `disable()`, `state: StateFlow<RadioGatewayState>`, `driver: StateFlow<KissTncDriver?>`, `requestTestMessage(...)`), `RadioGatewayState`, `TestMessageResult`. |
+| `...radio.chat` | `RadioChatHost` (`engine`, `enabled`, `status`, `inboundMessages`, `deliveryReceipts`), `RadioChatEngine` (segmented text up to 3,008 bytes, cryptographic ACKs, multi-lane priority `EMERGENCY > TEXT > ACK > LOCATION`), `RadioChatSettings`, `RadioChatInbound`, `RadioChatReceipt`, `RadioChatStatus`. |
+| `...radio.link` | `ByteLink`, `RadioDeviceDiscovery`, `DiscoveredDevice`, `PairResult`, `RadioServiceIdentity`; Android `AndroidRadioDiscovery` / `AndroidBluetoothCatalog`; JVM `WindowsRadioDiscovery` / `WindowsComPortMapper` / `JvmSerialPortCatalog`. |
 | `...radio.connect` | `RememberedRadio`, `RememberedRadioStore` (`InMemoryRememberedRadioStore`, `AndroidSharedPreferencesRadioStore`), `RadioAuthorisationStore`, `RadioAuthorisationGate`, `RadioSecurityProfile` (`PROFILE_A_PLAINTEXT_SIGNED`, `PROFILE_M_ENCRYPTED`), `RadioConnectStateMachine`. |
 | `...radio.driver` & `...kiss` | `KissTncDriver`, `KissFrameCodec`, `Ax25FrameCodec`, `TxPacing`, `TncLinkState`, `AndroidPrefsRadioStatePersistence`. |
-| `...radio.wire`, `...audio`, `...diag` | `RadioSession`, `RadioPairingAdapter`, `RadioCrypto` / `JdkRadioCrypto`, `RadioWire`, `StreamFramer`, `RadioAudioSession` / `RadioAudioCodec`, `RadioLinkTester`. |
+| `...radio.wire`, `...audio`, `...diag` | `RadioSession`, `RadioPairingAdapter`, `RadioCrypto` / `JdkRadioCrypto`, `RadioWire`, `StreamFramer`, `RadioAudioSession` (`RadioAudioState`, `RadioAudioPhase`, `RadioPcmInput`, `RadioPcmOutput`), `RadioLinkTester`. |
 
 ---
 
