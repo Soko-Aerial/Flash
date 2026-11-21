@@ -8,7 +8,7 @@ The `:core:transfer` module contains the high-throughput, multi-stream chunked f
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.3.0-beta.1")
 }
 ```
 
@@ -17,18 +17,18 @@ dependencies {
 ## 2. Core Architecture & Transfer Lifecycle
 
 Chunked transfer rides the same WebSocket mesh as chat (ADR-016); this module is transport-independent and talks to the network
-through the `FLASH_XFER` / `FLASH_FILE_ACK` text messages (`protocol/WsTransferMessages`) and binary chunk frames (`ChunkFrame`, framing v2).
+through the `FLASH_XFER` / `FLASH_FILE_ACK` text messages (`protocol/WsTransferMessages`) and binary chunk frames (`ChunkFrame`, framing v2). When talking to a paired peer that has a shared session key, binary `FLSH` frames (`FILE_START`, `CHUNK`, `ACK_BATCH`, `COMPLETE`) are sealed inside `FSEC` AES-256-GCM envelopes via `SecureBinaryFrameCodec` ([`:core:security`](core-security.md)), falling back to plain `FLSH` frames when no session key is present.
 
 1. **Send side (`MultiStreamDispatcher`, `SendPipeline`):**
-   * `Chunker` plans the chunks: default **64 KiB**, bounded to **16 KiB–1 MiB**. `adaptiveSize` uses the measured throughput and the active profile ceiling.
-   * One *materializer* reads the file sequentially and routes each serialized chunk to `N` worker streams (static assignment `index % N`). The stream count comes from `FlashTransferProfile`: **LOW 1, MEDIUM 2, HIGH 4** (the profile also sets chunk base size and queue depths).
+   * `Chunker` plans the chunks: default **64 KiB**, bounded to **16 KiB–1 MiB**. `Chunker.adaptiveSize(recentThroughputBytesPerSec: Double)` maps measured throughput logarithmically between `MIN_CHUNK_SIZE_BYTES` (16 KiB at `<= 256 KiB/s`) and `MAX_CHUNK_SIZE_BYTES` (1 MiB at `>= 64 MiB/s`), snapped to 4 KiB (`SIZE_GRANULARITY_BYTES`).
+   * One *materializer* reads the file sequentially and routes each serialized chunk to `N` worker streams (static assignment `index % N`). The stream count and chunk/queue limits come from `FlashTransferProfile`: **ULTRA_LOW 1 stream / 16 KiB base (32 KiB adaptive cap, 2/2 queues), LOW 1 / 32 KiB, MEDIUM 2 / 64 KiB, HIGH 4 / 64 KiB (up to 1 MiB adaptive)**.
    * At-least-once on the wire, exactly-once write: when a stream dies its unconfirmed frames are redistributed to the survivors.
    * Pause is cooperative: the materializer parks before its next chunk while acknowledgements keep being tracked.
 2. **Receive side (`ReceivePipeline`, `MultiStreamReceiver`):**
    * Each chunk's SHA-256 is verified **before** it is written, then written at its offset through a `RandomAccessSinkHandle` (no whole-file buffer). Duplicates are ignored, and completed chunks are kept in a `ResumeBitVector` (persisted per chunk in `TransferChunkEntity` when resume is enabled).
    * When all chunks are in, `WholeFileVerifier` checks the whole-file SHA-256 before the file is released; a mismatch fails the transfer on both ends. (BLAKE3 was deferred, ADR-010.)
    * An inbound offer waits for `acceptIncoming` unless the sender is paired and `autoAcceptIncoming` is on; a receive that cannot fit on disk is refused by name; failures are worded for people by `TransferFailureText`.
-3. **Resume.** `TransferReconnectResumePolicy` re-offers a failed transfer when the session comes back; the receiver answers with its done-set so only missing chunks are sent.
+3. **Resume & LAN <-> Hub continuity.** `TransferReconnectResumePolicy` re-offers a failed transfer when the session comes back; the receiver answers with its done-set so only missing chunks are sent. For transfers that traverse both LAN and the organisation Hub, `TransferRouteContinuityPort` bridges `:core:transfer` to `TransferRouteCoordinator` and `FileContinuityCheckpointStore` in `:core:engine`, persisting atomic `ContinuityCheckpoint` records (`VerifiedByteSpan`s, route ownership epochs, and source fingerprints) so progress survives route handoffs and process restarts.
 4. **Path safety.** Relative paths in folder transfers are sanitized with `FlashPathSanitizer.sanitizeRelativePath` (in `:core:engine`) before anything is written. `DestinationPolicy` (Android) picks the destination.
 
 ---
@@ -72,8 +72,14 @@ Observe one transfer by filtering `activeTransfers` on `id`; there is no `observ
 ## 4. Practical Code Example
 
 ```kotlin
+import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.result.onSuccess
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.model.FlashTransferState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.takeWhile
+import kotlinx.coroutines.launch
 
 fun executeFileTransfer(
     repository: FlashTransferRepository,
@@ -81,6 +87,7 @@ fun executeFileTransfer(
     fileUri: String,
     fileName: String,
     fileSize: Long,
+    scope: CoroutineScope,
 ) {
     scope.launch {
         repository.sendFile(peer, fileUri, fileName, fileSize).onSuccess { transferId ->

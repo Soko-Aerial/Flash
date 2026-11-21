@@ -1,6 +1,6 @@
 # Core Messaging Module (`:core:messaging`)
 
-The `:core:messaging` module implements the peer-to-peer chat repository, message delivery tracking, typing indicators, read receipts, unicode reactions, **signed groups** (membership, roster, vouching, secrets and invites), group history sync, and the push-to-talk wire codecs that `:core:ptt` builds on.
+The `:core:messaging` module implements the peer-to-peer chat repository, message delivery tracking, typing indicators, read receipts, unicode reactions, **signed groups** (membership, roster, vouching, secrets and invites), group history sync, and Hub relay / Hub group E2EE bridging (`HubChatBridge` and `HubGroupE2eeCoordinator`). Push-to-talk wire codecs (`FLASH_PTT`, `FLASH_PTSS`) live in [`:core:ptt`](core-ptt.md), not here.
 
 ---
 
@@ -8,7 +8,7 @@ The `:core:messaging` module implements the peer-to-peer chat repository, messag
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-messaging:v2.3.0-beta.1")
 }
 ```
 
@@ -28,7 +28,12 @@ Frames are single text lines: a prefix followed by space-separated `key=value` f
 | Direct chat (`ChatTextFrameCodec`) | `FLASH_MSG` (fields `localId`, `conversationId`, `senderId`, `senderName`, `sentAt`, `text`, `replyToId`, `replyToPreview`), `FLASH_RCPT` (`messageId`, `conversationId`, `memberId`, `deliveredAt`), `FLASH_READ` (`conversationId`, `memberId`, `upToMessageId`, `readAt`), `FLASH_REACT` (`messageId`, `memberId`, `emoji`, `isAdded`), `FLASH_TYPING` (`conversationId`, `memberId`, `memberName`, `isTyping`, `timestampMs`) |
 | Direct delete | `FLASH_DACT` (delete for everyone, `DirectMessageActionCodec`) |
 | Groups | `FLASH_GROUP`, `FLASH_GMSG`, `FLASH_GRCPT`, `FLASH_GREAD`, `FLASH_GACT`, `FLASH_GSYNC` (history sync), `FLASH_GMEDIA`, `FLASH_GMEM` (membership); group ids starting `g2-` are signed v2 groups |
-| Push-to-talk | `FLASH_PTT`, `FLASH_PTSS` (session frames) |
+
+(Push-to-talk `FLASH_PTT` and `FLASH_PTSS` frames are defined and decoded in [`:core:ptt`](core-ptt.md).)
+
+### Hub Relay & Group E2EE Bridging (`...core.messaging.hub`)
+* **`HubChatBridge`** (`@FlashInternalApi`): connects `RealFlashChatRepository` to `HubRelayPort` for Hub-relayed 1:1 chat (`CHAT_FRAME`), sealed envelopes (`HubSealing.ENVELOPE_TYPE`), sealed Hub file tickets (`HUB_FILE`), and group frames (`GROUP_FRAME`), handling deduplication, sender standing/trust checks, stale-message rejection, and durable-store-before-acknowledge.
+* **`HubGroupE2eeCoordinator`** (`@FlashInternalApi`): manages Hub-linked group epoch keys (`GroupEpochKeyStore`), key rotations and distribution (`GroupKeyDistPayload`), fail-closed compatibility status (`GroupE2eeCompatStatus` / `GroupE2eeGroupState`), and sealing/unsealing under `GROUP_E2EE_MODE_REQUIRED` or `GROUP_E2EE_MODE_HUB_INSPECTABLE`.
 
 A frame that carries a recognised prefix but a missing key field is dropped, never passed on to the next parser. When a session has an E2E key the frame is wrapped in a `FLASH_SEC` payload ([`:core:security`](core-security.md)). The authoritative wire spec, including the group wire and membership v1 sections, is `docs/protocol.md`.
 
@@ -78,8 +83,14 @@ Sending returns `Unit`, not a message id or `FlashResult`: the message is writte
 
 ```kotlin
 import com.transfer.flash.core.messaging.FlashChatRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
-fun openChatThread(repository: FlashChatRepository, peerId: String) {
+fun openChatThread(
+    repository: FlashChatRepository,
+    peerId: String,
+    scope: CoroutineScope,
+) {
     repository.openConversation(peerId)
 
     scope.launch {

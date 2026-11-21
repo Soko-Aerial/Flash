@@ -8,7 +8,7 @@ The `:core:calling` module implements decentralized, real-time peer-to-peer audi
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.3.0-beta.1")
 }
 ```
 
@@ -18,10 +18,10 @@ dependencies {
 
 ## 2. Calling Architecture
 
-1. **Signaling over the existing session.** SDP offers and answers and ICE candidates travel as `FLASH_CALL` frames (`CallFrameCodec` / `CallWireFrame`) over the WebSocket session the network layer already has. WebRTC runs with **empty ICE servers**: host candidates connect on-link, so there is no STUN or TURN and no internet is needed (ADR-025).
+1. **Signaling and ICE / TURN.** SDP offers, answers, and ICE candidates travel as `FLASH_CALL` frames (`CallFrameCodec` / `CallWireFrame`) over the active session (LAN WebSocket or Hub relay). On direct LAN calls, WebRTC runs with empty ICE servers (`IceTransportPolicy.All`) so host candidates connect on-link with no internet required (ADR-025). For off-LAN / Hub-relayed peers (HR9, ADR-367), `CallCoordinator` accepts `callIceResolver` (`CallRouteCapabilities` / `CallIceResolution`) and `iceConfigProvider` to resolve per-leg Hub-issued STUN/TURN credentials (including mixed-route group calls where LAN legs stay direct and Hub-relayed legs use TURN, plus TURN lease renewal before expiry and `OffLanCallSignalGuard` replay/TTL validation).
 2. **Mesh group calls.** `FlashGroupCallSession` opens one peer connection per other participant (a full mesh), so a sender encodes once per watcher. Limits in code: 12 participants for voice, 8 for video (`FlashGroupCallLimits`); the owner's tests found 3 to 4 devices realistic for group video. Membership and media state are exchanged with presence / query frames, and a call's members come from the group roster (ADR-061).
-3. **Adaptation and recovery.** `CallQualityGovernor` and `GroupVideoTuning` step video and voice down under load (voice keeps priority); `RtpSenderTuning` applies the sender settings; `CallHealthMonitor` watches stats. A network roam triggers an ICE restart within `callDisconnectGraceMs` (from `FlashTransportProfile`). Video targets come from `FlashPerformanceMode` for 1:1 calls (LOW 360p, MEDIUM / HIGH more); **group video is capped lower** (HIGH 540p, MEDIUM and LOW 360p, ADR-098).
-4. **Screen share (ADR-102).** `listShareSources`, `startScreenShare`, `stopScreenShare`, `setShareQuality`, `dismissShareNotice` on `FlashCalling`. Every receiver can watch; the **presenter exists on desktop only** (the Android presenter is not built). Because of the mesh, a presenter pays the encode per watcher. Not device-verified (`SHARE-*` tests).
+3. **Adaptation and recovery.** `CallQualityGovernor` and `GroupVideoTuning` step video and voice down under load (voice keeps priority); `RtpSenderTuning` applies the sender settings; `CallHealthMonitor` watches stats. A network roam triggers an ICE restart within `callDisconnectGraceMs` (from `FlashTransportProfile`). Video targets come from `FlashPerformanceMode` for 1:1 calls (`ULTRA_LOW` / `LOW` 360p, `MEDIUM` / `HIGH` higher); **group video is capped lower** (`HIGH` 540p, `MEDIUM`, `LOW`, and `ULTRA_LOW` 360p, ADR-098).
+4. **Screen share (ADR-102).** `listShareSources`, `startScreenShare`, `stopScreenShare`, `setShareQuality`, `dismissShareNotice` on `FlashCalling`. Every receiver can watch, and presenters exist on both **desktop** and **Android** (via `MediaProjection`: `AndroidScreenCaptureHost` / `AndroidScreenCaptureSupport` wired in `MainActivity` and `FlashScreenCaptureService`). Because of the mesh, a presenter pays the encode per watcher. Not device-verified (`SHARE-*` tests).
 5. **Media seam.** `FlashCallMedia` (platform WebRTC wrapper), `MediaAcquire` (mic/camera acquisition with explicit end reasons `MIC_DENIED` / `MIC_UNAVAILABLE` and an audio-only retry when the camera is refused) and the `PlatformMonitor` live in the module; the WebRTC native code comes from the vendored `webrtc-kmp` fork, published as `com.transfer.flash:webrtc-kmp[-android|-jvm]` (ADR-103). A desktop consumer must add a `dev.onvoid.webrtc:webrtc-java` native classifier.
 
 ---
@@ -36,8 +36,7 @@ Located in [`com.transfer.flash.core.calling.FlashCalling`](../../../../core/cal
 public interface FlashCalling {
     public val activeCall: StateFlow<FlashCallUiState?>                      // null = no call
     public val ongoingGroupCalls: StateFlow<Map<String, OngoingGroupCallUi>>
-    public val stats: StateFlow<FlashCallStats?>
-    public val media: FlashCallMedia?
+    public val media: FlashCallMedia?                                        // holds stats + video tracks
 
     public suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean
     public suspend fun startGroupCall(groupId: String, groupName: String, memberIds: List<String>, video: Boolean): Boolean
@@ -58,6 +57,8 @@ public interface FlashCalling {
     public fun onSignalingRestored(peerId: String)
 }
 ```
+
+Live call quality metrics (`stats: StateFlow<FlashCallStats?>`) and `VideoStreamTrack` flows (`localVideoStreamTrack`, `remoteVideoStreamTrack`, `remoteVideoTracks`) live on `FlashCallMedia` (accessed via `calling.media`), not directly on `FlashCalling`.
 
 `FlashCallUiState` carries `callId`, `peerId`, `peerName`, `direction`, `video`, `state`
 (`DIALING`, `RINGING`, `CONNECTING`, `ACTIVE`, `ENDED`), `endReason` (`NORMAL`, `DECLINED`, `NO_ANSWER`, `DISCONNECTED`,
@@ -89,8 +90,10 @@ Both Flash apps build their own `CallCoordinator` and route `FLASH_CALL` frames 
 import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallDirection
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
-fun handleCalls(calling: FlashCalling) {
+fun handleCalls(calling: FlashCalling, scope: CoroutineScope) {
     scope.launch {
         calling.activeCall.collect { call ->
             when {

@@ -19,7 +19,7 @@ It is a Kotlin Multiplatform module with an **Android** and a **JVM** target (`c
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-swarm:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-swarm:v2.3.0-beta.1")
 }
 ```
 
@@ -70,9 +70,21 @@ The engine-level `SwarmConfig` also carries `retentionMs` (default **7 days**, A
 ### Attaching it to an engine
 
 ```kotlin
-val swarm: FlashSwarm? = engine.attachSwarm(FlashSwarmConfig(profile = FlashSwarmProfile.MEDIUM))
-swarm?.rows?.collect { /* show the group-file rows */ }
-engine.detachSwarm()   // idempotent; engine.close() detaches too
+import com.transfer.flash.core.engine.FlashEngine
+import com.transfer.flash.core.swarm.api.FlashSwarm
+import com.transfer.flash.core.swarm.api.FlashSwarmConfig
+import com.transfer.flash.core.swarm.api.FlashSwarmProfile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+
+fun startSwarm(engine: FlashEngine, scope: CoroutineScope) {
+    val swarm: FlashSwarm? = engine.attachSwarm(FlashSwarmConfig(profile = FlashSwarmProfile.MEDIUM))
+    scope.launch {
+        swarm?.rows?.collect { /* show the group-file rows */ }
+    }
+    // when tearing down:
+    // engine.detachSwarm()   // idempotent; engine.close() detaches too
+}
 ```
 
 `FlashEngine` exposes `swarm`, `attachSwarm(config)` (builds a binding wired to the facade, returns `null` if the

@@ -8,7 +8,7 @@ The `:core:network` module manages the bidirectional transport layer, WebSocket 
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-network:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-network:v2.3.0-beta.1")
 }
 ```
 
@@ -19,10 +19,10 @@ dependencies {
 1. **Embedded WebSocket server and client over TLS.**
    * Every Flash instance runs a WebSocket server (`WsTransferServer`) on a port it chooses (`start(listenPort = 0)` picks a free one and returns it) and dials peers with `WsTransferClient`. The implementations are `WsFlashNetwork` (Android) and `JvmWsFlashNetwork` (desktop).
    * The channel is always TLS with **pinned device identities** (TOFU on first pairing, `TofuX509TrustManager` / `FlashPinVerifier`); there is no plaintext fallback. Text frames carry control and chat messages, binary frames carry file chunks. The HELLO frame advertises feature tokens (`HelloFeatures`) and the group protocol generation.
-2. **Keepalive and health.** `HeartbeatPolicy` / `HeartbeatTracker` ping at the profile's `pingIntervalMs` and close a session that has shown no life within `livenessTimeoutMs`; only the dialing side redials (`ReconnectPolicy`, `ReconnectStagger`). `ConnectionHealthAggregator` feeds `FlashNetwork.connectionHealth`.
+2. **Keepalive, health, and reconnect.** Live WebSocket sessions (`WsConnection`) run `WsKeepalive` on a shared `WsKeepaliveTicker` (`WsKeepaliveTiming` derived from the active `FlashTransportProfile` / `ConnectionModePolicy`), with single-pinger negotiation (`PingRole`), background-traffic filtering, and bounded single-stall Doze forgiveness (`confirmClose`). (`HeartbeatPolicy` and `HeartbeatTracker` remain internal to the TCP/`LanSession` path.) On unexpected drops, the dialing side redials via `ReconnectPolicy` (from `:core:common`) and `ReconnectStagger` (which spreads mass-drop reconnect storms), while inbound-only peers also have a slower backup redial loop off `knownEndpoints` (ERROR-026). `ConnectionHealthAggregator` feeds `FlashNetwork.connectionHealth`.
 3. **Link roaming.** `JvmNetworkWatcher` (desktop) polls `java.net.NetworkInterface` for IP and interface changes; `AndroidNetworkWatcher` registers a `ConnectivityManager` network callback. Either one triggers a re-browse and a reconnect pass.
 4. **Connection planning.** `ConnectionPlanner` / `AutoConnector` decide whom to dial. `ConnectionStrategy` has three modes, `ECO` (few sessions, slow keepalive), `STANDARD` and `BOOST` (every device, fast keepalive); the session ceiling is 24 for every mode (ADR-057), `DialBudget` limits dials in crowds. `RememberedRoutes` (DR1), the `SubnetSweeper` (DR3) and `PresenceExchange` supply addresses and liveness hints.
-5. **Radio / serial link (ADR-101, groundwork only).** `radio/` holds a KISS-over-serial/Bluetooth byte link (`ByteLink`, `KissTncDriver`, `RadioSession`, `RadioCrypto`) and the `RadioLinkTester` diagnostic. It is **not** wired into the apps' sessions yet (no pairing-key adapter, no `FlashTransportType.BLUETOOTH`), and the tester classes currently ship inside `core-network-jvm` (open item in `logs/handoff.md`).
+5. **Radio / Bluetooth transport.** KISS-over-serial/Bluetooth radio transport and diagnostics live in the separate [`:core:radio`](core-radio.md) module (with `FlashTransportType.BLUETOOTH` in `:core:common`), not in `:core:network`.
 
 ---
 
@@ -66,9 +66,12 @@ only use it for a host you trust (the named-dial TOFU trap); the engine dials on
 ## 4. Practical Code Example
 
 ```kotlin
+import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.network.FlashNetwork
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
-fun monitorNetworkSessions(network: FlashNetwork) {
+fun monitorNetworkSessions(network: FlashNetwork, scope: CoroutineScope) {
     scope.launch {
         network.activeSessions.collect { sessions ->
             println("Active peer connections: ${sessions.size}")
