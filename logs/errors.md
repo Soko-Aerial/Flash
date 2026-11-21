@@ -1,5 +1,103 @@
 # Error Log
 
+## ERROR-1039 — Hub CLI `--help` falls through to `serve` (`2.3.0-beta.1`)
+
+### Date
+2026-11-21
+
+### Area
+Hub server CLI (`:server`)
+
+### Symptoms
+Running `server\build\install\server\bin\server.bat --help` starts `FlashServerEngine` on `0.0.0.0:8443` / `8444` instead of printing CLI usage and exiting 0. `server.bat help` and `server.bat -h` print usage (including `keytool revoke`) and exit 0 as expected.
+
+### Environment
+- Branch/Commit: `dev` (`34c48f42`)
+- Distribution: `:server:installDist` (`2.3.0-beta.1`)
+- OS: Windows
+
+### Root cause
+`server/src/main/kotlin/com/transfer/flash/server/Main.kt:37` parses the subcommand with:
+`val command = args.firstOrNull()?.takeUnless { it.startsWith("--") } ?: "serve"`
+Because `--help` starts with `--`, `takeUnless` evaluates to `null`, defaulting `command` to `"serve"` before the `when (command)` branch `"help", "--help", "-h" -> usage(0)` on line 45 can match.
+
+### Verification
+- `server\build\install\server\bin\server.bat --help` started `HubServices` / `FlashServerEngine`.
+- `server\build\install\server\bin\server.bat help` and `server\build\install\server\bin\server.bat -h` printed `usage(0)` including `keytool revoke` and exited 0.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/Main.kt`
+
+### Status
+OPEN
+
+## ERROR-1040 — `:sample:consumer-desktop:compileKotlin` fails strict dependency verification on `2.3.0-beta.1`
+
+### Date
+2026-11-21
+
+### Area
+Gradle dependency verification / KMP library publishing dry-run
+
+### Symptoms
+Running `tools\flash-gradle.cmd :sample:consumer-desktop:compileKotlin --no-daemon "-Dmaven.repo.local=...\build\scratch-m2"` after publishing all 19 KMP libraries (`2.3.0-beta.1`) to `build/scratch-m2` failed strict dependency verification on 24 `.module` artifacts from `MavenLocal` (`core-common`, `core-discovery`, `core-engine`, `core-enterprise`, `core-hub-protocol`, `core-messaging`, `core-network`, `core-persistence`, `core-ptt`, `core-security`, `core-swarm`, `core-transfer`, and their `-jvm` variants).
+
+### Environment
+- Branch/Commit: `dev` (`34c48f42`)
+- Gradle: `9.5.0`
+- OS: Windows
+
+### Root cause
+`gradle/verification-metadata.xml` contains `com.transfer.flash` artifact checksums up to `2.2.0-beta.3`, and has not been updated with `--write-verification-metadata sha256` for `2.3.0-beta.1` (per `docs/release-build.md`).
+
+### Verification
+- Strict run (`:sample:consumer-desktop:compileKotlin` against `build/scratch-m2`) exited 1 with 24 `Dependency verification failed` errors.
+- Follow-up run with `--dependency-verification=off` against `build/scratch-m2` succeeded (`BUILD SUCCESSFUL in 46s`), confirming the published `2.3.0-beta.1` POMs and artifacts compile cleanly once verification metadata is regenerated.
+
+### Related files
+- `gradle/verification-metadata.xml`
+- `sample/consumer-desktop/build.gradle.kts`
+- `docs/release-build.md`
+
+### Status
+OPEN
+
+## ERROR-1041 — Desktop invite installer tasks require WiX on `PATH`, and two host coroutine timing flakes under `--max-workers=2`
+
+### Date
+2026-11-21
+
+### Area
+Desktop Windows installer packaging (`:desktop`) & Android host unit tests (`:core:transfer`, `:core:messaging`)
+
+### Symptoms
+1. `tools\build-release.ps1 -NoDaemon` failed in `:desktop:buildFlashExeWithInviteHandler` and `:desktop:buildFlashMsiWithInviteHandler` with `Can not find WiX tools (light.exe, candle.exe)` / `Error: Invalid or unsupported type: [exe]` / `[msi]` when `build\wix311` was not on `PATH`.
+2. In the full Gradle test gate (`--max-workers=2`), two timing-sensitive coroutine tests timed out:
+   - `ExternalSourcesAndInterceptorTest > attaching a source again replaces only that source and the old flow stops counting` (`:core:transfer:testAndroidHostTest`, 10 s `awaitUntil` timeout).
+   - `RealFlashChatRepositoryTest > delete for everyone sends direct action only for the local author` (`:core:messaging:testAndroidHostTest`, 5,000 ms `withTimeout`).
+   On the first `--max-workers=1` combined rerun of both tasks, `:core:transfer:testAndroidHostTest` passed while `RealFlashChatRepositoryTest > HUBFILE-U45 a hub file's bubble line names the hub and its reason, a LAN file keeps Wi-Fi` failed on its 200 ms `delay(200)` poll; on a solo `--max-workers=1` rerun, `:core:messaging:testAndroidHostTest` passed all 699 tests.
+
+### Environment
+- Branch/Commit: `dev` (`34c48f42`)
+- JDK: `jetbrains_s_r_o_-21-amd64-windows.2`
+- OS: Windows
+
+### Root cause
+1. `PackageFlashInviteInstaller` (`desktop/build.gradle.kts:313-316`) runs `jpackage.exe` directly without adding `build\wix311` to `PATH`, while Compose Multiplatform's stock `packageMsi`/`packageExe` tasks are disabled via `onlyIf { false }`.
+2. Fixed wall-clock timeouts/sleeps (`awaitUntil` 10 s, `withTimeout(5_000)`, `delay(200)`) in `:core:transfer` and `:core:messaging` host tests can lose races under concurrent Gradle/Robolectric JVM load.
+
+### Verification
+- Prepending `C:\Users\KaliOxygen\Downloads\Flash\build\wix311` to `PATH` allowed `tools\build-release.ps1 -NoDaemon` to complete cleanly (`BUILD SUCCESSFUL in 1m 40s`, producing `Flash-2.3.0.msi` and `Flash-2.3.0.exe`).
+- `:core:transfer:testAndroidHostTest` and `:core:messaging:testAndroidHostTest` passed 0 failures on `--max-workers=1` reruns.
+
+### Related files
+- `desktop/build.gradle.kts`
+- `core/transfer/src/androidHostTest/kotlin/com/transfer/flash/core/transfer/ExternalSourcesAndInterceptorTest.kt`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt`
+
+### Status
+OPEN
+
 ## ERROR-1038 — Stale Android keystore test assertions, KSP/Lint combined invocation, and desktop incremental cache
 
 **2026-11-19 · Verifier gate (`9e2123ba`). Status: RESOLVED.**
