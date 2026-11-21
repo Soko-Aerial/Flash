@@ -4902,8 +4902,9 @@ private fun SweepState.toNearbyScan(): NearbyNetworkScan = when (this) {
 }
 
 /**
- * Parses an incoming HTTPS web invite URI (including optional custom port) against the configured
- * invite hosts, delegating scheme/path/fragment/origin checks to [InviteAppLink.unwrap].
+ * Parses an incoming HTTPS web invite URI against the configured bare lowercase DNS invite hosts
+ * (ports are rejected by `app/build.gradle.kts` host validation), delegating scheme/path/fragment/origin
+ * checks to [InviteAppLink.unwrap].
  */
 internal fun parseWebInviteUri(
     uriString: String?,

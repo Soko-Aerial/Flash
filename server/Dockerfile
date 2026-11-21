@@ -14,6 +14,8 @@
 FROM gradle:8.10.2-jdk21 AS build
 WORKDIR /home/gradle/src
 COPY --chown=gradle:gradle . .
+# gradle/gradle-daemon-jvm.properties pins the Gradle daemon to JDK 25; this JDK 21 build stage cannot fetch JDK 25.
+RUN rm -f gradle/gradle-daemon-jvm.properties
 RUN ./gradlew :server:installDist --no-daemon --configure-on-demand
 
 FROM eclipse-temurin:21.0.5_11-jre-alpine

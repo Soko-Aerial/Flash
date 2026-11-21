@@ -5,7 +5,7 @@ plugins {
     application
 }
 
-version = "2.2.0-beta.1"
+version = "2.3.0-beta.1"
 
 tasks.processResources {
     val hubVersion = project.version.toString()

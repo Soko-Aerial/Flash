@@ -397,33 +397,26 @@ public fun main(args: Array<String> = emptyArray()) {
                         val ready by engine.ready.collectAsState()
                         val startError by engine.startError.collectAsState()
                         Box(Modifier.fillMaxSize()) {
-                            if (args.firstOrNull() != SingleInstanceController.OPEN_INVITE_ARGUMENT && args.contains("--radio-demo")) {
-                                com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
-                                    controller = remember { com.transfer.flash.ui.radio.FakeRadioGatewayController().apply { setEnabled(true) } },
-                                    onBack = { exitApplication() },
-                                )
-                            } else {
-                                DesktopShell(
-                                    engine = engine,
-                                    themeMode = desktopSettings.themeMode,
-                                    onThemeModeSelected = { mode ->
-                                        engine.storeThemeMode(mode)
-                                    },
-                                    window = window,
-                                    nav = nav,
-                                    trayNavTick = trayNavTick,
-                                    externalShareFiles = pendingFilesToShare,
-                                    onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
-                                    pendingHubRoute = pendingHubRoute,
-                                    radioGatewayController = radioGatewayController,
-                                    notificationActionError = toastActionError,
-                                    onNotificationActionErrorShown = { toastActionError = null },
-                                )
-                                FlashLaunchSplashOverlay(
-                                    gate = launchSplash,
-                                    engineSettled = ready || startError != null,
-                                )
-                            }
+                            DesktopShell(
+                                engine = engine,
+                                themeMode = desktopSettings.themeMode,
+                                onThemeModeSelected = { mode ->
+                                    engine.storeThemeMode(mode)
+                                },
+                                window = window,
+                                nav = nav,
+                                trayNavTick = trayNavTick,
+                                externalShareFiles = pendingFilesToShare,
+                                onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
+                                pendingHubRoute = pendingHubRoute,
+                                radioGatewayController = radioGatewayController,
+                                notificationActionError = toastActionError,
+                                onNotificationActionErrorShown = { toastActionError = null },
+                            )
+                            FlashLaunchSplashOverlay(
+                                gate = launchSplash,
+                                engineSettled = ready || startError != null,
+                            )
                         }
                     }
                 }

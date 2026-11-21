@@ -29,7 +29,7 @@ internal const val ROOT_PASSPHRASE_ENV = "FLASH_ROOT_PASSPHRASE"
 /**
  * Entry point. Subcommands:
  * - `serve` (default): run the hub.
- * - `keytool init-root | issue-delegation | rotate`: the OFFLINE root key tool (run it on another machine).
+ * - `keytool init-root | issue-delegation | revoke | rotate`: the OFFLINE root key tool (run it on another machine).
  * - `healthcheck`: probe this hub's own `/health` on loopback (the Docker HEALTHCHECK); exit 0 when it answers 200.
  * - `admin-recovery --username <name>`: break-glass reset of an admin (prints a new password and authenticator secret once).
  */
@@ -63,6 +63,8 @@ private fun usage(code: Int): Int {
           keytool init-root --out DIR [--no-passphrase]
           keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,enrol:dept_admin,revoke:member
                   [--max-devices N] [--valid-days N] [--serial N] [--out FILE]
+          keytool revoke --root-key FILE --delegation-serial N[,N] [--serial N,..] [--device-id a,..]
+                  [--base current.json] [--version N] [--out FILE]
           keytool rotate
           healthcheck                    probe /health on loopback (exit 0 = healthy)
           admin-recovery --username NAME break-glass admin reset (console only)

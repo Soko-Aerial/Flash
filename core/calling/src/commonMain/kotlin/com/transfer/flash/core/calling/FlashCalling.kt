@@ -168,8 +168,10 @@ public interface FlashCalling {
     public fun setDataSaver(on: Boolean): Unit = Unit
 
     /**
-     * ADR-102: what this device can present, screens first and then windows. Empty when the platform cannot present
-     * (Android today) or lists nothing. May take a moment (a native call); call it when the picker opens, not per frame.
+     * ADR-102: what this device can present, screens first and then windows. On Android, returns the device screen
+     * entry once the host has wired MediaProjection consent and `FlashScreenCaptureService` via
+     * `AndroidScreenCaptureSupport`. Empty when the platform or host cannot present or lists nothing. May take a
+     * moment (a native call); call it when the picker opens, not per frame.
      */
     public suspend fun listShareSources(): List<ShareSource> = emptyList()
 
