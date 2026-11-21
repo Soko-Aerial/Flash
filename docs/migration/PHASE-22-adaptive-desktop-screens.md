@@ -115,7 +115,7 @@ the already-shipped `FlashAdaptiveTwoPane` composable from `ui:chat` (UI-034).
 
 ### `FlashAdaptiveLayouts.kt` (shipped, in `ui:chat`)
 
-See [`ui/chat/src/main/java/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt`](/C:/Users/KaliOxygen/Downloads/Flash/ui/chat/src/main/java/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt).
+See [`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt`](../../ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt).
 
 Key symbols:
 
@@ -128,7 +128,7 @@ Key symbols:
 
 ### `FlashAdaptiveLogicTest.kt` (shipped, 8 test cases)
 
-See [`ui/chat/src/test/java/com/transfer/flash/ui/adaptive/FlashAdaptiveLogicTest.kt`](/C:/Users/KaliOxygen/Downloads/Flash/ui/chat/src/test/java/com/transfer/flash/ui/adaptive/FlashAdaptiveLogicTest.kt).
+See [`ui/chat/src/commonTest/kotlin/com/transfer/flash/ui/adaptive/FlashAdaptiveLogicTest.kt`](../../ui/chat/src/commonTest/kotlin/com/transfer/flash/ui/adaptive/FlashAdaptiveLogicTest.kt).
 
 Tests cover:
 - Breakpoint boundaries (599.9→Compact, 600→Medium, 840→Expanded, 1280→Expanded)

@@ -16,13 +16,13 @@ The group invite sheet shares and encodes the same URL in an offline QR. The lin
 
 ## Hub directory group links
 
-A group manager can share a join link from a listed Hub group with Open or Request approval enabled. Links use the Hub's `/invite/group` page and contain an opaque token in the fragment. The browser's **Open in Flash** action hands off `flash://g/2/…`. The recipient confirms in Flash using their existing enrollment in the issuing Hub. Open groups follow their scope rules, and requests for approval still go to a group admin. The token expires after 24 hours or when the group version changes. Hidden and admin-only groups use direct assignment. The Hub must be updated alongside the clients.
+A group manager can share a join link from a listed Hub group with Open or Request approval enabled. Links use the Hub's `/invite/group` page and contain an opaque token in the fragment. The browser's **Open in Flash** action hands off `flash://g/2/…`. The recipient confirms in Flash using their existing enrollment in the issuing Hub. Open groups follow their scope rules, and requests for approval still go to a group admin. Each token expires after 24 hours, when its optional `maxUses` limit is reached, when revoked individually or at the group level, or when the group's visibility or join policy changes (routine roster updates preserve active links); v3 tokens are sealed with the Hub's dedicated `join-links.key`. Hidden and admin-only groups use direct assignment. The Hub must be updated alongside the clients.
 
 Android uses the existing group intent filter for the native link. Auto-opening HTTPS still depends on the build's configured group hostname, domain verification, and the device's link settings. [Android deep links](https://developer.android.com/training/app-links/create-deeplinks)
 
 ## Desktop and verification
 
-Windows MSI/EXE and the Linux DEB declare the `flash://` handler. The browser asks the OS to launch it when the user selects **Open in Flash**. Flash forwards the invite over its existing local activation channel when another instance is already running. A portable build can open an invite supplied as one command-line argument, or paste it from the browser.
+Windows MSI/EXE and the Linux DEB (built from the permanent `linux` branch) declare the `flash://` handler. The browser asks the OS to launch it when the user selects **Open in Flash**. Flash forwards the invite over its existing local activation channel when another instance is already running. A portable build can open an invite supplied as one command-line argument, or paste it from the browser.
 
 On Windows, use the actual installer to verify registration, browser handoff and uninstall cleanup. For a development check, run the portable launcher with the original `flash://` invite or paste the HTTPS link in Flash. The launcher's invite argument accepts the custom scheme.
 

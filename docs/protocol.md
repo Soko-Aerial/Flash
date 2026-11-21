@@ -1410,10 +1410,10 @@ JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDto
 | `DELETE /api/v1/device/sealing-key` | bearer (the device itself) | none | `OkResponse`; the key is also removed when the device is revoked, unenrolled or deleted | served (ADR-124) |
 | `POST /api/v1/departments` | bearer (organisation admin) | `CreateDepartmentBody {id, name, adminDeviceIds}` | `201` `DepartmentDto`; `400 ERR_BAD_REQUEST` for an invalid id; audited as `directory.department.create` | served (REV docs round) |
 | `POST /api/v1/groups` | bearer (organisation or department admin) | `CreateGroupBody {id, name, departmentId, visibility, joinMode, adminDeviceIds}` | `201` `GroupDto`; `400` for an invalid id, visibility or join mode; `403` outside the caller's scope | served |
-| `PUT /api/v1/groups/{id}` | bearer (group admin) | `UpdateGroupBody {name?, visibility?, joinMode?}` | `GroupDto`; a group the caller may not see answers `404` exactly like a missing one | served |
+| `PUT /api/v1/groups/{id}` | bearer (group admin) | `UpdateGroupBody {name?, visibility?, joinMode?, revokeJoinLinks?, revokeLinkId?}` | `GroupDto`; a group the caller may not see answers `404` exactly like a missing one | served |
 | `DELETE /api/v1/groups/{id}` | bearer (group admin) | none | `OkResponse`; same `404` rule | served |
 | `POST /api/v1/groups/create-with-members` | bearer (organisation or department admin) | `CreateGroupWithMembersBody {id, name, departmentId, memberDeviceIds}` | `201` with `GroupDto` after the full initial roster is persisted. An identical retry with the same id and creator returns the existing group. Invalid roster creation makes no group, and a conflicting retry returns `409`. | served |
-| `POST /api/v1/groups/join-links` | bearer (group manager) | `CreateGroupJoinLinkBody {groupId}` | `201` with an opaque, authenticated token for a listed group that supports self-service joining. | served |
+| `POST /api/v1/groups/join-links` | bearer (group manager) | `CreateGroupJoinLinkBody {groupId, maxUses?}` | `201` with an opaque, authenticated token for a listed group that supports self-service joining. | served |
 | `POST /api/v1/groups/join-links/resolve` | bearer | `GroupJoinLinkToken {token}` | `200` with `{groupId, name}` for an unexpired token and a group currently visible to this device. Joining still uses `/groups/join-request`. | served |
 | `POST /api/v1/groups/members` | bearer (group admin) | `GroupMemberBody {groupId, deviceId, add}` (`add` false removes) | `GroupDto`; audited `directory.group.member.add` / `.remove` | served |
 
@@ -1578,12 +1578,12 @@ Step-up signatures: `stepup/verify` accepts the signature as DER (devices) or as
 
 Static routes (no cookie needed). Every response under `/admin`, `/enroll` and `/enroll-assets/` carries: CSP `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, COOP and CORP `same-origin`, a restrictive Permissions-Policy and `X-Frame-Options: DENY`. `GET /admin/` is the shell (`no-store`); `GET /admin/ui/*` are assets (`no-cache` plus ETag, 304 honoured); `GET /enroll-assets/*` are the invite landing page's own script and style. The old `/admin/login`, `/admin/setup`, `/admin/dashboard`, `/admin/departments`, `/admin/groups`, `/admin/invites` and `/admin/audit` pages answer 302 to the matching console route. When the listener policy closes `/admin` (public port without `FLASH_ADMIN_ON_PUBLIC_PORT`), all console routes answer 404.
 
-Step-up actions (the `action` of a challenge): `device.revoke`, `device.unrevoke`, `delegation.install`, `delegation.reload`, `admin.create`,
-`admin.disable`, `settings.change`, `revocation.install`, `recovery.regenerate`.
+Step-up actions (the `action` of a challenge): `device.revoke`, `device.unrevoke`, `device.move`, `device.replace`, `delegation.install`, `delegation.reload`, `admin.create`,
+`admin.disable`, `admin.signer.replace`, `approver.change`, `settings.change`, `revocation.install`, `recovery.regenerate`.
 
 **Command line** (`server <command>`, the launcher of `:server:installDist` or `java -jar`): `serve` (default); `keytool init-root --out DIR
 [--no-passphrase]`; `keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,enrol:dept_admin,revoke:member [--max-devices N]
-[--valid-days N] [--serial N] [--out FILE]`; `keytool rotate`; `healthcheck` (exit 0 only when the hub's own `/health` answers 200); `admin-recovery
+[--valid-days N] [--serial N] [--out FILE]`; `keytool revoke --root-key FILE --delegation-serial N[,N] [--serial N,..] [--device-id a,..] [--base current.json] [--version N] [--out revocations.signed]`; `keytool rotate`; `healthcheck` (exit 0 only when the hub's own `/health` answers 200); `admin-recovery
 --username NAME` (console only, prints a new password, authenticator secret and recovery codes once). Exit codes: 0 ok, 1 refused to start or
 failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keytool pass-phrase non-interactively.
 
@@ -1594,10 +1594,11 @@ failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keyto
 | `FLASH_PORT` / `FLASH_HOST` | 8443 / 0.0.0.0 | public listener (relay, REST, enrol, `/health`) |
 | `FLASH_ADMIN_PORT` / `FLASH_ADMIN_HOST` | 8444 / 127.0.0.1 | management listener (admin console and API) |
 | `FLASH_ADMIN_ON_PUBLIC_PORT` | false | also serve `/admin` on the public port (must be true when the two ports are equal) |
-| `FLASH_DATA_DIR` | `./data` | database `flash-hub.db`, `server-identity.pk8/.pub`, `delegation.cert`, `setup-token.txt`, `tls/` |
+| `FLASH_DATA_DIR` | `./data` | database `flash-hub.db`, `data.key`, `join-links.key` / `join-links.prev.key`, `server-identity.pk8/.pub`, `delegation.cert`, `setup-token.txt`, `files/`, `tls/` |
 | `FLASH_TLS_MODE` | proxy | `proxy` (plain HTTP behind a TLS proxy), `self` (the hub terminates TLS), `none` (needs `FLASH_ALLOW_INSECURE`) |
 | `FLASH_TLS_KEYSTORE`, `FLASH_TLS_KEYSTORE_PASSWORD` | unset | supply a PKCS12 instead of the generated self-signed certificate |
 | `FLASH_EXTERNAL_URL` | `https://<lan-ip>:<port>` | address placed in invites and QR codes; must be https unless insecure |
+| `FLASH_INVITE_ANDROID_FINGERPRINTS` | empty | comma-separated SHA-256 APK signing certificate fingerprints served in `assetlinks.json` |
 | `FLASH_ALLOW_INSECURE` | false | permit `tls none`, an `http://` external URL and `--dev-embedded-root`; loud in the log |
 | `FLASH_DEV_EMBEDDED_ROOT` / `--dev-embedded-root` | false | DEVELOPMENT ONLY: the hub keeps its own root key |
 | `FLASH_DELEGATION_FILE` | `<data>/delegation.cert` | the root-signed delegation |
@@ -1609,6 +1610,12 @@ failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keyto
 | `FLASH_HUB_NAME`, `FLASH_DEVICE_QUOTA` | `Flash Hub`, from the delegation | name shown to devices; device cap (never above the delegation's) |
 | `FLASH_DEVICE_CERT_VALIDITY_DAYS`, `FLASH_RENEW_EARLY_DAYS`, `FLASH_RENEW_GRACE_DAYS` | 30, derived, derived | device certificate lifetime (1..365); optional fixed renewal window before expiry and grace after it |
 | `FLASH_CHALLENGE_TIMEOUT_MS`, `FLASH_MAILBOX_TTL_DAYS` | 60000, 7 | challenge lifetime; mailbox TTL |
+| `FLASH_STUN_URLS`, `FLASH_TURN_URLS` | empty | comma-separated `stun:`/`stuns:` and `turn:`/`turns:` URLs advertised by `/api/v1/calls/ice-config` |
+| `FLASH_TURN_SECRET` | unset | shared HMAC-SHA1 secret (`coturn` `use-auth-secret`) for ephemeral TURN credentials |
+| `FLASH_CALL_ICE_TTL_SECONDS` | `3600` | lifetime of minted ICE credentials (`60..86400` seconds) |
+| `FLASH_CALL_MEDIA_POLICY` | `DIRECT_PREFERRED_RELAY_FALLBACK` | `DIRECT_ONLY`, `DIRECT_PREFERRED_RELAY_FALLBACK`, or `RELAY_ONLY` |
+| `FLASH_ALLOW_PERSONAL_HUB_LINK` | `true` | whether clients may link personal/local groups to this Hub |
+| `FLASH_GROUP_E2EE_MODE` | `E2EE_REQUIRED` | organisation group encryption mode: `E2EE_REQUIRED` or `HUB_INSPECTABLE` |
 
 ### Hub review round REV-01..REV-16 (2026-10-13): contract changes
 

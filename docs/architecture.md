@@ -2,35 +2,41 @@
 
 ## Modular Library Architecture (ADR-008)
 
-Flash is architected as a suite of decoupled, standalone Android/Kotlin libraries under `com.transfer.flash:*`, with `:app` serving as the showcase application. This enables third parties and separate apps to use the core networking/transfer engines and custom UI components independently or together.
+Flash is architected as a suite of decoupled, standalone Kotlin Multiplatform (Android and JVM) libraries under `com.transfer.flash:*`, with `:app` (Android), `:desktop` (Compose Desktop JVM), and `:server` (standalone Flash Hub JVM daemon) as the host applications. This enables third parties and separate apps to use the core networking/transfer engines and custom UI components independently or together.
 
 Detailed plan: [`docs/architecture-modular-libraries-plan.md`](architecture-modular-libraries-plan.md)
 
 ### Layered Topology
 
 ```text
-Host App:
-  :app (Showcase / Demo — owns permissions, foreground services, audio routing)
+Host Applications:
+  :app     (Android Showcase — owns permissions, foreground services, audio routing)
+  :desktop (Compose Desktop JVM Application Shell — DesktopEngine, Room SQLite, system tray)
+  :server  (Standalone Flash Hub JVM Daemon & Admin Console — depends on :core:hub-protocol, :core:security, :core:common; zero client edges)
 
-UI Component Libraries (Compose, compileSdk 37):
-  :ui:chat      (Chat list, Conversation, Transfers, Nearby, Settings, Shell)
-  :ui:callui    (FlashCallScreen — full-screen in-call surface)
-  :ui:theme     (FlashTheme, Design Tokens, Motion, Custom Icons, Avatars)
+UI Component Libraries (Compose Multiplatform, Android compileSdk 37 + JVM):
+  :ui:chat           (Chat list, Conversation, Transfers, Nearby, Settings, Hub workspace, Shell)
+  :ui:callui         (FlashCallScreen — full-screen in-call surface, PttSessionOverlayContent)
+  :ui:platform-shims (Platform seams: back handling, clipboard, file picking, permissions, image decode, audio playback, voice capture)
+  :ui:theme          (FlashTheme, Design Tokens, Motion, Custom Icons, Avatars)
 
 Facade:
-  :core:engine     (Flash.create, FlashEngine — wires everything below into one object)
+  :core:engine       (Flash.create, FlashDesktop.create, FlashEngine — wires everything below into one object)
 
-Core Engine Libraries (Headless / Zero-UI, compileSdk 35):
-  :core:calling     (WebRTC voice/video, FLASH_CALL signaling over a host-owned channel)
-  :core:swarm       (group file swarm, sans-IO engine + FSW1 codec, ADR-070..075; attached by the host, optional; off by default, not device-verified)
-  :core:messaging   (Chat repository, Outbox, Receipts, Drafts, Reactions)
-  :core:transfer    (SAF File Streaming, Chunking, Reassembly, Checksums)
-  :core:network     (RFC 6455 WebSocket sessions over pinned TLS, mesh of paired peers; the TCP probe server is legacy)
-  :core:enterprise  (enterprise hub client: enrolment, directory, relay client, trust stores; depends on hub-protocol + security, not on network)
-  :core:discovery   (NSD / mDNS on Android, JmDNS on desktop, manual IP, remembered routes and the DR1-DR5 resilience sources; no Wi-Fi Direct code exists)
-  :core:security    (Identity, ECDSA/ECDH Crypto, TOFU Trust Store, Pairing)
-  :core:persistence (Room + SQLCipher, DataStore Settings, Retention Policy)
-  :core:common      (Shared Models, FlashResult, Framing Protocols, Annotations)
+Core Engine Libraries (Headless / Zero-UI, Android compileSdk 35 + JVM):
+  :core:calling      (WebRTC voice/video, FLASH_CALL signaling over a host-owned channel)
+  :core:ptt          (Push-to-talk half-duplex voice floor, capture, playout, and wire codecs)
+  :core:radio        (KISS/AX.25 packet radio gateway, hardware links, and radio chat)
+  :core:swarm        (Group file swarm, sans-IO engine + FSW1 codec, ADR-070..075; attached by the host)
+  :core:messaging    (Chat repository, Outbox, Receipts, Drafts, Reactions, Groups, Hub & Radio bridges)
+  :core:transfer     (SAF / JVM File Streaming, Chunking, Reassembly, Checksums)
+  :core:network      (RFC 6455 WebSocket sessions over pinned TLS, mesh of paired peers; the TCP probe server is legacy)
+  :core:enterprise   (Enterprise hub client: enrolment, directory, relay client, sealed files, trust stores; depends on :core:hub-protocol + :core:security)
+  :core:discovery    (NSD / mDNS on Android, JmDNS on desktop, manual IP, remembered routes and DR1-DR5 resilience sources; no Wi-Fi Direct code exists)
+  :core:security     (Identity, ECDSA/ECDH Crypto, TOFU Trust Store, Pairing)
+  :core:hub-protocol (Pure KMP Hub wire contract: certs, relay frames, REST DTOs; shared by :server, :core:security, and :core:enterprise)
+  :core:persistence  (Room + SQLCipher/sqlite-jdbc-crypt, DataStore Settings, Retention Policy)
+  :core:common       (Shared Models, FlashResult, Framing Protocols, Performance Modes, Annotations)
 ```
 
 Dependency direction is strictly downward, with two deliberate exceptions:
@@ -62,7 +68,7 @@ Dependency direction is strictly downward, with two deliberate exceptions:
 
 1. **Headless Core:** `:core:*` has zero Jetpack Compose or UI dependencies.
 2. **Backend-Agnostic UI:** `:ui:chat` depends on repository abstractions (`FlashChatRepository`), not low-level sockets; `:ui:callui` depends on `FlashCalling`/`FlashCallMedia`, never on a concrete session.
-3. **Standalone Publishability:** Every library module configures `maven-publish` to generate AARs, POMs, sources, and docs — including `:ui:callui`, which builds without `:app`, `:core:engine` or `:ui:chat`.
-4. **Transport Abstraction:** Transfer engines operate over an abstract connection layer regardless of the connection underneath. Today that is the WebSocket mesh only; Wi-Fi Direct and a Bluetooth/radio link are postponed or proposed (ADR-056, ADR-101). Call signaling is plain text, so any duplex text transport carries it.
+3. **Standalone KMP Publishability (Android + JVM):** Every library module is a Kotlin Multiplatform library configuring `maven-publish` to publish the root Gradle module metadata (`.module`/POM), the Android AAR variant (`-android`), the JVM JAR variant (`-jvm`), sources, and docs — including `:ui:callui`, which builds without `:app`, `:core:engine`, or `:ui:chat`. Variant-aware Gradle resolution lets both Android and Desktop JVM consumers depend on the same root coordinate.
+4. **Transport Abstraction:** Transfer engines operate over an abstract connection layer regardless of the connection underneath. Today that covers the WebSocket mesh and the Hub relay, plus an optional host-wired `:core:radio` packet-radio gateway (KISS/AX.25 over Bluetooth/serial); Wi-Fi Direct remains postponed (ADR-056). Call signaling is plain text, so any duplex text transport carries it.
 5. **Abstractions at the boundary:** every module's entry point is an interface, and no socket, stream, codec, Room or platform type appears in a public signature. The single sanctioned exception is webrtc-kmp's `VideoTrack`, which a renderer has to be handed directly (ADR-025).
 6. **Explicit API:** every `:core:*` module compiles with `explicitApi()` in strict mode (ADR-023). Published surface is enumerated in [`docs/architecture/public-api.md`](architecture/public-api.md).

@@ -101,23 +101,29 @@ Maintain a structure similar to:
 ```text
 docs/
 ├── architecture.md
+├── architecture/
+│   └── public-api.md
+├── audit/                       # Feature inventories, 27-module IF reviews, and remediation records
 ├── protocol.md
 ├── android-platform-notes.md
 ├── security.md
-├── testing.md
-├── performance.md
-├── known-issues.md
 ├── decisions.md
-├── troubleshooting.md
+├── release-build.md
+├── install-linux.md
+├── developer-guide/             # Consumer guides, per-module docs, scenarios, and examples
+├── migration/                   # KMP & adaptive UI phase docs
+├── plans/                       # Roadmaps, Hub readiness, radio, and optimization plans
 ├── testing/
 │   ├── TEST-BACKLOG.md          # Every device test still owed (see §35)
 │   └── PROBES.md                # Evidence probe vocabulary + log export header (ADR-087)
 ├── deploy/
-│   └── HUB-SERVER-DEPLOYMENT.md # Deploy the hub to any server (test and production profiles)
+│   ├── HUB-SERVER-DEPLOYMENT.md # Deploy the hub to any server (test and production profiles)
+│   └── INVITE-LINKS.md          # HTTPS App Links & universal group/enrol invite deployment
 └── ui/                          # Premium chat UI — research-first (see §34)
     ├── flash-premium-chat-ui-implementation.md
     ├── ui-research-index.md
     ├── component-doc-template.md
+    ├── performance.md
     └── <component>.md           # One research doc per major component
 
 logs/
@@ -126,6 +132,8 @@ logs/
 ├── experiments.md
 └── handoff.md
 ```
+
+*(Note: `docs/testing.md`, `docs/performance.md`, `docs/known-issues.md`, and `docs/troubleshooting.md` do not exist as top-level files; device testing lives under `docs/testing/`, UI performance under `docs/ui/performance.md`, and known defects/errors in `logs/errors.md`.)*
 
 Create missing files when needed.
 
@@ -917,6 +925,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-21 — 2.3.0 release preparation (`2.3.0` / Android `versionCode 6`, SDK `v2.3.0-beta.1`, Hub `server-v2.3.0-beta.1`).** Version targets and top-level/architecture/protocol/deploy/migration docs updated atop the verified Batch 1–4 remediation baseline on `dev`. Note that `origin/linux` (`linux` branch) is a permanent branch alongside `dev` and `main` for Linux desktop builds and packages. Signed release artifact builds, physical-device checks (`MODREV-01..07`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `IFREV-01..06`, `INVITE-LINK-01..02`), and live test-Hub verification remain owed in `docs/testing/TEST-BACKLOG.md`.
+
 **2026-11-19 — Feature and module review remediation (Batches 1–4) complete on `dev`.** Landed `11e33e40`, `266a79c2`, `84d1c6a1`, `7f08bb1c`, and `9e2123ba` covering lock-free Hub-to-LAN adoption, crash-safe checkpoints and desktop/Android DB recovery, offline `E2EE_REQUIRED` row retirement, independent `join-links.key` with per-link revocation and limits, per-leg mixed-route call ICE and TURN renewal, PTT disconnect/teardown and radio ACK/reconnect recovery, media viewer rotation restoration, desktop WSOLA 1.5x/2x voice speed, accessibility/RTL/contrast fixes, and Android/Desktop host safety. Full verified gate passed 9,320 Gradle tests (9,315 passed, 5 skips), 89 Admin UI tests, `:app:assembleDebug`, and `:app:lintDebug` (0 errors). See [the remediation record](docs/audit/2026-11-19-feature-module-remediation.md), ADR-367, ERROR-1038, and MODREV-01..07.
 
 **2026-11-19 — Feature and module review remediation.** The latest changes address voice capture pause, transfer handoff, desktop database access, Android service lifecycle, Hub authorization and retry behavior, group creation, and vault recovery. See [the remediation record](docs/audit/2026-11-19-feature-module-remediation.md), ADR-366, and the MODREV device checks in the test backlog.
@@ -1502,21 +1512,16 @@ Android's look preserved or improved).
 
 - **Wi‑Fi Direct transport.** No `WifiP2pManager` code exists (verified 2026-09-24); postponed (ADR-056, FO-03). The concept and the transport
   abstraction only.
-- **Adaptive layout remainder:** draggable splitter (AD-2 / AD-D3), pointer idioms and desktop selection (AD-4 / AD-D5), fold posture
-  (AD-6 / AD-D4), state continuity when a resize crosses a breakpoint (AD-7), and the adaptive quality gate (AD-8). See
-  `docs/migration/ADAPTIVE-UI-PLAN.md`.
-- **Device verification** (not missing code): the groups / discovery-resilience / removal work above, the adaptive UI, and the premium UI
-  quality gate UI-045.
+- **Adaptive layout remainder:** fold posture (AD-6 / AD-D4), full resize state continuity across breakpoints (AD-7), and the physical-device adaptive quality gate (AD-8). (Desktop draggable splitter `AD-2` in `DesktopAdaptive.kt` and desktop pointer/context-menu idioms are implemented in code; see `docs/migration/ADAPTIVE-UI-PLAN.md`.)
+- **Device verification** (not missing code): the groups / discovery-resilience / removal work above, the adaptive UI, Hub readiness (`HR6`–`HR11` / `IFREV-*`), desktop resume / inline video (`DESK-RESUME-01`, `MEDIA-PLAY-*`), Batch 1–4 remediation (`MODREV-01..07`), and the premium UI quality gate UI-045.
 - **Performance benchmarking on devices:** EXP-001…EXP-017 are individual findings, not the benchmark matrix of §23; the MEAS-* tests
   (chunk size, streams, LAN vs hotspot, thermals) and the UI-042/UI-043 device numbers are owed, and the scale measurement is postponed.
 - **Background transfer as a supported claim:** a foreground service (`connectedDevice|dataSync`) and a 15-minute WorkManager wake-up
   exist (ADR-041), but background liveness differs by handset (EXP-002: Samsung 90 %, Infinix 4 %; Transsion's freezer), so do not claim
   it is fully supported.
-- **Group gaps, accepted or open:** no per-sender keys, so a removed member keeps what it already received and can read what a member that
-  has not yet heard of the removal sends; a lying owner can vouch a key it controls; vouched members get no files (FO-04); a call leg
-  already established is not re-checked after a removal; a non-owner in a v2 group still sees "Add members" and it fails silently;
-  legacy groups keep the forgeable membership of ERROR-082 by the owner's decision.
+- **Group gaps, accepted or open:** Hub-linked groups support end-to-end encryption (`GROUP_SEALED_V1` / `GROUP_KEY_DIST_V1` with epoch rotation on membership change, HR10), whereas direct/LAN `g2-` and legacy groups do not use per-sender keys (so a removed LAN member keeps what it already received and can read what a member that has not yet heard of the removal sends); a lying owner can vouch a key it controls; vouched members get no files (FO-04); a call leg already established is not re-checked after a removal; a non-owner in a v2 group still sees "Add members" and it fails silently; legacy groups keep the forgeable membership of ERROR-082 by the owner's decision.
 - **Persisted pause intent** for transfers, and BLAKE3 (deferred until a benchmark asks for it).
+- **Platform media & key rotation gaps:** `E2eFrameCodec` static per-pairing key rotation (~2^32 GCM nonce cap), Linux/macOS native inline video playback, and OS mic-mute detection on Desktop / Android API `<29` remain open (`docs/audit/2026-11-19-feature-module-remediation.md`).
 
 ## Known Risks
 

@@ -1,8 +1,9 @@
-# Install Flash 2.2.0 on Linux
+# Install Flash 2.3.0 on Linux
 
 The Linux desktop downloads are for **x86-64** (also called `amd64`). Run `uname -m` if you are
 unsure; it should print `x86_64`. Choose one package from the
-[Flash 2.2.0 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0).
+[Flash 2.3.0 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.0). Linux packages are
+built from the permanent `linux` branch (`origin/linux`), separate from `dev` and `main`.
 
 Download `SHA256SUMS-linux.txt` into the same directory as your package, open a terminal there, and
 verify it before installing:
@@ -15,10 +16,10 @@ The package you downloaded should show `OK`.
 
 ## Debian or Ubuntu: install the `.deb`
 
-Download `flash_2.2.0_amd64.deb` and run:
+Download `flash_2.3.0_amd64.deb` and run:
 
 ```sh
-sudo apt install ./flash_2.2.0_amd64.deb
+sudo apt install ./flash_2.3.0_amd64.deb
 ```
 
 APT installs the local package and resolves its system dependencies from your configured repositories.
@@ -31,12 +32,12 @@ for local package installation.
 
 ## Other distributions or no administrator access: extract the archive
 
-Download `flash-2.2.0-linux-x64.tar.gz` and run:
+Download `flash-2.3.0-linux-x64.tar.gz` and run:
 
 ```sh
-install_dir="$HOME/.local/opt/flash-2.2.0"
+install_dir="$HOME/.local/opt/flash-2.3.0"
 mkdir -p "$install_dir"
-tar -xzf flash-2.2.0-linux-x64.tar.gz -C "$install_dir"
+tar -xzf flash-2.3.0-linux-x64.tar.gz -C "$install_dir"
 "$install_dir/Flash/bin/Flash"
 ```
 

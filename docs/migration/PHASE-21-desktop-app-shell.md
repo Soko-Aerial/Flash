@@ -683,7 +683,7 @@ fun openAttachment(path: String?, mimeType: String) {
 ### Step 6 — Resolve the `FlashApp` ownership problem first
 
 `FlashApp` is `public @Composable fun FlashApp(engine: AppEngine, showDevConsoleEntry: Boolean = false)`
-declared in [MainActivity.kt](/C:/Users/KaliOxygen/Downloads/Flash/app/src/main/java/com/transfer/flash/MainActivity.kt:160)
+declared in [MainActivity.kt](../../app/src/main/java/com/transfer/flash/MainActivity.kt#L160)
 (package `com.transfer.flash`). It takes the **concrete** Hilt class `AppEngine`
 (`com.transfer.flash.di.AppEngine`).
 

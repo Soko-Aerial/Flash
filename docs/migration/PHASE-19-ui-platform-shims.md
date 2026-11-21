@@ -704,7 +704,7 @@ expect fun rememberPermissionHelper(permission: String): PermissionHelper
  * [onResult] with the grant result.
  *
  * Android: launches [ActivityResultContracts.RequestPermission].
- * Desktop: invokes [onResult](true) immediately.
+ * Desktop: invokes `onResult(true)` immediately.
  */
 @Composable
 expect fun rememberPermissionRequest(
