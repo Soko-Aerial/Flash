@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-22 — Windows installer recovery
+
+Reproduced the owner's 2.3.0 install failure on the existing per-user installation. The EXE reported MSI 1638. The verbose standalone reinstall reported 1603 and exposed the changed jpackage component table and missing cached-source name (ERROR-1044).
+
+Windows desktop commit `c3da683b` builds version `2.3.1` in the existing Windows upgrade group and schedules removal within the upgrade transaction.
+
+- All three desktop version unit tests passed. `tools/build-release.ps1 -Target desktop -NoDaemon` built the EXE and MSI under `dist/desktop-2.3.1`.
+- Both output checksums, MSI family/version metadata and removal sequencing passed. The EXE's embedded MSI was inspected independently.
+- The standalone MSI upgraded the installed `2.3.0` on the owner's PC with exit code 0. Verified one `2.3.1` installation at the original path, the new desktop and Nearby JARs, and identical metadata for all 43 existing state files.
+
+Next verify Nearby on physical Wi-Fi using NEARBY-NET-01. The full EXE wrapper upgrade on a separate existing install is WIN-UPGRADE-01. See ERROR-1044 for the verbose MSI evidence.
+
 ## 2026-11-22 — Nearby network recovery and direct IP entry
 
 ### Changed

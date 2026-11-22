@@ -324,6 +324,14 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 - **Source:** ERROR-1043.
 - **Status:** TODO.
 
+### WIN-UPGRADE-01 — Upgrade from the Windows EXE wrapper
+
+- **Setup:** A spare Windows user or PC with the per-user Flash 2.3.0 package and existing Flash state. The standalone 2.3.1 MSI already passed the owner's installed-client check.
+- **Steps:** Exit Flash through the tray, launch `Flash-2.3.1.exe`, and reopen Flash after the installer finishes.
+- **Pass:** One Flash 2.3.1 registration remains at the original install path. The version shown in About is 2.3.1 and existing conversations and saved peers are present.
+- **Source:** ERROR-1044.
+- **Status:** TODO.
+
 ### NEARBY-NET-02 — Linux package detects a late network connection
 
 - **Setup:** Build from the Linux packaging branch with the Nearby backport. Use a Linux device with Wi-Fi or Ethernet. Keep the peer app closed for the address-only steps.

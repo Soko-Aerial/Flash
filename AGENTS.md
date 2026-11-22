@@ -925,6 +925,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-22 — Windows installer recovery (ERROR-1044).** Windows desktop `2.3.1` fixes the same-version installer conflict. The MSI upgraded the owner's installed `2.3.0` in place and preserved the existing state files. Verified installers are in `dist/desktop-2.3.1`. NEARBY-NET-01 and WIN-UPGRADE-01 remain in the test backlog.
+
 **2026-11-22 — Nearby network recovery (ERROR-1043).** The Windows/Linux desktop and Android hosts derive the Nearby status from live LAN addresses. Nearby shows its IP and port before discovery finds peers and permits direct IP entry from the offline panel. The Windows and Android `dist/2.3.0` bundle was rebuilt from `d7efc7a7` and all 10 binaries verified. The Linux packaging backport is on local `codex/nearby-linux`. Physical acceptance is NEARBY-NET-01–04 in the test backlog.
 
 **2026-11-21 — 2.3.0 release preparation (`2.3.0` / Android `versionCode 6`, SDK `v2.3.0-beta.1`, Hub `server-v2.3.0-beta.1`).** Version targets and top-level/architecture/protocol/deploy/migration docs updated atop the verified Batch 1–4 remediation baseline on `dev`. Note that `origin/linux` (`linux` branch) is a permanent branch alongside `dev` and `main` for Linux desktop builds and packages. Signed release artifact builds, physical-device checks (`MODREV-01..07`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `IFREV-01..06`, `INVITE-LINK-01..02`), and live test-Hub verification remain owed in `docs/testing/TEST-BACKLOG.md`.

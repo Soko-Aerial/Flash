@@ -1,5 +1,33 @@
 # Error Log
 
+## ERROR-1044 — Windows rejected the rebuilt 2.3.0 installer over an existing 2.3.0
+
+### Date and environment
+
+2026-11-22, Windows, per-user Flash 2.3.0 installed through the EXE wrapper.
+
+### Symptoms
+
+With Flash closed, both EXE attempts returned MSI error 1638. Standalone MSI repair attempts returned 1603. The installed desktop and Nearby JARs still matched the earlier build.
+
+### Root cause
+
+The rebuilt package reused the installed product version and ID. Its content-hashed JAR names changed the MSI component table. The verbose repair recorded `SELMGR: Removal of a component from a feature is not supported`. It also recorded that SecureRepair looked for the original EXE wrapper's `main.msi` at the standalone MSI source and stopped at `CreateShortcuts` with return value 3. The same-version `/fvamus` workaround reproduced the failure.
+
+### Fix
+
+Build Windows desktop `2.3.1` with a new product ID in the existing upgrade group. Move `RemoveExistingProducts` to after `InstallInitialize` and before the script-generating actions so the upgrade includes removal of the old package in its transaction. [MSI component rules](https://learn.microsoft.com/en-us/windows/win32/msi/changing-the-product-code) · [Removal sequencing](https://learn.microsoft.com/en-us/windows/win32/msi/removeexistingproducts-action)
+
+### Evidence
+
+The verbose reproduction is in `build/reports/nearby-network-probe/installed-2.3.0-repair.log`.
+
+The `2.3.1` MSI upgraded the owner's existing per-user install with exit code 0. One Windows product was registered afterward at the original path. The installed desktop and Nearby JARs matched the fresh app image. All 43 existing state files kept their paths, sizes, and write timestamps. Both installer checksums, product and upgrade metadata, and action ordering verified. The installed-upgrade log is `build/reports/nearby-network-probe/installed-2.3.1-upgrade.log`.
+
+### Status
+
+RESOLVED for the installed-client MSI upgrade. WIN-UPGRADE-01 tracks the full EXE wrapper test on a separate 2.3.0 install.
+
 ## ERROR-1043 — Nearby could retain an old network status after connecting
 
 ### Date

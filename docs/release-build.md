@@ -39,18 +39,19 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 | `Flash-windows-x64-<ver>.jar` | Only with `-UberJar`. It needs Java 21 installed to run. |
 | `SHA256SUMS.txt` | Checksums for every file in the folder. |
 
-## Where the version lives (change all of them together)
+## Where versions live
 
 | What | File | 2.3 release train |
 |---|---|---|
 | Android version name and code | `app/build.gradle.kts` | `2.3.0` / `6` |
-| Windows installer version | `desktop/build.gradle.kts` | `2.3.0` |
+| Windows installer version | `desktop/build.gradle.kts` | `2.3.1` desktop-only installer fix |
 | KMP library and WebRTC fork | `gradle.properties` → `flashLibraryVersion` | `2.3.0-beta.1` |
 | Hub server distribution | `server/build.gradle.kts` | `2.3.0-beta.1` |
 | Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.3.0-beta.1` |
 | Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.3.0-beta.1` |
 
-The Android and Windows tag is `v2.3.0`. The JitPack tag is `v2.3.0-beta.1`, under
+The coordinated Android and Windows release tag is `v2.3.0`. The Windows installer fix is built separately.
+The JitPack tag is `v2.3.0-beta.1`, under
 `com.github.Soko-Aerial.Flash:<module>:v2.3.0-beta.1`. The independent Hub distribution tag is
 `server-v2.3.0-beta.1`. Use the release checklist in the changelog and test backlog before
 publishing each artifact. Never reuse a tag. Keep the Android release signing key and increase
@@ -178,8 +179,15 @@ so SmartScreen shows "unknown publisher". Signing them needs a code-signing cert
 script doesn't do yet. The Linux `.deb` target in `desktop/build.gradle.kts` can only be built on Linux, so the
 script doesn't attempt it.
 
-These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers were built with (`packageVersion` 2.3.0 builds `Flash-2.3.0.msi` / `.exe`).
+These are the non-ProGuard `package*` tasks. The desktop-only `2.3.1` build produces
+`Flash-2.3.1.msi` and `Flash-2.3.1.exe` under `dist\desktop-2.3.1\`.
 `packageRelease*` (ProGuard) has never been verified for this app.
+
+Use a higher Windows package version for an installable rebuild when the jpackage application files
+change. jpackage's content-hashed JAR filenames can change the MSI component table. Windows Installer
+rejected the rebuilt `2.3.0` as a same-version update in ERROR-1044. The newer package has its own
+product ID and uses the existing upgrade group. The WiX template removes the previous package
+inside the installation transaction. [Windows Installer major upgrades](https://learn.microsoft.com/en-us/windows/win32/msi/major-upgrades) · [Removal sequencing](https://learn.microsoft.com/en-us/windows/win32/msi/removeexistingproducts-action)
 
 ## Linux release packages
 
