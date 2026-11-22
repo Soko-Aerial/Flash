@@ -1,5 +1,37 @@
 # Error Log
 
+## ERROR-1043 — Nearby could retain an old network status after connecting
+
+### Date
+
+2026-11-22
+
+### Area
+
+Windows and Android Nearby host state, with the equivalent Linux packaging path reviewed.
+
+### Symptoms
+
+The owner reported that Windows stayed on “No local network” after joining Wi-Fi with Nearby open. The Android host used the same state pattern. The older Linux packaging branch had never supplied its host's LAN availability to Nearby.
+
+### Root cause
+
+Both current hosts captured a computed Boolean in a remembered Compose derivation. An address poll could update the IP while the derivation continued to use the old availability flag. Android also missed link-properties events, treated an enabled Wi-Fi radio as availability, and limited its hotspot fallback polling to the offline state. The offline panel hid the manual connection action.
+
+### Fix
+
+The Nearby state derives availability from the live address, discovered endpoints and active sessions. Desktop samples LAN IPv4 while Nearby is visible and uses the existing virtual-adapter preference. Android refreshes on Wi-Fi and Ethernet link events and polls while Nearby is visible to cover hosted hotspot changes. The empty connected panel shows the local address and port, and the no-network panel offers manual IP entry. The Linux packaging branch has a focused local backport.
+
+### Verification
+
+The production JVM subnet reader found the active LAN on Windows. It also passed a native Linux WSL namespace probe that added an IPv4 address, reassigned it, brought the interface down and checked the virtual-adapter preference in one running JVM. Installed-client and phone verification is tracked in NEARBY-NET-01–04.
+
+The first Android host run compiled but failed the source-wiring assertion for the former address-list expression. The assertion now checks that the Nearby derivation reads the address state and uses it for availability, and that the host receives link-properties changes. All 122 Android unit tests passed on the rerun, with debug APK assembly and zero lint errors.
+
+### Status
+
+OPEN pending installed-client and physical-device verification.
+
 ## ERROR-1042 — Host coroutine timing flakes under `--max-workers=2` (`ExternalSourcesAndInterceptorTest`, `RealFlashChatRepositoryTest`)
 
 ### Date

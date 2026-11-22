@@ -1,5 +1,27 @@
 # Progress Log
 
+## 2026-11-22 — Nearby network recovery and direct IP entry
+
+### Changed
+
+- Windows and Linux desktop derive Nearby availability from the live LAN address, discovered endpoints and sessions. Address polling runs while Nearby is open and uses the same virtual-adapter preference as the desktop subnet sweep.
+- Android reads address changes from Wi-Fi and Ethernet link callbacks. The started Nearby screen also polls for hotspot interfaces Android does not expose as networks. An enabled radio alone no longer clears the offline panel.
+- Nearby shows the local IP and Flash port before peers appear. The offline panel keeps the existing **Connect by IP** dialog available, with its usual reachability and pairing behavior.
+- The separate Linux packaging baseline received a local backport in `c2fb1719` on `codex/nearby-linux`.
+
+### Verification
+
+- The Windows desktop and shared Nearby JVM suites passed 44 checks, including 29 native render cases in the opt-in render test. Inspected the offline panel, the offline panel with settings at 200% text, and the empty connected panel.
+- The JVM subnet reader found the host LAN on Windows. In an isolated Linux WSL namespace running Temurin 25.0.5.1, the same JVM observed offline, link-up without an IPv4 address, initial assignment, reassignment and link loss in sequence. The virtual-adapter opt-in was also verified.
+- The Linux backport passed 25 targeted desktop and shared Nearby JVM tests on the Windows build host.
+- Android passed all 122 unit tests after updating the source-wiring assertion. Debug APK assembly and signature verification passed. Debug lint reported 0 errors, 171 warnings and 1 hint.
+- Rebuilt the Windows and Android release bundle from `d7efc7a7` with `tools/build-release.ps1 -NoDaemon`. All ten binaries differ from the prior bundle and match the regenerated checksums. The four signed APKs use the existing release certificate and the universal APK reports version `2.3.0` / code `6`.
+- The MSI and the MSI embedded in the EXE both extracted successfully. Their desktop and Nearby JARs match the fresh app image, and both installer files match the copies in `dist/2.3.0`. Both installers retain the Windows product ID and version `2.3.0` and have fresh package IDs.
+
+### Remaining
+
+Complete live reconnect and manual-IP pairing on installed clients using NEARBY-NET-01–04. See ERROR-1043.
+
 ## 2026-11-21 — Flash 2.3.0 release verification, builds, library dry-run, and `ERROR-1039..1041` fixes
 
 ### Worked on

@@ -314,6 +314,40 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
   - No flaps in the screen-off runs.
 - **Status:** TODO
 
+## Nearby network changes and manual connection
+
+### NEARBY-NET-01 — Windows reconnects while Nearby stays open
+
+- **Setup:** Updated Windows build, Wi-Fi or Ethernet, and a Flash peer on the LAN. Keep the peer app closed for the address-only steps.
+- **Steps:** Launch Flash without a LAN, open Nearby, then join Wi-Fi or attach Ethernet. Verify the displayed IP and Flash port. Disconnect and reconnect while remaining on Nearby. Open Flash on the other device afterward.
+- **Pass:** The offline panel clears within one polling interval after Windows assigns an IPv4 address. Nearby shows the current address and returns to the offline panel when the last LAN address is lost and no peers or sessions remain. Discovery finds the peer after it starts.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### NEARBY-NET-02 — Linux package detects a late network connection
+
+- **Setup:** Build from the Linux packaging branch with the Nearby backport. Use a Linux device with Wi-Fi or Ethernet. Keep the peer app closed for the address-only steps.
+- **Steps:** Repeat the Windows sequence in NEARBY-NET-01 on Linux. Try a second network with a different IPv4 address while Nearby stays open.
+- **Pass:** The offline panel clears and returns on link transitions, and the displayed address updates when the LAN address changes. A Flash peer on the new LAN is discovered without restarting the app.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### NEARBY-NET-03 — Android follows Wi-Fi, Ethernet, and a hosted hotspot
+
+- **Setup:** Physical Android phone with the updated APK and a second Flash peer. Leave cellular data enabled. Keep the peer app closed for the address-only steps.
+- **Steps:** Start Nearby with Wi-Fi and hotspot off. Enable Wi-Fi without joining, then join a Wi-Fi LAN without internet. Disconnect, start and stop the hosted hotspot, and repeat with Ethernet if the phone supports it.
+- **Pass:** Cellular data and an unassociated Wi-Fi radio leave the no-network panel visible. Acquiring a LAN IPv4 clears it and shows the current address and port without leaving Nearby. Disconnecting the last LAN brings it back after any peer/session presence expires.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### NEARBY-NET-04 — A known IP can be used without discovery
+
+- **Setup:** Updated clients and a reachable Flash peer with a known address and listening port. Use an alternate port for one run if available.
+- **Steps:** From Nearby's offline panel, open **Connect by IP**. Try an unreachable address and check the normal failure behavior. Then use the reachable peer's IP and port without waiting for discovery, and complete any pairing prompt.
+- **Pass:** The offline panel opens the manual dialog. An unreachable address does not hang the app. A reachable peer follows the normal authenticated connection and pairing flow.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
 ## 4. Older device checks still owed
 
 From `logs/errors.md` entries whose status still says a device check is owed. Several may have been covered

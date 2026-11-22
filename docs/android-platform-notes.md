@@ -1,5 +1,9 @@
 # Android Platform Notes
 
+## 2026-11-22 — Refresh Nearby after a LAN address change
+
+On the app's supported API 24+ range, Nearby requests Wi-Fi and Ethernet callbacks and refreshes its address snapshot when link properties change. From Android 8.0 (API 26), the platform documents the initial link-properties callback immediately after availability and capability callbacks. Flash reads addresses asynchronously and also samples while Nearby is visible to cover hosted hotspot interfaces without a corresponding Android `Network`. The Wi-Fi radio toggle alone does not indicate that a LAN address is ready. [Android network state](https://developer.android.com/develop/connectivity/network-ops/reading-network-state) · [NetworkCallback](https://developer.android.com/reference/android/net/ConnectivityManager.NetworkCallback)
+
 ## 2026-11-19 — Voice capture, Quick Settings and foreground-service lifecycle
 
 - Voice notes use [MediaRecorder pause and resume](https://developer.android.com/reference/android/media/MediaRecorder) on Android API 24 and later. The recorder omits the pause interval from the output. Both commands must succeed before Flash changes the displayed capture state.
