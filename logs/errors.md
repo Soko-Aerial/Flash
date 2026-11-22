@@ -20,6 +20,10 @@ The desktop logged `chat.path=none` for both sends beginning at 13:13 UTC while 
 
 At 14:36 UTC both message IDs moved over LAN and later showed delivery ticks on Windows. Reopened the conversation viewport and found the security-key notice with Verify and Continue above the oldest loaded messages while the header showed Relayed. The notice was outside the viewport at the newest messages. The 18 host and Hub lifecycle checks across `HubNoticeMathTest`, `HubSealingHostFlowTest`, and `E2eHostSealingLifecycleTest` passed.
 
+### Next-release client change
+
+The shared conversation screen now places the key notice beside the composer. Pending outgoing messages change the banner copy and announce the reason through a polite live region. **Verify key** opens the old and new codes and an explicit **Trust new key** action. The peer's current published code is available in their Hub connection details. See UI-031 and HUBH-09.
+
 ### Status
 
 OPEN for relay-only delivery on the installed devices. The owner needs to verify the peer's new sealing code and confirm the notice. HUB-02 tracks the subsequent relay-only send and receipt. HUBH-02 tracks the key-change confirmation path.

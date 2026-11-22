@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-11-22 — Hub key verification beside the composer
+
+Moved the direct-chat key-change warning out of the scrollable history. The fixed banner identifies pending outgoing messages. **Verify key** opens a comparison of the old and new codes. The peer can find their own published code in Hub connection details on Android and desktop. Cancel preserves the pending pin. Trust uses the existing confirmation and outbox retry flow.
+
+Product commit `91649015` adds the release note under Unreleased. The 28 UI tests, 15 messaging host tests and native conversation interaction test passed. Reviewed the Windows render at desktop and phone widths, the dark verification dialog, and a 320 dp viewport with 200% text. The native test exercised **Verify key**, **Cancel**, and **Trust new key**. Android debug lint reported 0 errors, 171 warnings and 1 hint. The final debug assembly and universal APK signature verification passed.
+
+Live relay-only verification remains in HUB-02. Installed-client banner, key verification and restart behavior are tracked in HUBH-02 and HUBH-08/09. See ERROR-1045 and UI-031.
+
 ## 2026-11-22 — Desktop relay send held for encryption-key confirmation
 
 Traced two sends from the installed Windows app to a pending peer sealing-key change. The new fingerprint saved on Windows matched the peer's published Hub sealing key and the verified pairing identity matched the directory identity. Both original messages later used LAN, so their delivery ticks do not verify relay.

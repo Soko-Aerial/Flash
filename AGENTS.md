@@ -925,6 +925,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-22 — Hub security-key confirmation banner (ERROR-1045).** Direct chats show the warning next to the composer and prompt for verification when outgoing messages are pending. The dialog compares old and new codes, and the peer can read their own code in Hub connection details. Added to Unreleased. Installed-device verification is tracked by HUBH-02 and HUBH-08/09.
+
 **2026-11-22 — Test Hub updated and desktop relay block diagnosed (ERROR-1045).** The isolated test Hub on `myserver` runs `2.3.0-beta.1` from `6def5ba1`. The live public relay challenge, Hub identity and enrolled reconnects verified. Windows held the reported sends for a pending peer sealing-key change and later sent them over LAN. The owner's key confirmation and relay-only retest remain under HUB-02 and HUBH-02. See `logs/handoff.md` for rollback evidence.
 
 **2026-11-22 — Windows installer recovery (ERROR-1044).** Windows desktop `2.3.1` fixes the same-version installer conflict. The MSI upgraded the owner's installed `2.3.0` in place and preserved the existing state files. Verified installers are in `dist/desktop-2.3.1`. NEARBY-NET-01 and WIN-UPGRADE-01 remain in the test backlog.

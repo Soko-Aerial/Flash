@@ -4182,7 +4182,7 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 ### HUBH-02 - A colleague's key changes after a reinstall
 - **2026-11-22 Windows observation:** A pending key change on an installed client matched the peer's Hub key and showed the confirmation above the oldest loaded chat messages. The user decision and subsequent relay send remain to be checked. See ERROR-1045.
 - **Steps:** A and B have exchanged one sealed message (HUBH-01). Uninstall and reinstall the app on B (or clear its data), enrol B again with a new invite under the same device id, wait for key publication. On A send "after reinstall".
-- **Pass:** A's chat with B shows the notice "B's security key changed" with a new and an old short code and the buttons Continue and Verify; "after reinstall" is NOT sent (hub mailbox for B stays empty, also with "Messages through the hub" ON on A) and stays waiting on A's phone; tapping Continue sends it sealed with the new key within a few seconds and B shows it; the notice disappears; restarting A's app and sending again shows no notice. Repeat once, tap Verify instead: the peer details open.
+- **Pass:** A's chat with B shows the notice "B's security key changed" beside the composer at the newest messages. "After reinstall" stays pending and the Hub mailbox for B stays empty, including with "Messages through the hub" on. **Verify key** opens the previous and new codes and **Cancel** keeps the banner. Compare the new code with B's code in Hub connection details. **Trust new key** clears the banner and the outbox sends the sealed message to B. Restart A and verify a new message goes through without another prompt.
 - **Source:** ADR-126, ERROR-362. **Status:** TODO
 
 ### HUBH-03 - Publication retries while offline and survives a rate limit
@@ -4210,10 +4210,15 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Pass:** the file is not readable text (no PKCS#8 header after the first bytes); the other Windows user cannot unprotect it (the second install makes a new key); on Linux (when run there) the file mode is 0600. Sealed messages between the desktop and a phone work as in HUBH-01.
 - **Source:** ADR-126. **Status:** TODO
 
-### HUBH-08 - A held message survives restart and is released by Continue
-- **Steps:** with a pending key change (HUBH-02) on A, send two messages to B, force-stop A's app, reopen it, open the chat; then tap Continue.
-- **Pass:** after the restart the notice is still there and neither message has been sent; both messages stay on one tick (not Failed) well beyond 15 minutes; after Continue both arrive on B, sealed, in order.
+### HUBH-08 - Held messages survive restart and resume after key confirmation
+- **Steps:** With a pending key change (HUBH-02) on A and the LAN path unavailable, send two messages to B. Force-stop A, reopen its chat, and use **Verify key** to compare the code with B. Tap **Trust new key**.
+- **Pass:** After restart, the banner says messages are waiting beside the composer. Both messages stay pending beyond 15 minutes. After confirmation, both arrive on B, sealed and in order.
 - **Source:** ADR-126, ERROR-362. **Status:** TODO
+
+### HUBH-09 - Key verification is visible and scoped to the current direct chat
+- **Steps:** On installed Windows, Linux and Android builds, open a direct Hub chat with a pending key. Keep a long history and test at the newest messages and after scrolling back. On Android open the keyboard and test with large text and TalkBack. Open verification, cancel, then switch to another chat. Compare the contact's code using the Hub status row in Settings.
+- **Pass:** The banner remains in view next to the composer at any scroll position. Pending outgoing text changes the banner copy and is announced without moving accessibility focus. The code dialog shows the current peer's old and new codes, Cancel preserves the pending key, and another chat never inherits the prompt. The contact can read the matching published code.
+- **Source:** ERROR-1045, UI-031. **Status:** TODO
 
 
 
