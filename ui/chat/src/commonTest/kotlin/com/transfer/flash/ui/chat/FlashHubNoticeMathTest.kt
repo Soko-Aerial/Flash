@@ -2,6 +2,8 @@ package com.transfer.flash.ui.chat
 
 import com.transfer.flash.core.messaging.model.FlashHubNoticeKind
 import com.transfer.flash.core.messaging.model.FlashHubNoticeUi
+import com.transfer.flash.core.messaging.model.FlashMessageStatus
+import com.transfer.flash.core.messaging.model.FlashMessageUi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,6 +29,17 @@ class FlashHubNoticeMathTest {
         FlashHubNoticeKind.entries.filter { it != FlashHubNoticeKind.KEY_CHANGED }.forEach {
             assertFalse(FlashHubNoticeMath.needsDecision(n(it)), it.name)
         }
+    }
+
+    @Test
+    fun `the key banner calls out pending outgoing messages`() {
+        val message = FlashMessageUi("one", "You", "Y", "12:00", "Hello", isMine = true)
+        val waitingMessage = message.copy(deliveryStatus = FlashMessageStatus.Pending)
+        assertEquals("Messages are waiting to send through the Hub.", hubKeyBannerMessage(listOf(waitingMessage)))
+        val verifyMessage = "Verify the new key to send through the Hub."
+        assertEquals(verifyMessage, hubKeyBannerMessage(emptyList()))
+        assertEquals(verifyMessage, hubKeyBannerMessage(listOf(waitingMessage.copy(isMine = false))))
+        assertEquals(verifyMessage, hubKeyBannerMessage(listOf(message.copy(deliveryStatus = FlashMessageStatus.Delivered))))
     }
 
     @Test

@@ -3556,6 +3556,7 @@ private fun DesktopSettingsDestination(
     // ADR-126: the sealing key state and the dropped-message counts for the connection details.
     val hubSealingKeyFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
     val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
+    val hubSecurityCode = hubObject?.sealingKeys?.publishedFingerprint?.collectAsState()?.value
     val hubDroppedFlow = remember(engine, ready) { if (ready) engine.chats?.hubDropped else null }
     val hubDroppedFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts()) }
     val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
@@ -3592,7 +3593,7 @@ private fun DesktopSettingsDestination(
     val settings = remember(
         engine, ready, receivedBytes, themeMode, trustedPeersCount, desktopSettings,
         localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable,
-        hubSealingKeyState, hubDropped, orgTrustState, radioUiState.enabled
+        hubSealingKeyState, hubSecurityCode, hubDropped, orgTrustState, radioUiState.enabled
     ) {
         FlashSettingsModel(
             displayName = localFriendlyName,
@@ -3632,6 +3633,7 @@ private fun DesktopSettingsDestination(
                 unverified = hubDropped.unverified,
                 readableOff = hubDropped.readableOff,
                 stale = hubDropped.stale,
+                securityCode = hubSecurityCode,
             ),
             hubRelinkableGroups = hubRelinkable,
             orgTrustState = orgTrustState,

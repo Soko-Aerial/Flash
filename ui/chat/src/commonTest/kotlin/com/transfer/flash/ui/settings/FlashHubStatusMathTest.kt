@@ -129,6 +129,17 @@ class FlashHubStatusMathTest {
     }
 
     @Test
+    fun connectionDetailsShowOnlyThePublishedSecurityCode() {
+        val code = "0123 4567 89ab cdef"
+        val ready = FlashHubSealingUi(HubSealingKeyState.PUBLISHED, securityCode = code)
+        assertTrue(FlashHubDetailLine("Hub security code", code) in FlashHubStatusMath.sealingLines(ready))
+        assertTrue(FlashHubStatusMath.sealingLines(ready.copy(keyState = HubSealingKeyState.PUBLISHING))
+            .none { it.label == "Hub security code" })
+        assertTrue(FlashHubStatusMath.sealingLines(ready.copy(securityCode = null))
+            .none { it.label == "Hub security code" })
+    }
+
+    @Test
     fun aPendingLeaveIsExplained() {
         val s = status(HubLinkState.NOT_ENROLLED) { copy(pendingUnenrol = true) }
         assertTrue(FlashHubStatusMath.detailLines(s, now).any { it.label == "Leaving" })

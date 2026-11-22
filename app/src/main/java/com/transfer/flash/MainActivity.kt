@@ -1038,6 +1038,7 @@ fun FlashApp(
     // ADR-126: the sealing key state and the dropped-message counts for the connection details.
     val hubSealingKeyFallback = remember { MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
     val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
+    val hubSecurityCode = hubObject?.sealingKeys?.publishedFingerprint?.collectAsState()?.value
     val hubDroppedFlow = remember(ready) { if (ready) engine.chats?.hubDropped else null }
     val hubDroppedFallback = remember { MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts()) }
     val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
@@ -1148,6 +1149,7 @@ fun FlashApp(
             unverified = hubDropped.unverified,
             readableOff = hubDropped.readableOff,
             stale = hubDropped.stale,
+            securityCode = hubSecurityCode,
         ),
         hubRelinkableGroups = hubRelinkable,
         orgTrustState = orgTrustState,

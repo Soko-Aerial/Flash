@@ -3,20 +3,29 @@ package com.transfer.flash.ui.chat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashHubNoticeKind
 import com.transfer.flash.core.messaging.model.FlashHubNoticeUi
+import com.transfer.flash.core.messaging.model.FlashMessageStatus
+import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
@@ -81,6 +90,109 @@ public object FlashHubNoticeMath {
     public fun needsDecision(notice: FlashHubNoticeUi): Boolean = notice.kind == FlashHubNoticeKind.KEY_CHANGED
 
     public fun contentDescription(notice: FlashHubNoticeUi): String = "${title(notice)}. ${body(notice)}"
+}
+
+internal fun hubKeyBannerMessage(messages: List<FlashMessageUi>): String =
+    if (messages.any { it.isMine && it.deliveryStatus == FlashMessageStatus.Pending }) {
+        "Messages are waiting to send through the Hub."
+    } else {
+        "Verify the new key to send through the Hub."
+    }
+
+/** Kept next to Send so the key decision is visible at any scroll position. */
+@Composable
+internal fun FlashHubKeyChangeBanner(
+    notice: FlashHubNoticeUi,
+    message: String,
+    onVerify: (() -> Unit)?,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.backgroundSurface)
+            .padding(start = FlashSpacing.space16, end = FlashSpacing.space8, top = FlashSpacing.space4, bottom = FlashSpacing.space4),
+    ) {
+        val stackAction = maxWidth / LocalDensity.current.fontScale < 264.dp
+        Column {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FlashIcon(FlashIcons.Encryption, contentDescription = null, tint = colors.accentPrimary, size = 20.dp)
+                Column(
+                    modifier = Modifier.weight(1f).semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+                ) {
+                    FlashText(
+                        text = FlashHubNoticeMath.title(notice),
+                        style = typography.metadataEmphasis,
+                        color = colors.textPrimary,
+                        modifier = Modifier.semantics { heading() },
+                    )
+                    FlashText(text = message, style = typography.metadataDefault, color = colors.textSecondary)
+                }
+                if (!stackAction && onVerify != null) {
+                    FlashHubVerifyButton(onVerify)
+                }
+            }
+            if (stackAction && onVerify != null) {
+                FlashHubVerifyButton(onVerify, Modifier.align(Alignment.End))
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlashHubVerifyButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    TextButton(onClick = onClick, modifier = modifier) {
+        Text("Verify key", color = FlashTheme.colors.accentFill)
+    }
+}
+
+@Composable
+internal fun FlashHubKeyVerification(
+    notice: FlashHubNoticeUi,
+    onDismiss: () -> Unit,
+    onTrust: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    FlashConfirmHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
+        title = {
+            FlashText("Verify Hub security key", style = typography.headingMedium, color = colors.textPrimary)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+                FlashText(
+                    "Compare the new code with the Hub security code in your contact’s connection details.",
+                    style = typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+                notice.newCode?.let {
+                    FlashText("New code\n$it", style = typography.bodyEmphasis, color = colors.textPrimary)
+                }
+                notice.oldCode?.let {
+                    FlashText("Previous code\n$it", style = typography.metadataDefault, color = colors.textSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onTrust,
+                enabled = !notice.newCode.isNullOrBlank(),
+                colors = ButtonDefaults.textButtonColors(contentColor = colors.accentFill),
+            ) {
+                Text("Trust new key")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel", color = colors.textSecondary) }
+        },
+    )
 }
 
 /**

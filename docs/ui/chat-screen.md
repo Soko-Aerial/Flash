@@ -537,6 +537,16 @@ if (showEncryptionSheet) {
 }
 ```
 
+### Hub security-key changes (2026-11-22)
+
+**Status:** IMPLEMENTED for the next release. Device follow-up is HUBH-02 and HUBH-08/09.
+
+The Windows relay investigation (ERROR-1045) found the confirmation above the oldest loaded messages. The user saw the peer connected and sent from the latest messages without seeing why the Hub held delivery.
+
+The direct chat shows the warning beside the composer whenever a Hub security-key change is pending. The banner calls out pending outgoing messages. **Verify key** opens the new and previous codes, and the peer can read their own code in Hub connection details. **Trust new key** confirms the change and lets the outbox retry. Dismissing the dialog keeps the warning and the pending key. Changing chats or receiving a different pending code closes the dialog for the previous key.
+
+A transient toast could disappear before the user returned. Automatically opening a dialog on each retry would interrupt reading and typing. The fixed banner keeps the decision available and uses a polite live region to announce changes. Use the shared Flash theme, dialog and touch targets at phone and desktop widths. [Compose accessibility semantics](https://developer.android.com/develop/ui/compose/accessibility/semantics#alerts-and-pop-ups), verified 2026-11-22.
+
 ---
 
 ## UI-004 / UI-030 — "Radio only" presence (ADR-228, 2026-10-28)

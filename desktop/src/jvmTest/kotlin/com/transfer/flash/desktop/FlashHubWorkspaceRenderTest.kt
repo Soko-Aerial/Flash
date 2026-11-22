@@ -3,6 +3,9 @@
 package com.transfer.flash.desktop
 
 import androidx.compose.ui.ImageComposeScene
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.Alignment
@@ -11,6 +14,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.enterprise.HubLinkState
 import com.transfer.flash.core.messaging.model.*
 import com.transfer.flash.core.messaging.util.sampleFlashConversationState
@@ -28,9 +32,94 @@ import java.io.File
 import javax.swing.SwingUtilities
 import org.junit.Assume.assumeTrue
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 /** Opt-in native render evidence, with sample data only. Set FLASH_HUB_RENDER_DIR to an output directory. */
 class FlashHubWorkspaceRenderTest {
+    @Test fun renderKeyChangeInActiveConversation() {
+        val output = System.getenv("FLASH_HUB_RENDER_DIR")
+        assumeTrue("Set FLASH_HUB_RENDER_DIR to capture the Hub review matrix", output != null)
+        val directory = File(output!!).apply { mkdirs() }
+        val peerId = "colleague"
+        val notice = FlashHubNoticeUi(
+            FlashHubNoticeKind.KEY_CHANGED,
+            peerId,
+            "Amara Okafor",
+            newCode = "0123 4567 89ab cdef",
+            oldCode = "aaaa bbbb cccc dddd",
+        )
+        val sample = sampleFlashConversationState()
+        val conversation = sample.copy(
+            header = sample.header.copy(
+                title = notice.peerName, avatarInitials = "AO", isGroup = false,
+                presence = FlashPeerPresence.Online, transport = FlashNetworkTransport.Relay,
+            ),
+            messages = List(32) { index ->
+                FlashMessageUi(
+                    id = "message-$index",
+                    senderName = if (index == 31) "You" else notice.peerName,
+                    senderInitials = "AO",
+                    timeLabel = "12:${index.toString().padStart(2, '0')}",
+                    text = if (index == 31) "Can you send the notes?" else "Earlier conversation",
+                    isMine = index == 31,
+                    deliveryStatus = if (index == 31) FlashMessageStatus.Pending else null,
+                )
+            },
+            hubNotice = notice,
+        )
+        data class KeyCase(val name: String, val width: Int, val height: Int, val scale: Float = 1f, val dark: Boolean = false)
+        val cases = listOf(KeyCase("desktop", 1100, 720, dark = true), KeyCase("phone", 390, 800), KeyCase("large-text", 320, 800, 2f))
+        SwingUtilities.invokeAndWait {
+            for (case in cases) {
+                var trustedPeer: String? = null
+                val scene = ImageComposeScene(case.width, case.height, density = Density(1f, case.scale)) {
+                    FlashTheme(darkTheme = case.dark, motion = rememberFlashMotion(reduceMotion = true)) {
+                        FlashConversationScreen(
+                            state = conversation,
+                            conversationId = peerId,
+                            isPeerTrusted = true,
+                            onBack = {},
+                            onSendText = {},
+                            onAttachmentClick = {},
+                            onConfirmHubKeyChange = { trustedPeer = it },
+                        )
+                    }
+                }
+                try {
+                    scene.render(0).close()
+                    scene.render(100_000_000).use { frame ->
+                        frame.encodeToData()!!.use { File(directory, "key-banner-${case.name}.png").writeBytes(it.bytes) }
+                    }
+                    if (case.name == "desktop") {
+                        val verify = Offset(1046f, 628f)
+                        scene.tap(verify)
+                        scene.render(200_000_000).close()
+                        scene.render(300_000_000).use { frame ->
+                            frame.encodeToData()!!.use { File(directory, "key-verification-desktop.png").writeBytes(it.bytes) }
+                        }
+                        assertNull(trustedPeer, "Opening the comparison must not trust the new key")
+                        scene.tap(Offset(612f, 456f)) // Cancel in the fixed-size desktop fixture.
+                        scene.render(400_000_000).close()
+                        assertNull(trustedPeer, "Cancel must leave the key pending")
+                        scene.tap(verify)
+                        scene.render(500_000_000).close()
+                        scene.tap(Offset(710f, 456f)) // Trust new key.
+                        scene.render(600_000_000).close()
+                        assertEquals(peerId, trustedPeer)
+                    }
+                } finally {
+                    scene.close()
+                }
+            }
+        }
+    }
+
+    private fun ImageComposeScene.tap(position: Offset) {
+        sendPointerEvent(PointerEventType.Press, position, type = PointerType.Touch)
+        sendPointerEvent(PointerEventType.Release, position, type = PointerType.Touch)
+    }
+
     @Test fun renderWorkspaceStates() {
         val output = System.getenv("FLASH_HUB_RENDER_DIR")
         assumeTrue("Set FLASH_HUB_RENDER_DIR to capture the Hub review matrix", output != null)

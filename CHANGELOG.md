@@ -10,6 +10,8 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## Unreleased
 
+- **Hub chat** shows a security-key banner beside the composer. When outgoing messages are waiting, it prompts you to verify the new key. Compare the code with your contact before trusting it. Your own code appears in Hub connection details.
+
 ## [2.3.0] - 2026-11-21
 
 ### Flash for Android and Desktop 2.3.0

@@ -594,7 +594,14 @@ fun FlashConversationScreen(
     var pendingCancelFileId by remember { mutableStateOf<String?>(null) }
     var pendingConfirm by remember { mutableStateOf<FlashConversationConfirm?>(null) }
     var pendingForwardPayload by remember { mutableStateOf<FlashSharePayloadUi?>(null) }
-    val hasScrollableBanners = (state.groupHistory != null && conversationId != null) || state.hubNotice != null
+    val hubKeyNotice = state.hubNotice?.takeIf {
+        FlashHubNoticeMath.needsDecision(it) && (conversationId == null || it.peerId == conversationId)
+    }
+    val scrollableHubNotice = state.hubNotice?.takeUnless(FlashHubNoticeMath::needsDecision)
+    val hasScrollableBanners = (state.groupHistory != null && conversationId != null) || scrollableHubNotice != null
+    var showHubKeyVerification by remember(conversationId, hubKeyNotice?.peerId, hubKeyNotice?.newCode, hubKeyNotice?.oldCode) {
+        mutableStateOf(false)
+    }
     val menuItems = if (state.header.isGroup) {
         FlashConversationMenuMath.groupItems(
             canLeave = state.header.memberCount > 1,
@@ -987,6 +994,13 @@ fun FlashConversationScreen(
         },
         bottomBar = {
             Column {
+                hubKeyNotice?.let { notice ->
+                    FlashHubKeyChangeBanner(
+                        notice = notice,
+                        message = remember(state.messages) { hubKeyBannerMessage(state.messages) },
+                        onVerify = if (onConfirmHubKeyChange != null) ({ showHubKeyVerification = true }) else null,
+                    )
+                }
                 // A direct chat set to Never looked exactly like an unreachable peer: the header drops
                 // the radio-only claim and the composer accepts text, but the radio step will refuse.
                 // Say it where the operator is about to type, with the one-tap way out.
@@ -1298,7 +1312,7 @@ fun FlashConversationScreen(
                                     )
                                 }
                             }
-                            state.hubNotice?.let { notice ->
+                            scrollableHubNotice?.let { notice ->
                                 FlashHubNotice(
                                     notice = notice,
                                     onContinue = { onConfirmHubKeyChange?.invoke(notice.peerId) },
@@ -1331,6 +1345,17 @@ fun FlashConversationScreen(
                 )
             }
         }
+    }
+
+    if (showHubKeyVerification && hubKeyNotice != null && onConfirmHubKeyChange != null) {
+        FlashHubKeyVerification(
+            notice = hubKeyNotice,
+            onDismiss = { showHubKeyVerification = false },
+            onTrust = {
+                showHubKeyVerification = false
+                onConfirmHubKeyChange(hubKeyNotice.peerId)
+            },
+        )
     }
 
     // A message deleted for everyone while its overlay is open must close the overlay: Reply / Copy / Forward on a message
