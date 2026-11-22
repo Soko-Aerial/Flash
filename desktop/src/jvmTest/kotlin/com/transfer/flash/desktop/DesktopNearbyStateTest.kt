@@ -141,6 +141,21 @@ class DesktopNearbyStateTest {
         assertEquals(0, state.pairingSecondsLeft)
     }
 
+    @Test
+    fun lanAddressAppearingAndDisappearingUpdatesNearbyWithoutAnyPeers() {
+        fun state(address: String?) = stateOf(
+            trusted = emptyList(),
+            discovered = emptyList(),
+            localAddressLabel = address,
+        )
+
+        assertFalse(state(null).radiosAvailable)
+        val connected = state("192.168.1.25")
+        assertTrue(connected.radiosAvailable)
+        assertEquals("192.168.1.25", connected.identity.localAddressLabel)
+        assertFalse(state(null).radiosAvailable)
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private fun stateOf(
@@ -149,6 +164,7 @@ class DesktopNearbyStateTest {
         ui: FlashPairingCoordinator.PairingUi? = null,
         ready: Boolean = true,
         liveSessions: Int = 0,
+        localAddressLabel: String? = null,
     ) = nearbyUiStateOf(
         trusted = trusted,
         discovered = discovered,
@@ -158,6 +174,7 @@ class DesktopNearbyStateTest {
         localFriendlyName = "Flash Desktop",
         localDeviceId = LOCAL_ID,
         liveSessions = liveSessions,
+        localAddressLabel = localAddressLabel,
     )
 
     /**
@@ -328,7 +345,6 @@ class DesktopNearbyStateTest {
             localDeviceId = LOCAL_ID,
             liveSessions = 0,
             localAddressLabel = "192.168.1.25",
-            radiosAvailable = true,
             failureReason = "Too many pairing attempts.",
         )
         assertEquals(FlashPairingPhase.Failed, failedState.pairingPhase)

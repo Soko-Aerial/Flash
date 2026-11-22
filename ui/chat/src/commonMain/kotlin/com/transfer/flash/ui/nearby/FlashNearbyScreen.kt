@@ -354,12 +354,14 @@ fun FlashNearbyScreen(
                     NearbyPageState.RadiosOff -> RadiosOffPanel(
                         modifier = Modifier.fillMaxSize().padding(bottom = bottomInset),
                         onOpenWifiSettings = onOpenWifiSettings,
+                        onManualConnectClick = onManualConnectClick,
                     )
                     NearbyPageState.Loading -> LoadingRows(Modifier.fillMaxSize().padding(bottom = bottomInset))
                     NearbyPageState.Empty ->
                         ScanningEmptyPanel(
                             modifier = Modifier.fillMaxSize().padding(bottom = bottomInset),
                             active = state.isScanning,
+                            localAddressLine = FlashNearbyMath.identityAddressLine(state.identity),
                             scan = state.scan,
                             scanDismissed = scanDismissed,
                             onDismissScan = { scanDismissed = true },
@@ -1154,6 +1156,7 @@ private fun SectionLabel(text: String) {
 private fun RadiosOffPanel(
     modifier: Modifier,
     onOpenWifiSettings: (() -> Unit)? = null,
+    onManualConnectClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     Column(
@@ -1191,6 +1194,10 @@ private fun RadiosOffPanel(
                 )
             }
         }
+        if (onManualConnectClick != null) {
+            Spacer(Modifier.height(if (onOpenWifiSettings == null) FlashSpacing.space16 else FlashSpacing.space4))
+            ConnectByIpTextAction(showIcon = true, onClick = onManualConnectClick)
+        }
     }
 }
 
@@ -1198,6 +1205,7 @@ private fun RadiosOffPanel(
 private fun ScanningEmptyPanel(
     modifier: Modifier,
     active: Boolean,
+    localAddressLine: String? = null,
     scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
     scanDismissed: Boolean = false,
     onDismissScan: () -> Unit = {},
@@ -1221,7 +1229,17 @@ private fun ScanningEmptyPanel(
             text = "Keep both devices on the same network with Flash open.",
             style = FlashTheme.typography.metadataDefault,
             color = FlashTheme.colors.textSecondary,
+            textAlign = TextAlign.Center,
         )
+        if (localAddressLine != null) {
+            Spacer(Modifier.height(FlashSpacing.space8))
+            FlashText(
+                text = localAddressLine,
+                style = FlashTheme.typography.metadataDefault,
+                color = FlashTheme.colors.textSecondary,
+                textAlign = TextAlign.Center,
+            )
+        }
         if (onManualConnectClick != null) {
             Spacer(Modifier.height(FlashSpacing.space16))
             Box(

@@ -121,6 +121,11 @@ class FlashWorkspaceTabsRenderTest {
             Case("nearby-large-text", nearby, fontScale = 2f),
             Case("nearby-empty", NearbyUiState()), Case("nearby-loading", NearbyUiState(isLoading = true)),
             Case("nearby-network-off", NearbyUiState(radiosAvailable = false)),
+            Case("nearby-network-off-with-settings", NearbyUiState(radiosAvailable = false), width = 370, height = 520,
+                fontScale = 2f),
+            Case("nearby-empty-with-address", NearbyUiState(
+                identity = nearby.identity.copy(localAddressLabel = "192.168.1.25"),
+            )),
             Case("transfers-phone"), Case("transfers-dark", dark = true),
             Case("transfers-desktop", width = 1200, height = 800),
             Case("transfers-large-text", fontScale = 2f),
@@ -181,7 +186,8 @@ class FlashWorkspaceTabsRenderTest {
                                 FlashNearbyScreen(case.nearbyState, {}, {}, {}, {},
                                     onVerifyTrustedClick = if (case.optionalActions) ({}) else null,
                                     onManualConnect = if (case.optionalActions) ({ _, _ -> }) else null,
-                                    onScanNetwork = if (case.optionalActions) ({}) else null)
+                                    onScanNetwork = if (case.optionalActions) ({}) else null,
+                                    onOpenWifiSettings = if (case.name == "nearby-network-off-with-settings") ({}) else null)
                             } else {
                                 FlashTransfersScreen(case.transferState, {}, {}, {}, {},
                                     onFindDevices = {}, onAcceptOffer = {}, onDeclineOffer = {}, onHistoryShare = {},

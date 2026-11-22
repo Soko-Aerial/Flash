@@ -501,23 +501,19 @@ public fun DesktopShell(
     // that structural rather than remembered — there is no enclosing `val` left to capture. The body
     // lives in `nearbyUiStateOf` below; being pure, its invariant is unit-tested
     // (DesktopNearbyStateTest) instead of being checked by eye in a live run.
-    var localLanAddresses by remember { mutableStateOf<List<String>>(emptyList()) }
-    LaunchedEffect(ready, discoveredEndpoints.size, activeSessions.size, sweepState, nav.current.destination) {
+    val nearbyVisible = nav.current.destination == FlashDestination.NearbyDevices
+    var localLanAddress by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(engine, nearbyVisible) {
+        if (!nearbyVisible) return@LaunchedEffect
         while (true) {
-            val addrs = withContext(Dispatchers.IO) {
-                com.transfer.flash.core.network.sweep.JvmLocalSubnets.lanSubnets()
-                    .map { it.address }
-                    .distinct()
+            localLanAddress = withContext(Dispatchers.IO) {
+                com.transfer.flash.core.network.sweep.JvmLocalSubnets
+                    .lanSubnets(includeVirtual = engine.settings.value.includeVirtualAdapters)
+                    .firstOrNull()?.address
             }
-            localLanAddresses = addrs
-            if (nav.current.destination != FlashDestination.NearbyDevices) break
             delay(4_000L)
         }
     }
-    val radiosAvailable = !ready ||
-        localLanAddresses.isNotEmpty() ||
-        discoveredEndpoints.isNotEmpty() ||
-        activeSessions.isNotEmpty()
 
     val nearby by remember(engine, engine.discovery, activeSessions) {
         derivedStateOf {
@@ -534,8 +530,7 @@ public fun DesktopShell(
                 scan = sweepState.toNearbyScan(),
                 isOrgPeer = { peerId -> engine.hasAuthenticatedOrgSession(peerId) },
                 orgName = engine.enterpriseTrustStore.getCredentials()?.hubName,
-                localAddressLabel = localLanAddresses.firstOrNull(),
-                radiosAvailable = radiosAvailable,
+                localAddressLabel = localLanAddress,
                 failureReason = lastPairingFailureMessage,
             )
         }
@@ -3218,7 +3213,6 @@ internal fun nearbyUiStateOf(
     isOrgPeer: (String) -> Boolean = { false },
     orgName: String? = null,
     localAddressLabel: String? = null,
-    radiosAvailable: Boolean = true,
     failureReason: String? = null,
     activeSessionPeerIds: Set<String> = emptySet(),
 ): NearbyUiState {
@@ -3246,7 +3240,7 @@ internal fun nearbyUiStateOf(
             localAddressLabel = localAddressLabel,
         ),
         isScanning = discoveryState.isDiscovering,
-        radiosAvailable = radiosAvailable,
+        radiosAvailable = !ready || localAddressLabel != null || discovered.isNotEmpty() || liveSessions > 0,
         isLoading = !ready,
         peers = discoveredRows.filter { it.id !in trustedIds },
         trustedPeers = FlashNearbyMath.withDeviceKinds(

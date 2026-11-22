@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -29,7 +30,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedVisibility
@@ -194,8 +198,10 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -1940,15 +1946,19 @@ private fun FlashShell(
         )
     }
 
-    var localLanAddresses by remember { mutableStateOf<List<String>>(emptyList()) }
-    var wifiEnabled by remember { mutableStateOf(true) }
-    var networkRefreshTick by remember { mutableStateOf(0) }
-    DisposableEffect(toastContext) {
+    var localLanAddress by remember { mutableStateOf<String?>(null) }
+    val networkRefresh = remember { MutableStateFlow(0) }
+    DisposableEffect(toastContext, networkRefresh) {
         val cm = toastContext.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { networkRefreshTick++ }
-            override fun onLost(network: Network) { networkRefreshTick++ }
-            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) { networkRefreshTick++ }
+            override fun onAvailable(network: Network) { networkRefresh.update { it + 1 } }
+            override fun onLost(network: Network) { networkRefresh.update { it + 1 } }
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                networkRefresh.update { it + 1 }
+            }
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                networkRefresh.update { it + 1 }
+            }
         }
         val req = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -1957,7 +1967,7 @@ private fun FlashShell(
         runCatching { cm?.registerNetworkCallback(req, callback) }
         val wifiReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                networkRefreshTick++
+                networkRefresh.update { it + 1 }
             }
         }
         val filter = IntentFilter().apply {
@@ -1979,26 +1989,16 @@ private fun FlashShell(
             runCatching { toastContext.unregisterReceiver(wifiReceiver) }
         }
     }
-    LaunchedEffect(toastContext, ready, networkRefreshTick, discoveryState.advertisedPort) {
-        val (ips, wifiOn) = withContext(Dispatchers.IO) {
-            val addrs = runCatching {
-                com.transfer.flash.core.network.util.LocalNetworkAddresses(toastContext).ipv4Addresses()
-            }.getOrDefault(emptyList())
-            val wm = toastContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            val isWifiOn = runCatching {
-                @Suppress("DEPRECATION")
-                wm?.isWifiEnabled
-            }.getOrNull() ?: true
-            addrs to isWifiOn
+    LaunchedEffect(toastContext, ready, discoveryState.advertisedPort, networkRefresh) {
+        networkRefresh.collectLatest {
+            localLanAddress = withContext(Dispatchers.IO) {
+                runCatching {
+                    com.transfer.flash.core.network.util.LocalNetworkAddresses(toastContext)
+                        .ipv4Addresses().firstOrNull()
+                }.getOrNull()
+            }
         }
-        localLanAddresses = ips
-        wifiEnabled = wifiOn
     }
-    val radiosAvailable = !ready ||
-        wifiEnabled ||
-        localLanAddresses.isNotEmpty() ||
-        discoveredEndpoints.isNotEmpty() ||
-        activeSessions.isNotEmpty()
 
     var pendingShareRecipient by remember { mutableStateOf<Pair<String, String>?>(null) }
     var isPairingForShare by remember { mutableStateOf(false) }
@@ -2318,10 +2318,11 @@ private fun FlashShell(
                     displayName = engine.localFriendlyName,
                     deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
                     port = discoveryState.advertisedPort,
-                    localAddressLabel = localLanAddresses.firstOrNull(),
+                    localAddressLabel = localLanAddress,
                 ),
                 isScanning = discoveryState.isDiscovering,
-                radiosAvailable = radiosAvailable,
+                radiosAvailable = !ready || localLanAddress != null ||
+                    discoveredEndpoints.isNotEmpty() || activeSessions.isNotEmpty(),
                 // ERROR-034: the Nearby page has had a Loading branch all along and nothing reached it,
                 // so for the whole boot the tab rendered the first-run "no devices" panel under the
                 // header line "Scan paused" — attributing to the user a pause of a scan that had not
@@ -3271,11 +3272,13 @@ private fun FlashShell(
             DiscoveryEngineHolder.setNearbyVisible(true)
             onDispose { DiscoveryEngineHolder.setNearbyVisible(false) }
         }
-        LaunchedEffect(radiosAvailable) {
-            if (!radiosAvailable) {
+        // A hosted hotspot can gain or lose its LAN address without a ConnectivityManager Network.
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(networkRefresh, lifecycle) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 while (true) {
-                    delay(2000L)
-                    networkRefreshTick++
+                    networkRefresh.update { it + 1 }
+                    delay(4_000L)
                 }
             }
         }
