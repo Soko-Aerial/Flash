@@ -1,5 +1,7 @@
 # Current Handoff
 
+> **2026-11-22 — Test Hub updated to `2.3.0-beta.1` on `myserver` (ERROR-1045).** Deployed source `6def5ba1d3f9`; `7a8cc78b` is its latest server-affecting commit. Public HTTPS health, Hub identity, relay challenge, JAR digest and two enrolled relay registrations verified. The existing tunnel and configuration were preserved. Matching pre-upgrade app, state and configuration are under `~/flash-hub/deployments/dev-6def5ba1d3f9-UzCRAk`. The 83 targeted relay tests passed on rerun. The next task is to retry the reported relay chat on the installed clients under HUB-02.
+
 > **2026-11-22 — Windows installer recovery (ERROR-1044).** Product commit `c3da683b`. Reproduced the same-version `2.3.0` repair failure on the installed PC. Windows desktop `2.3.1` MSI and EXE are in `dist/desktop-2.3.1`. The MSI upgraded the owner's earlier install in place with exit code 0. Verified one installed product, fresh desktop and Nearby JARs, and the metadata of all 43 state files. Three desktop version tests passed. The next installed-app test is NEARBY-NET-01 on `2.3.1`. WIN-UPGRADE-01 tracks the EXE wrapper end-to-end check.
 
 > **2026-11-22 — Nearby LAN recovery and manual IP entry.** Product commit `d7efc7a7` on local `dev`. Windows and Android consume live LAN addresses without reopening Nearby. Connected hosts display their address and port before discovery finds peers. **Connect by IP** is available from the offline panel. The Linux packaging backport is `c2fb1719` on local `codex/nearby-linux`.

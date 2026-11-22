@@ -1,5 +1,23 @@
 # Error Log
 
+## ERROR-1045 — Hub chat failed while the peer appeared online in Relay mode
+
+### Date and environment
+
+2026-11-22, Flash clients on the isolated test Hub on `myserver`.
+
+### Symptoms and evidence
+
+The owner reported a message that did not arrive while the peer showed Online and the route showed Relay. Before the update, the public and loopback Hub endpoints reported `2.2.0-beta.1`, deployed from `d3c50b78`. The desktop log continued reading Hub presence. The available logs did not identify the failed message's delivery outcome.
+
+### Action and verification
+
+Deployed `2.3.0-beta.1` from `6def5ba1`. The Docker health check, public HTTPS, live WebSocket challenge and deployed JAR SHA-256 passed. The Hub identity and tunnel remained the same. Two enrolled relay connections re-registered. All 83 targeted relay tests passed on rerun, including live text delivery, receipt acknowledgment and offline replay in the automated Hub fixture.
+
+### Status
+
+OPEN for the specific reported chat. The stale deployment was corrected. HUB-02 tracks the two-device retest.
+
 ## ERROR-1044 — Windows rejected the rebuilt 2.3.0 installer over an existing 2.3.0
 
 ### Date and environment

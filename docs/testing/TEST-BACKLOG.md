@@ -3790,6 +3790,7 @@ a phone and/or the desktop app of the same build. Older builds cannot connect to
 - **Source:** ERROR-170, ADR-109. **Status:** TODO
 
 ### HUB-02 - Message relay between two enrolled devices, sender is stamped
+- **2026-11-22 retest:** The owner saw the peer online in Relay mode while a chat message failed on the old test Hub. The Hub now runs `2.3.0-beta.1`. Recheck the reported conversation on the installed clients and record both the receiving bubble and the sender receipt. See ERROR-1045.
 - **Setup:** two enrolled devices (phone + desktop) online at the hub.
 - **Steps:** send a chat message from the phone to the desktop through the hub (LAN path off, or the hub-only route).
 - **Pass:** the desktop shows the message from the phone's identity; the hub log's DELIVER names the phone's device id as `from`; the phone receives `DELIVERED`.

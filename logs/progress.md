@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-11-22 — Test Hub relay deployment
+
+The owner reported a failed chat with the peer online in Relay mode. The isolated `myserver` Hub was three days into the `d3c50b78` deployment and reported `2.2.0-beta.1` on both the public and local endpoints. The desktop log continued reading Hub presence. There was no conclusive receipt for the reported message in the available logs.
+
+Built or verified the current `:server:installDist` through the Gradle lock and deployed `2.3.0-beta.1` from local `6def5ba1d3f9` (latest server-affecting commit `7a8cc78b`). The first 83-test relay run hit the intermittent graceful-shutdown mailbox assertion already documented under ERROR-959. The case passed alone and the repeated 83-test gate passed in full, including automated 1:1 live text, receipt acknowledgment and offline replay.
+
+Recreated only the Hub container. The database and keys were backed up before the swap, and the prior app, configuration and state are paired under `~/flash-hub/deployments/dev-6def5ba1d3f9-UzCRAk`. The deployed JAR matched the local SHA-256. The configuration, tunnel ID and start time, Hub identity, and wire/API versions were verified. Docker and public HTTPS health passed, the public WebSocket returned a valid relay challenge, and the Hub registered two enrolled relay connections after startup.
+
+Next retest the user's original chat on its enrolled devices using HUB-02. The stale deployment was addressed. The exact delivery failure remains open in ERROR-1045.
+
 ## 2026-11-22 — Windows installer recovery
 
 Reproduced the owner's 2.3.0 install failure on the existing per-user installation. The EXE reported MSI 1638. The verbose standalone reinstall reported 1603 and exposed the changed jpackage component table and missing cached-source name (ERROR-1044).
