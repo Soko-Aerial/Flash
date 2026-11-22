@@ -136,7 +136,8 @@
       <?ifndef JpAllowDowngrades ?>
       <Custom Action="JpDisallowDowngrade" After="JpFindRelatedProducts">JP_DOWNGRADABLE_FOUND</Custom>
       <?endif?>
-      <RemoveExistingProducts Before="CostInitialize"/>
+      <!-- Remove the previous version inside the install transaction so rollback can restore it. -->
+      <RemoveExistingProducts After="InstallInitialize"/>
       <Custom Action="JpFindRelatedProducts" After="FindRelatedProducts"/>
     </InstallExecuteSequence>
 

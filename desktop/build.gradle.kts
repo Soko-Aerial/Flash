@@ -24,7 +24,7 @@ plugins {
 // Implementation-Version manifest attribute that Settings -> About reads. Change this one value
 // when the desktop release version changes, so the About card can never drift from the installer
 // again (2.2.0 shipped a hardcoded "1.0.0-desktop").
-val desktopAppVersion = "2.3.0"
+val desktopAppVersion = "2.3.1"
 val desktopBuildJdk = providers.environmentVariable("FLASH_JDK")
     .orElse(providers.environmentVariable("JAVA_HOME"))
     .orElse(providers.systemProperty("java.home"))
