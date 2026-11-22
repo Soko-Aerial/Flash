@@ -3790,7 +3790,7 @@ a phone and/or the desktop app of the same build. Older builds cannot connect to
 - **Source:** ERROR-170, ADR-109. **Status:** TODO
 
 ### HUB-02 - Message relay between two enrolled devices, sender is stamped
-- **2026-11-22 retest:** The owner saw the peer online in Relay mode while a chat message failed on the old test Hub. The Hub now runs `2.3.0-beta.1`. Recheck the reported conversation on the installed clients and record both the receiving bubble and the sender receipt. See ERROR-1045.
+- **2026-11-22 retest:** The updated test Hub runs `2.3.0-beta.1`. The reported Windows sends were held by a pending sealing-key change and later reached the peer over LAN. After verifying the peer's code and confirming the new key in the Windows chat, send from Windows with LAN unavailable. Record the `chat.path` Hub route, receiving bubble and sender receipt. See ERROR-1045 and HUBH-02.
 - **Setup:** two enrolled devices (phone + desktop) online at the hub.
 - **Steps:** send a chat message from the phone to the desktop through the hub (LAN path off, or the hub-only route).
 - **Pass:** the desktop shows the message from the phone's identity; the hub log's DELIVER names the phone's device id as `from`; the phone receives `DELIVERED`.
@@ -4180,6 +4180,7 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Source:** ADR-126, CLI-05. **Status:** TODO
 
 ### HUBH-02 - A colleague's key changes after a reinstall
+- **2026-11-22 Windows observation:** A pending key change on an installed client matched the peer's Hub key and showed the confirmation above the oldest loaded chat messages. The user decision and subsequent relay send remain to be checked. See ERROR-1045.
 - **Steps:** A and B have exchanged one sealed message (HUBH-01). Uninstall and reinstall the app on B (or clear its data), enrol B again with a new invite under the same device id, wait for key publication. On A send "after reinstall".
 - **Pass:** A's chat with B shows the notice "B's security key changed" with a new and an old short code and the buttons Continue and Verify; "after reinstall" is NOT sent (hub mailbox for B stays empty, also with "Messages through the hub" ON on A) and stays waiting on A's phone; tapping Continue sends it sealed with the new key within a few seconds and B shows it; the notice disappears; restarting A's app and sending again shows no notice. Repeat once, tap Verify instead: the peer details open.
 - **Source:** ADR-126, ERROR-362. **Status:** TODO

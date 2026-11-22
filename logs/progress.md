@@ -1,5 +1,11 @@
 # Progress Log
 
+## 2026-11-22 — Desktop relay send held for encryption-key confirmation
+
+Traced two sends from the installed Windows app to a pending peer sealing-key change. The new fingerprint saved on Windows matched the peer's published Hub sealing key and the verified pairing identity matched the directory identity. Both original messages later used LAN, so their delivery ticks do not verify relay.
+
+Found the installed app's key-change confirmation above the oldest loaded messages and left the chat on that notice. The targeted host and Hub sealing lifecycle run passed all 18 tests. After the owner verifies the new key and confirms it in Flash, use HUB-02 to verify a relay-only send and receipt. See ERROR-1045 and HUBH-02.
+
 ## 2026-11-22 — Test Hub relay deployment
 
 The owner reported a failed chat with the peer online in Relay mode. The isolated `myserver` Hub was three days into the `d3c50b78` deployment and reported `2.2.0-beta.1` on both the public and local endpoints. The desktop log continued reading Hub presence. There was no conclusive receipt for the reported message in the available logs.

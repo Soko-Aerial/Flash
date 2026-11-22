@@ -14,9 +14,15 @@ The owner reported a message that did not arrive while the peer showed Online an
 
 Deployed `2.3.0-beta.1` from `6def5ba1`. The Docker health check, public HTTPS, live WebSocket challenge and deployed JAR SHA-256 passed. The Hub identity and tunnel remained the same. Two enrolled relay connections re-registered. All 83 targeted relay tests passed on rerun, including live text delivery, receipt acknowledgment and offline replay in the automated Hub fixture.
 
+### Desktop follow-up
+
+The desktop logged `chat.path=none` for both sends beginning at 13:13 UTC while Hub presence reads succeeded. Its saved sealing pin had an unconfirmed replacement from November 16. The replacement matched the peer's current public sealing key on the test Hub. The peer's verified pairing identity also matched the Hub directory identity. Under ADR-126, the pending sealing key blocks relay content while presence and typing can continue.
+
+At 14:36 UTC both message IDs moved over LAN and later showed delivery ticks on Windows. Reopened the conversation viewport and found the security-key notice with Verify and Continue above the oldest loaded messages while the header showed Relayed. The notice was outside the viewport at the newest messages. The 18 host and Hub lifecycle checks across `HubNoticeMathTest`, `HubSealingHostFlowTest`, and `E2eHostSealingLifecycleTest` passed.
+
 ### Status
 
-OPEN for the specific reported chat. The stale deployment was corrected. HUB-02 tracks the two-device retest.
+OPEN for relay-only delivery on the installed devices. The owner needs to verify the peer's new sealing code and confirm the notice. HUB-02 tracks the subsequent relay-only send and receipt. HUBH-02 tracks the key-change confirmation path.
 
 ## ERROR-1044 — Windows rejected the rebuilt 2.3.0 installer over an existing 2.3.0
 
