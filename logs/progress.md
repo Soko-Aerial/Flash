@@ -1,34 +1,33 @@
 # Progress Log
 
-## 2026-11-23 — Synced Linux branch with upstream dev (v2.3.2 release candidate)
+## 2026-11-23 — Synced Linux branch with upstream dev (v2.3.2 swarm Retry refresh)
 
 ### Worked on
-Merged latest `dev` changes from `origin/dev` (`f1336089`) into the `linux` branch while preserving all Linux-native capabilities and fixes.
+Merged latest fixes from `origin/dev` (`aea4772a`) into the `linux` branch while preserving all Linux-native capabilities and fixes. Rebuilt and verified the Linux release packages (.deb and portable tarball).
 
 ### Changed
-- Integrated upstream Flash 2.3.2 release candidate features, fixes, and dependencies:
-  - Group voice note recipient-specific wire ID isolation (`54a69dcb`, ERROR-1050).
-  - Windows reinstall and upgrade packaging fix (`2457c0fa`, ERROR-1051).
-  - Android 13/14 startup crash fixes and discovery foreground-service lifecycle stabilization (`fa1a4118`, `3289874a`, ERROR-1048/1049).
-  - Hub group policy serializer and directory sync updates (`692ebe5f`, ERROR-1047).
-  - Multi-address Nearby discovery and LAN status refresh.
-- Re-applied and verified all Linux desktop capabilities:
-  - Added `"jdk.security.auth"` to `desktop/build.gradle.kts` `nativeDistributions.modules` to ensure packaged JREs include `UnixSystem` for D-Bus Secret Service SASL auth (ERROR-1054).
-  - Linux radio BlueZ live scanning (`channelFlow`), automated pairing agent, and user-space RFCOMM sockets (`LinuxRadioDiscovery.kt`, `LinuxRfcommSocket.kt`).
-  - Linux XDG autostart in `DesktopAutoStartManager.kt`.
-  - Linux Wi-Fi frequency band detection (`iw dev`) in `DesktopNetworkBand.kt`.
-  - FreeDesktop D-Bus file manager reveal (`org.freedesktop.FileManager1.ShowItems`) in `DesktopHelpers.kt`.
-  - Updated `tools/build-release.sh` to package Linux `.deb` and portable `.tar.gz` for version 2.3.2.
+- Integrated upstream Flash 2.3.2 swarm Retry recovery and packaging fixes:
+  - Swarm file length verification, bound check by authenticated manifest, and failed receive retry (`d2a5936b`, ERROR-1052).
+  - Windows packaging upgrade configuration (`12507c9e`).
+- Maintained all Linux desktop subsystems:
+  - Retained `"jdk.security.auth"` module inclusion in `desktop/build.gradle.kts` (ERROR-1055) ensuring D-Bus Secret Service SASL auth succeeds in packaged builds.
+  - Linux radio BlueZ live scanning (`LinuxRadioDiscovery.kt`), automated pairing agent, user-space RFCOMM sockets (`LinuxRfcommSocket.kt`).
+  - XDG autostart (`DesktopAutoStartManager.kt`), Linux Wi-Fi frequency band detection (`iw dev`), and FreeDesktop D-Bus file manager reveal (`DesktopHelpers.kt`).
+- Rebuilt Linux release artifacts for 2.3.2 using `tools/build-release.sh`.
 
 ### Verification
-- Tested compilation and unit tests:
-  - `:core:radio:jvmTest`: green.
-  - `:desktop:compileKotlinJvm`: green.
-  - `:desktop:jvmTest`: green.
+- Ran `:desktop:compileKotlinJvm` and tests.
+- Rebuilt release packages in `dist/2.3.2/`.
 
-### Next steps
-- Verify packaged Linux `.deb` build using `tools/build-release.sh`.
-- Push updated `linux` branch to `origin/linux`.
+## 2026-11-23 — Flash 2.3.2 swarm Retry release refreshed
+
+Rebuilt the four signed APKs and both Windows installers with `d2a5936b`. The Windows refresh in `12507c9e` uses product code `{1DC2CC2A-C3E2-4346-B9C9-D0A149D43DC5}`. Both Windows packages carried the rebuilt engine and swarm JARs and selected this PC's prior 2.3.2 installation as an upgrade target in the same per-user context. All six checksums matched. The Android packages passed release lint, signer, version, alignment and payload checks. The previous candidate remains at `build/release-staging/3f36c2b4-b049-4a2b-85d3-b16ce70220de/previous`. See `build/reports/release-2.3.2-swarm-retry`.
+
+Installed the signed arm64 build in place on the Android 13 V760. The installed digest matched the release and the original install date was preserved. Cold launch and the foreground service stayed healthy in the same process for over 2 minutes and 45 seconds with no new crashes. WIN-UPGRADE-02 covers the Windows replacement and SWM-RETRY-01 covers pressing Retry on the saved failed receive.
+
+## 2026-11-23 — Swarm receive finalization and Retry
+
+Diagnosed the failed desktop swarm from the 12:01 log and partial file. Its 63,728,423 advertised bytes reproduced the signed manifest root. The old whole-file check included an extra 16 KiB of zeros on disk. A separate copy was recovered and verified without editing the app's partial. Commit `d2a5936b` verifies the manifest's declared range, refetches identifiable bad pieces and makes Retry recheck stopped verification. All 693 swarm and engine tests and desktop compilation passed. Evidence is in `build/reports/swarm-retry`. SWM-RETRY-01 tracks the installed retest. See ERROR-1052.
 
 ## 2026-11-23 — Group voice 2.3.2 build installed on V760
 

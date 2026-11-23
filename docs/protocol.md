@@ -951,6 +951,7 @@ root = SHA-256(every byte above)          at most 53 + 16,384 × 32 = 524,341 by
 
 - Little-endian, like the frames. The fragments are consecutive slices of these bytes.
 - A receiver uses a manifest only after recomputing the root, and checks `totalSize` and `pieceSize` against the announcement.
+- On finalization, a receiver verifies the whole-file SHA-256 across exactly the authenticated `totalSize` before publishing. Excess partial-file bytes are discarded after verification. If the advertised range fails verification, its piece hashes identify bytes to request again. Retry can recheck a failed local partial within its retention period.
 - **Not swarmed:** an empty file, and a file that needs more than 16,384 pieces at the largest allowed piece size (more than 16 GiB). Both use
   today's push.
 

@@ -23,6 +23,7 @@ import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.PieceMath
 import com.transfer.flash.core.swarm.model.PieceReadStatus
 import com.transfer.flash.core.swarm.model.PartialHandle
+import com.transfer.flash.core.swarm.model.ManifestPieceStorage
 import com.transfer.flash.core.swarm.model.PieceStorage
 import com.transfer.flash.core.swarm.model.SourceHandle
 import com.transfer.flash.core.swarm.model.StorageFinalizeResult
@@ -582,7 +583,11 @@ public class SwarmDriver(
                         // revoked folder, rename failure) used to end this coroutine without one, so the row, and the
                         // notification, stayed "Verifying" for ever.
                         val res = try {
-                            storage.finalize(key, record.fileName, record.mime, manifest.fileSha256)
+                            if (storage is ManifestPieceStorage) {
+                                storage.finalize(key, record.fileName, record.mime, manifest)
+                            } else {
+                                storage.finalize(key, record.fileName, record.mime, manifest.fileSha256)
+                            }
                         } catch (ce: CancellationException) {
                             throw ce
                         } catch (t: Throwable) {
@@ -590,7 +595,7 @@ public class SwarmDriver(
                             eventChannel.send(SwarmEvent.FinalizeResult(cmd.groupId, cmd.root, ok = false, storageError = true, nowMs = now()))
                             return@launch
                         }
-                        FlashLog.i("SWARM", "finalize root=${cmd.root.hex.take(8)} ok=${res.ok} badPieces=${res.badPieces.size}")
+                        FlashLog.i("SWARM", "finalize root=${cmd.root.hex.take(8)} ok=${res.ok} badPieces=${res.badPieces.size} error=${res.errorMessage.orEmpty()}")
                         if (res.ok && res.finalPath != null) {
                             val updated = record.copy(
                                 finalPath = res.finalPath,

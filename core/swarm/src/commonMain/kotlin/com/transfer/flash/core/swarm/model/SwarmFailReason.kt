@@ -1,7 +1,7 @@
 package com.transfer.flash.core.swarm.model
 
 /**
- * Standard reasons why a swarm transfer failed permanently (§5.4, §8.2).
+ * Standard reasons why a swarm transfer failed (§5.4, §8.2).
  */
 public enum class SwarmFailReason(public val reasonCode: String) {
     /** Whole-file hash mismatch after re-verification and re-fetch (E-14). */

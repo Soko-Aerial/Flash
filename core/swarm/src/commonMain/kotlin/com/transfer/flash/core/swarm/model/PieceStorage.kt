@@ -86,3 +86,13 @@ public interface PieceStorage {
      */
     public suspend fun purgeOrphanedPartials(activeKeys: Set<String>)
 }
+
+/** Storage that can verify the exact authenticated length and diagnose mismatched pieces. */
+public interface ManifestPieceStorage : PieceStorage {
+    public suspend fun finalize(
+        key: String,
+        fileName: String,
+        mime: String,
+        manifest: SwarmManifest,
+    ): StorageFinalizeResult
+}

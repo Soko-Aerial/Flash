@@ -1,6 +1,8 @@
 # Error Log
 
-## ERROR-1054 — Missing jdk.security.auth module in packaged JRE broke D-Bus Secret Service, identity keys, and chat database
+# Error Log
+
+## ERROR-1055 — Missing jdk.security.auth module in packaged JRE broke D-Bus Secret Service, identity keys, and chat database
 
 ### Date
 2026-11-23
@@ -50,7 +52,7 @@ None.
 ### Status
 RESOLVED
 
-## ERROR-1053 — Flow invariant violation in LinuxRadioDiscovery.scan during live Bluetooth discovery
+## ERROR-1054 — Flow invariant violation in LinuxRadioDiscovery.scan during live Bluetooth discovery
 
 ### Date
 2026-11-23
@@ -98,7 +100,7 @@ None.
 ### Status
 RESOLVED
 
-## ERROR-1052 — Gradle dependency verification failed for org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3
+## ERROR-1053 — Gradle dependency verification failed for org.jetbrains.compose.desktop:desktop-jvm-linux-x64:1.9.3
 
 ### Date
 2026-11-23
@@ -132,6 +134,26 @@ Added the SHA-256 checksum for `org.jetbrains.compose.desktop:desktop-jvm-linux-
 ### Status
 RESOLVED
 
+## ERROR-1052 — Swarm receive hashes a trailing partial-file suffix and Retry does nothing
+
+### Date and environment
+
+2026-11-23, Windows Flash 2.3.2, incoming LAN group swarm, content root `97f1b9e6`, transfer `482e1f24`.
+
+### Symptoms and root cause
+
+The receiver accepted at 12:01:04 and reached finalization at 12:01:33. The desktop logged `ok=false badPieces=0` and marked the row `DAMAGED`. The announcement declared 63,728,423 bytes. The partial file was 63,744,807 bytes, including 16,384 zero bytes after the declared end. Recomputing the canonical manifest from the declared range reproduced the full announced root. The old finalizer hashed the entire physical file. The origin of the trailing zeros is unconfirmed. The swarm Retry path only resumed paused or storage-blocked active rows, so this failed row did not re-enter verification.
+
+### Fix and verification
+
+Commit `d2a5936b` applies the authenticated length and SHA-256 before removing any trailing bytes and publishing. If the declared range fails verification, its piece hashes identify what to fetch again. Retry rechecks an existing complete partial within the retention period. A failed local partial with missing data can resume downloading.
+
+Recovered a separate MP4 copy from the verified bytes and checked its SHA-256 and container layout. The original partial is retained. The desktop log, recovery check and recovered file are stored under `build/reports/swarm-retry`. The first test run exposed two fixtures that sent a finalization result before storing their final pieces. The corrected fixtures and all 693 swarm and engine JVM and Android host tests passed. Desktop Kotlin compilation passed.
+
+### Status
+
+Source fix and separate recovery verified. The refreshed 2.3.2 installers include the fix. Installed-app Retry on the saved row remains under SWM-RETRY-01.
+
 ## ERROR-1051 — Rebuilt Windows 2.3.2 must replace the earlier 2.3.2 installation
 
 ### Date and environment
@@ -148,7 +170,7 @@ On this PC, the previous package's `FindRelatedProducts` skipped upgrade detecti
 
 ### Status
 
-Verified installer detection on the existing installation. The owner will run the actual replacement and the device audio test under WIN-UPGRADE-02 and GROUP-VOICE-01.
+Verified installer detection on the existing installation. The earlier refresh was subsequently observed registered at the original path as `{8C805950-5360-4A1A-9E13-02462985BCD4}`. Both swarm Retry refresh packages detect that product as an upgrade target and use `{1DC2CC2A-C3E2-4346-B9C9-D0A149D43DC5}` in the same upgrade family. See WIN-UPGRADE-02 for the remaining installed checks.
 
 ## ERROR-1050 — One group recipient gets a voice message without its audio
 

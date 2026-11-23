@@ -1,5 +1,7 @@
 package com.transfer.flash.core.engine.swarm
 
+import com.transfer.flash.core.swarm.model.ManifestBuilder
+import com.transfer.flash.core.swarm.model.PieceMath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -159,6 +161,37 @@ class JvmPieceStorageTest {
         assertTrue(res.errorMessage?.contains("mismatch") == true)
         // Partial file should still exist for potential re-fetch
         assertTrue(File(partialDir, "corrupt-item.part").exists())
+    }
+
+    @Test
+    fun `manifest finalization publishes only verified content when a partial has a trailing suffix`() = runBlocking {
+        val bytes = ByteArray(PieceMath.MIN_PIECE_SIZE + 83) { it.toByte() }
+        val manifest = ManifestBuilder(PieceMath.MIN_PIECE_SIZE).apply { addBlock(bytes) }.build()
+        val partial = File(partialDir, "with-tail.part")
+        partial.writeBytes(bytes + ByteArray(16_384))
+
+        val result = storage.finalize("with-tail", "recovered.bin", "application/octet-stream", manifest)
+
+        assertTrue(result.ok)
+        assertArrayEquals(bytes, File(requireNotNull(result.finalPath)).readBytes())
+        assertEquals(manifest.totalSize, result.identity?.sizeBytes)
+        assertFalse(partial.exists())
+    }
+
+    @Test
+    fun `manifest finalization reports corrupt pieces without publishing or truncating the partial`() = runBlocking {
+        val bytes = ByteArray(PieceMath.MIN_PIECE_SIZE + 83) { it.toByte() }
+        val manifest = ManifestBuilder(PieceMath.MIN_PIECE_SIZE).apply { addBlock(bytes) }.build()
+        val corrupt = (bytes + ByteArray(16_384)).apply { this[PieceMath.MIN_PIECE_SIZE + 1] = 42 }
+        val partial = File(partialDir, "corrupt-with-tail.part")
+        partial.writeBytes(corrupt)
+
+        val result = storage.finalize("corrupt-with-tail", "damaged.bin", "application/octet-stream", manifest)
+
+        assertFalse(result.ok)
+        assertEquals(listOf(1), result.badPieces)
+        assertArrayEquals(corrupt, partial.readBytes())
+        assertTrue(destDir.listFiles().orEmpty().isEmpty())
     }
 
     @Test

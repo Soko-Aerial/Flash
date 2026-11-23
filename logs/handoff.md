@@ -1,12 +1,16 @@
 # Current Handoff
 
-> **2026-11-23 — LINUX: Synced with upstream dev (v2.3.2 release candidate) & verified Linux packaging runtime.**
-> Merged latest upstream `dev` changes (`f1336089`), bringing in Flash 2.3.2 release candidate, Hub readiness HR6-HR11, group voice note audio route isolation (`54a69dcb`), Windows reinstall fixes (`2457c0fa`), Android startup & foreground-service lifetime fixes (`fa1a4118`, `3289874a`), and multi-address Nearby discovery into the `linux` branch.
+> **2026-11-23 — LINUX: Synced with upstream dev (v2.3.2 swarm retry refresh) & verified Linux packaging runtime.**
+> Merged latest upstream `dev` changes (`aea4772a`), bringing in Flash 2.3.2 swarm Retry recovery (`d2a5936b`), group voice note audio route isolation (`54a69dcb`), Windows reinstall fixes (`12507c9e`), Android startup & foreground-service lifetime fixes (`fa1a4118`, `3289874a`), and multi-address Nearby discovery into the `linux` branch.
 > Preserved all Linux-native subsystems and enhancements:
 > 1. **Bluetooth/Radio:** Linux BlueZ live scanning (`LinuxRadioDiscovery.kt`), automated pairing agent, user-space RFCOMM sockets (`LinuxRfcommSocket.kt`), and OS settings navigation.
 > 2. **Desktop Integration:** XDG autostart (`DesktopAutoStartManager.kt`), Linux Wi-Fi frequency band parsing (`iw dev`), and FreeDesktop D-Bus file manager reveal (`org.freedesktop.FileManager1.ShowItems`).
-> 3. **Desktop Packaging Runtime:** Maintained `"jdk.security.auth"` module inclusion in `desktop/build.gradle.kts` (ERROR-1054) so packaged `.deb` and portable tarballs provide `UnixSystem` for D-Bus Secret Service SASL authentication, avoiding identity degradation and empty chat lists.
+> 3. **Desktop Packaging Runtime:** Maintained `"jdk.security.auth"` module inclusion in `desktop/build.gradle.kts` (ERROR-1055) so packaged `.deb` and portable tarballs provide `UnixSystem` for D-Bus Secret Service SASL authentication, avoiding identity degradation and empty chat lists.
 > 4. **Packaging Tool:** Executable `tools/build-release.sh` builds `.deb`, portable `.tar.gz`, and SHA256 checksums in `dist/<version>/`.
+
+> **2026-11-23 — Flash 2.3.2 swarm Retry release rebuilt and installed on the V760 (ERROR-1052).** The six current artifacts in `dist/2.3.2` include `d2a5936b` and passed checksum and payload verification. Both Windows installer packages with product code change `12507c9e` detect the prior 2.3.2 on this PC in the matching per-user context. The V760 installed the matching signed arm64 APK in place and passed over 2 minutes and 45 seconds of startup and foreground service checks with no new crashes. The failed desktop partial is present for SWM-RETRY-01. See `build/reports/release-2.3.2-swarm-retry` and WIN-UPGRADE-02.
+
+> **2026-11-23 — Failed swarm receive recovered (ERROR-1052).** The desktop received every announced byte, and a 16 KiB tail in its partial caused the physical-file hash to fail. The verified MP4 copy is in `build/reports/swarm-retry/recovered`. Commit `d2a5936b` bounds verification by the signed manifest and lets Retry recheck a failed receive. All 693 affected tests and desktop compilation passed.
 
 > **2026-11-23 — Group voice 2.3.2 APK installed on the V760.** The V760 on Android 13 now runs the current signed arm64 build from `dist/2.3.2`, including `54a69dcb`. The install was in place, the installed APK hash matched, and the cold launch and foreground service passed over 2 minutes and 45 seconds of observation with no new crashes. GROUP-VOICE-01 still needs playback on both recipients. Evidence is in `build/reports/release-2.3.2-group-voice`.
 
