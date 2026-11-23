@@ -530,7 +530,7 @@ public class EnterpriseDirectoryClient(
         ) {
             return@withContext FlashResult.Failure(FlashError.Unknown("Could not verify the Hub group policy."))
         }
-        val policy = HubRestCodec.decodeOrNull<HubGroupPolicy>(reply.body)
+        val policy = HubRestCodec.decodeOrNull(HubGroupPolicy.serializer(), reply.body)
             ?: return@withContext FlashResult.Failure(FlashError.Unknown("Could not read the Hub group policy."))
         FlashResult.Success(policy)
     }

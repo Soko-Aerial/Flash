@@ -4,8 +4,10 @@ package com.transfer.flash.core.enterprise
 
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
+import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -17,6 +19,28 @@ import kotlin.test.assertEquals
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class HubGroupPolicyMonitorTest {
+    @Test
+    fun directoryClientReadsGroupPolicyAndUsesSafeDefaultsForOlderHubs() = runTest {
+        val hub = FakeHub()
+        hub.client().use { http ->
+            val client = EnterpriseDirectoryClient(httpClient = http, expectedServerId = { "test-hub" })
+            hub.respond(
+                "GET", HubContract.PATH_HUB_INFO, HttpStatusCode.OK,
+                """{"serverId":"test-hub","allowPersonalHubLink":true,"groupE2eeMode":"HUB_INSPECTABLE"}""",
+            )
+            assertEquals(
+                FlashResult.Success(HubGroupPolicy(true, HubGroupPolicy.GROUP_E2EE_MODE_HUB_INSPECTABLE)),
+                client.fetchHubGroupPolicy("https://hub.example.test"),
+            )
+
+            hub.respond("GET", HubContract.PATH_HUB_INFO, HttpStatusCode.OK, """{"serverId":"test-hub"}""")
+            assertEquals(
+                FlashResult.Success(HubGroupPolicyMonitor.SAFE_DEFAULT),
+                client.fetchHubGroupPolicy("https://hub.example.test"),
+            )
+        }
+    }
+
     @Test
     fun invalidationAndEnrollmentChangesFailClosedBeforeARefresh() = runTest {
         val credentials = MutableStateFlow<EnrollmentCredentials?>(enrolled("old"))

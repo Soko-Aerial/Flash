@@ -2,6 +2,7 @@
 // extracted from :core:network. It depends on :core:hub-protocol, :core:security and :core:common, NEVER on :core:network.
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.android.kotlin.multiplatform.library)
     `maven-publish`
 }
