@@ -1,5 +1,50 @@
 # Decisions
 
+## ADR-367 — Independent join-link keys, per-leg call ICE resolution, and non-destructive desktop DB recovery
+
+**2026-11-19.** Extends ADR-366 across Hub join links, off-LAN/mixed-route group calling, and desktop/continuity recovery:
+
+1. **Independent join-link key lifecycle and durable tracking:** `HubGroupJoinLinks` seals v3 tokens with a dedicated `join-links.key` (retaining `join-links.prev.key` and `dataSecrets` as `fallbackSecrets`) so rotating `data.key` no longer breaks active v3 join links. Link IDs, optional `maxUses` consumption counters, and per-link/group revocations are persisted in `dir_group_join_links` (preserving reusable 24-hour `OPEN_IN_SCOPE` links when `maxUses` is omitted).
+2. **Per-leg group call ICE resolution and credential renewal:** `CallCoordinator` and `FlashGroupCallSession` resolve `CallIceResolution` (`CallRouteCapabilities.resolveCallIce`) per remote `peerId` rather than passing `groupId`, allowing LAN legs (`IceTransportPolicy.All`) and off-LAN Hub legs (TURN + `mediaPolicy`) to coexist in one group call and refusing invalid off-LAN routes explicitly. `FlashCallSession` and `FlashGroupCallSession` proactively renew TURN credentials at 75% of `ttlSeconds` and issue `iceRestart` offers when configuration changes.
+3. **Non-destructive desktop DB recovery and crash-safe checkpoints:** `ChatDbKeyStore.loadOrMintDeferred()` refuses to overwrite an existing unreadable `db-key.bin`, and `openEncryptedFlashDatabaseWithRecovery` preserves existing files on non-corruption errors, takes a forensic copy and probes a WAL-less copy with `PRAGMA integrity_check` to salvage intact history on WAL-only corruption, and quarantines unrecoverable stores to `.unrecoverable-<stamp>`. `FileContinuityCheckpointStore` persists before memory updates, uses recoverable `.bak` moves instead of pre-deleting targets, and prunes terminal/inactive checkpoints after 30 days or 1,000 entries while protecting active/referenced transfers.
+
+## ADR-366 — Separate join-link validity from roster updates and scope announcement retries
+
+**2026-11-19.** The directory stores a join-link revision when a group is created. A visibility or join-policy change replaces that revision and invalidates outstanding v2 tokens, even if an operator later restores the previous policy. Routine roster changes preserve the revision. The token remains sealed by the Hub, expires in 24 hours, and resolves for enrolled principals subject to current visibility and join policy. Existing v1 tokens retain the old roster-version check until they expire. Per-link revocation and consumption limits remain separate capabilities.
+
+Announcement create retries are keyed by request ID, author kind and identity, and audience. The migration reconstructs recent mappings from their existing announcement rows. This preserves retries after upgrade and prevents one audience or publisher from receiving the result of another's submission.
+
+The relay validates a group envelope's structure and binds its visible sender and destination to routing metadata. The receiving device authenticates the message and decrypts it with the group key. When the active policy prevents a queued row from being replayed, the Hub retires that copy and emits the existing dropped event to online senders.
+
+
+## ADR-365 — Enforce Hub group policy before delivery and create the initial roster atomically
+
+2026-11-18. The Hub rejects readable group relay sends under required encryption and excludes old readable copies from replay and spill while the policy is active. Server policy updates invalidate Android and desktop state. Clients bind policy to the current enrollment and restore required encryption and disabled personal links during a failed refresh.
+
+Hub group creation submits the full initial roster in one request. Client retries reuse the draft's group ID. The Hub returns an existing result only for a matching creator and unchanged request. It validates every member before writing the group and roster. The existing Hub group route remains for older callers.
+
+Shareable Hub directory group links use a separate `flash://g/2` credential, sealed by the issuing Hub and wrapped in the existing HTTPS group landing URL. The recipient must be enrolled in that Hub and its regular join policy still applies. Token expiry and group version prevent an old link from resolving indefinitely. Device and deployed-Hub acceptance are IFREV-01..06.
+
+## ADR-362 — Recover desktop direct transfers with the existing encrypted store
+
+2026-11-15. Desktop uses the shared Room adapter and existing encrypted database to restore transfer identity, retry state and retention. `FlashConfig.enableResume` controls the store in SDK hosts. Open the database before constructing the transfer repository and index durable rows before binding inbound sessions. With a database open failure, transfers continue in memory.
+
+The receiver flushes new acknowledged data before recording coverage. Desktop uses the existing LAN continuity checkpoint's byte ranges to map saved progress onto the incoming chunk layout. It checks the destination and re-offer identity before reusing progress. A fresh desktop sender dispatcher waits for the receiver's replayed coverage before skipping bytes. The existing source identity checks and final SHA-256 verification still apply. Interrupted rows return as Retry, with no automatic sends at startup. Existing desktop versions did not persist these rows, so only transfers recorded by the new build can restore their UI state. No schema or wire version change. Device acceptance is DESK-RESUME-01.
+
+## ADR-363 — Keep video playback inside the shared media viewer
+
+2026-11-15. A single Compose viewer owns page navigation, playback state, system-player fallback, and attribution/actions. Android uses Media3 ExoPlayer with its TextureView binding for first-frame notification and composition beneath the viewer controls. The viewer keeps the local poster during prepare, releases the player when paging or dismissing, and pauses on host stop. Playback uses local file and content URIs. UI-018 records the design and the desktop backend comparison. ADR-364 adds Windows inline playback. Android acceptance is MEDIA-PLAY-01 and MEDIA-PLAY-02.
+
+## ADR-364 — Windows Media Foundation inside the shared viewer
+
+2026-11-15. Windows uses `IMFMediaEngine` in frame-server mode and the existing JNA runtime to open local files and control playback. A dedicated thread owns the Media Foundation and D3D11 resources for the active video. The bridge reads back BGRA frames with a 1280-pixel long edge for Compose to render with the same fit and controls as Android. Frame readback adds a copy. Keep the output bound and measure dropped frames, GPU and CPU usage on older hardware before raising it.
+
+Windows supplies the codecs. The measured x64 Release bridge is 121,344 bytes and does not require a bundled decoder or Visual C++ runtime. UI-018 records the existing JCodec and bundled libmpv/libVLC alternatives. Retain the system-player action for unavailable Windows media components, unsupported files and other desktop operating systems. The [Media Foundation frame-server API](https://learn.microsoft.com/en-us/windows/win32/api/mfmediaengine/nf-mfmediaengine-imfmediaengine-transfervideoframe) was verified against Microsoft documentation on 2026-11-15. Runtime acceptance is MEDIA-PLAY-03.
+
+## ADR-361 — Invite links carry the credential in the HTTPS fragment
+
+Hub enrollment invitations use the issuing Hub's public HTTPS origin. Local group invitations use the Flash link origin configured into the app build. Both carry the original invite in an unpadded base64url fragment so the public landing server serves a static page without receiving an invitation credential. The clients reuse the existing parsers, trust checks and confirmation screens. Android can verify the configured hostnames, and other Hub origins use the browser's explicit Open in Flash action. Existing custom-scheme links remain supported. See [invite deployment](deploy/INVITE-LINKS.md).
+
 ## ADR-022 - Transfer profile tiering: FlashTransferProfile in FlashPerformanceMode, bounded buffer queues, and single-stream low mode
 
 ### Decision
@@ -5136,7 +5181,7 @@ An organisation asks for WebAuthn or SSO, a second language is needed, or the co
 - **Verify** opens the existing peer details; the notice itself shows the new and the old short codes so the two people can compare them out loud. A dedicated "compare sealing codes" screen is not built.
 - Pins are local to a device and are not part of any backup. Removing a colleague from the directory does not remove the pin.
 - The hub notice of a conversation is computed whenever the conversation state emits; a hub-linked group's notice can therefore be stale until the next emission after the "Messages through the hub" switch is flipped (accepted for now).
-- A message held for a changed key is retried at once when the user taps Continue (`confirmHubKeyChange` drains the outbox).
+- Key approval compares the prompt's full fingerprint under the pin lock. Sealing checks and uses one directory snapshot. The relay retry budget honors the persisted pending pin when the relay is unavailable, and confirmation makes that peer's unacknowledged rows due under the drain lock (2026-11-23).
 - Not built: group sealing, sealing keys for the Desktop `Rejected` handlers, a key-transparency log. The hub-delivery notes (`hubDeliveryNotes`) are still not rendered anywhere in the chat UI (pre-existing gap, now partly covered by the inline notice).
 - Not device-verified: all of it. Tests `HUBH-01`..`HUBH-08`, `HUBC-05`, `HUBC-06`, `HUBE-05` in `docs/testing/TEST-BACKLOG.md`.
 

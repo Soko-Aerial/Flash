@@ -33,12 +33,15 @@ import com.transfer.flash.core.radio.link.PairResult
 import com.transfer.flash.core.radio.link.RadioDeviceDiscovery
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 
 /**
  * Common facade and manager for the Flash Radio Gateway (Plan R §3 and §6).
@@ -65,6 +68,7 @@ public class RadioGatewayManager(
     private val authorisationGate: RadioAuthorisationGate = RadioAuthorisationGate(),
     private val maxRetryAttempts: Int = 5,
     private val clock: FlashTimeSource = SystemTimeSource,
+    private val slowRecoveryIntervalMs: Long = DEFAULT_SLOW_RECOVERY_INTERVAL_MS,
 ) {
     private val stateMachine = RadioConnectStateMachine(rememberedStore)
     private val _state = MutableStateFlow(RadioGatewayState())
@@ -81,7 +85,9 @@ public class RadioGatewayManager(
     private var currentByteLink: ByteLink? = null
     private var driverStateJob: Job? = null
     private var scanJob: Job? = null
+    private var recoveryJob: Job? = null
     private var consecutiveReconnectAttempts: Int = 0
+    private var slowRecoveryBackoffStep: Int = 0
     private val testMessageLock = Mutex()
 
     init {
@@ -128,9 +134,12 @@ public class RadioGatewayManager(
      */
     public suspend fun disable() {
         if (!_state.value.isEnabled) return
+        recoveryJob?.cancel()
+        recoveryJob = null
         stopScanInternal()
         stopDriverInternal()
         consecutiveReconnectAttempts = 0
+        slowRecoveryBackoffStep = 0
         stateMachine.transition(RadioConnectEvent.ToggleGateway(false))
         updateState {
             copy(
@@ -293,7 +302,10 @@ public class RadioGatewayManager(
      */
     public suspend fun connectRemembered() {
         if (!_state.value.isEnabled) return
+        recoveryJob?.cancel()
+        recoveryJob = null
         consecutiveReconnectAttempts = 0
+        slowRecoveryBackoffStep = 0
         updateState { copy(isRetryingStopped = false) }
 
         val remembered = rememberedStore.load()
@@ -314,6 +326,10 @@ public class RadioGatewayManager(
      * Forgets the remembered radio configuration.
      */
     public suspend fun forget() {
+        recoveryJob?.cancel()
+        recoveryJob = null
+        consecutiveReconnectAttempts = 0
+        slowRecoveryBackoffStep = 0
         rememberedStore.clear()
         stopDriverInternal()
         updateState { copy(rememberedRadio = null) }
@@ -445,8 +461,11 @@ public class RadioGatewayManager(
         updateState { copy(connectState = stateMachine.state) }
     }
 
-    private suspend fun connectTarget(target: RadioCandidateDevice) {
+    private suspend fun connectTarget(target: RadioCandidateDevice, initialAttemptCount: Int = 0) {
+        recoveryJob?.cancel()
+        recoveryJob = null
         stopDriverInternal()
+        consecutiveReconnectAttempts = initialAttemptCount
         val remembered = RememberedRadio(
             bluetoothAddress = target.addressOrPort,
             displayName = target.name ?: target.addressOrPort,
@@ -456,7 +475,8 @@ public class RadioGatewayManager(
         updateState {
             copy(
                 connectState = RadioConnectState.Connecting(target),
-                linkState = TncLinkState.Connecting(1)
+                linkState = TncLinkState.Connecting(1),
+                isRetryingStopped = false,
             )
         }
 
@@ -480,7 +500,10 @@ public class RadioGatewayManager(
     private suspend fun handleDriverLinkState(linkState: TncLinkState, targetRadio: RememberedRadio) {
         when (linkState) {
             is TncLinkState.Connected -> {
+                recoveryJob?.cancel()
+                recoveryJob = null
                 consecutiveReconnectAttempts = 0
+                slowRecoveryBackoffStep = 0
                 val commands = stateMachine.transition(RadioConnectEvent.ConnectionSucceeded(targetRadio))
                 executeCommands(commands)
                 updateState {
@@ -495,14 +518,16 @@ public class RadioGatewayManager(
             is TncLinkState.Waiting -> {
                 consecutiveReconnectAttempts++
                 if (consecutiveReconnectAttempts >= maxRetryAttempts) {
-                    // Stop driver and display "Reconnect" button
+                    // Pause fast retries and surface "Reconnect", while scheduling slow background recovery
+                    // so transient disconnects past maxRetryAttempts still recover automatically when radio returns.
                     updateState {
                         copy(
                             linkState = linkState,
                             isRetryingStopped = true
                         )
                     }
-                    activeDriver?.stop()
+                    stopDriverAfterRetryCap()
+                    scheduleSlowRecovery(targetRadio)
                 } else {
                     updateState {
                         copy(
@@ -518,6 +543,39 @@ public class RadioGatewayManager(
             is TncLinkState.Connecting, is TncLinkState.Idle -> {
                 updateState { copy(linkState = linkState) }
             }
+        }
+    }
+
+    private suspend fun stopDriverAfterRetryCap() {
+        val job = driverStateJob
+        driverStateJob = null
+        val driver = activeDriver
+        activeDriver = null
+        _driver.value = null
+        withContext(NonCancellable) {
+            runCatching { driver?.stop() }
+            runCatching { currentByteLink?.close() }
+            currentByteLink = null
+        }
+        job?.cancel()
+    }
+
+    private fun scheduleSlowRecovery(targetRadio: RememberedRadio) {
+        if (!_state.value.isEnabled || slowRecoveryIntervalMs <= 0L) return
+        recoveryJob?.cancel()
+        val step = slowRecoveryBackoffStep.coerceAtMost(4)
+        slowRecoveryBackoffStep++
+        val delayMs = (slowRecoveryIntervalMs shl step).coerceAtMost(MAX_SLOW_RECOVERY_INTERVAL_MS)
+        recoveryJob = scope.launch {
+            delay(delayMs)
+            if (!_state.value.isEnabled || !_state.value.isRetryingStopped) return@launch
+            val target = RadioCandidateDevice(
+                name = targetRadio.displayName,
+                addressOrPort = targetRadio.bluetoothAddress,
+                kind = CandidateKind.BLUETOOTH_SERIAL,
+                isPaired = true,
+            )
+            connectTarget(target, initialAttemptCount = (maxRetryAttempts - 1).coerceAtLeast(0))
         }
     }
 
@@ -543,6 +601,12 @@ public class RadioGatewayManager(
     public companion object {
         /** Upper bound of a test message (UTF-8 bytes): one short line, never a payload. */
         public const val MAX_TEST_MESSAGE_BYTES: Int = 64
+
+        /** Default delay before the first automatic background recovery probe after fast retries stop. */
+        public const val DEFAULT_SLOW_RECOVERY_INTERVAL_MS: Long = 30_000L
+
+        /** Upper cap on slow background recovery backoff (5 minutes). */
+        public const val MAX_SLOW_RECOVERY_INTERVAL_MS: Long = 300_000L
 
         /** `KissTncDriver` prefixes the reason of a link that could not even be opened with this. */
         private const val OPEN_FAILED_PREFIX: String = "open_failed:"

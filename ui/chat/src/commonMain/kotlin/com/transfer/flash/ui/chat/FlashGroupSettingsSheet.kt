@@ -30,8 +30,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,6 +77,7 @@ public fun FlashGroupSettingsSheet(
     isEnterpriseEnrolled: Boolean = false,
     isLinkedToHub: Boolean = false,
     onToggleLinkToHub: ((Boolean) -> Unit)? = null,
+    hubConfidentialityNotice: String? = null,
 ) {
     val colors = FlashTheme.colors
     val canEdit = remember(isOwner, isAdmin) { FlashGroupSettingsMath.canEditGroupRules(isOwner, isAdmin) }
@@ -138,22 +142,22 @@ public fun FlashGroupSettingsSheet(
                     Box(
                         modifier = Modifier
                             .clip(FlashShapes.chip)
-                            .background(colors.accentPrimary.copy(alpha = 0.12f))
+                            .background(colors.accentFill.copy(alpha = 0.12f))
                             .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
                     ) {
                         FlashText(
                             text = if (isOwner) "Owner" else "Admin",
                             style = FlashTheme.typography.metadataEmphasis,
-                            color = colors.accentPrimary,
+                            color = colors.textLink,
                         )
                     }
                 }
             }
 
-            // Section 1: Group Rules (Signed, applies to all)
+            // Section 1: Group Rules (Applies to all)
             SectionHeader(
                 title = "Group rules",
-                subtitle = "Signed by admins · Applies to all members",
+                subtitle = "Managed by admins · Applies to everyone in the group",
             )
 
             if (!canEdit) {
@@ -216,9 +220,9 @@ public fun FlashGroupSettingsSheet(
 
             Divider()
 
-            // Swarm File Sharing
+            // Shared File Delivery
             SettingsSwitchRow(
-                title = "Group file swarming",
+                title = "Shared file delivery",
                 description = FlashGroupSettingsMath.swarmServingDescription(effectiveSettings.swarmServing),
                 checked = effectiveSettings.swarmServing,
                 enabled = canEdit,
@@ -233,8 +237,8 @@ public fun FlashGroupSettingsSheet(
             CapacityStepperRow(
                 maxMembers = capacityLocal,
                 enabled = canEdit,
-                onDelta = { delta ->
-                    val updated = FlashGroupSettingsMath.clampMaxMembers(capacityLocal, delta)
+                onStep = { forward ->
+                    val updated = FlashGroupSettingsMath.stepMaxMembers(capacityLocal, forward = forward)
                     if (updated != capacityLocal) {
                         capacityLocal = updated
                         onUpdateSettings(null, null, updated, null, null)
@@ -354,6 +358,10 @@ public fun FlashGroupSettingsSheet(
                 title = "Battery pause threshold",
                 valueLabel = FlashGroupSettingsMath.batteryThresholdLabel(batteryLocal),
                 description = FlashGroupSettingsMath.batteryThresholdDescription(batteryLocal),
+                canDecrement = batteryLocal > 5,
+                canIncrement = batteryLocal < 50,
+                decrementDescription = "Decrease battery pause threshold",
+                incrementDescription = "Increase battery pause threshold",
                 onDecrement = {
                     val newVal = (batteryLocal - 5).coerceIn(5, 50)
                     if (newVal != batteryLocal) {
@@ -377,6 +385,10 @@ public fun FlashGroupSettingsSheet(
                 title = "Keep files available",
                 valueLabel = FlashGroupSettingsMath.keepAvailableDaysLabel(keepDaysLocal),
                 description = FlashGroupSettingsMath.keepAvailableDaysDescription(keepDaysLocal),
+                canDecrement = keepDaysLocal > 1,
+                canIncrement = keepDaysLocal < 30,
+                decrementDescription = "Decrease days to keep files",
+                incrementDescription = "Increase days to keep files",
                 onDecrement = {
                     val newVal = (keepDaysLocal - 1).coerceIn(1, 30)
                     if (newVal != keepDaysLocal) {
@@ -423,16 +435,16 @@ public fun FlashGroupSettingsSheet(
             if (isEnterpriseEnrolled) {
                 Spacer(modifier = Modifier.height(FlashSpacing.space24))
                 SectionHeader(
-                    title = "Organization Relay (E2c)",
-                    subtitle = "Relay new messages through corporate hub for remote and offline members",
+                    title = "Organization Relay",
+                    subtitle = "Deliver new messages through your organization's hub when members are offline or remote",
                 )
 
                 SettingsSwitchRow(
-                    title = if (isLinkedToHub) "Linked to Corporate Hub" else "Link to Corporate Hub",
+                    title = if (isLinkedToHub) "Linked to Organization Hub" else "Link to Organization Hub",
                     description = if (isLinkedToHub) {
-                        "Active: new messages relay through the hub. Past messages remain local (Zero Cloud Dump)."
+                        "Active: new messages relay through your organization's hub. Past messages stay on your devices only."
                     } else {
-                        "Enable relay delivery for offline members. Zero Cloud Dump: past messages are NEVER uploaded."
+                        "Relay new messages for offline members. Past messages are never uploaded to the hub."
                     },
                     checked = isLinkedToHub,
                     enabled = canEdit && onToggleLinkToHub != null,
@@ -440,6 +452,16 @@ public fun FlashGroupSettingsSheet(
                         onToggleLinkToHub?.invoke(checked)
                     },
                 )
+
+                if (isLinkedToHub) {
+                    Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                    FlashText(
+                        text = hubConfidentialityNotice ?: "End-to-end encrypted: Hub group messages are sealed with per-membership epoch keys so your organisation's hub cannot read them. Keys rotate when membership changes, and past history stays on member devices only.",
+                        style = FlashTheme.typography.metadataDefault,
+                        color = FlashTheme.colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = FlashSpacing.space16),
+                    )
+                }
             }
         }
     }
@@ -566,9 +588,11 @@ internal fun SettingsSwitchRow(
 private fun CapacityStepperRow(
     maxMembers: Int,
     enabled: Boolean,
-    onDelta: (Int) -> Unit,
+    onStep: (forward: Boolean) -> Unit,
 ) {
     val colors = FlashTheme.colors
+    val canDecrement = FlashGroupSettingsMath.stepMaxMembers(maxMembers, forward = false) != maxMembers
+    val canIncrement = FlashGroupSettingsMath.stepMaxMembers(maxMembers, forward = true) != maxMembers
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -593,15 +617,19 @@ private fun CapacityStepperRow(
         if (enabled) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
             ) {
                 StepperButton(
                     text = "−",
-                    onClick = { onDelta(-5) },
+                    contentDescription = "Decrease maximum group size",
+                    enabled = canDecrement,
+                    onClick = { onStep(false) },
                 )
                 StepperButton(
                     text = "+",
-                    onClick = { onDelta(5) },
+                    contentDescription = "Increase maximum group size",
+                    enabled = canIncrement,
+                    onClick = { onStep(true) },
                 )
             }
         }
@@ -613,6 +641,10 @@ private fun ValueStepperRow(
     title: String,
     valueLabel: String,
     description: String,
+    canDecrement: Boolean,
+    canIncrement: Boolean,
+    decrementDescription: String,
+    incrementDescription: String,
     onDecrement: () -> Unit,
     onIncrement: () -> Unit,
 ) {
@@ -639,7 +671,7 @@ private fun ValueStepperRow(
                 FlashText(
                     text = "($valueLabel)",
                     style = FlashTheme.typography.metadataEmphasis,
-                    color = colors.accentPrimary,
+                    color = colors.textLink,
                 )
             }
             FlashText(
@@ -650,14 +682,18 @@ private fun ValueStepperRow(
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
         ) {
             StepperButton(
                 text = "−",
+                contentDescription = decrementDescription,
+                enabled = canDecrement,
                 onClick = onDecrement,
             )
             StepperButton(
                 text = "+",
+                contentDescription = incrementDescription,
+                enabled = canIncrement,
                 onClick = onIncrement,
             )
         }
@@ -667,22 +703,36 @@ private fun ValueStepperRow(
 @Composable
 private fun StepperButton(
     text: String,
+    contentDescription: String,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val colors = FlashTheme.colors
     Box(
         modifier = Modifier
-            .size(36.dp)
+            .size(FlashDimensions.minTouchTarget)
             .clip(CircleShape)
-            .background(colors.backgroundSurfaceSubtle)
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics {
+                role = Role.Button
+                this.contentDescription = contentDescription
+            }
+            .alpha(if (enabled) 1f else 0.4f),
         contentAlignment = Alignment.Center,
     ) {
-        FlashText(
-            text = text,
-            style = FlashTheme.typography.bodyEmphasis,
-            color = colors.textPrimary,
-        )
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(colors.backgroundSurfaceSubtle),
+            contentAlignment = Alignment.Center,
+        ) {
+            FlashText(
+                text = text,
+                style = FlashTheme.typography.bodyEmphasis,
+                color = if (enabled) colors.textPrimary else colors.textTertiary,
+            )
+        }
     }
 }
 
@@ -706,12 +756,12 @@ private fun ActionRow(
         FlashIcon(
             icon = icon,
             contentDescription = title,
-            tint = if (isDestructive) colors.textError else colors.accentPrimary,
+            tint = if (isDestructive) colors.textError else colors.textLink,
         )
         FlashText(
             text = title,
             style = FlashTheme.typography.bodyEmphasis,
-            color = if (isDestructive) colors.textError else colors.accentPrimary,
+            color = if (isDestructive) colors.textError else colors.textLink,
         )
     }
 }
@@ -740,7 +790,7 @@ private fun CustomSwitch(checked: Boolean, enabled: Boolean) {
     val trackTint by animateColorAsState(
         targetValue = when {
             !enabled -> colors.borderSubtle
-            checked -> colors.accentPrimary
+            checked -> colors.accentFill
             else -> colors.borderStrong
         },
         animationSpec = motion.tweenFastSpec(),
@@ -749,7 +799,7 @@ private fun CustomSwitch(checked: Boolean, enabled: Boolean) {
     val thumbTint by animateColorAsState(
         targetValue = when {
             !enabled -> colors.textTertiary
-            checked -> colors.textOnAccent
+            checked -> colors.onAccentFill
             else -> colors.backgroundSurface
         },
         animationSpec = motion.tweenFastSpec(),

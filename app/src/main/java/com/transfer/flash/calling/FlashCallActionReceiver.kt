@@ -8,7 +8,9 @@ import com.transfer.flash.debug.DiscoveryEngineHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * C7 (calling): resolves [com.transfer.flash.core.calling.FlashCalling] actions
@@ -20,8 +22,6 @@ import kotlinx.coroutines.launch
  * action buttons.
  */
 class FlashCallActionReceiver : BroadcastReceiver() {
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onReceive(context: Context, intent: Intent) {
         val calling = DiscoveryEngineHolder.currentCalling()
@@ -35,27 +35,23 @@ class FlashCallActionReceiver : BroadcastReceiver() {
             // ERROR-105: never accept from here. Answering needs the RECORD_AUDIO / CAMERA checks and the audio
             // router, which live in MainActivity; the activity's own answer path (EXTRA_ANSWER_CALL) runs them.
             ACTION_ANSWER -> bringAppToFront(context, answer = true)
-            ACTION_DECLINE -> {
-                val pending = goAsync()
-                scope.launch {
-                    try {
-                        calling.decline()
-                    } finally {
-                        pending.finish()
-                    }
-                }
-            }
-            ACTION_HANGUP -> {
-                val pending = goAsync()
-                scope.launch {
-                    try {
-                        calling.hangUp()
-                    } finally {
-                        pending.finish()
-                    }
-                }
-            }
+            ACTION_DECLINE -> runAsyncAction { calling.decline() }
+            ACTION_HANGUP -> runAsyncAction { calling.hangUp() }
             else -> Log.w(TAG, "Unknown call action ${intent.action}")
+        }
+    }
+
+    private fun runAsyncAction(block: suspend () -> Unit) {
+        val pending = goAsync()
+        // Per-broadcast scope cancelled in finally so a short-lived BroadcastReceiver never leaks a CoroutineScope.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        scope.launch {
+            try {
+                withTimeoutOrNull(ACTION_TIMEOUT_MS) { block() }
+            } finally {
+                pending.finish()
+                scope.cancel()
+            }
         }
     }
 
@@ -70,6 +66,7 @@ class FlashCallActionReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "CALLACT"
+        private const val ACTION_TIMEOUT_MS = 8_000L
         const val ACTION_ANSWER = "com.transfer.flash.calling.ACTION_ANSWER"
         const val ACTION_DECLINE = "com.transfer.flash.calling.ACTION_DECLINE"
         const val ACTION_HANGUP = "com.transfer.flash.calling.ACTION_HANGUP"

@@ -16,7 +16,7 @@ Android app and by the Windows desktop app.
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-ptt:v2.2.0-beta.3")   // JitPack coordinate; a mavenLocal build uses group com.transfer.flash
+    implementation("com.github.Soko-Aerial.Flash:core-ptt:v2.3.0-beta.1")   // JitPack coordinate; a mavenLocal build uses group com.transfer.flash
 }
 ```
 
@@ -27,7 +27,7 @@ dependencies {
 
 ## 2. How a session works (ADR-032)
 
-- **Floor:** there is no request/grant round trip. The floor machine (`PttFloorMachine`, in `:core:messaging`) is a pure
+- **Floor:** there is no request/grant round trip. The floor machine (`PttFloorMachine`, in `:core:ptt`) is a pure
   reducer: a local press on an idle device starts capture and announces `Start`; a device that hears a `Start` from a
   trusted peer becomes a listener; a second press stops. If two devices start within the 1.5 s collision window, the one with the lower
   device id keeps the floor and the other stops and listens (no coordinator). Control frames are text (`FLASH_PTT` ping; `FLASH_PTSS` start / stop / leave / heartbeat / heartbeat-ack).
@@ -54,6 +54,7 @@ dependencies {
 | `onPttButton(): PttPressOutcome` | toggle the floor; `ACCEPTED`, `NO_PEERS`, `NO_MIC`, `CALL_ACTIVE`, `VOICE_NOTE_ACTIVE` |
 | `sendPing(): Boolean` / `postNotice(text)` | send a `FLASH_PTT` ping to the paired peers; show a one-shot notice |
 | `stopLocal()` / `onCallStarted()` / `shutdown()` | stop, tear down for a call, terminal teardown |
+| `onPeerDisconnected(peerId)` | immediately releases the listening floor if `peerId` held it, and removes `peerId` from the talker fan-out |
 | `acquireVoiceNoteLease()` / `releaseVoiceNoteLease(id)` | the microphone gate for voice messages |
 | `onInboundText(peerId, text)` / `onInboundBinary(peerId, data)` | host routing seams; return true for PTT frames **including rejected ones** |
 

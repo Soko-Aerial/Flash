@@ -16,6 +16,25 @@ public object FlashGroupSettingsMath {
     public fun clampMaxMembers(current: Int, delta: Int, min: Int = 2, max: Int = GroupPolicy.MAX_MEMBERS_V2): Int =
         (current + delta).coerceIn(min, max)
 
+    /**
+     * Symmetric grid stepping for the group capacity stepper so `+` and `-` traverse the same
+     * stops (`2 <-> 5 <-> 10 <-> 15 <-> 20 ...`) instead of drifting off-grid at `min`.
+     */
+    public fun stepMaxMembers(
+        current: Int,
+        forward: Boolean,
+        min: Int = 2,
+        max: Int = GroupPolicy.MAX_MEMBERS_V2,
+        step: Int = 5,
+    ): Int {
+        val clamped = current.coerceIn(min, max)
+        return if (forward) {
+            if (clamped >= max) max else (((clamped / step) + 1) * step).coerceIn(min, max)
+        } else {
+            if (clamped <= min) min else (((clamped - 1) / step) * step).coerceIn(min, max)
+        }
+    }
+
     /** Human-readable label for join policy. */
     public fun joinPolicyLabel(policy: String): String =
         if (policy.equals(GroupSettings.POLICY_APPROVE, ignoreCase = true)) {
@@ -56,12 +75,12 @@ public object FlashGroupSettingsMath {
             "Only admins can add members directly."
         }
 
-    /** Detail sentence for swarmServing flag. */
+    /** Detail sentence for shared file delivery flag. */
     public fun swarmServingDescription(enabled: Boolean): String =
         if (enabled) {
-            "Group members cooperatively share downloaded file pieces."
+            "Group members help deliver downloaded file pieces to each other."
         } else {
-            "File swarming is disabled for this group."
+            "Shared file delivery is turned off for this group."
         }
 
     /** Detail sentence for local serveToGroup preference. */

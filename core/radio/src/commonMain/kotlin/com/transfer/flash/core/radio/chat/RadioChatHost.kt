@@ -51,6 +51,8 @@ public class RadioChatHost(
 ) : AutoCloseable {
 
     private val lock = Any()
+    private val hostDedupCache = RadioDedupCache(maxSize = 1000)
+    private var retainedContinuity: RadioChatEngine.ContinuitySnapshot? = null
     private var engineScopeJob: Job? = null
     private var currentEngine: RadioChatEngine? = null
     private var latestSettings = RadioChatSettings(enabled = false, profile = RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED)
@@ -86,6 +88,7 @@ public class RadioChatHost(
     private fun swap(driver: KissTncDriver?) {
         synchronized(lock) {
             currentEngine?.close()
+            currentEngine?.exportContinuity()?.let { retainedContinuity = it }
             engineScopeJob?.cancel()
             currentEngine = null
             engineScopeJob = null
@@ -94,10 +97,24 @@ public class RadioChatHost(
             val job = SupervisorJob(scope.coroutineContext[Job])
             val engineScope = CoroutineScope(scope.coroutineContext + job)
             val created = engineFactory(engineScope, driver)
+            retainedContinuity?.let { created.importContinuity(it) }
             created.setEnabled(latestSettings.enabled)
             created.setProfile(latestSettings.profile)
             // Forwarders first, so a frame that arrives right after the engine starts is not missed.
-            engineScope.launch { created.inboundMessages.collect { _inbound.emit(it) } }
+            engineScope.launch {
+                created.inboundMessages.collect { msg ->
+                    val dedupKey = "${msg.senderDeviceId}:${msg.messageId}"
+                    val isDuplicate = synchronized(lock) {
+                        if (hostDedupCache.isDuplicate(dedupKey)) {
+                            true
+                        } else {
+                            hostDedupCache.markSeen(dedupKey)
+                            false
+                        }
+                    }
+                    if (!isDuplicate) _inbound.emit(msg)
+                }
+            }
             engineScope.launch { created.deliveryReceipts.collect { _receipts.emit(it) } }
             engineScopeJob = job
             currentEngine = created

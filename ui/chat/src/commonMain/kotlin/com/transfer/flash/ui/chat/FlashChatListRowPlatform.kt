@@ -1,13 +1,11 @@
 package com.transfer.flash.ui.chat
 
 /**
- * Platform capability seam for the touch swipe-to-dismiss gesture on chat list rows (OPT-O04-05).
- * - Android: true - a horizontal drag archives/unarchives a row.
- * - Desktop: false - no `SwipeToDismissBox` is allocated per row, and **the swipe gesture is gone on Windows**.
- *
- * The desktop keeps archive reachable through long-press -> selection mode -> Archive/Unarchive in the selection
- * action bar (`DesktopShell` wires `onArchiveSelected`/`onUnarchiveSelected`). There is deliberately **no right-click
- * context menu** on a chat row; do not read this as "desktop has another gesture". `PERF-U02` is the check that this
- * path works on a real desktop build.
+ * Platform capability seams for interactions on chat list rows:
+ * - [isSwipeToDismissSupported]: Android true (horizontal drag archives/unarchives a row), Desktop false.
+ * - [isRowRightClickMenuSupported]: Desktop true (secondary/right click opens Pin/Mute/Archive/Delete menu),
+ *   Android false (long-press enters selection mode).
  */
 internal expect val isSwipeToDismissSupported: Boolean
+
+internal expect val isRowRightClickMenuSupported: Boolean

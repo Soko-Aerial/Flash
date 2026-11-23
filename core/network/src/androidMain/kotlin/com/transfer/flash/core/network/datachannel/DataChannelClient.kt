@@ -3,6 +3,7 @@
 package com.transfer.flash.core.network.datachannel
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.logging.FlashLog
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -54,7 +55,7 @@ public object DataChannelClient {
         localDeviceId: String = "",
     ): DataSendChannel? {
         val socket = Socket()
-        return runCatching {
+        return runSuspendCatching {
             socket.sendBufferSize = 1024 * 1024
             socket.receiveBufferSize = 1024 * 1024
             socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)

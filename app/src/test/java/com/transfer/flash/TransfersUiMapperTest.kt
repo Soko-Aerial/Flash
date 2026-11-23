@@ -108,6 +108,11 @@ class TransfersUiMapperTest {
         assertTrue(domain(state = FlashTransferState.Completed).toUiItem().verified)
         assertFalse(domain(state = FlashTransferState.Verifying).toUiItem().verified)
         assertFalse(domain(state = FlashTransferState.Transferring).toUiItem().verified)
+
+        val verifyingUi = domain(state = FlashTransferState.Verifying).toUiItem()
+        assertTrue(verifyingUi.isVerifying)
+        assertEquals(0L, verifyingUi.speedBytesPerSec)
+        assertNull(verifyingUi.etaSeconds)
     }
 
     @Test

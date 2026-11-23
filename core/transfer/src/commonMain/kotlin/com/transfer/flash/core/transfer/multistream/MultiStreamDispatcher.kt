@@ -6,6 +6,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.perf.FlashThermalStatus
 import com.transfer.flash.core.common.perf.ThermalGovernor
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.transfer.chunked.ChunkBufferPool
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
@@ -278,9 +279,34 @@ internal class MultiStreamDispatcher(
                                 startIndex = startIndex,
                             ).also { stream = it }
                             if (pos < index) {
-                                // O23-02: Positional fast-forward without redundant read/hash
-                                s.skipTo(index)
-                                pos = index
+                                if (startIndex == 0) {
+                                    // Holes left by the sender's own done-set must still be READ
+                                    // here: the whole-file digest guard is active when the stream
+                                    // opened at 0, and `skipTo` deliberately does not hash. A
+                                    // non-contiguous confirmed set used to make a resumed send fail
+                                    // with "whole-file digest changed between passes" and leave the
+                                    // receiver waiting at its last byte count.
+                                    while (pos < index) {
+                                        ChunkBufferPool.release(s.next().data)
+                                        pos++
+                                    }
+                                } else {
+                                    // O23-02: positioned past a resumed prefix, the digest guard is
+                                    // off, so a positional skip without redundant read/hash is safe.
+                                    s.skipTo(index)
+                                    pos = index
+                                }
+                            }
+                            // A retry may learn from the receiver's re-announced done-set that this
+                            // chunk is already durable there. Read (and hash) it so the whole-file
+                            // digest guard still sees every byte, but do not serialize or queue it:
+                            // replaying acknowledged chunks is what made a retry look frozen on the
+                            // receiver until the sender caught up.
+                            if (terminalLock.withLock { confirmedVector.isReceived(index) }) {
+                                ChunkBufferPool.release(s.next().data)
+                                pos++
+                                sentCount.incrementAndFetch()
+                                continue
                             }
                             val readT0 = nowMs()
                             val frame = s.next()
@@ -337,8 +363,19 @@ internal class MultiStreamDispatcher(
                                     startIndex = retryFirst,
                                 ).also { stream = it }
                                 if (pos < index) {
-                                    s.skipTo(index)
-                                    pos = index
+                                    if (retryFirst == 0) {
+                                        // Same digest-guard reason as the main loop: an endgame pass
+                                        // that starts at chunk 0 must read (hash) its skipped holes,
+                                        // or the whole-file cross-check fails and the retry reports
+                                        // Failed with every channel idle.
+                                        while (pos < index) {
+                                            ChunkBufferPool.release(s.next().data)
+                                            pos++
+                                        }
+                                    } else {
+                                        s.skipTo(index)
+                                        pos = index
+                                    }
                                 }
                                 val frame = s.next()
                                 pos++
@@ -374,16 +411,12 @@ internal class MultiStreamDispatcher(
             // forever in feeds[i].send() (buffer full, no worker draining), so coroutineScope —
             // which joins all children — could never return and send() hung permanently.
             val channels = (0 until effectiveStreams).map { id ->
-                val channel = try {
-                    factory.open(id, peerDeviceId)
-                } catch (t: Throwable) {
-                    null
-                }
+                val channel = runSuspendCatching { factory.open(id, peerDeviceId) }.getOrNull()
                 if (channel == null) {
                     terminalLock.withLock { deadIds.add(id) }
                     return@map Pair(DeadStreamChannel(id), false)
                 }
-                val startOk = runCatching {
+                val startOk = runSuspendCatching {
                     channel.sendFrame(ChunkFrame.serialize(chunker.fileStart(meta, plan, resolvedDigest)))
                 }.getOrDefault(false)
                 if (!startOk) {
@@ -442,6 +475,13 @@ internal class MultiStreamDispatcher(
     /** Snapshot: channel ids marked dead during the session. */
     fun deadChannelsSnapshot(): List<Int> = terminalLock.withLock { deadIds.toList() }
 
+    /**
+     * True when at least one index in a receiver ACK is a real chunk of this transfer.
+     * Wire input is untrusted: an ACK consisting only of out-of-range indexes must never be used
+     * as proof of acceptance or progress.
+     */
+    fun hasValidAckIndex(indexes: List<Int>): Boolean = indexes.any { it in 0 until plan.totalChunks }
+
     // ---- inbound feedback -------------------------------------------------------------------------
 
     private fun ingestAckBatch(frame: ChunkFrame.AckBatch): Boolean {
@@ -470,6 +510,8 @@ internal class MultiStreamDispatcher(
     private fun markRangeConfirmed(indexes: List<Int>) {
         terminalLock.withLock {
             indexes.forEach { idx ->
+                // ACK indexes are wire input; out-of-range ones must be ignored, not thrown on.
+                if (idx !in 0 until plan.totalChunks) return@forEach
                 if (!confirmedVector.isReceived(idx)) {
                     confirmedVector.markReceived(idx)
                     confirmedBytes.addAndFetch(chunkBytes(idx))
@@ -693,9 +735,18 @@ internal class MultiStreamDispatcher(
                     continue
                 }
 
+                // The receiver may announce durable chunks after this frame was queued (a retry
+                // re-announces its done-set on FILE_START). Never put a chunk the receiver already
+                // holds back on the wire; count it as handled so the endgame settle does not wait
+                // for an acknowledgement that is already known.
+                if (terminalLock.withLock { confirmedVector.isReceived(prepared.index) }) {
+                    sentCount.incrementAndFetch()
+                    continue
+                }
+
                 chunksSentTotal.incrementAndFetch()
                 bytesSentTotal.addAndFetch(chunkBytes(prepared.index))
-                val ok = runCatching { wire.sendFrame(prepared.frameBytes) }.getOrDefault(false)
+                val ok = runSuspendCatching { wire.sendFrame(prepared.frameBytes) }.getOrDefault(false)
                 if (ok) {
                     sentCount.incrementAndFetch()
                     continue

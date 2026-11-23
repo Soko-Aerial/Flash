@@ -3,6 +3,7 @@
 package com.transfer.flash.core.network.tcp
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
@@ -160,7 +161,7 @@ public class LanSession(
 
     override suspend fun send(message: ByteArray): FlashResult<Unit> = withContext(Dispatchers.IO) {
         if (closed.get()) return@withContext FlashResult.Failure(FlashError.PeerUnavailable(peerDeviceId.value, "Session closed"))
-        return@withContext runCatching {
+        return@withContext runSuspendCatching {
             writeLine(String(message, Charsets.UTF_8)) || throw java.io.IOException("Socket write checkError failed")
             _frameAcks.tryEmit(FrameAck(frameId = UUID.randomUUID().toString(), stage = FrameAckStage.SocketWritten, atMs = nowMs()))
             FlashResult.Success(Unit)
@@ -192,7 +193,7 @@ public class LanSession(
             val frameId = UUID.randomUUID().toString()
             val waiter = CompletableDeferred<Unit>()
             pendingAcks[frameId] = waiter
-            val writeOk = runCatching {
+            val writeOk = runSuspendCatching {
                 synchronized(writeLock) {
                     writer.println(LanProbeMessages.data(PROTOCOL_VERSION, localDeviceId, localFriendlyName, frameId))
                     if (!writer.checkError()) {
@@ -230,7 +231,7 @@ public class LanSession(
         if (!closed.compareAndSet(false, true)) return
         failPendingAcks("disconnect: $reason")
         _connectionState.value = FlashConnectionState.Disconnecting
-        runCatching {
+        runSuspendCatching {
             writer.println(LanProbeMessages.disconnect(PROTOCOL_VERSION, localDeviceId, localFriendlyName))
         }
         closeSocket()
@@ -249,7 +250,7 @@ public class LanSession(
     private suspend fun readLoop() = withContext(Dispatchers.IO) {
         // Bump soTimeout to allow heartbeat-driven liveness (10s interval) to work.
         // The probe/handshake path sets 4s which is too aggressive for idle sessions.
-        runCatching { socket.soTimeout = IDLE_READ_TIMEOUT_MS }
+        runSuspendCatching { socket.soTimeout = IDLE_READ_TIMEOUT_MS }
         var pendingDataFrameId: String? = null
         try {
             while (!closed.get() && scope.isActive) {
@@ -362,7 +363,7 @@ public class LanSession(
             }
             when (action) {
                 com.transfer.flash.core.network.resilience.HeartbeatAction.PingNow -> {
-                    val ok = runCatching { writeLine(LanProbeMessages.ping(PROTOCOL_VERSION, localDeviceId, localFriendlyName)) }
+                    val ok = runSuspendCatching { writeLine(LanProbeMessages.ping(PROTOCOL_VERSION, localDeviceId, localFriendlyName)) }
                         .getOrElse { false }
                     if (ok) {
                         synchronized(heartbeatLock) { tracker.onPingSent(nowMs()) }

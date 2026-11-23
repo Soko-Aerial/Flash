@@ -472,4 +472,67 @@ class AnnouncementRoutesTest {
         assertEquals(HubErrorCodes.ERR_RATE_LIMIT, HubRestCodec.decode<ErrorBody>(rPinBlocked.bodyAsText()).code)
         assertNotNull(rPinBlocked.headers[HttpHeaders.RetryAfter])
     }
+
+    @Test
+    fun directoryAwareRoutesValidateDepartmentIdAndResolveMemberAuthorName() = testApplication {
+        val w = World()
+        val dir = com.transfer.flash.server.directory.OrganizationDirectory.open(w.db)
+        dir.createDepartment("dept-eng", "Engineering", emptyList(), isOrgAdmin = true)
+        dir.addDepartmentMember("dept-eng", "admin-01", "Alice Admin", com.transfer.flash.server.directory.MemberRole.ORG_ADMIN)
+        routing {
+            announcementRoutes(
+                store = w.store,
+                principalResolver = BearerPrincipalResolver(w.tokens),
+                limits = HubRateLimits.unlimited(),
+                directory = dir,
+            )
+        }
+        val adminToken = w.token("admin-01", "ORG_ADMIN", null)
+
+        val unknownDept = client.postAs(
+            "/api/v1/announcements",
+            adminToken,
+            PostAnnouncementRequestDto("department", "dept-missing", "Title", "Body"),
+        )
+        assertEquals(HttpStatusCode.BadRequest, unknownDept.status)
+
+        val valid = client.postAs(
+            "/api/v1/announcements",
+            adminToken,
+            PostAnnouncementRequestDto("department", "dept-eng", "Sprint", "Starts today"),
+        )
+        assertEquals(HttpStatusCode.Created, valid.status)
+        val dto = HubRestCodec.decode<AnnouncementItemDto>(valid.bodyAsText())
+        assertEquals("Alice Admin", dto.authorName)
+    }
+
+    @Test
+    fun departmentHeadCanModifyPeerHeadAnnouncementButNotOrgAdminAnnouncement() = testApplication {
+        val w = World()
+        mount(w)
+        val head1 = w.token("head-eng-1", "DEPT_HEAD", "dept-eng")
+        val head2 = w.token("head-eng-2", "DEPT_HEAD", "dept-eng")
+        val orgAdmin = w.token("boss-01", "ORG_ADMIN", null)
+
+        val peerCreated = HubRestCodec.decode<AnnouncementItemDto>(
+            client.postAs("/api/v1/announcements", head1, PostAnnouncementRequestDto("department", "dept-eng", "Peer", "Body")).bodyAsText(),
+        )
+        val peerEdited = client.putAs(
+            "/api/v1/announcements/${peerCreated.id}",
+            head2,
+            UpdateAnnouncementRequestDto(title = "Peer Updated", expectedSeq = peerCreated.seq),
+        )
+        assertEquals(HttpStatusCode.OK, peerEdited.status)
+        assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/announcements/${peerCreated.id}/pin", head2, "").status)
+        assertEquals(HttpStatusCode.OK, client.deleteAs("/api/v1/announcements/${peerCreated.id}", head2).status)
+
+        val adminCreated = HubRestCodec.decode<AnnouncementItemDto>(
+            client.postAs("/api/v1/announcements", orgAdmin, PostAnnouncementRequestDto("department", "dept-eng", "Admin", "Body")).bodyAsText(),
+        )
+        assertEquals(
+            HttpStatusCode.Forbidden,
+            client.putAs("/api/v1/announcements/${adminCreated.id}", head2, UpdateAnnouncementRequestDto(title = "Nope", expectedSeq = adminCreated.seq)).status,
+        )
+        assertEquals(HttpStatusCode.Forbidden, client.deleteAs("/api/v1/announcements/${adminCreated.id}", head2).status)
+    }
 }

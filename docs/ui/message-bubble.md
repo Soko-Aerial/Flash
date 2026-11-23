@@ -14,6 +14,11 @@
 
 `FlashMessageBubble` + `FlashBubbleShape` — the geometry, grouping, sizing, and feedback system for every message in a conversation.
 
+**2026-11-14 timestamp spacing.** A text or voice message ends with a 2 dp inset
+above its timestamp and 4 dp below. The options control uses a 20 dp visual height
+and keeps its 48 dp width. Foundation expands its touch height. The low-power bubble
+uses the same timestamp spacing, and voice-player controls keep their full size.
+
 ## Purpose
 
 Messages are the surface users stare at for hours. The provisional bubble used a zero-radius corner as a fake "tail" — a generic rectangle with one square corner, exactly the "generic `RoundedCornerShape` rectangle" the master plan forbids as a final state. UI-005 replaces it with:

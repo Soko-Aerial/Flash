@@ -180,10 +180,13 @@ class HubSealingHostFlowTest {
 
             // The hold survives a restart: a new pins object over the same store still blocks.
             val restarted = Host(alice, dir, store, readable = true)
+            restarted.relay.usable = false
+            assertTrue("retry budget must survive a restart with the relay down", restarted.bridge.wouldHold("m-2", "bob"))
+            restarted.relay.usable = true
             restarted.pins.load()
             assertFalse(restarted.bridge.canCarry("bob"))
 
-            assertTrue(a.bridge.confirmKeyChange("bob"))
+            assertTrue(a.bridge.confirmKeyChange("bob", requireNotNull(a.pins.blocked.value.getValue("bob").pending)))
             assertTrue(a.bridge.canCarry("bob"))
             assertTrue(a.bridge.sendDirect("bob", "m-2", 2_000L, text("m-2")))
             assertEquals(HubSealing.ENVELOPE_TYPE, a.relay.sent.last().type)
@@ -191,6 +194,22 @@ class HubSealingHostFlowTest {
         } finally {
             // keep the shared people untouched for other tests (they are per test instance anyway)
         }
+    }
+
+    @Test
+    fun `sealing uses the directory key that passed the pin check`() = runBlocking {
+        val oldEntry = bob.entry()
+        bob.rotateKey()
+        val newEntry = bob.entry()
+        var reads = 0
+        val pins = HubSealingPins(MemoryHubSealingPinStore())
+        val sealing = DirectoryHubSealing(alice.crypto, "alice", { alice.sealingKey }, pins) {
+            if (++reads == 1) oldEntry else newEntry
+        }
+        assertTrue(sealing.seal("bob", "m-1", now, HubChatBridge.CHAT_FRAME, "test") != null)
+        assertEquals("sealing must use one directory snapshot", 1, reads)
+        assertNull(sealing.seal("bob", "m-2", now, HubChatBridge.CHAT_FRAME, "test"))
+        assertTrue(pins.isBlocked("bob"))
     }
 
     @Test

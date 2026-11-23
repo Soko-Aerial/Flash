@@ -13,6 +13,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import com.transfer.flash.ui.theme.FlashTheme
 
 /** Top-level destinations of the Flash showcase app (UI-033). */
@@ -496,6 +498,7 @@ fun FlashAnimatedScreen(
     content: @Composable (FlashBackStackState) -> Unit,
 ) {
     val motion = FlashTheme.motion
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val saveableStateHolder = rememberSaveableStateHolder()
     AnimatedContent(
         targetState = targetState,
@@ -503,25 +506,25 @@ fun FlashAnimatedScreen(
         transitionSpec = {
             when (FlashNavigationMath.transitionFor(initialState, targetState, hubEnrolled)) {
                 FlashScreenTransition.Push -> ContentTransform(
-                    targetContentEnter = motion.screenPushEnter(),
-                    initialContentExit = motion.screenPushExit(),
+                    targetContentEnter = motion.screenPushEnter(isRtl = isRtl),
+                    initialContentExit = motion.screenPushExit(isRtl = isRtl),
                     targetContentZIndex = 1f,
                     sizeTransform = null,
                 )
                 FlashScreenTransition.Pop -> ContentTransform(
-                    targetContentEnter = motion.screenPopEnter(),
-                    initialContentExit = motion.screenPopExit(),
+                    targetContentEnter = motion.screenPopEnter(isRtl = isRtl),
+                    initialContentExit = motion.screenPopExit(isRtl = isRtl),
                     targetContentZIndex = 0f,
                     sizeTransform = null,
                 )
                 FlashScreenTransition.TabForward -> ContentTransform(
-                    targetContentEnter = motion.tabEnter(towardEnd = true),
-                    initialContentExit = motion.tabExit(towardEnd = true),
+                    targetContentEnter = motion.tabEnter(towardEnd = true, isRtl = isRtl),
+                    initialContentExit = motion.tabExit(towardEnd = true, isRtl = isRtl),
                     sizeTransform = null,
                 )
                 FlashScreenTransition.TabBackward -> ContentTransform(
-                    targetContentEnter = motion.tabEnter(towardEnd = false),
-                    initialContentExit = motion.tabExit(towardEnd = false),
+                    targetContentEnter = motion.tabEnter(towardEnd = false, isRtl = isRtl),
+                    initialContentExit = motion.tabExit(towardEnd = false, isRtl = isRtl),
                     sizeTransform = null,
                 )
                 FlashScreenTransition.None -> ContentTransform(

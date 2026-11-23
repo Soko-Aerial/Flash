@@ -88,6 +88,7 @@ kotlin {
             // (FlashFilePicker) and `ActivityResultContracts.RequestPermission` (FlashPermissions).
             // This is the dependency `:ui:chat` was carrying for those same three reasons.
             implementation(libs.androidx.activity.compose)
+            implementation(libs.androidx.media3.exoplayer)
             // `androidx.core.content.ContextCompat.checkSelfPermission`, from `androidx.core:core`.
             implementation(libs.androidx.core.ktx)
         }
@@ -110,6 +111,7 @@ kotlin {
         // MediaPlayer and never names this.
         jvmMain.dependencies {
             implementation(libs.jcodec)
+            implementation(libs.jna)
         }
         jvmTest.dependencies {
             implementation(libs.junit)
@@ -130,6 +132,31 @@ kotlin {
             // because a test dependency is not published, `ui-platform-shims`'s POM is unchanged.
             implementation(compose.desktop.currentOs)
         }
+    }
+}
+
+if (System.getProperty("os.name").startsWith("Windows")) {
+    val architecture = if (System.getProperty("os.arch") == "aarch64") "ARM64" else "x64"
+    val nativeSource = layout.projectDirectory.dir("src/jvmMain/cpp")
+    // Keep MSBuild's CMakeScratch/.tlog tree under a short path so worktree builds stay below Windows MAX_PATH (260).
+    val nativeBuild = File(
+        System.getProperty("java.io.tmpdir"),
+        "flash-mf-${layout.projectDirectory.asFile.absolutePath.hashCode().toUInt()}/$architecture",
+    )
+    val nativeLibrary = File(nativeBuild, "Release/flash_media_foundation.dll")
+    val configureMediaFoundation = tasks.register<Exec>("configureWindowsMediaFoundation") {
+        inputs.file(nativeSource.file("CMakeLists.txt"))
+        outputs.file(File(nativeBuild, "CMakeCache.txt"))
+        commandLine("cmake", "-S", nativeSource.asFile, "-B", nativeBuild, "-A", architecture)
+    }
+    val buildMediaFoundation = tasks.register<Exec>("buildWindowsMediaFoundation") {
+        dependsOn(configureMediaFoundation)
+        inputs.dir(nativeSource)
+        outputs.file(nativeLibrary)
+        commandLine("cmake", "--build", nativeBuild, "--config", "Release")
+    }
+    tasks.named<ProcessResources>("jvmProcessResources") {
+        from(buildMediaFoundation) { into("com/transfer/flash/ui/shims/win32") }
     }
 }
 

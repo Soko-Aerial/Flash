@@ -4,6 +4,7 @@ package com.transfer.flash.core.enterprise
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.enterprise.HubSealingFingerprint
@@ -82,7 +83,9 @@ public class HubSealingKeyManager(
      * This device's key for opening sealed messages, loading it from [store] on first use. Null when there is none yet
      * (not enrolled, or no key could be made). A message that arrives before the key exists cannot be opened.
      */
-    public suspend fun key(): HubSealingKeyPair? = lock.withLock { loadLocked() }
+    public suspend fun key(): HubSealingKeyPair? = lock.withLock {
+        runSuspendCatching { loadLocked() }.getOrNull()
+    }
 
     /**
      * Makes sure a key exists and the hub holds it. Safe to call as often as wanted (an unchanged key is an idempotent
@@ -93,7 +96,12 @@ public class HubSealingKeyManager(
             _state.value = HubSealingKeyState.IDLE
             return@withLock HubSealingPublishOutcome(done = true)
         }
-        var key = loadLocked() ?: newKeyLocked() ?: return@withLock HubSealingPublishOutcome(false, backoff(STORAGE_RETRY_MS))
+        val existing = runSuspendCatching { loadLocked() }.getOrElse {
+            _state.value = HubSealingKeyState.STORAGE_FAILED
+            FlashLog.w("HUB", "Stored sealing key unavailable: ${it::class.simpleName}")
+            return@withLock HubSealingPublishOutcome(false, backoff(STORAGE_RETRY_MS))
+        }
+        var key = existing ?: newKeyLocked() ?: return@withLock HubSealingPublishOutcome(false, backoff(STORAGE_RETRY_MS))
         repeat(MAX_ROTATIONS) { round ->
             val signature = withContext(ioDispatcher) { key.bindingSignature(crypto, deviceId) }
             when (api.publish(url, Base64.encode(key.publicKeyEncoded), signature)) {
@@ -139,11 +147,11 @@ public class HubSealingKeyManager(
         val url = hubUrl()
         if (tellHub && url != null) runCatching { api.remove(url) }
         cached = null
-        cacheLoaded = true
         failures = 0
         _publishedFingerprint.value = null
         _state.value = HubSealingKeyState.IDLE
-        runCatching { store.clear() }.isSuccess
+        cacheLoaded = runSuspendCatching { store.clear() }.isSuccess
+        cacheLoaded
     }
 
     /** Asks the hub to forget this device's sealing key (before unenrolling, while the sign-in still works). Best effort. */
@@ -154,7 +162,7 @@ public class HubSealingKeyManager(
 
     private suspend fun loadLocked(): HubSealingKeyPair? {
         if (!cacheLoaded) {
-            cached = runCatching { store.load() }.getOrNull()
+            cached = store.load()
             cacheLoaded = true
         }
         return cached
@@ -163,7 +171,7 @@ public class HubSealingKeyManager(
     /** A new key, stored BEFORE it is used; null (and STORAGE_FAILED) when it could not be stored. */
     private suspend fun newKeyLocked(): HubSealingKeyPair? {
         val fresh = withContext(ioDispatcher) { HubSealingKeyPair.generate() }
-        val saved = runCatching { store.save(fresh) }
+        val saved = runSuspendCatching { store.save(fresh) }
         if (saved.isFailure) {
             FlashLog.w("HUB", "sealing key not stored (${saved.exceptionOrNull()?.let { it::class.simpleName }}), not publishing it")
             _state.value = HubSealingKeyState.STORAGE_FAILED

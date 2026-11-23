@@ -336,4 +336,77 @@ class OrganizationDirectoryTest {
         assertEquals(1, remaining.size)
         assertEquals("dev-hq-1", remaining[0].deviceId)
     }
+
+    @Test
+    fun s1ApplyEnrollmentBumpsGroupVersionInMemoryAndDb() {
+        val db = com.transfer.flash.server.storage.ServerDatabase.inMemory()
+        val dir = OrganizationDirectory.open(db)
+        dir.createDepartment("dept-eng", "Engineering", emptyList(), isOrgAdmin = true)
+        val created = dir.createGroup(
+            "grp-auto", "Auto", "dept-eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY,
+            emptyList(), DirectoryActor.CONSOLE,
+        )
+        val versionBefore = created.version
+        dir.applyEnrollment(
+            DepartmentMember("dev-new", "dept-eng", "New Dev", MemberRole.MEMBER),
+            autoJoinGroups = setOf("grp-auto"),
+            allowedGroups = emptySet(),
+        )
+        val after = dir.getGroup("grp-auto")!!
+        assertTrue(after.memberDeviceIds.contains("dev-new"))
+        assertTrue(after.version > versionBefore, "group version must advance on autoJoin enrollment")
+        val reloaded = OrganizationDirectory.open(db)
+        assertEquals(after.version, reloaded.getGroup("grp-auto")!!.version)
+    }
+
+    @Test
+    fun s2RemoveMemberClearsPreAuthorization() {
+        val db = com.transfer.flash.server.storage.ServerDatabase.inMemory()
+        val dir = OrganizationDirectory.open(db)
+        dir.createDepartment("dept-eng", "Engineering", emptyList(), isOrgAdmin = true)
+        dir.createGroup(
+            "grp-hidden", "Hidden", "dept-eng", GroupVisibility.HIDDEN, JoinMode.ADMIN_ONLY,
+            emptyList(), DirectoryActor.CONSOLE,
+        )
+        dir.applyEnrollment(
+            DepartmentMember("dev-kicked", "dept-eng", "Kicked", MemberRole.MEMBER),
+            autoJoinGroups = emptySet(),
+            allowedGroups = setOf("grp-hidden"),
+        )
+        assertIs<JoinRequestResult.Joined>(dir.requestJoinGroup("grp-hidden", "dev-kicked", "dept-eng"))
+        dir.removeMemberFromGroup("grp-hidden", "dev-kicked", DirectoryActor.CONSOLE)
+        assertIs<JoinRequestResult.Rejected>(
+            dir.requestJoinGroup("grp-hidden", "dev-kicked", "dept-eng"),
+            "removed member must not immediately rejoin via stale dir_preauth",
+        )
+        val reloaded = OrganizationDirectory.open(db)
+        assertIs<JoinRequestResult.Rejected>(reloaded.requestJoinGroup("grp-hidden", "dev-kicked", "dept-eng"))
+    }
+
+    @Test
+    fun s3CreateGroupAndSetGroupAdminsRejectUnknownMembersAndAllowZeroAdminConsole() {
+        val dir = OrganizationDirectory()
+        dir.createDepartment("dept-eng", "Engineering", emptyList(), isOrgAdmin = true)
+        dir.addDepartmentMember("dept-eng", "dev-known", "Known User")
+
+        assertFailsWith<IllegalArgumentException> {
+            dir.createGroup(
+                "grp-bad", "Bad", "dept-eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY,
+                listOf("dev-unknown"), DirectoryActor.CONSOLE,
+            )
+        }
+        val consoleGroup = dir.createGroup(
+            "grp-console", "Console", "dept-eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY,
+            emptyList(), DirectoryActor.CONSOLE,
+        )
+        assertEquals(emptyList(), consoleGroup.adminDeviceIds)
+        assertEquals(emptyList(), consoleGroup.memberDeviceIds)
+
+        assertFailsWith<IllegalArgumentException> {
+            dir.setGroupAdmins("grp-console", listOf("dev-unknown"), DirectoryActor.CONSOLE)
+        }
+        val promoted = dir.setGroupAdmins("grp-console", listOf("dev-known"), DirectoryActor.CONSOLE)
+        assertEquals(listOf("dev-known"), promoted.adminDeviceIds)
+        assertEquals(listOf("dev-known"), promoted.memberDeviceIds)
+    }
 }

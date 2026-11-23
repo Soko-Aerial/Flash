@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,9 +31,11 @@ import com.transfer.flash.core.calling.model.FlashCallHealthWarning
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashPressScale
 
@@ -89,7 +90,7 @@ internal fun FlashCallHealthBanner(
             modifier = modifier.bannerSurface(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
+            FlashText(
                 text = "Showing one video",
                 style = FlashTheme.typography.metadataDefault,
                 color = Color.White,
@@ -103,7 +104,7 @@ internal fun FlashCallHealthBanner(
 
 @Composable
 private fun WarningText(text: String, modifier: Modifier) {
-    Text(
+    FlashText(
         text = text,
         style = FlashTheme.typography.metadataDefault,
         color = Color.White,
@@ -125,6 +126,7 @@ private fun Modifier.bannerSurface(): Modifier = this
 @Composable
 private fun BannerAction(text: String, label: String, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
+    val darkActionColor = remember { FlashColors.dark().textLink }
     Box(
         modifier = Modifier
             .heightIn(min = FlashDimensions.minTouchTarget)
@@ -139,10 +141,10 @@ private fun BannerAction(text: String, label: String, onClick: () -> Unit) {
             .semantics { contentDescription = label },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        FlashText(
             text = text,
             style = FlashTheme.typography.metadataDefault,
-            color = FlashTheme.colors.accentPrimary,
+            color = darkActionColor,
             maxLines = 1,
             modifier = Modifier.padding(horizontal = FlashSpacing.space8),
         )

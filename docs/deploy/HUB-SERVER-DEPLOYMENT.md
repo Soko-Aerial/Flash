@@ -12,7 +12,7 @@ Two companions:
 - `docs/security.md` — the threat model this guide refers to (SEC-04, SEC-06, SEC-16,
   REV-10, REV-12, REV-16).
 
-The `2.2.0-beta.1` Hub has a separate release tag, `server-v2.2.0-beta.1`. Use disposable
+The `2.3.0-beta.1` Hub has a separate release tag, `server-v2.3.0-beta.1`. Use disposable
 data for the operator beta. The production profile describes the hardening required for
 a future rollout. See the [readiness plan](../plans/HUB-READINESS-REMEDIATION.md) for open gates.
 
@@ -34,7 +34,8 @@ and, on a **second** listener (loopback by default), the **admin console** at `/
 with its session-authenticated API at `/admin/api/v1/...`.
 
 State lives in one data directory: a SQLite database, the hub's delegate key, a
-sealing/key-encryption key (`data.key`), the delegation certificate, and the one-time
+sealing/key-encryption key (`data.key`), the group join-link key (`join-links.key` and
+optional `join-links.prev.key`), the delegation certificate, and the one-time
 setup token.
 
 There is no external database, no message queue and no other service to run. A single
@@ -204,6 +205,7 @@ tried to set. Every setting can be given as `--kebab-case` on the command line o
 | `FLASH_DATA_DIR` | `--data-dir` | `./data` | State directory (database, keys, delegation, setup token) |
 | `FLASH_TLS_MODE` | `--tls-mode` | `proxy` | `proxy` (TLS ends in front of the hub), `self` (the hub terminates TLS), `none` (plain HTTP, development only, needs `FLASH_ALLOW_INSECURE`) |
 | `FLASH_TRUSTED_PROXIES` | `--trusted-proxies` | empty | Comma-separated addresses/CIDRs of the proxies whose `X-Forwarded-Proto`/`For` headers are believed. **Required in practice for `tlsMode=proxy`** (see REV-10 below) |
+| `FLASH_INVITE_ANDROID_FINGERPRINTS` | `--invite-android-fingerprints` | unset | Comma-separated public APK signing certificate fingerprints for verified App Links on this Hub's hostname. See [Invite links](INVITE-LINKS.md) |
 | `FLASH_EXTERNAL_URL` | `--external-url` | guessed from host/port, else the detected LAN IPv4 | The public `https://` address devices enrol against. It is baked into invite links and QR codes |
 | `FLASH_ALLOW_INSECURE` | `--allow-insecure` | `false` | Permits `tlsMode=none`, an `http://` external URL and `--dev-embedded-root`. Development only |
 | `FLASH_DEV_EMBEDDED_ROOT` | `--dev-embedded-root` | `false` | **Development only**: the hub mints its own root key and delegation. Needs `FLASH_ALLOW_INSECURE` |
@@ -220,6 +222,13 @@ tried to set. Every setting can be given as `--kebab-case` on the command line o
 | `FLASH_RENEW_EARLY_DAYS`, `FLASH_RENEW_GRACE_DAYS` | `--renew-early-days`, `--renew-grace-days` | derived | Optional fixed renewal window before and after expiry (1..365 days) |
 | `FLASH_MAILBOX_TTL_DAYS` | `--mailbox-ttl-days` | `7` | How long the hub holds mail for an absent device |
 | `FLASH_CHALLENGE_TIMEOUT_MS` | `--challenge-timeout-ms` | `60000` | Auth challenge validity |
+| `FLASH_STUN_URLS` | `--stun-urls` | empty | Comma-separated `stun:`/`stuns:` URLs served by `/api/v1/calls/ice-config` for off-LAN WebRTC calls (HR9) |
+| `FLASH_TURN_URLS` | `--turn-urls` | empty | Comma-separated `turn:`/`turns:` relay URLs for symmetric-NAT fallback (`RELAY_ONLY` or fallback policy) |
+| `FLASH_TURN_SECRET` | `--turn-secret` | empty | Shared HMAC-SHA1 secret matching coturn `use-auth-secret` / `static-auth-secret` to mint short-lived credentials (≥16 chars in production; keep in environment secret, never CLI) |
+| `FLASH_CALL_ICE_TTL_SECONDS` | `--call-ice-ttl-seconds` | `3600` | Lifetime of minted ICE credentials (`60..86400` seconds) |
+| `FLASH_CALL_MEDIA_POLICY` | `--call-media-policy` | `DIRECT_PREFERRED_RELAY_FALLBACK` | One of `DIRECT_ONLY`, `DIRECT_PREFERRED_RELAY_FALLBACK`, or `RELAY_ONLY` |
+| `FLASH_ALLOW_PERSONAL_HUB_LINK` | `--allow-personal-hub-link` | `true` | Permits clients to link personal/local groups to this Hub (`false` blocks personal group linking) |
+| `FLASH_GROUP_E2EE_MODE` | `--group-e2ee-mode` | `E2EE_REQUIRED` | Organisation group encryption mode: `E2EE_REQUIRED` or `HUB_INSPECTABLE` |
 
 > **Do not pass the two tokens as command-line flags on a shared machine** (SEC-D18-01, audit 2026-10-22): arguments are visible to every local user in the process list. Use the environment variables (a systemd `EnvironmentFile`, a Docker secret or `env_file`) or let the hub create `setup-token.txt`. The `--setup-token` / `--management-token` flags exist for quick local tests only.
 
@@ -228,7 +237,7 @@ Subcommands (run with no `serve` argument):
 ```text
 server serve                       run the hub (default)
 server healthcheck                 probe /health on loopback; exit 0 = healthy (the Docker HEALTHCHECK)
-server keytool init-root|issue-delegation|rotate
+server keytool init-root|issue-delegation|revoke|rotate
 server admin-recovery --username NAME   break-glass: new password + authenticator secret, shown once
 server help
 ```
@@ -387,6 +396,7 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
 |---|---|---|
 | `flash-hub.db` | devices, directory, groups, announcements, audit, mailbox, sealed-file index | organisation must be re-enrolled |
 | `data.key` | seals authenticator seeds and queued mailbox payloads | Startup refuses a missing or mismatched key for a bound database. Restore the matching key. If every copy is lost, the sealed data is unrecoverable and the Hub must be provisioned with a fresh database. |
+| `join-links.key` / `join-links.prev.key` | dedicated key (and optional previous-rotation fallback key) sealing v3 Hub group join-link tokens | Active unrevoked v3 join links stop resolving and must be re-issued (`data.key` rotation no longer breaks them when `join-links.key` is kept) |
 | `files/` | the sealed file payloads, one directory per `fileId` (ADR-215) | the index survives and every download answers `503` until the sweeper removes those rows after retention |
 | `server-identity.pk8` / `server-identity.pub` | the hub's own delegate key pair (owner-only) | issue a new delegation; devices re-enrol |
 | `delegation.cert` | the root-signed delegation | re-issue from the root |
@@ -415,6 +425,20 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
 - **Detail and metrics.** `GET /health/detail` and `GET /metrics` require a direct loopback
   caller or `FLASH_MANAGEMENT_TOKEN`. Check `serverVersion` in `/health/detail`, the active
   Hub's `/api/v1/hub` response, or Console → **Settings → About** after deployment.
+
+### Actionable Monitoring Thresholds & Operator Alerts (HR11)
+
+Both `GET /health/detail` (fields `alerts[]`, `mailbox.quarantinedTotal`, `mailbox.oldestAgeSeconds`, `disk`, `delegationDaysRemaining`, `tlsDaysRemaining`) and Prometheus `GET /metrics` evaluate the following alert conditions (`0 = ok`, `1 = warn`, `2 = critical`):
+
+| Alert ID | Prometheus Gauges | Warn Threshold | Critical Threshold | Meaning & Operator Response |
+|---|---|---|---|---|
+| `unreadable_queue` | `flash_mailbox_quarantined_total`, `flash_alert_unreadable_queue` | `>= 1` row | `>= 10` rows | Stored mailbox payloads failed `HubDataKey` AEAD decryption and were quarantined (`RLY-01`). **Action:** Inspect logs for quarantine entries. If rows multiplied after a restore, stop the Hub, verify `data.key` matches the database snapshot (`server` startup preflight prevents mismatched DB boot), or restore DB + matching `data.key` together. If isolated single-row disk corruption is confirmed, export diagnostic counts and purge stale expired rows once TTL elapses. |
+| `oldest_queued_mail` | `flash_mailbox_oldest_age_seconds`, `flash_alert_oldest_mail` | `>= 259200` s (72 h) | `>= 518400` s (144 h) | Undelivered messages are sitting near the default 7-day mailbox TTL without recipient `FLASH_RECV_ACK`. **Action:** Check Console → **Devices** for offline/stalled clients, inspect WebSocket connectivity and `flash_mailbox_sweep_failures_total`, and verify device notifications/sync health before TTL eviction occurs. |
+| `disk_pressure` | `flash_disk_usable_bytes`, `flash_disk_used_ratio`, `flash_alert_disk_pressure` | `(>= 80% used AND <= 4 GiB free) OR <= 512 MiB` free | `(>= 92% used AND <= 1 GiB free) OR <= 128 MiB` free | Hub data volume is filling with encrypted files, WAL pages, or audit history. **Action:** Inspect `/admin/api/v1/files/stats`, reduce `fileRetentionDays` / `globalStoredBytes` in Console → **Settings** if appropriate, check WAL checkpoint (`flash_db_wal_pages`), and expand disk storage before SQLite writes fail. |
+| `delegation_expiring` | `flash_delegation_days_remaining`, `flash_alert_delegation_expiry` | `<= 14` days remaining | `<= 3` days remaining | The Hub's root-signed delegation certificate (`delegation.cert.json`) is approaching expiration; an expired delegation halts enrollment, renewal, and relay handshakes. **Action:** Run offline `keytool issue-delegation` with the organisation root key (a higher serial), deploy the replacement certificate to the Hub data directory, and confirm reload / revocation of superseded signer serials if rotating early. |
+| `tls_cert_expiring` | `flash_tls_cert_days_remaining`, `flash_alert_tls_expiry` | `<= 14` days remaining | `<= 3` days remaining | Direct TLS leaf certificate (`tlsMode=self`) is approaching expiration. **Action:** Renew/rotate the certificate or check reverse-proxy ACME renewal immediately so clients do not encounter TLS failures. |
+
+When any `critical` alert is active while the SQLite database still responds, `/health` and `/health/detail` report `"status": "degraded"` (`HTTP 200`, keeping admin recovery reachable) whereas database probe failure reports `"status": "down"` (`HTTP 503` on `/health`).
 - **Audit**: Console → **Audit**. Entries are chained and signed with the delegate key.
 - **Rate limits** (per device or per address, whichever the route uses): sign-in/verify,
   enrolment, admin login, directory sync, people listing, announcements, and sealed-file

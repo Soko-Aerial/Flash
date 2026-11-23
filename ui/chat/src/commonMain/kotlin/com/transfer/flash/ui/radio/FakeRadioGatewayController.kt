@@ -8,7 +8,10 @@ import kotlinx.coroutines.flow.update
 
 /**
  * Deterministic in-memory fake implementing [RadioGatewayController] (Task 3b).
- * Supports tests, Compose previews, and standalone demo paths on Android and Desktop.
+ *
+ * Prototype/demo-only: supports unit tests, Compose previews, and explicit `--radio-demo` / debug
+ * showcase launchers. Must never be wired into shipped production flows (enforced by
+ * `FlashRadioSettingsEntryTest` and `FlashPrototypeIsolationTest`).
  */
 public class FakeRadioGatewayController(
     initialState: RadioGatewayUiState = RadioGatewayUiState(),

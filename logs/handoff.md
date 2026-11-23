@@ -1,35 +1,201 @@
 # Current Handoff
 
-> **2026-11-05 (latest) — LINUX BLUETOOTH: LIVE SCANNING, AUTOMATED AGENT PAIRING & USER-SPACE RFCOMM IMPLEMENTED.**
-> Following user feedback regarding static scan results and pairing takeover:
-> 1. **Live Discovery:** Replaced static BlueZ cache checks in `LinuxRadioDiscovery.scan` with active real-time discovery (`stdbuf -oL bluetoothctl scan on`), streaming nearby devices immediately as they broadcast (`[NEW]` and `[CHG]`).
-> 2. **Automated Agent Pairing:** Script runner registers default agent with capability `NoInputNoOutput`, pairs, and executes `trust <mac>` so BlueZ does not reject future RFCOMM connections or block on unhandled stdin prompts.
-> 3. **User-Space RFCOMM Sockets:** Created [`LinuxRfcommSocket`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRfcommSocket.kt) using POSIX `AF_BLUETOOTH` (31) / `BTPROTO_RFCOMM` (3) sockets via standard `libc`. Bypasses the root-only `rfcomm bind` restriction and connects directly to Bluetooth SPP devices without `sudo` or `/dev/rfcomm0`.
-> Verification: `:core:radio:jvmTest` (7 suites green, including `LinuxRadioDiscoveryTest`), `:desktop:jvmTest` (all radio tests green).
+> **2026-11-23 — LINUX: Synced with upstream dev (v2.3.2 release candidate) & verified Linux packaging runtime.**
+> Merged latest upstream `dev` changes (`f1336089`), bringing in Flash 2.3.2 release candidate, Hub readiness HR6-HR11, group voice note audio route isolation (`54a69dcb`), Windows reinstall fixes (`2457c0fa`), Android startup & foreground-service lifetime fixes (`fa1a4118`, `3289874a`), and multi-address Nearby discovery into the `linux` branch.
+> Preserved all Linux-native subsystems and enhancements:
+> 1. **Bluetooth/Radio:** Linux BlueZ live scanning (`LinuxRadioDiscovery.kt`), automated pairing agent, user-space RFCOMM sockets (`LinuxRfcommSocket.kt`), and OS settings navigation.
+> 2. **Desktop Integration:** XDG autostart (`DesktopAutoStartManager.kt`), Linux Wi-Fi frequency band parsing (`iw dev`), and FreeDesktop D-Bus file manager reveal (`org.freedesktop.FileManager1.ShowItems`).
+> 3. **Desktop Packaging Runtime:** Maintained `"jdk.security.auth"` module inclusion in `desktop/build.gradle.kts` (ERROR-1054) so packaged `.deb` and portable tarballs provide `UnixSystem` for D-Bus Secret Service SASL authentication, avoiding identity degradation and empty chat lists.
+> 4. **Packaging Tool:** Executable `tools/build-release.sh` builds `.deb`, portable `.tar.gz`, and SHA256 checksums in `dist/<version>/`.
 
-> **2026-11-05 — LINUX DESKTOP PARITY: BLUETOOTH/RADIO, XDG AUTOSTART, BAND DETECTION & FILE REVEAL IMPLEMENTED.**
-> Complete Linux parity audit and implementation across recent features:
-> 1. **Bluetooth & Radio Link Layer:** Implemented [`LinuxRadioDiscovery`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/linux/LinuxRadioDiscovery.kt)
->    and [`DesktopRadioDiscovery`](file:///home/signal/flash/core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/DesktopRadioDiscovery.kt) factory.
->    Enumerates serial and USB radios via `SerialPortCatalog` (jSerialComm), parses paired devices from BlueZ (`bluetoothctl devices`),
->    pairs via `bluetoothctl pair`, opens links on `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/rfcomm*`. Replaces Windows-only Win32 COM / registry / `bthprops.cpl` calls.
-> 2. **Desktop Radio Gateway:** Updated [`DesktopRadioGatewayController`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/radio/DesktopRadioGatewayController.kt)
->    to use `DesktopRadioDiscovery.forCurrentOs()`, `DesktopPaths.stateDir()` (XDG compliance), and open native Linux Bluetooth settings
->    (`bluedevil-wizard`, `kcmshell5`, `gnome-control-center`, `blueman-manager`, `lxqt-config`) instead of failing on `ms-settings:bluetooth`.
-> 3. **XDG Autostart:** Updated [`DesktopAutoStartManager`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopAutoStartManager.kt)
->    to support Linux (`~/.config/autostart/flash.desktop`).
-> 4. **Network Band Probing:** Updated [`DesktopNetworkBand`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNetworkBand.kt)
->    with Linux frequency parsing via `iw dev` (2.4 GHz, 5 GHz, 6 GHz) and wired Ethernet interfaces (`enp*`, `eno*`, `ens*`, `eth*`).
-> 5. **File Manager Reveal:** Updated [`DesktopHelpers`](file:///home/signal/flash/desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopHelpers.kt)
->    to invoke `org.freedesktop.FileManager1.ShowItems` via D-Bus with fallback to folder open.
-> 6. **Dependency Verification:** Resolved `ERROR-1018` in `gradle/verification-metadata.xml` for `desktop-jvm-linux-x64-1.9.3.pom`.
-> Verification: `:core:radio:jvmTest` (green, 6 suites), `:desktop:compileKotlinJvm` (green), `:desktop:jvmTest` (`*Radio*`, `DesktopNetworkBandTest`, `DesktopDiscoveryDownscaleTest`, `FlashDesktopEngineTest` all green), `:desktop:run -m` (green).
+> **2026-11-23 — Group voice 2.3.2 APK installed on the V760.** The V760 on Android 13 now runs the current signed arm64 build from `dist/2.3.2`, including `54a69dcb`. The install was in place, the installed APK hash matched, and the cold launch and foreground service passed over 2 minutes and 45 seconds of observation with no new crashes. GROUP-VOICE-01 still needs playback on both recipients. Evidence is in `build/reports/release-2.3.2-group-voice`.
 
-> **2026-11-05 — ERROR-1018: DESKTOP LINUX DEPENDENCY VERIFICATION RESOLVED.** Added SHA-256 for
-> `desktop-jvm-linux-x64-1.9.3.pom` (`8eb6b42e9af6acb401948e41e6fdd372377d23c4aebbbb1c768f777aaf2c63e8`) in
-> `gradle/verification-metadata.xml`. Resolves build failure when running `:desktop:run` on Linux where aboutLibraries
-> POM batch and configuration cache failed on unverified Linux Compose desktop POM metadata. Verified: `:desktop:compileKotlinJvm`
-> (1m 45s), `:desktop:exportLibraryDefinitionsJvm` (2s), `:desktop:jvmTest` (2m 48s, green), `:desktop:run -m` (3s).
+> **2026-11-23 — Flash 2.3.2 rebuilt with group audio and Windows reinstall fixes (ERROR-1050/1051).** The current `dist/2.3.2` contains four signed APKs and the EXE and MSI with group sender fix `54a69dcb`. Installer fix `2457c0fa` gives the Windows refresh a new product code in the existing upgrade family. Both MSI payloads detected the earlier Windows 2.3.2 on this PC as an in-place upgrade in the matching per-user context. Checksums and package contents verified. The previous build is in `build/release-staging/8cc87740-ad4a-4527-8046-abff9840043b/previous`. The owner will run WIN-UPGRADE-02 and GROUP-VOICE-01. Evidence is in `build/reports/release-2.3.2-group-voice` and `build/reports/group-voice-v760`.
+
+> **2026-11-23 — Signed Flash 2.3.2 installed and verified on V760 (ERROR-1048/1049).** The current Android APKs in `dist/2.3.2` contain service fix `fa1a4118`, R8 fix `3289874a` and serializer fix `692ebe5f`. The V760 (Android 13) upgraded from signed 2.2.0 and cold-launched the final arm64 build with its original install date. Its installed APK hash matched. The app and foreground service were active for 2 minutes and 55 seconds with no new crashes. All 12 focused unit tests passed and all six checksums matched, including the existing Windows packages. See `build/reports/release-2.3.2-v760-service` and IFREV-02 for the remaining installed release checks.
+
+> **2026-11-23 — Flash 2.3.2 release artifacts refreshed (ERROR-1047).** The first Hub policy refresh candidate contained four signed APKs and the Windows EXE and MSI rebuilt from `4299921c`, including serializer fix `692ebe5f`. All six checksums matched. Both Windows installers contain the rebuilt enterprise JAR. The older set is preserved at `build/release-staging/bc4b2ac1-5b13-4b19-bd61-83fcf6e1c6c6/previous`. This PC already registers the same Windows 2.3.2 product code. Run WIN-UPGRADE-01 from an older install. Evidence is in `build/reports/release-2.3.2-hub-policy`.
+
+> **2026-11-23 — Android Hub policy startup crash fixed and verified on the phone (ERROR-1047).** Product commit `692ebe5f` generates the `HubGroupPolicy` serializer and tests the actual decoder through the directory client. Debug assembly and 464 enterprise tests passed. The in-place arm64 update on the enrolled Infinix X6882B (Android 14) cold-launched, synced its Hub directory and stayed in the same foreground process for over 90 seconds with no new crashes. Evidence is in `build/reports/android-hub-policy-crash`.
+
+> **2026-11-23 — Android and Windows 2.3.2 release candidate built (ERROR-1046).** Product commit `4240e388` fixes exact-key approval and sealing, persisted relay holds, scoped immediate retry, multi-address Nearby, and clean release staging. The six verified assets are in `dist/2.3.2` with `SHA256SUMS.txt`. Android version code is 7 with the existing release certificate. Both Windows installer payloads use the existing upgrade family with the new product code and transactional removal. Targeted tests recorded 108 passed, one skip and zero failures. Android release lint reported zero errors. The next checks are WIN-UPGRADE-01, HUB-02, HUBH-08/09 and NEARBY-NET-05 on installed devices. Build evidence is in `build/reports/release-2.3.2`.
+
+> **2026-11-22 — Hub key verification banner ready for the next release (ERROR-1045).** Product commit `91649015` adds the shared banner beside the composer, pending-message copy, a key comparison dialog with explicit trust, and the device's own published code in Hub connection details. All 44 targeted checks passed. The native interaction test exercised Verify, Cancel and Trust with a synthetic conversation. Reviewed phone, 320 dp at 200% text and dark desktop renders. Android debug lint reported zero errors, the APKs assembled, and the universal APK signature verified. Verify the next installed builds and live relay delivery using HUB-02 and HUBH-02/08/09.
+
+> **2026-11-22 — Desktop relay send diagnosed (ERROR-1045).** Both reported message IDs returned `path=none` before LAN carried them. The desktop retained a pending sealing-key change matching the peer's current Hub key. The verified paired identity matched the directory. The installed chat shows the confirmation above its oldest loaded messages. 18 targeted host and Hub lifecycle tests passed. Wait for the owner's key confirmation, then verify a relay-only send and receipt under HUB-02 and HUBH-02.
+
+> **2026-11-22 — Test Hub updated to `2.3.0-beta.1` on `myserver` (ERROR-1045).** Deployed source `6def5ba1d3f9`; `7a8cc78b` is its latest server-affecting commit. Public HTTPS health, Hub identity, relay challenge, JAR digest and two enrolled relay registrations verified. The existing tunnel and configuration were preserved. Matching pre-upgrade app, state and configuration are under `~/flash-hub/deployments/dev-6def5ba1d3f9-UzCRAk`. The 83 targeted relay tests passed on rerun. The next task is to retry the reported relay chat on the installed clients under HUB-02.
+
+> **2026-11-22 — Windows installer recovery (ERROR-1044).** Product commit `c3da683b`. Reproduced the same-version `2.3.0` repair failure on the installed PC. Windows desktop `2.3.1` MSI and EXE are in `dist/desktop-2.3.1`. The MSI upgraded the owner's earlier install in place with exit code 0. Verified one installed product, fresh desktop and Nearby JARs, and the metadata of all 43 state files. Three desktop version tests passed. The next installed-app test is NEARBY-NET-01 on `2.3.1`. WIN-UPGRADE-01 tracks the EXE wrapper end-to-end check.
+
+> **2026-11-22 — Nearby LAN recovery and manual IP entry.** Product commit `d7efc7a7` on local `dev`. Windows and Android consume live LAN addresses without reopening Nearby. Connected hosts display their address and port before discovery finds peers. **Connect by IP** is available from the offline panel. The Linux packaging backport is `c2fb1719` on local `codex/nearby-linux`.
+> - The current desktop and shared Nearby suites passed 44 checks, including 29 native renders. The Linux backport passed 25 targeted JVM tests on the Windows build host. The Windows subnet read and the native Linux WSL address-transition probe passed.
+> - Android passed all 122 unit tests and assembled the debug APKs. The universal debug APK signature verified. Debug lint reported 0 errors, 171 warnings and 1 hint.
+> - Rebuilt `dist/2.3.0` from `d7efc7a7` with `tools\build-release.ps1 -NoDaemon`. All 10 binaries have fresh SHA-256 hashes, the four signed APKs match the existing release certificate, and both Windows installer payloads contain the verified desktop and shared UI JARs. Windows package version was `2.3.0`, with the same product ID and new package IDs. The same-version `msiexec.exe /fvamus` approach is superseded by `2.3.1` after the installed-device failure in ERROR-1044.
+> - The remaining live checks are NEARBY-NET-01–04. See ERROR-1043 for the owner report and the refresh mechanism.
+
+> **2026-11-21 — Flash `2.3.0` / `2.3.0-beta.1` verification, release builds, library dry-run, and `ERROR-1039..1041` fixes on `dev`.**
+> - **Automated tests & lint:** **9,506 automated tests (9,501 passed, 0 failed, 5 skips)** across latest module runs (**9,417 Gradle tests across 1,063 suites**: 9,412 passed, 0 failed, 5 skips in `core\security` 2, `desktop` 2, `ui\platform-shims` 1, after `--max-workers=1` reruns of two coroutine timeout flakes in `ERROR-1042` + updated `:server:test` 727/727; plus **89 Admin UI Node tests** 89/89, `:app:assembleDebug`). `:app:lintRelease` passed sequentially (`0 errors, 169 warnings, 2 hints`).
+> - **Hub distribution (`:server:installDist`):** `BUILD SUCCESSFUL`; `flash-server-version.txt` = `2.3.0-beta.1`; `Main.kt` `--help` fallthrough fixed (`ERROR-1039` `RESOLVED`), `MainCommandsTest` 3/3 passed, and `server.bat --help` exits `0` showing `keytool revoke`.
+> - **Android & Desktop `2.3.0` releases (`dist\2.3.0\`):** Fixed `PackageFlashInviteInstaller` WiX PATH (`ERROR-1041` `RESOLVED`) and re-ran `tools\build-release.ps1 -NoDaemon` in a clean-`PATH` shell (`BUILD SUCCESSFUL in 3m 19s`). Built 10 artifacts + `SHA256SUMS.txt` (`Flash-2.3.0.apk`, `-arm64-v8a.apk`, `-x86_64.apk`, `-armeabi-v7a.apk`, unsigned counterparts, `Flash-2.3.0.msi`, `Flash-2.3.0.exe`; `versionCode: 6`; `apksigner verify --print-certs` verified cert SHA-256 `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`).
+> - **KMP `2.3.0-beta.1` dry-run:** All 19 `publishToMavenLocal` tasks (`jitpack.yml`) published 57 Maven modules to `build\scratch-m2`. Updated `gradle/verification-metadata.xml` (`ERROR-1040` `RESOLVED`, zero deletions); `:sample:consumer-desktop:compileKotlin :sample:consumer-desktop:test` passed under strict verification (`BUILD SUCCESSFUL in 1m 10s`). `build\scratch-m2` deleted; `~/.m2` untouched.
+> - **Remaining open item & owed checks:** `ERROR-1042` (coroutine test timing waits under `--max-workers=2`) and physical/live/remote checks in `docs/testing/TEST-BACKLOG.md` (`MODREV-01..07`, `IFREV-01..06`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `INVITE-LINK-01..02`, `HUBWORK-06..07`, `REL22-04`). No device install, Hub deployment, or remote push was performed.
+
+> **2026-11-19 — Feature and module review remediation (Batches 1–4) verified on local `dev`.** Landed sequential verified commits `11e33e40` (Batch 1 transfer/continuity/DB recovery), `266a79c2` (Batch 2 Hub policy/join-links/announcements/messaging), `84d1c6a1` (Batch 3 calling per-leg ICE & renewal/PTT/radio), `7f08bb1c` (Batch 4 media/UI/a11y/Android/Desktop/benchmarks), and `9e2123ba` (Batch 1 `:core:security` Android-host keystore test alignment with `aa146718`), plus this docs commit. See [the remediation record](../docs/audit/2026-11-19-feature-module-remediation.md), `ADR-367`, and `ERROR-1038`. Full verification gate passed **9,409 automated tests (9,404 passed, 0 failed, 5 skips)**: **9,320 Gradle tests across 1,056 suites** (9,315 passed, 5 pre-existing/opt-in skips) + **89 Admin UI Node tests** (89 passed), plus `:app:assembleDebug` (4 debug APKs), `:app:lintDebug` (0 errors, 171 warnings, 2 hints), `:ui:hub-competition-claude:compileKotlinJvm`, `:benchmark:compileDebugKotlin`, `:sample:consumer:testDebugUnitTest` (10/10), and `:sample:consumer-granular:compileDebugKotlin`. Physical device, installed Windows, and live Hub checks remain in `MODREV-01..07`. No deployment or device install was performed in this session.
+
+> **2026-11-19 — Feature and module review fixes on local dev.** The [remediation record](../docs/audit/2026-11-19-feature-module-remediation.md) covers voice pause, bounded cross-route transfer adoption, desktop database trim, Android service lifecycle, Hub authorization and retry behavior, and group creation. ADR-366 defines revised join links and announcement idempotency. The final verified product commit is `aced6579`. The [host gate](progress.md) passed 3,644 Gradle tests and 87 Admin UI tests, with Android debug assembly, lint and Windows native playback verified. Device, installed desktop and live Hub acceptance remain MODREV-01..05. No deployment or device install was performed in this session.
+
+
+> **2026-11-18 — Test build installed and test Hub updated.** Product commit `d3c50b78` on `dev` passed the 2,778-pass Gradle gate, Android debug lint and APK assembly, and 87 Admin UI tests. Its test-host APK is installed in place on the Infinix X6882B (Android 14). The APK digest and Android URL associations verified. The test Hub on `myserver` runs the matching distribution with the same public server ID and tunnel. Rollback artifacts are in `~/flash-hub/deployments/dev-d3c50b783149-cih1jLBC`. The next step is enrolled device acceptance for the checks in the test backlog. Signed public release artifacts still need their own upgrade and install pass.
+
+> **2026-11-18 — Hub refresh and Windows split tested.** Hub loads its sections concurrently, uses a single first-load row and shows warm activity in the header. Windows keeps the active conversation beside Hub and routes Hub-opened chats within that tab. Focused JVM/desktop gate, Android debug APK, and native previews passed. See the Hub workspace refinement and HUBWORK-06/07 for live checks.
+
+> **2026-11-18 — Hub group fixes verified on the local dev worktree at 364109bd.** ADR-365 covers relay enforcement, per-enrollment policy refresh, atomic and replay-safe group creation, and Hub directory group links. Host verification passed 2,218 Gradle tests and 87 Admin UI tests, plus Android debug APK assembly, desktop compilation and the browser fallback script check. The prior IF matrix remains the audit baseline. Live Hub rollout and Android/Windows acceptance remain IFREV-01..06.
+
+> **2026-11-18 — 27-module IF matrix reviewed on local dev at 364109bd.** The [audit](../docs/audit/2026-11-17-module-if-review.md) links source and existing tests and records 308 PASS, 22 FAIL, 191 PARTIAL, 1,208 N/A, and 971 UNVERIFIED rows. ERROR-1031..1034 cover required-encryption enforcement, stale Hub policy, partial group creation and duplicate group creation. The user requested no builds while the external drive is disconnected. Historical reports were read and no new build, test run or deployment was performed. Continue with IFREV-01..04 in the test backlog and live C1–C4/S1–S3 acceptance.
+
+> **2026-11-16 — Test Hub updated.** `myserver` runs server source `4c17a0a02821`; the distribution reports `2.2.0-beta.1`. Public HTTPS health, invite pages and Android association verified. Previous state and app are backed up in `~/flash-hub/deployments/dev-4c17a0a02821-l43itK`. The isolated live-binary smoke passed console setup, enrollment, announcements, replacement, and old/new device authentication after restart. An updated APK was installed in place on Android 14 and the OS verified the public Hub hostname. Windows invite argument and single-instance tests passed. See INVITE-LINK-01/02 for the remaining camera and installed browser handoff checks and HR6–HR11 for device and production-profile acceptance.
+
+> **2026-11-15 — Radio modes research and implementation proposal.** See [Radio modes](../docs/plans/RADIO-MODES-IMPLEMENTATION.md) for the next sequence and verification gates. Start with Tactical Radar's encrypted `BEACON` wire/compatibility decision. Base Station Relay needs a decision on whether the base may read message contents and a durable application receipt. The proposed Walkie-Talkie Bridge starts with a receive-only prototype if FO-28 is reopened. All-in-One follows the combined RF arbitration run. The research changed documentation only. Last verified product build is still the media commit `4a974fc9`.
+
+> **2026-11-15 — Windows inline playback and refreshed video controls.** Last verified product commit `4a974fc9` on local `dev`. The Windows Media Foundation bridge adds 61,010 compressed bytes to the desktop JAR. The shared viewer has a new timeline and keeps the play control clear of the dock. Android double-taps advance up to ten seconds. The native decode, pause, seek and replay test, 1,579 chat tests, debug APK, lint and seven Windows media captures passed. The final desktop captures are under `build/reports/media-review/windows`. See ADR-364 and ERROR-1030 for the renderer and MEDIA-PLAY-03/04 for the installed Windows and physical Android checks still owed.
+
+> **2026-11-15 — Desktop direct-transfer recovery and unified Android media viewer.** Product commits `ac572f1f` and `82f7906b` are on local `dev`. The encrypted-store restart regression passed over loopback, and 145 transfer tests, 1,577 chat tests and the final debug APK build passed. The shared viewer retains the poster and controls while Android Media3 starts playback. UI-018 records the desktop Media Foundation recommendation and package comparison. See ADR-362/363 for the implementation and DESK-RESUME-01 and MEDIA-PLAY-01/02 for physical acceptance.
+
+> **2026-11-15 — Feature inventory reviewed against `dev` at `0a1be983`.** See the [inventory](../docs/audit/2026-11-15-feature-implementation-inventory.md) for production evidence, the separate `origin/linux` work, and deferred items. Native Wi-Fi Direct, desktop direct-transfer recovery after restart and managed folder/file batches remain open. The review was documentation-only. Use the device backlog for live acceptance and the feature plans for scope decisions.
+
+> **2026-11-14 — Desktop tray icon, voice button and Passes 1–4 UI polish committed on `dev` as `a21bf8f9`.**
+> - **Last verified product commit:** `a21bf8f9`. Debug APK assembly and lint passed in separate locked runs. Lint reported zero errors.
+> - `DesktopMain.kt`: `Tray(...)` now uses the redesigned Flash logo via `DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0)` (`appIconPainter`) instead of `FlashIcons.Tray`.
+> - `FlashVoiceRecording.kt` & `FlashComposer.kt`: `FlashSendButton` is only mounted when `sendProgress > 0.01f` so it does not sit over `FlashMicButton`; `FlashMicButton` emits `PressInteraction` events and animates an `Animatable` `pressScale` spring inside `graphicsLayer` on press/click/release for both Android and Desktop (`motion.reduceMotion` respected).
+> - `FlashConversationScreen.kt` & `FlashComposer.kt`: removed the redundant `showMessage(...)` snackbar from `onVoiceTapTooShort` / `onVoiceRecordingTooShort` so it no longer covers the text box while `FlashVoiceHintPill` is already shown above the composer (`1_400L` auto-dismiss).
+> - **Verified (`tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :desktop:jvmTest :app:testDebugUnitTest :app:assembleDebug --no-daemon --max-workers=2 "-Dorg.gradle.jvmargs=-Xmx4096m -Xss4m -XX:+UseG1GC -Dfile.encoding=UTF-8"`):** `BUILD SUCCESSFUL in 7m 21s` (exit code `0`).
+
+> **2026-11-14 — Cross-screen visual polish across Android and Desktop (Passes 1–4) verified on `dev`.** Commit `a21bf8f9` includes navigation and chat list polish, search clear controls, desktop toast scaling, conversation and sheet layouts, Hub, Radio and Settings refinements, group call picture-in-picture, the desktop PTT hit target, and Android widget colors.
+> - **PNG render inspection:** `:desktop:jvmTest --tests "com.transfer.flash.desktop.FlashWorkspaceTabsRenderTest"` with `FLASH_TABS_RENDER_DIR` passed (`BUILD SUCCESSFUL in 5m 16s`), generating 55 PNGs; visually inspected 13 renders (`transfers-*`, `nearby-*`, `chat-*`, dark/light/desktop/large-text) with zero clipping, overlap, or contrast regressions.
+> - **Full verified gate (`tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon --max-workers=2 "-Dorg.gradle.jvmargs=-Xmx4096m -Xss4m -XX:+UseG1GC -Dfile.encoding=UTF-8"`):**
+>   `BUILD SUCCESSFUL in 8m 28s` (exit code `0`); **264 suites, 2,191 tests — 2,189 passed, 0 failed, 2 pre-existing opt-in render skips** (`:ui:theme:jvmTest` 8/69, `:ui:chat:jvmTest` 87/801, `:ui:chat:testAndroidHostTest` 81/776, `:ui:callui:jvmTest` 16/113, `:desktop:jvmTest` 52/313 with 2 skips, `:app:testDebugUnitTest` 20/119); `:app:lintDebug` and `:app:assembleDebug` passed.
+> - **Owed physical-device / desktop visual acceptance (`docs/testing/TEST-BACKLOG.md`):** `UXPOL-18` and `UXPOL-19` (alongside prior `UXPOL-01..17`, `NOTIF-01..04`, `DEV-AUDIT-01..02`, `INVITE-LINK-01..02`, and `HR6-DEV-01`..`HR11-ENV-02`).
+
+> **2026-11-14 — Branch inventory, compact Transfers and chat, and duplicate receive fix.** On `dev` from `1e8868d2`. Read the latest progress entry for the worktree inventory. `origin/linux` contains substantive Linux product and packaging changes outside `dev`, with three history-log merge conflicts. UXPOL-16/17 cover device layout and photo/voice receive acceptance. ERROR-1025 explains the recipient insert race, and ERROR-1024 covers repeat selection. For a remaining duplicate, compare both transfer IDs and route events before changing transport code.
+> **Last verified product commit `9e2a82cf`**, with attachment fix `29b97709`. The focused gate passed 1,805 tests, 55 native renders, lint with zero errors and debug APK assembly. ERROR-1026 tracks the discovery timeout in the wider desktop suite. For search, compare the specific device symptom with UXPOL-11. The committed search source survived the merge and the search logic tests and narrow native bar render passed.
+
+> **2026-11-14 — Nearby availability, compact detail actions, Relay/Nearby icons & BottomNav animations verified on `dev` at `26924567`.**
+> - **Commits on `dev`:**
+>   - `508dbee6`: `feat(icons): replace Wi-Fi-like Relay and Nearby vector icons` (`FlashIcons.Relay` Hub Relay Bridge + `FlashIcons.Nearby` Discovery Compass)
+>   - `953cdeb6`: `feat(ui): add signature click animations for each bottom-nav icon` (per-tab `Animatable` + `graphicsLayer` motions & `reduceMotion` collapse)
+>   - `4d53d5dc`: `fix(nearby): show truthful peer availability and compact detail actions` (`isAvailableNearby`/`isOnline` wiring + above-the-fold single-line `FlashNearbyDetailPane` actions)
+>   - `26924567`: `fix(nearby): remove unsupported softWrap arg on FlashText`
+> - **Verified Gate (`tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :desktop:jvmTest :desktop:compileKotlinJvm :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`):**
+>   `BUILD SUCCESSFUL in 12m 14s` (exit code `0`); **248 suites, 2,076 tests — 2,074 passed, 0 failed, 2 pre-existing skips** (`:ui:theme:jvmTest` 8/69, `:ui:chat:jvmTest` 87/800, `:ui:chat:testAndroidHostTest` 81/775, `:desktop:jvmTest` 52/313 with 2 skips, `:app:testDebugUnitTest` 20/119); `:desktop:compileKotlinJvm` clean; `:app:lintDebug` **0 errors** (169 warnings, 2 hints); `:app:assembleDebug` built all 4 debug APKs in `app/build/outputs/apk/debug/`.
+> - **Owed physical-device / desktop visual acceptance (`docs/testing/TEST-BACKLOG.md`):** `UXPOL-12..15` (alongside prior `UXPOL-01..11`, `NOTIF-01..04`, `DEV-AUDIT-01..02`, `INVITE-LINK-01..02`, and `HR6-DEV-01`..`HR11-ENV-02`).
+
+> **2026-11-14 — HR6–HR11 merged into `dev` from `agent/hub-readiness` at `e3a64a24`.** The Hub feature commits, two audits and `dev` fixes are in history. The merge preserves the local/Hub invite formats, routes desktop announcements through Flash toasts, and combines transfer cancellation with duplicate cleanup across routes. The final locked build passed, including the debug APK, 2,903 passing Gradle tests, two desktop skips and 87 passing console tests. Follow HR6–HR11 and INVITE-LINK-01/02 in the backlog for live acceptance.
+
+> **2026-11-14 — Hub and local group invite links on `dev` at `0b162b80` with working-tree changes.** Hub invites use the issuing Hub origin. Local group sharing and QR use the configurable Flash hostname. Android verified routes, browser fallback, paste, and desktop single-instance routing reuse existing confirmation and validation. The Android debug APK, lint, browser checks, and host tests passed, including all 676 Hub tests on rerun. The two Windows installer formats contain the expected `flash` registration. Linux DEB packaging and installed desktop activation remain in the backlog. To enable live verification, configure the actual public hosts and the distributed APK certificate per [invite deployment](../docs/deploy/INVITE-LINKS.md), then run INVITE-LINK-01 and INVITE-LINK-02.
+
+> **2026-11-14 — Dev working-tree audit fixes and compact Nearby header.** Based on `dev` at `0b162b80`. Android notification actions and cards now have exact transfer identity, with startup reconciliation. Desktop notices retain actionable requests, route pairing through its comparison dialog, and revalidate the displayed call. Receive cancellation and verification share a finalization guard. Nearby's two actions fit beside the title in the native 320 dp render, and long paired names can take a third line. Settings labels adapt, and the voice composer has an accessible hands-free start. See the audit's remediation entry and `DEV-AUDIT-01/02`, `NOTIF-01..04`, and `VOICE-BTN-01..06` for device and live desktop follow-up. This entry records the state before the Hub integration.
+
+> **2026-11-12 — UI/UX polish & regression fixes: network detection, settings performance tile, chat spacing, offline banner & voice button PASSED (uncommitted on `dev`).**
+> Implementation and verification pass across `:ui:chat`, `:app`, and `:desktop`:
+> - **Network Detection & Inclusive Offline Banner (`MainActivity.kt`, `FlashNearbyScreen.kt`):**
+>   - Registered receiver via `ContextCompat.registerReceiver` with `RECEIVER_EXPORTED` on Android 14+ (API 34+), resolving the silent `SecurityException` where toggling Wi-Fi failed to update the UI.
+>   - Added broadcast actions `WIFI_STATE_CHANGED_ACTION`, `CONNECTIVITY_ACTION`, and `"android.net.wifi.WIFI_AP_STATE_CHANGED"` so Hotspot, Wi-Fi, and Ethernet toggles immediately increment `networkRefreshTick`.
+>   - Recognized Hotspot (`ap0`) and Ethernet (`eth0`): `LocalNetworkAddresses.ipv4Addresses()` interface enumeration populates `localLanAddresses`, correctly setting `radiosAvailable = true` for Hotspot and Ethernet users.
+>   - Added a 2-second periodic poll while on the Nearby screen with `!radiosAvailable` to instantly clear the offline panel upon turning on Wi-Fi or Hotspot.
+>   - Updated `RadiosOffPanel` copy to "No local network" and subtitle to "Turn on Wi-Fi, enable Mobile Hotspot, or connect Ethernet so Flash can find nearby devices.", with button "Open Network Settings".
+> - **Settings Performance Mode Tile (`FlashSettingsScreen.kt`):**
+>   - Replaced wrapping `FlowRow` chips with a clean single-row segmented track `Row(modifier = Modifier.fillMaxWidth().height(SegmentTrackHeight))` for all 5 tiers ("Auto", "Ultra Low", "Low", "Medium", "High") with subtitle below, completely resolving the line-spill and oversized card issue. Also unified `DiscoveryModeSegmented`.
+> - **Chat Spacing & Header Separation (`FlashChatHeader.kt`, `FlashMessageBubble.kt`, `FlashMessageList.kt`):**
+>   - Set tight vertical arrangement `Arrangement.spacedBy(0.dp)` on the chat header title and status Column, and constrained `FlashEncryptionBadge(compact = true)` to `iconSm` (16dp), removing excess vertical gap between contact name and status.
+>   - Removed bloated 48dp `defaultMinSize` on the 3-dot options button in `FlashMessageTimestampRow`, replacing it with a compact 20dp button that eliminates ~28dp of dead vertical space at the bottom of message tiles.
+>   - Reduced inter-group bubble spacing in `FlashMessageList.kt` from 16dp to 8dp while keeping tight 2dp intra-group spacing.
+> - **Offline Connection Banner Retry Button (`FlashNetworkStatusUi.kt`):**
+>   - Replaced the bulky 48dp `defaultMinSize` retry button inside `FlashConnectionBanner` with a sleek 28dp pill button (`captionEmphasis`, 10dp horizontal padding) that maintains an exact 36dp banner height without dominating the row.
+> - **Voice Message Button Responsiveness (`FlashComposer.kt`, `FlashVoiceRecording.kt`, `FlashConversationScreen.kt`):**
+>   - Expanded trailing mic button hit target in `FlashComposer` to 48dp minimum (`defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)`) while keeping the visual bubble centered at 44dp, ensuring edge-of-screen thumb presses register reliably.
+>   - Added touch slop guard on hold-drag in `FlashMicButton` (`viewConfiguration.touchSlop`) to prevent initial finger wobble from misidentifying as slide-to-cancel.
+>   - In `FlashConversationScreen.kt`, cached `micPermissionGranted` so that upon granting microphone permission, subsequent clicks immediately start recording without delay.
+> - **Verified Gate (`tools\flash-gradle.cmd :core:transfer:jvmTest :core:transfer:testAndroidHostTest :app:testDebugUnitTest :desktop:jvmTest :desktop:compileKotlinJvm :app:lintDebug`):**
+>   `BUILD SUCCESSFUL in 9m 54s` (exit code `0`, 428 actionable tasks: 32 executed, 396 up-to-date); **117 suites, 833 tests (831 passed, 2 opt-in render skips, 0 failures, 0 errors)**; `:desktop:compileKotlinJvm` clean (0 errors); `:app:lintDebug` passed with **0 errors, 0 fatal issues** (156 informational baseline warnings).
+> - **Owed on physical devices / desktop:** `NOTIF-01..04`, `UXPOL-01..11`, `XFER-RETRY-02`, and `VOICE-BTN-01..06` in `docs/testing/TEST-BACKLOG.md`.
+
+> **2026-11-14 — Audit remediation complete for HR6–HR11 on `agent/hub-readiness` (atop `256e140d` / `0b162b80`).**
+> Implemented in isolated worktree `C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness` (main checkout `C:\Users\KaliOxygen\Downloads\Flash` preserved untouched on `dev`).
+> - **Resolved all 8 findings (`6 P1 + 2 P2`) from `docs/audit/2026-11-14-hub-completion-review.md` plus independent re-verifier defects:**
+>   - **HR6 (#1 & #2):** `IdentityStore` Migration 4 (`hub_device_replacements`) + per-device lock in `AdminApi.kt` (`replaceLocks`) + `IdentityStore.beginDeviceReplacement`; validates dept/group membership, `remainingQuotaAssumingRevoked`, and org-admin/approver/linked-admin bindings before mutating creds/revocations; pending replacements return `409 Conflict` with `replacementInviteId` visible on `GET /admin/api/v1/devices/{id}` so the operator revokes and re-issues safely, and `reconcileInterruptedReplacements` + `IN_PROGRESS_LEASE_MS` recover orphaned crash states (`DeviceReplacementTest`).
+>   - **HR7 (#3):** `expectedEpoch` parameter across `AnnouncementRoutes`, `AnnouncementStore.getChangesFeed`, `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, `FakeHubAnnouncementsApi`, and `RealFlashChatRepository.refreshHubAnnouncements` so recreated/reset Hub feed epochs force `fullResync = true` and suppress notification floods (`AnnouncementClientContractTest`, `RealFlashChatRepositoryAnnouncementsTest`).
+>   - **HR8 (#4):** Atomic disk persistence via `FileContinuityCheckpointStore` (`noBackupFilesDir/transfer-continuity` on Android, `stateDir/transfer-continuity` on Desktop), 32-hex `wireFileId` generation (`RealFlashTransferRepository.newWireFileId`), `TransferRouteFallback` wiring (`HubFileBinding.tryHandoverFromLan` / `tryHandoverOutToLan`), `senderSourceFingerprint` validation, `hubfile.handover.lan_to_hub` / `hubfile.handover.hub_to_lan` probes, deterministic `CrossRouteWiringIntegrationTest` (`LAN -> Hub`, `Hub -> LAN`, restart persistence, changed-source/oversized refusal).
+>   - **HR9 (#5 & #7):** Pre-replay validation of inner `FLASH_CALL` frame (`callId`, sender, terminal state) and `seq` monotonicity before `seenIds.add` (`CallCoordinator`, `HubOffLanCalling`, `OffLanCallSignalingTest`); proactive `EnterpriseHub.ensureFreshCallIceConfig` renewal/retry plus `suspend iceConfigProvider` awaited on `CallCoordinator` session setup (`DiscoveryEngineHolder`, `DesktopEngine`, `DesktopShell`, `EnterpriseHubTest`).
+>   - **HR10 (#6):** Bounded `GroupRelaySealing.MAX_VALID_EPOCH` (`1_000_000_000L`) and deterministic `(rosterVersion, epoch, keyId)` canonical key tie-breaking (`HubGroupE2eeCoordinator`, `HubGroupE2eeTest`).
+>   - **HR11 (#8):** Added `MailboxStats.quarantinedOutstanding()` backed by `MailboxQueue`, wired into `OperationalMonitor.evaluate`, `GET /health/detail` (`mailbox.quarantinedOutstanding`), and Prometheus `flash_mailbox_quarantined_outstanding` (`FlashServerEngine`, `OperationsAndRolloutDrillsTest`).
+> - **Verified after final code & doc edits (`--rerun-tasks`):**
+>   - **Node Admin UI tests (`node --no-warnings --test server/admin-ui-tests/*.test.mjs`):** `87 tests, 87 passed, 0 failed, 0 skipped`.
+>   - **Server suite (`tools\flash-gradle.cmd --max-workers=2 :server:test --rerun`):** `76 suites, 703 tests, 0 failures, 0 errors, 0 skipped`.
+>   - **Client / Protocol / UI / Android / Desktop Gradle suite (`--rerun-tasks`):** `394 suites, 3,311 tests, 0 failures, 0 errors, 4 pre-existing POSIX skips on Windows` (`:core:security:jvmTest` 2, `:desktop:jvmTest` 2) + `:app:assembleDebug` `BUILD SUCCESSFUL`.
+> - **Overlapping uncommitted main-checkout files (`C:\Users\KaliOxygen\Downloads\Flash` on `dev`, all 18 files across `0b162b80..HEAD`) requiring 3-way merge on integration:**
+>   `app/src/main/java/com/transfer/flash/MainActivity.kt`, `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`, `app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt`, `app/src/test/java/com/transfer/flash/notifications/FlashNotificationContentTest.kt`, `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/CallCoordinator.kt`, `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt`, `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopMain.kt`, `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopNotificationManager.kt`, `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`, `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopNotificationManagerTest.kt`, `docs/protocol-routes.txt`, `docs/testing/TEST-BACKLOG.md`, `logs/handoff.md`, `logs/progress.md`, `server/src/main/kotlin/com/transfer/flash/server/auth/EnrollmentService.kt`, `server/src/main/kotlin/com/transfer/flash/server/config/ServerConfig.kt`, `server/src/main/kotlin/com/transfer/flash/server/core/FlashServerEngine.kt`, `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashSettingsScreen.kt` (remediation delta `256e140d..HEAD` subset: `DiscoveryEngineHolder.kt`, `CallCoordinator.kt`, `RealFlashTransferRepository.kt`, `DesktopShell.kt`, `TEST-BACKLOG.md`, `logs/handoff.md`, `logs/progress.md`, `EnrollmentService.kt`, `FlashServerEngine.kt`).
+> - **Owed physical-device / isolated-VPS / Chrome acceptance (`docs/testing/TEST-BACKLOG.md`):**
+>   `HR6-DEV-01 / ORGT-14`, `HR7-DEV-01`, `HR8-DEV-01`, `HR9-DEV-01`, `HR9-DEV-02`, `HR10-DEV-01`, `HR11-ENV-01`, `HR11-ENV-02`.
+> - **Next step:** Independent verifier re-review (`docs/plans/HUB-PLANS-PROMPTS.md` §2) against clean committed `agent/hub-readiness` `HEAD`.
+
+> **2026-11-12 — Phase 7 UI/UX diff audit & ERROR-1018 transfer retry committed on `dev` (`37c45602`, `58f9b236`).**
+> Seven-phase UI/UX overhaul, audit remediation pass, and transfer retry boundary re-announcements committed on `dev`
+> across `:core:transfer`, `:core:engine`, `:core:security`, `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`,
+> `:app`, and `:desktop`.
+> - **Commits:**
+>   - `58f9b236`: `fix(transfer): re-announce saved chunks across retry boundaries and reject invalid ACKs (ERROR-1018)`
+>   - `37c45602`: `feat(ui): cross-platform UI/UX polish, theme contrast, adaptive layouts and audit fixes (Phases 1-7)`
+> - **Resolved in Phase 7 audit:** 12 Must-Fix bugs and 12 Half-Baked features identified during comprehensive
+>   diff review (Notification banner shell unmounting, two-pane `BackHandler` priority, desktop tab trapping/selection
+>   reset, reactions sheet deduplication, pairing `lingerJob` tracking/cancellation, `AwaitingPeerConfirmation` Cancel
+>   button and BackHandler, desktop pairing retry target resolution, conversation 3-dot `REVOKE_TRUST` confirmation dialog,
+>   `FlashSharedContentSheet` resume routing and label fixes, SI decimal sizing in `FlashDetailPanes`, call screen share
+>   autoStart loop elimination, desktop search result context menu, `ultraLowUi` desktop theme roots, conversation trust/transport
+>   wiring, colleague chat and single-pane detail inspection in Nearby, `isVerifying` detail handling, share-initiated pairing
+>   retry preservation, widget `ACTION_WIDGET_SEND`, desktop gallery file extensions, member sheet `Find devices` CTA,
+>   empty list `topBanners` top-alignment, `savedInstanceState == null` intent guard, and `.heic`/`.3gp` MIME fallbacks).
+> - **Verified Phase 7 Gate (`tools\flash-gradle.cmd :core:security:jvmTest :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :ui:callui:testAndroidHostTest :ui:platform-shims:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :desktop:compileKotlinJvm`):**
+>   `BUILD SUCCESSFUL in 3m 22s` (exit code `0`); **304 suites, 2,446 tests, 0 failures, 0 errors, 4 skipped**
+>   (`:core:security:jvmTest` 25/177 + 2 skips, `:ui:theme:jvmTest` 8/68, `:ui:chat:jvmTest` 87/790,
+>   `:ui:chat:testAndroidHostTest` 81/765, `:ui:callui:jvmTest` 16/113, `:ui:callui:testAndroidHostTest` 10/90,
+>   `:ui:platform-shims:jvmTest` 5/42, `:desktop:jvmTest` 52/291 + 2 skips, `:app:testDebugUnitTest` 20/110);
+>   `:desktop:compileKotlinJvm` clean; `:app:lintDebug` passed with **0 errors, 0 fatal issues** (156 pre-existing/advisory warnings, 2 hints).
+> - **Integrity:** 6 core protected files (`DiscoveryEngineHolder.kt`, `DesktopEngine.kt`, `Flash.kt`, `RealFlashTransferRepository.kt`,
+>   `ReceivePipeline.kt`, `MultiStreamDispatcher.kt`) verified SHA-256 unchanged; `ERROR-1018` and `ERROR-1019` candidates intact.
+> - **Owed on physical devices / desktop:** `UXPOL-01..11`, `XFER-RETRY-02`, and `VOICE-BTN-01..06` in
+>   `docs/testing/TEST-BACKLOG.md`.
+
+> **2026-11-12 — Phases 1–5 UI/UX polish pass & Phase 6 regression/lint gate PASSED (uncommitted on `dev`, atop `31e1551c`).**
+> Five-phase UI/UX fix pass across `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`, `:app`,
+> and `:desktop`, preserving the pre-existing uncommitted `ERROR-1018` (transfer retry) and `ERROR-1019`
+> (voice-button lock/capture guard) working-tree candidates.
+> - **Covered:** theme/contrast/splash/avatar tokens, light-mode quoted replies, video error controls,
+>   Radio Gateway PTT/semantics/scroll, Settings no-dead-rows/collapsed Advanced/search & Android/Desktop
+>   host wiring, Hub `bottomInset`/visual truncation/people search, Android `840–907 dp` two-pane/Back/
+>   deferred notification banner/Quick Tile/Widget, Desktop DnD off-screen guard/share-to-group/shortcuts/
+>   toast bounds/foreground notification suppression, Pairing `Failed`/`Idle` phase mapping & local IPv4,
+>   Transfers `Verifying`/receive-cancel confirm/split Clear, Calling stats pill/PiP scrim/share picker/
+>   Android PTT touch-blocking scrim, Voice lock hint & single playback (`FlashVoicePlaybackCoordinator`),
+>   delete confirmations, extended emoji picker & reactor detail sheet, 10-item staging tray, media viewer
+>   captions/actions/keys, chat list/search declutter, and group sheets.
+> - **Verified Phase 6 Gate (`tools\flash-gradle.cmd :ui:theme:jvmTest :ui:chat:jvmTest :ui:chat:testAndroidHostTest :ui:callui:jvmTest :ui:callui:testAndroidHostTest :ui:platform-shims:jvmTest :desktop:jvmTest :app:testDebugUnitTest :app:lintDebug :desktop:compileKotlinJvm`):**
+>   `BUILD SUCCESSFUL in 6m 34s` (exit code `0`); **279 suites, 2,249 tests, 0 failures, 0 errors, 2 opt-in render skips**
+>   (`:ui:theme:jvmTest` 8/68, `:ui:chat:jvmTest` 87/785, `:ui:chat:testAndroidHostTest` 81/760,
+>   `:ui:callui:jvmTest` 16/113, `:ui:callui:testAndroidHostTest` 10/90, `:ui:platform-shims:jvmTest` 5/42,
+>   `:desktop:jvmTest` 52/284 + 2 skips, `:app:testDebugUnitTest` 20/107); `:desktop:compileKotlinJvm` clean;
+>   `:app:lintDebug` passed with **0 errors, 0 fatal issues** (156 pre-existing/advisory warnings, 2 hints).
+> - **Owed on physical devices / desktop:** `UXPOL-01..11`, `XFER-RETRY-02`, and `VOICE-BTN-01..06` in
+>   `docs/testing/TEST-BACKLOG.md`.
+
+> **2026-11-09 — Linux x86-64 packages added to Flash 2.2.0.** The `.deb`, portable archive and
+> separate SHA-256 manifest are on the existing release. Package metadata and GitHub asset digests
+> were verified. Install/launch/upgrade on Linux is owed under REL22-LINUX-01. Install steps:
+> `docs/install-linux.md`. The reported retry mismatch is tracked separately as XFER-RETRY-02;
+> the uncommitted candidate passed 894 host cases (two documented skips), including repeated
+> retry and delayed ACKs (ERROR-1018). The uncommitted voice-button candidate prevents a second
+> capture after locking and passed 1,455 chat host cases (ERROR-1019). Next: XFER-RETRY-02 and
+> VOICE-BTN-01..06 on physical devices. Neither fix has shipped.
 
 > **2026-11-08 — Flash 2.2.0, Hub beta.1 and SDK beta.3 published.** The original release tags point to `322a92aa`:
 > [Android and Windows](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0),
@@ -294,7 +460,7 @@
 > app handoff below still applies to `dev`.
 > **Still owed:** owner browser checks `CONSOLE-D02..D07`; push completed in `d77b8261`. The other agent's Wave 2/tombstone
 > entries are preserved below; the console merge did not touch their files.
-
+>
 > **2026-11-05 (latest) — ADR-353 REVOCATION TOMBSTONE + STABLE DIRECT-CHAT TITLE, MERGED INTO
 > `dev` AS `c2acce9c` AND PUSHED; AFFECTED GATE GREEN.** `revokeTrust` writes a local tombstone
 > (`revoked_<id>` / desktop `revoked.<id>`), `savePin` is a silent no-op while it is present, auto-dial filters the peer,
@@ -8649,3 +8815,4 @@ AGENTS §29; then commit (do not push without the owner). Known limit: deleting 
 > menu item, profile sheet, group info/settings, piece map, appearance sheet), keeping every
 > `FlashConversationScreen` parameter, every callback and `FlashBubbleShape` unchanged. Nothing is device-verified;
 > no phone was used.
+# **2026-11-17 — 100-if module audit initialized.** `docs/audit/2026-11-17-module-if-review.md` contains 2,700 rows: 100 explicit conditional checks for each of the 27 modules in `settings.gradle.kts` plus the included WebRTC build. All rows start `UNVERIFIED` by design; replace them only with source, test, runtime, or device evidence. The existing Hub-group review remains linked for confirmed C1-C4 and S1-S3 findings. The worktree was already dirty and was preserved. Next: bounded evidence passes per module, then record concrete errors and manual checks.

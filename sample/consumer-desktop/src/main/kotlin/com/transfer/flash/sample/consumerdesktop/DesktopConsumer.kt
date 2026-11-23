@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.Flow
  * `:sample:consumer-granular`'s GranularConsumer, in three ways:
  *
  * 1. **Variant selection**: this module is `kotlin("jvm")` and depends on the ROOT coordinate
- *    `com.transfer.flash:core-engine:2.2.0-beta.3` — the same root coordinate used by an Android
+ *    `com.transfer.flash:core-engine:2.3.0-beta.1` — the same root coordinate used by an Android
  *    consumer of this local Maven publication.
  *    If Gradle module metadata were missing or wrong, resolution would fail or pick the
  *    `-android` variant and this file would not compile.

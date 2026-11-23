@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -51,6 +53,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.HubAnnouncementUi
 import com.transfer.flash.core.messaging.model.HubPostingRights
@@ -66,7 +69,6 @@ import com.transfer.flash.ui.theme.FlashTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.material3.Text
 
 /**
  * The News segment: a composer entry for people who may post (or one calm sentence for everyone else), the pinned
@@ -176,6 +178,10 @@ internal fun FlashHubReadMarking(
     }
 }
 
+/** True when a collapsed announcement preview wrapped past its line cap or contains more than [FlashHubMath.CARD_PREVIEW_LINES] lines. */
+internal fun isAnnouncementBodyTruncated(hasVisualOverflow: Boolean, body: String): Boolean =
+    hasVisualOverflow || body.trimEnd().lines().size > FlashHubMath.CARD_PREVIEW_LINES
+
 /**
  * One announcement: the author's avatar, name, role and time, the scope and pinned chips, the title and a three line preview.
  * A coloured edge marks what is unread or pinned (and the unread title is bold), so a glance shows what is new.
@@ -195,6 +201,7 @@ internal fun FlashAnnouncementCard(
     val roleChip = FlashHubMath.authorRoleChip(a.authorRole)
     val time = FlashHubMath.relativeTime(a.createdAtMs, nowMs)
     var truncated by remember(a.id, a.body) { mutableStateOf(false) }
+    val bodyColor = remember(colors.textSecondary) { ColorProducer { colors.textSecondary } }
     val spoken = buildString {
         append(scopeLabel).append(", ").append(a.title).append(", ").append(a.authorName)
         if (roleChip != null) append(", ").append(roleChip)
@@ -204,9 +211,9 @@ internal fun FlashAnnouncementCard(
     }
     val edge by animateColorAsState(
         targetValue = when {
-            !a.isRead -> colors.accentPrimary
-            a.pinned -> colors.accentPrimary.copy(alpha = 0.45f)
-            else -> colors.accentPrimary.copy(alpha = 0f)
+            !a.isRead -> colors.accentFill
+            a.pinned -> colors.accentFill.copy(alpha = 0.45f)
+            else -> colors.accentFill.copy(alpha = 0f)
         },
         animationSpec = FlashTheme.motion.tweenNormalSpec(),
         label = "hubCardEdge",
@@ -218,7 +225,7 @@ internal fun FlashAnnouncementCard(
             .height(IntrinsicSize.Min)
             .clip(HubShapes.card)
             .background(colors.backgroundSurface)
-            .border(FlashDimensions.borderHairline, if (a.pinned) colors.accentPrimary.copy(alpha = 0.55f) else colors.borderSubtle, HubShapes.card)
+            .border(FlashDimensions.borderHairline, if (a.pinned) colors.accentFill.copy(alpha = 0.55f) else colors.borderSubtle, HubShapes.card)
             .hubClickable(onClick = onOpen)
             .semantics(mergeDescendants = true) {
                 contentDescription = spoken
@@ -252,15 +259,19 @@ internal fun FlashAnnouncementCard(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
-            FlashText(
+            BasicText(
                 text = a.body,
                 style = FlashTheme.typography.bodyDefault,
-                color = colors.textSecondary,
+                color = bodyColor,
                 maxLines = FlashHubMath.CARD_PREVIEW_LINES,
                 overflow = TextOverflow.Ellipsis,
+                onTextLayout = { result ->
+                    val overflowed = isAnnouncementBodyTruncated(result.hasVisualOverflow, a.body)
+                    if (truncated != overflowed) truncated = overflowed
+                },
             )
-            if (truncated || a.body.lines().size > FlashHubMath.CARD_PREVIEW_LINES) {
-                FlashText(FlashHubCopy.ANN_READ_MORE, style = FlashTheme.typography.captionEmphasis, color = colors.accentPrimary)
+            if (isAnnouncementBodyTruncated(truncated, a.body)) {
+                FlashText(FlashHubCopy.ANN_READ_MORE, style = FlashTheme.typography.captionEmphasis, color = colors.textLink)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
                 FlashHubChip(scopeLabel, emphasised = true, modifier = Modifier.weight(1f, fill = false))
@@ -272,8 +283,8 @@ internal fun FlashAnnouncementCard(
                     exit = FlashTheme.motion.badgePopExit(),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
-                        Box(Modifier.size(8.dp).clip(HubShapes.capsule).background(colors.accentPrimary))
-                        FlashText(FlashHubCopy.ANN_UNREAD, style = FlashTheme.typography.metadataEmphasis, color = colors.accentPrimary, maxLines = 1)
+                        Box(Modifier.size(8.dp).clip(HubShapes.capsule).background(colors.accentFill))
+                        FlashText(FlashHubCopy.ANN_UNREAD, style = FlashTheme.typography.metadataEmphasis, color = colors.textLink, maxLines = 1)
                     }
                 }
             }
@@ -297,12 +308,21 @@ internal fun FlashAnnouncementReader(
     onCopy: () -> Unit,
     onLink: (String) -> Unit,
     modifier: Modifier = Modifier,
+    bottomInset: Dp = 0.dp,
 ) {
     val colors = FlashTheme.colors
     val a = announcement
     val roleChip = FlashHubMath.authorRoleChip(a.authorRole)
     Column(
-        modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(FlashSpacing.space16),
+        modifier = modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(
+                start = FlashSpacing.space16,
+                end = FlashSpacing.space16,
+                top = FlashSpacing.space16,
+                bottom = FlashSpacing.space16 + bottomInset,
+            ),
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
@@ -340,6 +360,7 @@ internal fun FlashHubLinkedText(text: String, onLink: (String) -> Unit, modifier
     val parts = remember(text) { FlashHubMath.parseLinks(text) }
     val links = remember(parts) { parts.filterIsInstance<FlashHubMath.TextPart.Link>() }
     val linkColor = colors.textLink
+    val bodyColor = remember(colors.textPrimary) { ColorProducer { colors.textPrimary } }
     val annotated: AnnotatedString = remember(parts, linkColor) {
         buildAnnotatedString {
             parts.forEach { part ->
@@ -355,10 +376,10 @@ internal fun FlashHubLinkedText(text: String, onLink: (String) -> Unit, modifier
         }
     }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    Text(
+    BasicText(
         text = annotated,
         style = FlashTheme.typography.bodyDefault,
-        color = colors.textPrimary,
+        color = bodyColor,
         onTextLayout = { layout = it },
         modifier = modifier
             .fillMaxWidth()
@@ -484,13 +505,18 @@ private fun FlashHubCounter(used: Int, max: Int, tone: FlashHubMath.CounterTone)
     val colors = FlashTheme.colors
     val tint by animateColorAsState(
         targetValue = when (tone) {
-            FlashHubMath.CounterTone.NORMAL -> colors.accentPrimary
+            FlashHubMath.CounterTone.NORMAL -> colors.accentFill
             FlashHubMath.CounterTone.WARNING -> colors.accentSecondary
             FlashHubMath.CounterTone.ERROR -> colors.textError
         },
         animationSpec = FlashTheme.motion.tweenFastSpec(),
         label = "hubCounterTint",
     )
+    val labelColor = when (tone) {
+        FlashHubMath.CounterTone.NORMAL -> colors.textTertiary
+        FlashHubMath.CounterTone.WARNING -> colors.textPrimary
+        FlashHubMath.CounterTone.ERROR -> colors.textError
+    }
     val fraction by animateFloatAsState(
         targetValue = if (max <= 0) 0f else (used.toFloat() / max).coerceIn(0f, 1f),
         animationSpec = FlashTheme.motion.tweenFastSpec(),
@@ -503,7 +529,7 @@ private fun FlashHubCounter(used: Int, max: Int, tone: FlashHubMath.CounterTone)
         FlashText(
             FlashHubCopy.annCounter(used, max),
             style = FlashTheme.typography.numericDefault,
-            color = if (tone == FlashHubMath.CounterTone.NORMAL) colors.textTertiary else tint,
+            color = labelColor,
         )
     }
 }
@@ -513,7 +539,7 @@ internal fun FlashHubField(
     value: String,
     hint: String,
     singleLine: Boolean,
-    minHeight: androidx.compose.ui.unit.Dp,
+    minHeight: Dp,
     onChange: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -533,7 +559,7 @@ internal fun FlashHubField(
             singleLine = singleLine,
             modifier = Modifier.fillMaxWidth().semantics { contentDescription = hint },
             textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
-            cursorBrush = SolidColor(colors.accentPrimary),
+            cursorBrush = SolidColor(colors.accentFill),
             decorationBox = { inner ->
                 if (value.isEmpty()) FlashText(hint, style = FlashTheme.typography.bodyDefault, color = colors.textTertiary)
                 inner()

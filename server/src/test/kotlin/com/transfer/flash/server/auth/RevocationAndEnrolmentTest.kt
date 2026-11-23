@@ -87,7 +87,7 @@ class RevocationAndEnrolmentTest {
             "https://hub.test",
             InviteScope(department = "eng", expiry = now + 3_600_000),
             now,
-        ).link.substringAfter("token=").substringBefore("&")
+        ).token
 
         fun enrol(deviceId: String, key: KeyPair = FlashCrypto.generateEcKeyPair(), token: String = invite()): Result<EnrollmentResult> {
             val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), enrollment.serverId))

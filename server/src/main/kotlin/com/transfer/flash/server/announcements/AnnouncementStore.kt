@@ -106,7 +106,8 @@ public class AnnouncementStore(
         return db.withTransaction { conn ->
             // 1. Idempotency check: check if clientRequestId was already processed within last 10 min
             pruneOldRequests(conn)
-            val existingId = findByClientRequestId(conn, clientRequestId)
+            val requestDepartment = departmentId.orEmpty().takeIf { scope == "department" }.orEmpty()
+            val existingId = findByClientRequestId(conn, clientRequestId, authorKind, authorRef, scope, requestDepartment)
             if (existingId != null) {
                 val existing = getByIdInternal(conn, existingId)
                 if (existing != null) return@withTransaction existing
@@ -152,10 +153,18 @@ public class AnnouncementStore(
             }
 
             // Record clientRequestId for idempotency
-            conn.prepareStatement("INSERT OR REPLACE INTO announcement_request(client_request_id, announcement_id, created_at) VALUES (?, ?, ?)").use { stmt ->
+            conn.prepareStatement(
+                "INSERT OR REPLACE INTO announcement_request " +
+                    "(client_request_id, author_kind, author_ref, scope, department_id, announcement_id, created_at) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ).use { stmt ->
                 stmt.setString(1, clientRequestId)
-                stmt.setString(2, id)
-                stmt.setLong(3, now)
+                stmt.setString(2, authorKind)
+                stmt.setString(3, authorRef)
+                stmt.setString(4, scope)
+                stmt.setString(5, requestDepartment)
+                stmt.setString(6, id)
+                stmt.setLong(7, now)
                 stmt.executeUpdate()
             }
 
@@ -412,12 +421,13 @@ public class AnnouncementStore(
         callerDeptId: String?,
         isOrgAdmin: Boolean,
         nowMs: Long = clock(),
+        expectedEpoch: String? = null,
     ): AnnouncementFeedDto = db.withConnection { conn ->
         val safeLimit = limit.coerceIn(1, 200)
         val epoch = readState(conn, "epoch") ?: UUID.randomUUID().toString()
         val highestSeq = readState(conn, "seq")?.toLongOrNull() ?: 0L
 
-        if (sinceSeq == 0L) {
+        if (sinceSeq == 0L && (expectedEpoch.isNullOrBlank() || expectedEpoch != epoch)) {
             // Initial sync: newest 200 non-deleted, non-expired items (pinned first, then created_at DESC)
             val sql = if (isOrgAdmin) {
                 """
@@ -726,14 +736,15 @@ public class AnnouncementStore(
         actorDeptId: String?,
         actorRef: String,
     ) {
-        val isOrgAdmin = actorRole == "admin" || actorRole == "ORG_ADMIN"
+        val isOrgAdmin = actorRole.equals("admin", ignoreCase = true) || actorRole.equals("ORG_ADMIN", ignoreCase = true)
         if (isOrgAdmin) return
 
-        val isDeptHead = actorRole == "dept_admin" || actorRole == "DEPT_HEAD"
+        val isDeptHead = actorRole.equals("dept_admin", ignoreCase = true) || actorRole.equals("DEPT_HEAD", ignoreCase = true)
         if (isDeptHead) {
             // A head can only edit announcements in their own department that were authored by a head
             val inOwnDept = announcement.scope == "department" && announcement.departmentId == actorDeptId
-            val authoredByHead = announcement.authorRole == "dept_admin" || announcement.authorRole == "DEPT_HEAD"
+            val authoredByHead = announcement.authorRole.equals("dept_admin", ignoreCase = true) ||
+                announcement.authorRole.equals("DEPT_HEAD", ignoreCase = true)
             if (inOwnDept && authoredByHead) {
                 return
             }
@@ -796,9 +807,23 @@ public class AnnouncementStore(
         }
     }
 
-    private fun findByClientRequestId(conn: Connection, clientRequestId: String): String? {
-        conn.prepareStatement("SELECT announcement_id FROM announcement_request WHERE client_request_id = ?").use { stmt ->
+    private fun findByClientRequestId(
+        conn: Connection,
+        clientRequestId: String,
+        authorKind: String,
+        authorRef: String,
+        scope: String,
+        departmentId: String,
+    ): String? {
+        conn.prepareStatement(
+            "SELECT announcement_id FROM announcement_request " +
+                "WHERE client_request_id = ? AND author_kind = ? AND author_ref = ? AND scope = ? AND department_id = ?",
+        ).use { stmt ->
             stmt.setString(1, clientRequestId)
+            stmt.setString(2, authorKind)
+            stmt.setString(3, authorRef)
+            stmt.setString(4, scope)
+            stmt.setString(5, departmentId)
             stmt.executeQuery().use { rs ->
                 return if (rs.next()) rs.getString(1) else null
             }
@@ -976,7 +1001,36 @@ public class AnnouncementStore(
                         t.message
                     )
                 }
-            }
+            },
+            Migration(2, "announcements: scope create retries to their author and audience") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("ALTER TABLE announcement_request RENAME TO announcement_request_v1")
+                    st.execute(
+                        """
+                        CREATE TABLE announcement_request (
+                            client_request_id TEXT NOT NULL,
+                            author_kind TEXT NOT NULL,
+                            author_ref TEXT NOT NULL,
+                            scope TEXT NOT NULL,
+                            department_id TEXT NOT NULL,
+                            announcement_id TEXT NOT NULL,
+                            created_at INTEGER NOT NULL,
+                            PRIMARY KEY (client_request_id, author_kind, author_ref, scope, department_id)
+                        )
+                        """.trimIndent()
+                    )
+                    st.execute(
+                        """
+                        INSERT INTO announcement_request
+                        SELECT r.client_request_id, a.author_kind, a.author_ref, a.scope,
+                               COALESCE(a.department_id, ''), r.announcement_id, r.created_at
+                        FROM announcement_request_v1 r JOIN announcement a ON a.id = r.announcement_id
+                        """.trimIndent()
+                    )
+                    st.execute("DROP TABLE announcement_request_v1")
+                    st.execute("CREATE INDEX idx_announcement_req_created ON announcement_request(created_at)")
+                }
+            },
         )
 
         public fun open(db: ServerDatabase, clock: () -> Long = System::currentTimeMillis): AnnouncementStore {

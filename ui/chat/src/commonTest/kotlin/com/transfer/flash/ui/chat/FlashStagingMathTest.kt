@@ -58,4 +58,38 @@ class FlashStagingMathTest {
         assertEquals(item2.id, remaining[0].id)
         assertEquals(item3.id, remaining[1].id)
     }
+
+    @Test
+    fun `appendUpToLimit enforces MAX_STAGED_ATTACHMENTS cap`() {
+        var staged = emptyList<FlashShareItemUi>()
+        repeat(FlashStagingMath.MAX_STAGED_ATTACHMENTS) { idx ->
+            val (next, accepted) = FlashStagingMath.appendUpToLimit(
+                staged,
+                FlashShareItemUi(uri = "file:///$idx.png", name = "$idx.png", sizeBytes = 10L),
+            )
+            assertTrue(accepted)
+            staged = next
+        }
+        assertEquals(FlashStagingMath.MAX_STAGED_ATTACHMENTS, staged.size)
+
+        val (capped, acceptedOverflow) = FlashStagingMath.appendUpToLimit(
+            staged,
+            FlashShareItemUi(uri = "file:///extra.png", name = "extra.png", sizeBytes = 10L),
+        )
+        assertFalse(acceptedOverflow)
+        assertEquals(FlashStagingMath.MAX_STAGED_ATTACHMENTS, capped.size)
+    }
+
+    @Test
+    fun `picking the same photo again stages a single transfer`() {
+        val photo = FlashShareItemUi(uri = "content://gallery/photo/42", name = "photo.jpg", sizeBytes = 1024L)
+        val staged = listOf(photo)
+        val duplicate = photo.copy(id = "another-picker-result")
+
+        assertEquals(staged to true, FlashStagingMath.appendUpToLimit(staged, duplicate, maxLimit = 1))
+        assertEquals(listOf(duplicate) to true, FlashStagingMath.appendUpToLimit(emptyList(), duplicate))
+
+        val otherPhoto = photo.copy(uri = "content://gallery/photo/43", id = "other-photo")
+        assertEquals(listOf(photo, otherPhoto) to true, FlashStagingMath.appendUpToLimit(staged, otherPhoto))
+    }
 }

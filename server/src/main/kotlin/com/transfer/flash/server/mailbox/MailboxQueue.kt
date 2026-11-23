@@ -1,5 +1,6 @@
 package com.transfer.flash.server.mailbox
 
+import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.server.auth.SecretBox
 import com.transfer.flash.server.observability.MailboxStats
 import com.transfer.flash.server.observability.RelayMetrics
@@ -386,6 +387,62 @@ class MailboxQueue(
     override suspend fun acknowledge(target: String, msgId: String, origin: String?): List<AckedRow> =
         acknowledgeBatch(target, listOf(msgId), origin)
 
+    override suspend fun dropForPolicy(row: QueuedMessage): Boolean {
+        val removed = database.ioTransaction { conn ->
+            conn.prepareStatement("DELETE FROM mailbox_envelopes WHERE seq = ? AND undeliverable_reason IS NULL").use { stmt ->
+                stmt.setLong(1, row.seq)
+                stmt.executeUpdate() == 1
+            }
+        }
+        if (removed) noteDropped()
+        return removed
+    }
+
+    override suspend fun retireReadableGroupRows(): List<QuarantinedRow> {
+        val retired = ArrayList<QuarantinedRow>()
+        while (true) {
+            val batch = database.ioTransaction { conn ->
+                val found = conn.prepareStatement(
+                    """
+                    SELECT seq, origin_device_id, target_device_id, msg_id
+                    FROM mailbox_envelopes
+                    WHERE undeliverable_reason IS NULL
+                      AND kind <> ?
+                      AND (group_id IS NOT NULL OR kind IN (?, ?))
+                    ORDER BY seq ASC
+                    LIMIT 500
+                    """.trimIndent(),
+                ).use { stmt ->
+                    stmt.setString(1, HubContract.GROUP_SEALED_ENVELOPE_TYPE)
+                    stmt.setString(2, HubContract.GROUP_FRAME_TYPE)
+                    stmt.setString(3, HubContract.LEGACY_GROUP_FRAME_TYPE)
+                    stmt.executeQuery().use { rs ->
+                        val rows = ArrayList<QuarantinedRow>()
+                        while (rs.next()) {
+                            rows.add(QuarantinedRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4)))
+                        }
+                        rows
+                    }
+                }
+                if (found.isNotEmpty()) {
+                    conn.prepareStatement("DELETE FROM mailbox_envelopes WHERE seq = ? AND undeliverable_reason IS NULL").use { del ->
+                        for (row in found) {
+                            del.setLong(1, row.seq)
+                            del.addBatch()
+                        }
+                        del.executeBatch()
+                    }
+                }
+                found
+            }
+            if (batch.isEmpty()) break
+            noteDropped(batch.size)
+            retired += batch
+            if (batch.size < 500) break
+        }
+        return retired
+    }
+
     override suspend fun mayReplay(row: QueuedMessage): Boolean {
         if (!enforceGroupMembership || row.group == null) return true
         return database.io { conn ->
@@ -534,6 +591,17 @@ class MailboxQueue(
     override fun droppedTotal(): Long = dropped.get()
 
     override fun quarantinedTotal(): Long = quarantined.get()
+
+    override fun quarantinedOutstanding(): Long = database.withConnection { conn ->
+        val now = clock()
+        conn.prepareStatement(
+            "SELECT COUNT(*) FROM mailbox_envelopes WHERE expires_at > ? AND undeliverable_reason IS NOT NULL AND undeliverable_reason <> ?",
+        ).use { stmt ->
+            stmt.setLong(1, now)
+            stmt.setString(2, MailboxSchema.GROUP_MEMBER_REMOVED)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else 0L }
+        }
+    }
 
     private companion object {
         /** Pages of a single fetch spent skipping quarantined rows; the router simply asks again after that. */

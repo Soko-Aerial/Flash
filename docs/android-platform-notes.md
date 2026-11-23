@@ -1,5 +1,40 @@
 # Android Platform Notes
 
+## 2026-11-23 — Discovery service startup after a signed update
+
+On the Android 13 V760 (API 33, app target API 36), the first launch after an in-place update could receive a `ForegroundServiceDidNotStartInTimeException` before the discovery service logged its foreground promotion. A visible activity can use `startService()`, which starts the service without the deadline attached to a `startForegroundService()` request. The service promotes itself in `onCreate` and can retry promotion on a new start request if the instance was already running. The Quick Settings and background retry entry points use the foreground-service start API and its existing restrictions. [Background execution limits](https://developer.android.com/about/versions/oreo/background) · [Foreground-service troubleshooting](https://developer.android.com/develop/background-work/services/fgs/troubleshooting)
+
+## 2026-11-22 — Refresh Nearby after a LAN address change
+
+On the app's supported API 24+ range, Nearby requests Wi-Fi and Ethernet callbacks and refreshes its address snapshot when link properties change. From Android 8.0 (API 26), the platform documents the initial link-properties callback immediately after availability and capability callbacks. Flash reads addresses asynchronously and also samples while Nearby is visible to cover hosted hotspot interfaces without a corresponding Android `Network`. The Wi-Fi radio toggle alone does not indicate that a LAN address is ready. [Android network state](https://developer.android.com/develop/connectivity/network-ops/reading-network-state) · [NetworkCallback](https://developer.android.com/reference/android/net/ConnectivityManager.NetworkCallback)
+
+## 2026-11-19 — Voice capture, Quick Settings and foreground-service lifecycle
+
+- Voice notes use [MediaRecorder pause and resume](https://developer.android.com/reference/android/media/MediaRecorder) on Android API 24 and later. The recorder omits the pause interval from the output. Both commands must succeed before Flash changes the displayed capture state.
+- [TileService](https://developer.android.com/reference/android/service/quicksettings/TileService) receives tile taps independently of the activity. Flash applies the existing Hidden discovery mode and keeps the mesh engine available for calls, chat, and transfers.
+- Android API 31 restricts background foreground-service starts. API 34 applies foreground-service type and while-in-use permission checks. Call and PTT services promote from the current session state at entry, including the teardown edge after a start has already been requested. Radio handles refused starts. See [foreground-service launch](https://developer.android.com/develop/background-work/services/fgs/launch) and [foreground-service troubleshooting](https://developer.android.com/develop/background-work/services/fgs/troubleshooting).
+
+
+## 2026-11-15 — Radio Radar and PTT bridge research
+
+- **API 24+ planned Radar host.** Request `ACCESS_COARSE_LOCATION` from the user's Share Position action and use the existing AndroidX Core `LocationManagerCompat` one-shot API with cancellation. On API 31+, the user can grant approximate location even when precise is requested. Show the reported accuracy and handle denied access, disabled providers and stale fixes. Reception and the manual reference position require no location-provider access. [Android runtime location access](https://developer.android.com/develop/sensors-and-location/location/permissions/runtime) · [LocationManagerCompat](https://developer.android.com/reference/androidx/core/location/LocationManagerCompat)
+- **API 34+ foreground service restrictions.** The existing radio `connectedDevice` service covers the radio link. A future background location session needs the applicable `location` service type and permissions, with while-in-use launch checks. The first Radar sharing session stops requesting fixes and drops pending reports when the app leaves the foreground. [Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types#location) · [While-in-use restrictions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start)
+- **API 29+ audio input arbitration.** Android can silence an input when its capture priority loses. The proposed bridge routes decoded RF PCM into an explicit PTT session using the existing device seam, and leaves microphone ownership with the active local audio feature. Keep on-device coverage for incoming calls, revocation and loss of capture. [Android audio input sharing](https://developer.android.com/media/platform/sharing-audio-input) · [Radio modes proposal](plans/RADIO-MODES-IMPLEMENTATION.md)
+
+## 2026-11-15 — In-viewer video playback
+
+The Android viewer uses a `TextureView` attached with Media3 `Player.setVideoTextureView` on the player's application thread. The documented `SurfaceView` path can offer better frame timing and power use. The TextureView path supports the Compose overlay and viewport transform on the same view hierarchy. Playback pauses on Android host stop and releases as the video leaves composition. The app's minimum remains API 24. Glass uses a dark translucent tint on all versions, and the poster blur depends on platform rendering support. [Media3 surface types](https://developer.android.com/media/media3/ui/surface) · [Player lifecycle](https://developer.android.com/media/media3/exoplayer/hello-world) · [Compose blur API](https://developer.android.com/reference/kotlin/androidx/compose/ui/draw/package-summary#blur(androidx.compose.ui.Modifier,androidx.compose.ui.unit.Dp,androidx.compose.ui.draw.BlurredEdgeTreatment))
+
+## 2026-11-14 — Verified invite links
+
+- Android App Links verify the HTTPS hosts declared by the app against `/.well-known/assetlinks.json` on each host. The file must be served directly over trusted HTTPS and identify the distributed app's package and signing certificate. Android 11 (API 30) and earlier require all declared App Links hosts to verify. Android 12 (API 31) and later verify hosts independently. Flash uses separate exact path filters for group and enrollment, with browser and paste flows for Hubs outside those filters. [Add Android App Links](https://developer.android.com/training/app-links/add-applinks) · [Configure website associations](https://developer.android.com/training/app-links/configure-assetlinks)
+
+## 2026-11-14 — Transfer notification identity and expiry
+
+- Android matches PendingIntents using the intent's action, data and component, among other matching fields. Extras do not distinguish otherwise equivalent intents. Flash includes the full transfer ID in intent data so colliding hash values cannot retarget actions. [PendingIntent reference](https://developer.android.com/reference/android/app/PendingIntent)
+- Active notification enumeration is available from API 23. Flash uses the returned tag and ID to reconcile stale transfer cards on startup and migrate the untagged slots used by older builds. The app minimum is API 24. [NotificationManager reference](https://developer.android.com/reference/android/app/NotificationManager#getActiveNotifications())
+- API 26+ supports system-side expiry for completed cards. On API 24–25 the process schedules expiry while it is alive and the next startup reconciles any remaining card. [Notification.Builder reference](https://developer.android.com/reference/android/app/Notification.Builder#setTimeoutAfter(long))
+
 ## 2026-11-08 — Permissions for SDK hosts using transfers or radio
 
 - **Android 14 (API 34) and later:** An app targeting API 34+ must declare the permission for

@@ -11,9 +11,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 
 /**
- * `ActivityResultContracts.OpenDocument()`, byte-for-byte the picker `FlashConversationScreen` ran
- * before this shim existed — same contract, same persistable-permission call, same metadata query.
- * The only thing that moved is which file it lives in.
+ * `ActivityResultContracts.OpenMultipleDocuments()` — multi-pick SAF document picker matching
+ * desktop `JFileChooser(isMultiSelectionEnabled = true)`, with persistable read grants and
+ * metadata resolution for each selected URI.
  */
 @Composable
 public actual fun rememberFlashFilePickerLauncher(
@@ -22,8 +22,8 @@ public actual fun rememberFlashFilePickerLauncher(
     val context = LocalContext.current
     // `rememberLauncherForActivityResult` wraps `onPicked` in a `rememberUpdatedState` internally, so
     // a recomposition that supplies a new lambda is picked up without re-registering the contract.
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) {
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
+        for (uri in uris) {
             // Persist read access so the transfer can stream the file even after this screen dies.
             // `runCatching` because a provider is free to refuse, and a refusal must not lose the pick.
             val isPersistable = runCatching {
@@ -39,9 +39,8 @@ public actual fun rememberFlashFilePickerLauncher(
     return remember(launcher) {
         object : FlashFilePickerLauncher {
             override fun launch(mimeTypes: List<String>) {
-                // `OpenDocument` takes the MIME array verbatim: `arrayOf("image/*", "video/*")` for
-                // Gallery, `arrayOf("audio/*")` for Audio, `arrayOf("*/*")` otherwise. Flattening
-                // these to a single filter is exactly what adopting FileKit would have done.
+                // `OpenMultipleDocuments` takes the MIME array verbatim: `arrayOf("image/*", "video/*")` for
+                // Gallery, `arrayOf("audio/*")` for Audio, `arrayOf("*/*")` otherwise.
                 launcher.launch(mimeTypes.toTypedArray())
             }
         }

@@ -45,9 +45,13 @@ internal class PttCapture(
     private val running = AtomicBoolean(false)
     private val packetsEnabled = AtomicBoolean(false)
     private val lossReported = AtomicBoolean(false)
+    private val recorderLock = Any()
 
     @Volatile
     private var executor: java.util.concurrent.ExecutorService? = null
+
+    @Volatile
+    private var workerThread: Thread? = null
 
     @Volatile
     private var recorder: AudioRecord? = null
@@ -77,6 +81,7 @@ internal class PttCapture(
         executor = service
         val bytesPerPacket = actualRateHz * actualPacketMs / 1000 * 2
         service.execute {
+            workerThread = Thread.currentThread()
             val chunk = ByteArray(bytesPerPacket)
             var offset = 0
             try {
@@ -104,6 +109,7 @@ internal class PttCapture(
                 }
             } finally {
                 val unexpected = running.getAndSet(false)
+                workerThread = null
                 closeRecorder()
                 shutdownExecutorFromWorker()
                 if (unexpected && lossReported.compareAndSet(false, true)) {
@@ -128,14 +134,21 @@ internal class PttCapture(
         packetsEnabled.set(false)
         running.set(false)
         runCatching { recorder?.stop() }
-        closeRecorder()
         val service = executor
         if (service != null) {
             service.shutdown()
-            runCatching { service.awaitTermination(1L, TimeUnit.SECONDS) }
-            service.shutdownNow()
+            if (Thread.currentThread() !== workerThread) {
+                val terminated = runCatching { service.awaitTermination(1L, TimeUnit.SECONDS) }.getOrDefault(false)
+                if (!terminated) {
+                    service.shutdownNow()
+                    runCatching { service.awaitTermination(250L, TimeUnit.MILLISECONDS) }
+                }
+            } else {
+                service.shutdownNow()
+            }
             if (executor === service) executor = null
         }
+        closeRecorder()
     }
 
     private fun openRecorder(): OpenedRecorder? {
@@ -219,7 +232,11 @@ internal class PttCapture(
     }
 
     private fun closeRecorder() {
-        val current = recorder ?: return
+        val current = synchronized(recorderLock) {
+            val r = recorder ?: return
+            recorder = null
+            r
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             recordingCallback?.let { callback ->
                 runCatching { current.unregisterAudioRecordingCallback(callback) }
@@ -227,7 +244,6 @@ internal class PttCapture(
         }
         recordingCallback = null
         runCatching { current.release() }
-        if (recorder === current) recorder = null
     }
 
     private fun shutdownExecutorFromWorker() {

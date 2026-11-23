@@ -255,6 +255,31 @@ public data class HubInfo(
      */
     public val maxFileBytes: Long = 0L,
     public val serverVersion: String? = null,
+    /** HR9: True when the hub advertises off-LAN call signaling and ICE/TURN configuration. */
+    public val offLanCallingSupported: Boolean = false,
+    /** When false, clients must not link personal/local groups to this Hub. */
+    public val allowPersonalHubLink: Boolean = true,
+    /** Group E2EE policy: `E2EE_REQUIRED` (default) or `HUB_INSPECTABLE`. */
+    public val groupE2eeMode: String = com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_REQUIRED,
+)
+
+/** HR9: Authenticated short-lived ICE/TURN server entry for off-LAN WebRTC calls. */
+@FlashInternalApi
+@Serializable
+public data class HubIceServerDto(
+    public val urls: List<String>,
+    public val username: String = "",
+    public val credential: String = "",
+)
+
+/** `GET /api/v1/calls/ice-config` response (HR9). */
+@FlashInternalApi
+@Serializable
+public data class HubIceConfigDto(
+    public val offLanCallingSupported: Boolean = false,
+    public val mediaPolicy: String = "DIRECT_PREFERRED_RELAY_FALLBACK",
+    public val ttlSeconds: Long = 3600L,
+    public val iceServers: List<HubIceServerDto> = emptyList(),
 )
 
 

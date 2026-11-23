@@ -8,7 +8,7 @@ The `:core:common` module forms the root foundation of the Flash ecosystem. It d
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-common:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-common:v2.3.0-beta.1")
 }
 ```
 
@@ -37,11 +37,11 @@ public data class FlashDevice(
 public value class FlashDeviceId(public val value: String)
 
 public enum class FlashTransportType {
-    LAN, WIFI_DIRECT, WEBSOCKET, RELAY, MESH, UNKNOWN
+    LAN, WIFI_DIRECT, WEBSOCKET, RELAY, MESH, BLUETOOTH, UNKNOWN
 }
 
 public enum class FlashPeerPresence {
-    Online, Offline, Typing, Connecting
+    Online, Offline, Typing, Connecting, Reachable, RadioOnly
 }
 ```
 
@@ -64,7 +64,7 @@ public sealed interface FlashResult<out T> {
 
 Available functional extensions (top-level functions in `...core.common.result`; import them): `getOrNull()`, `getOrElse { }`, `map { }`, `flatMap { }`, `onSuccess { }`, `onFailure { }`, and `fold(onSuccess, onFailure)`.
 
-`FlashError` is a sealed interface with nine cases: `NetworkUnavailable`, `PeerUnavailable`, `ConnectionTimeout`, `ProtocolMismatch`, `TransferFailed`, `VerificationFailed`, `StorageError`, `Cancelled` and `Unknown`. It has **no common `message` property**; `when` over the cases (or print the data class) to get the detail.
+`FlashError` is a sealed interface with ten cases: `NetworkUnavailable`, `PeerUnavailable`, `ConnectionTimeout`, `ProtocolMismatch`, `TransferFailed`, `VerificationFailed`, `StorageError`, `Cancelled`, `Domain` (`code`, `message`, `details`), and `Unknown`. It has **no common `message` property**; `when` over the cases (or print the data class) to get the detail.
 
 ### 2.3 Performance & Hardware Tiering: `FlashPerformanceMode`
 Located in [`com.transfer.flash.core.common.perf.FlashPerformanceMode`](../../../../core/common/src/commonMain/kotlin/com/transfer/flash/core/common/perf/FlashPerformanceMode.kt):
@@ -73,17 +73,20 @@ Governs how much CPU, memory, radio airtime, and UI complexity a device is permi
 
 ```kotlin
 public enum class FlashPerformanceMode {
+    ULTRA_LOW,
     LOW,
     MEDIUM,
     HIGH;
 
+    public val isUltraLow: Boolean get() = this == ULTRA_LOW
     public val reduceMotion: Boolean get() = this != HIGH
     public val minimalChrome: Boolean get() = this != HIGH
+    public val ultraLowUi: Boolean get() = this == ULTRA_LOW
     public val video: FlashVideoProfile
     public val voice: FlashVoiceProfile
     public val transport: FlashTransportProfile
     public val transfer: FlashTransferProfile
-    public val key: String // stable persisted key ("low" / "medium" / "high")
+    public val key: String // stable persisted key ("ultra_low" / "low" / "medium" / "high")
 }
 ```
 
@@ -96,7 +99,7 @@ The profile classes carry the numbers: `FlashVideoProfile` (`captureWidth`, `cap
 | `annotation` | `@FlashInternalApi` (public for cross-module use, not API; a consumer needs `@OptIn`) and `@FlashExperimentalApi`. |
 | `logging` | `FlashLog`, `FlashLogger`, pluggable `FlashLogSink`, and `FlashProbe` (the evidence probes of ADR-087). |
 | `perf` | The profiles above plus `FlashPerformanceClassifier`, `MemoryGovernor`, `ThermalGovernor`, `FlashMotionPolicy`. |
-| `protocol` | Text framing and envelope helpers (`FlashProtocol`, `FlashTextFraming`, `FlashEnvelope`), `Base64` / `Base64Url`. |
+| `protocol` | Text framing and envelope helpers (`FlashProtocol`, `FlashTextFraming`, `FlashEnvelope`), `InviteAppLink` (HTTPS `/invite/group` and `/invite/enroll` wrapper/unwrapper, `flash://g/2/` Hub group token helpers), `Base64` / `Base64Url`. |
 | `time`, `id`, `concurrent`, `net` | `FlashTimeSource`, id and UUID generation, small lock and synchronized-collection helpers, `LinkChangeTracker`. |
 
 ---

@@ -81,7 +81,7 @@ public fun FlashSearchSectionHeader(
                 FlashText(
                     text = "See all",
                     style = typography.metadataEmphasis,
-                    color = colors.accentPrimary,
+                    color = colors.textLink,
                 )
             }
         }
@@ -102,7 +102,7 @@ public fun FlashMessageSearchResultRow(
         buildHighlightedMessageText(
             text = hit.snippet,
             query = query,
-            highlightColor = colors.accentPrimary.copy(alpha = 0.35f),
+            highlightColor = colors.accentFill.copy(alpha = 0.25f),
         )
     }
     Column(
@@ -159,7 +159,7 @@ public fun FlashFileSearchResultRow(
         buildHighlightedMessageText(
             text = hit.fileName,
             query = query,
-            highlightColor = colors.accentPrimary.copy(alpha = 0.35f),
+            highlightColor = colors.accentFill.copy(alpha = 0.25f),
         )
     }
     Row(
@@ -184,7 +184,7 @@ public fun FlashFileSearchResultRow(
             FlashText(
                 text = badge,
                 style = typography.metadataEmphasis,
-                color = colors.accentPrimary,
+                color = colors.textLink,
                 maxLines = 1,
             )
         }

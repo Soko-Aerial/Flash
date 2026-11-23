@@ -47,4 +47,40 @@ class AnnouncementClientContractTest {
         assertIs<FlashResult.Success<*>>(delta)
         assertTrue((delta as FlashResult.Success).value.items.any { it.title == "Later" })
     }
+
+    @Test
+    fun emptyInitialSyncFollowedByNewPostWithKnownEpochDeliversDeltaNotFullResync() = testApplication {
+        val db = ServerDatabase.inMemory()
+        val store = AnnouncementStore.open(db)
+        val tokens = BearerTokenStore()
+        val memberToken = tokens.issue(HubPrincipal("dev-reader", "member", "software", 100L)).first
+        routing {
+            announcementRoutes(store = store, principalResolver = BearerPrincipalResolver(tokens), router = null, limits = HubRateLimits.unlimited())
+        }
+        val api = RealHubAnnouncementsApi(httpClient = client, bearerSource = HubBearerSource { memberToken })
+
+        // 1. Initial sync on an empty hub: seq=0, fullResync=true, no items
+        val emptySync = (api.fetchFeed("http://localhost", since = 0L, limit = 100, epoch = null) as FlashResult.Success).value
+        assertEquals(0L, emptySync.seq)
+        assertTrue(emptySync.fullResync)
+        assertTrue(emptySync.items.isEmpty())
+
+        // 2. Another user publishes the first announcement on the Hub
+        store.createAnnouncement(scope = "org", departmentId = null, title = "First Real Post", body = "Important update", authorKind = "device", authorRef = "dev-author", authorName = "Admin", authorRole = "admin")
+
+        // 3. Returning client passes stored (seq=0, epoch=emptySync.epoch): Hub treats this as delta (fullResync=false)
+        val afterEmpty = (api.fetchFeed("http://localhost", since = emptySync.seq, limit = 100, epoch = emptySync.epoch) as FlashResult.Success).value
+        assertEquals(1L, afterEmpty.seq)
+        assertEquals(false, afterEmpty.fullResync)
+        assertEquals(listOf("First Real Post"), afterEmpty.items.map { it.title })
+
+        // 4. Newly enrolled client without prior epoch still gets a quiet initial fullResync snapshot
+        val freshClient = (api.fetchFeed("http://localhost", since = 0L, limit = 100, epoch = null) as FlashResult.Success).value
+        assertTrue(freshClient.fullResync)
+        assertEquals(listOf("First Real Post"), freshClient.items.map { it.title })
+
+        // 5. Stale epoch from an older hub history also forces fullResync=true
+        val staleEpoch = (api.fetchFeed("http://localhost", since = 0L, limit = 100, epoch = "old-epoch-id") as FlashResult.Success).value
+        assertTrue(staleEpoch.fullResync)
+    }
 }

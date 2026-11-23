@@ -192,6 +192,12 @@ public class PttSessionEngine(
 
     @Volatile
     private var pttStartPending: Boolean = false
+
+    @Volatile
+    private var isShutdown: Boolean = false
+
+    @Volatile
+    private var shutdownSignaled: Boolean = false
     private val voiceNoteGate = PttLock()
 
     private val audioOut = Channel<OutPacket>(64, BufferOverflow.DROP_OLDEST)
@@ -201,6 +207,7 @@ public class PttSessionEngine(
      * the toggle itself runs async. Debouncing lives with the caller.
      */
     override public fun onPttButton(): PttPressOutcome {
+        if (isShutdown) return PttPressOutcome.NO_PEERS
         // RVW22 F59: the floor's collision tie-break compares this device's id with the other talker's
         // (`holderId`), so a press with no id cannot be resolved: both sides would keep the floor and
         // transmit over each other. There is nothing to talk to yet either, so this is the NO_PEERS
@@ -371,38 +378,44 @@ public class PttSessionEngine(
                 )
                 is PttSessionFrame.Heartbeat -> {
                     dispatchIo(PttFloorEvent.RemoteActivity(frame.sessionId, peerId, now))
-                    val current = state.value as? PttFloorState.Listening
-                    if (
-                        current != null && current.sessionId == frame.sessionId &&
-                        current.holderId == peerId && self != null
-                    ) {
-                        lastHbRttMs = frame.rttMs
-                        withContext(Dispatchers.IO) {
-                            sendControl(
-                                peerId,
-                                PttSessionCodec.encode(
-                                    PttSessionFrame.HeartbeatAck(
-                                        frame.sessionId,
-                                        self,
-                                        frame.seq,
-                                        now,
-                                    ),
+                    val ackText = commandMutex.withLock {
+                        val current = floor as? PttFloorState.Listening
+                        if (
+                            !isShutdown && current != null && current.sessionId == frame.sessionId &&
+                            current.holderId == peerId && self != null
+                        ) {
+                            lastHbRttMs = frame.rttMs
+                            refreshPttSessionStats()
+                            PttSessionCodec.encode(
+                                PttSessionFrame.HeartbeatAck(
+                                    frame.sessionId,
+                                    self,
+                                    frame.seq,
+                                    now,
                                 ),
                             )
+                        } else {
+                            null
                         }
-                        refreshPttSessionStats()
+                    }
+                    if (ackText != null) {
+                        withContext(Dispatchers.IO) {
+                            sendControl(peerId, ackText)
+                        }
                     }
                 }
                 is PttSessionFrame.HeartbeatAck -> {
-                    val current = state.value as? PttFloorState.Talking
-                    if (
-                        current != null && current.sessionId == frame.sessionId &&
-                        peerId in members
-                    ) {
-                        sentHb.take(frame.seq, peerId)?.let { sentAt ->
-                            val sample = (now - sentAt).coerceAtLeast(0L)
-                            lastRttMs = lastRttMs?.let { (it + sample) / 2 } ?: sample
-                            refreshPttSessionStats()
+                    commandMutex.withLock {
+                        val current = floor as? PttFloorState.Talking
+                        if (
+                            !isShutdown && current != null && current.sessionId == frame.sessionId &&
+                            peerId in members
+                        ) {
+                            sentHb.take(frame.seq, peerId)?.let { sentAt ->
+                                val sample = (now - sentAt).coerceAtLeast(0L)
+                                lastRttMs = lastRttMs?.let { (it + sample) / 2 } ?: sample
+                                refreshPttSessionStats()
+                            }
                         }
                     }
                 }
@@ -451,7 +464,14 @@ public class PttSessionEngine(
 
     /** A phone call went active: mic exclusivity + ADR-026 quiet tear any session down. */
     override public fun onCallStarted() {
+        if (isShutdown) return
         scope.launch { dispatchIo(PttFloorEvent.CallStarted) }
+    }
+
+    /** A peer's transport session dropped: immediately frees a stalled listening floor or updates fan-out. */
+    override public fun onPeerDisconnected(peerId: String) {
+        if (peerId.isBlank() || isShutdown) return
+        scope.launch { dispatchIo(PttFloorEvent.PeerDisconnected(peerId)) }
     }
 
     /**
@@ -485,34 +505,96 @@ public class PttSessionEngine(
 
     /** Local stop entry for notification actions / UI (Phase 2+). Safe from any thread. */
     override public fun stopLocal() {
+        if (isShutdown) return
         scope.launch { dispatchIo(PttFloorEvent.LocalStopPress) }
     }
 
     /** One-shot user notice (Phase 3 toasts). Safe from any thread. */
     override public fun postNotice(text: String) {
+        if (isShutdown) return
         scope.launch { _notices.emit(text) }
     }
 
     override public fun shutdown() {
+        if (isShutdown) return
+        isShutdown = true
         sessionJobs?.cancel()
         sessionJobs = null
         sessionJobKey = null
+        controlInbox.close()
+        if (commandMutex.tryLock()) {
+            try {
+                val prevFloor = floor
+                val prevMembers = members
+                val prevHolder = holderId
+                val self = localId()
+                teardownDevicesAndStateLocked()
+                dispatchShutdownSignaling(prevFloor, prevMembers, prevHolder, self)
+            } finally {
+                commandMutex.unlock()
+            }
+        } else {
+            // A command is mid-flight under commandMutex; snapshot active session state before
+            // resetting UI/devices so Stop/Leave still goes out even if tryLock lost to executeLocked's tail.
+            val prevFloor = floor
+            val prevMembers = members
+            val prevHolder = holderId
+            val self = localId()
+            teardownDevicesAndStateLocked()
+            dispatchShutdownSignaling(prevFloor, prevMembers, prevHolder, self)
+        }
+        scope.cancel()
+    }
+
+    private fun teardownDevicesAndStateLocked() {
         runCatching { capture?.stop() }
         runCatching { playout?.stop() }
         capture = null
         playout = null
         holderId = null
         members = emptyList()
+        sentHb.clear()
+        lastRttMs = null
+        lastHbRttMs = null
         voiceNoteLeaseId = null
         pttStartPending = false
-        // Teardown, not a transition: no wire sends on the way out (orphaned receivers
-        // are covered by their heartbeat timeout). Resetting the flows lets the session
-        // service observe Idle and stop itself.
         floor = PttFloorState.Idle
         _state.value = PttFloorState.Idle
         _stats.value = null
-        controlInbox.close()
-        scope.cancel()
+    }
+
+    private fun dispatchShutdownSignaling(
+        prevFloor: PttFloorState,
+        prevMembers: List<String>,
+        prevHolder: String?,
+        self: String?,
+    ) {
+        if (shutdownSignaled) return
+        val selfId = self?.takeIf { it.isNotBlank() } ?: return
+        when (prevFloor) {
+            is PttFloorState.Talking -> if (prevFloor.announced && prevMembers.isNotEmpty()) {
+                shutdownSignaled = true
+                val stop = PttSessionCodec.encode(
+                    PttSessionFrame.Stop(prevFloor.sessionId, selfId, SystemTimeSource.nowMs()),
+                )
+                CoroutineScope(Dispatchers.IO).launch {
+                    prevMembers.forEach { runCatching { sendControl(it, stop) } }
+                }
+            }
+            is PttFloorState.Listening -> {
+                val targetHolder = prevHolder ?: prevFloor.holderId.takeIf { it.isNotBlank() }
+                if (targetHolder != null) {
+                    shutdownSignaled = true
+                    val leave = PttSessionCodec.encode(
+                        PttSessionFrame.Leave(prevFloor.sessionId, selfId, SystemTimeSource.nowMs()),
+                    )
+                    CoroutineScope(Dispatchers.IO).launch {
+                        runCatching { sendControl(targetHolder, leave) }
+                    }
+                }
+            }
+            is PttFloorState.Idle -> Unit
+        }
     }
 
     private suspend fun dispatch(event: PttFloorEvent) {
@@ -525,12 +607,25 @@ public class PttSessionEngine(
 
     /** commandMutex must be held; internal effects recurse here without trying to re-lock it. */
     private suspend fun processLocked(event: PttFloorEvent) {
+        if (isShutdown) {
+            teardownDevicesAndStateLocked()
+            return
+        }
         if (event is PttFloorEvent.LocalPress && floor is PttFloorState.Idle && refuseQueuedPressLocked()) return
         val transition = PttFloorMachine.reduce(floor, event)
         floor = transition.state
         _state.value = transition.state
         refreshPttSessionStats()
         executeLocked(transition)
+        if (isShutdown) {
+            val prevFloor = floor
+            val prevMembers = members
+            val prevHolder = holderId
+            val self = localId()
+            teardownDevicesAndStateLocked()
+            dispatchShutdownSignaling(prevFloor, prevMembers, prevHolder, self)
+            return
+        }
         // An internal failure may have recursively reduced to a newer state. Only the innermost,
         // still-current transition owns the loop set; never restart jobs for an abandoned state.
         if (floor == transition.state) syncJobs(transition.state)
@@ -616,7 +711,13 @@ public class PttSessionEngine(
             },
             onCaptureLost = {
                 scope.launch {
-                    if (capture === slot[0]) dispatchIo(PttFloorEvent.MicDenied)
+                    withContext(commandLane) {
+                        commandMutex.withLock {
+                            if (!isShutdown && capture === slot[0]) {
+                                processLocked(PttFloorEvent.MicDenied)
+                            }
+                        }
+                    }
                 }
             },
         )
@@ -624,6 +725,10 @@ public class PttSessionEngine(
         capture = instance
         when (val started = instance.start()) {
             is PttCaptureStart.Started -> {
+                if (isShutdown) {
+                    runCatching { instance.stop() }
+                    return
+                }
                 sessionRateHz = started.actualRateHz
                 sessionPacketMs = started.actualPacketMs
                 val self = localId()?.takeIf { it.isNotBlank() }
@@ -644,6 +749,13 @@ public class PttSessionEngine(
                 )
                 val announcedMembers = members.filter { sendControl(it, start) }
                 members = announcedMembers
+                if (isShutdown) {
+                    if (announcedMembers.isNotEmpty()) {
+                        floor = (floor as? PttFloorState.Talking)?.copy(announced = true) ?: floor
+                    }
+                    runCatching { instance.stop() }
+                    return
+                }
                 if (announcedMembers.isEmpty()) {
                     FlashLog.w(TAG, "PTT start reached no members — ending session=$sessionId")
                     processLocked(PttFloorEvent.LocalStopPress)
@@ -698,9 +810,13 @@ public class PttSessionEngine(
             onAmplitude = { refreshPttSessionStatsIfDue() },
             onPlayoutLost = {
                 scope.launch {
-                    if (playout === slot[0]) {
-                        dispatchIo(PttFloorEvent.LocalStopPress)
-                        _notices.emit("Listening stopped (audio fault)")
+                    withContext(commandLane) {
+                        commandMutex.withLock {
+                            if (!isShutdown && playout === slot[0]) {
+                                processLocked(PttFloorEvent.LocalStopPress)
+                                _notices.emit("Listening stopped (audio fault)")
+                            }
+                        }
                     }
                 }
             },
@@ -711,6 +827,10 @@ public class PttSessionEngine(
             if (playout === instance) playout = null
             processLocked(PttFloorEvent.LocalStopPress)
             _notices.emit("Could not start listening")
+            return
+        }
+        if (isShutdown) {
+            runCatching { instance.stop() }
             return
         }
         FlashLog.i(TAG, "Listening session=${effect.sessionId} holder=$holder rate=$sessionRateHz")
@@ -794,17 +914,23 @@ public class PttSessionEngine(
     }
 
     private suspend fun CoroutineScope.heartbeatLoop(sessionId: String) {
-        while (isActive) {
+        while (isActive && !isShutdown) {
             delay(HEARTBEAT_MS)
-            val talking = floor as? PttFloorState.Talking
-            if (talking == null || talking.sessionId != sessionId) break
-            val self = localId() ?: break
+            val snapshot = commandMutex.withLock {
+                val talking = floor as? PttFloorState.Talking
+                if (isShutdown || talking == null || talking.sessionId != sessionId) {
+                    null
+                } else {
+                    Triple(members, lastRttMs, localId())
+                }
+            } ?: break
+            val (recipients, rttSnapshot, self) = snapshot
+            if (self == null) break
             val seq = hbLock.withLock { ++hbSeq }
             val now = nowMs()
-            val recipients = members
             sentHb.record(seq, recipients, now)
             val heartbeat = PttSessionCodec.encode(
-                PttSessionFrame.Heartbeat(sessionId, self, seq, now, lastRttMs),
+                PttSessionFrame.Heartbeat(sessionId, self, seq, now, rttSnapshot),
             )
             withContext(Dispatchers.IO) {
                 recipients.forEach { sendControl(it, heartbeat) }

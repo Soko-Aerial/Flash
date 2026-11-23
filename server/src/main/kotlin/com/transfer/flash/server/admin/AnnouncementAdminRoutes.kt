@@ -11,6 +11,7 @@ import com.transfer.flash.core.hubprotocol.rest.PostAnnouncementRequestDto
 import com.transfer.flash.core.hubprotocol.rest.UpdateAnnouncementRequestDto
 import com.transfer.flash.server.announcements.AnnouncementConflictException
 import com.transfer.flash.server.announcements.AnnouncementForbiddenException
+import com.transfer.flash.server.announcements.AnnouncementNotFoundException
 import com.transfer.flash.server.announcements.AnnouncementPinLimitException
 import com.transfer.flash.server.announcements.AnnouncementStore
 import com.transfer.flash.server.announcements.AnnouncementText
@@ -68,22 +69,30 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 return@post
             }
             if (req.scope == "department") {
-                if (req.departmentId.isNullOrBlank()) {
+                val deptId = req.departmentId
+                if (deptId.isNullOrBlank()) {
                     call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "departmentId is required for department scope")
                     return@post
                 }
-                if (!isOrgAdmin && !scope.allows(req.departmentId)) {
+                if (!isOrgAdmin && !scope.allows(deptId)) {
                     call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Department heads may only preview for their assigned department")
                     return@post
                 }
+                if (d.directory.getDepartment(deptId) == null) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Unknown departmentId")
+                    return@post
+                }
+            } else if (req.scope != "org") {
+                call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "scope must be 'org' or 'department'")
+                return@post
             }
 
-            val deptName = req.departmentId?.let { d.directory.getDepartment(it)?.name ?: it }
+            val deptName = if (req.scope == "department") req.departmentId?.let { d.directory.getDepartment(it)?.name ?: it } else null
             val audienceScope = if (req.scope == "org") "Entire organisation" else "Department: ${deptName ?: req.departmentId}"
             val recipientCount = if (req.scope == "org") {
                 d.identities.activeDeviceCount().toInt()
             } else {
-                req.departmentId?.let { deptId -> d.identities.listDevices(department = deptId).size } ?: 0
+                req.departmentId?.let { deptId -> d.identities.activeDeviceIds(deptId).size } ?: 0
             }
 
             call.respondJson(
@@ -190,12 +199,17 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
             }
 
             if (req.scope == "department") {
-                if (req.departmentId.isNullOrBlank()) {
+                val deptId = req.departmentId
+                if (deptId.isNullOrBlank()) {
                     call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "departmentId is required for department scope")
                     return@post
                 }
-                if (!isOrgAdmin && !scope.allows(req.departmentId)) {
+                if (!isOrgAdmin && !scope.allows(deptId)) {
                     call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Department heads may only post to their assigned department")
+                    return@post
+                }
+                if (d.directory.getDepartment(deptId) == null) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Unknown departmentId")
                     return@post
                 }
             } else if (req.scope != "org") {
@@ -214,7 +228,7 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 store.createAnnouncement(
                     clientRequestId = req.clientRequestId.ifBlank { UUID.randomUUID().toString() },
                     scope = req.scope,
-                    departmentId = req.departmentId,
+                    departmentId = if (req.scope == "org") null else req.departmentId,
                     title = cleaned.title,
                     body = cleaned.body,
                     authorKind = "console",
@@ -319,6 +333,8 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
             } catch (_: AnnouncementForbiddenException) {
                 call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to edit this announcement")
                 return@put
+            } catch (_: AnnouncementNotFoundException) {
+                return@put call.notFound()
             } catch (e: AnnouncementPinLimitException) {
                 call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
                 return@put
@@ -379,6 +395,8 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
             } catch (_: AnnouncementForbiddenException) {
                 call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to delete this announcement")
                 return@delete
+            } catch (_: AnnouncementNotFoundException) {
+                return@delete call.notFound()
             }
             d.router?.broadcastAnnouncement(
                 RelayFrame.AnnouncementEvent(
@@ -424,6 +442,8 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
             } catch (_: AnnouncementForbiddenException) {
                 call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to pin this announcement")
                 return@post
+            } catch (_: AnnouncementNotFoundException) {
+                return@post call.notFound()
             } catch (e: AnnouncementPinLimitException) {
                 call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
                 return@post
@@ -477,6 +497,8 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
             } catch (_: AnnouncementForbiddenException) {
                 call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to unpin this announcement")
                 return@post
+            } catch (_: AnnouncementNotFoundException) {
+                return@post call.notFound()
             }
             d.router?.broadcastAnnouncement(
                 RelayFrame.AnnouncementEvent(

@@ -57,6 +57,12 @@ public interface FlashPtt {
     public fun onCallStarted()
 
     /**
+     * A peer's transport session disconnected. Immediately releases the listening floor if that
+     * peer held it, and removes the peer from the active talker fan-out.
+     */
+    public fun onPeerDisconnected(peerId: String) {}
+
+    /**
      * Voice-message capture gate. Returns a lease id when no PTT/call/other voice note holds the
      * microphone, or null when the microphone is already claimed. Only the owner of the returned
      * id can release it.

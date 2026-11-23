@@ -280,9 +280,11 @@ try {
 } finally { Pop-Location }
 
 # --- Collect outputs -------------------------------------------------------------------------
-$dist = Join-Path $RepoRoot "dist\$appVersion"
-if ($doDesktop -and -not $doAndroid) { $dist = Join-Path $RepoRoot "dist\desktop-$deskVersion" }
-New-Item -ItemType Directory -Force -Path $dist | Out-Null
+$distRoot = (New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'dist')).FullName
+$folderName = if (-not $doAndroid) { "desktop-$deskVersion" } elseif (-not $doDesktop) { "android-$appVersion" } else { $appVersion }
+$destination = Join-Path $distRoot $folderName
+$stageRoot = (New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot "build\release-staging\$([guid]::NewGuid())")).FullName
+$dist = (New-Item -ItemType Directory -Path (Join-Path $stageRoot 'candidate')).FullName
 $produced = @()
 
 if ($doAndroid) {
@@ -373,14 +375,34 @@ if ($doDesktop) {
     }
 }
 
-# Checksums for everything in the folder, so a re-run for one target keeps the others listed.
-$sums = Get-ChildItem -LiteralPath $dist -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name |
+# Only this invocation's verified artifacts enter the candidate manifest.
+$sums = $produced | ForEach-Object { Get-Item -LiteralPath $_ } | Sort-Object Name |
     ForEach-Object { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLower(), $_.Name }
 $sums | Set-Content -LiteralPath (Join-Path $dist 'SHA256SUMS.txt') -Encoding ASCII
 
+# Keep the previous candidate recoverable if replacing it. Never mix files from the two runs.
+$previous = Join-Path $stageRoot 'previous'
+if (Test-Path -LiteralPath $destination) {
+    $existing = Get-Item -LiteralPath $destination
+    if (-not $existing.PSIsContainer -or $existing.Parent.FullName -ne $distRoot -or
+        ($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        Fail "Unsafe release output directory: $destination"
+    }
+    [System.IO.Directory]::Move($existing.FullName, $previous)
+}
+try {
+    [System.IO.Directory]::Move($dist, $destination)
+} catch {
+    if ((Test-Path -LiteralPath $previous) -and -not (Test-Path -LiteralPath $destination)) {
+        [System.IO.Directory]::Move($previous, $destination)
+    }
+    throw
+}
+
 Write-Step ("Done in {0:mm\:ss}" -f ((Get-Date) - $started))
-foreach ($f in $produced) {
+foreach ($artifact in $produced) {
+    $f = Join-Path $destination (Split-Path -Leaf $artifact)
     Write-Note ("{0,-45} {1,8:N1} MB" -f (Split-Path -Leaf $f), ((Get-Item -LiteralPath $f).Length / 1MB))
 }
-Write-Note "Folder: $dist"
+Write-Note "Folder: $destination"
 if ($doDesktop) { Write-Note "The Windows installers are not code-signed: SmartScreen will say 'unknown publisher'." }

@@ -92,6 +92,28 @@ public interface FlashChatRepository {
     public suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
+    /** Creates an organization/department group on the Hub (`POST /api/v1/groups`) for ORG_ADMIN / DEPT_ADMIN users. */
+    public suspend fun createHubGroup(
+        name: String,
+        memberIds: Set<String> = emptySet(),
+        departmentId: String = "",
+    ): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Hub group creation unavailable"))
+
+    /** Creates a group with a stable, caller-owned request id for retries of the same draft. */
+    public suspend fun createHubGroupForRequest(
+        name: String,
+        memberIds: Set<String>,
+        requestId: String,
+        departmentId: String = "",
+    ): FlashResult<String> = createHubGroup(name, memberIds, departmentId)
+
+    /** Returns true when this device's directory role allows creating Hub groups (ORG_ADMIN or DEPT_ADMIN). */
+    public suspend fun canCreateHubGroup(): Boolean = false
+
+    /** Returns true when [groupId] is a Hub-managed directory group. */
+    public fun isHubGroup(groupId: String): Boolean = false
+
     /** Creates a v2 group with only the creator to be shared via invite link (GM-4). */
     public suspend fun createGroupForInvite(name: String): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
@@ -143,7 +165,7 @@ public interface FlashChatRepository {
      * The user chose to continue sending to [peerDeviceId] through the hub after their sealing key changed (ADR-126).
      * Returns false when nothing was waiting. Messages held back for that colleague are sent right away.
      */
-    public suspend fun confirmHubKeyChange(peerDeviceId: String): Boolean = false
+    public suspend fun confirmHubKeyChange(peerDeviceId: String, expectedFingerprint: String): Boolean = false
 
     /** Approves a pending join request for [groupId] and issues a certificate (GM-4). Admin-only. */
     public suspend fun approveJoinRequest(groupId: String, subjectId: String): FlashResult<Unit> =

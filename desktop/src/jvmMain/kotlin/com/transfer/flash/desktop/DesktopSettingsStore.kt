@@ -9,6 +9,8 @@ import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.Properties
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * Data model for persisted desktop settings.
@@ -55,6 +57,8 @@ public data class DesktopSettings(
     val chatWallpaperCustom: String = FlashChatWallpaper.DefaultCustomColour,
     /** ADR-121: let the organisation hub carry readable chat text to colleagues who are not reachable directly. Default FALSE. */
     val hubContentViaHub: Boolean = false,
+    /** HR7: whether new company/department announcement notifications are shown. Default TRUE. */
+    val announcementNotifications: Boolean = true,
 )
 
 /**
@@ -65,7 +69,20 @@ public data class DesktopSettings(
  * is "the choice survives restart", and a `Properties` file under `~/.flash/` is a faithful
  * equivalent. State layout: `~/.flash/settings.properties`.
  */
-internal class DesktopSettingsStore(private val stateDir: File) {
+internal class DesktopSettingsStore(
+    private val stateDir: File,
+    private val syncAutoStart: (Boolean) -> Unit = { enabled ->
+        if (DesktopAutoStartManager.isSupported) {
+            DesktopAutoStartManager.setAutoStart(enabled)
+        }
+    },
+    private val syncContextMenu: (Boolean, File) -> Unit = { enabled, dir ->
+        if (WindowsContextMenuManager.isSupported) {
+            WindowsContextMenuManager.setContextMenuEnabled(enabled, dir)
+        }
+    },
+    private val osSyncExecutor: Executor = defaultOsSyncExecutor,
+) {
 
     private val file = File(stateDir, "settings.properties")
     private val lock = Any()
@@ -118,46 +135,71 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             chatWallpaperCustom = props.getProperty(KEY_CHAT_WALLPAPER_CUSTOM)
                 ?: FlashChatWallpaper.DefaultCustomColour,
             hubContentViaHub = props.getProperty(KEY_HUB_CONTENT_VIA_HUB, "false").toBoolean(),
+            announcementNotifications = props.getProperty(KEY_ANNOUNCEMENT_NOTIFICATIONS, "true").toBoolean(),
         )
     }
 
     /** Records all desktop settings to the properties file. */
-    fun saveSettings(settings: DesktopSettings) = synchronized(lock) {
-        val props = load()
-        props.setProperty(KEY_THEME_MODE, themeModeToKey(settings.themeMode))
-        props.setProperty(KEY_DISCOVERY_MODE, settings.discoveryMode.name)
-        props.setProperty(KEY_SAVE_LOCATION, settings.saveLocation)
-        props.setProperty(KEY_AUTO_DOWNLOAD_VOICE, settings.autoDownloadVoice.toString())
-        props.setProperty(KEY_AUTO_DOWNLOAD_IMAGE, settings.autoDownloadImage.toString())
-        props.setProperty(KEY_AUTO_DOWNLOAD_VIDEO, settings.autoDownloadVideo.toString())
-        props.setProperty(KEY_AUTO_DOWNLOAD_FILE, settings.autoDownloadFile.toString())
-        props.setProperty(KEY_PRIORITISE_VOICE_QUALITY, settings.prioritiseVoiceQuality.toString())
-        props.setProperty(KEY_SMALLER_VIDEO_FOR_MANY, settings.smallerVideoForMany.toString())
-        props.setProperty(KEY_DYNAMIC_ACCENT, settings.dynamicAccent.toString())
-        props.setProperty(KEY_CLOSE_TO_TRAY, settings.closeToTray.toString())
-        props.setProperty(KEY_SHOW_NOTIFICATIONS, settings.showNotifications.toString())
-        props.setProperty(KEY_AUTO_START_ON_BOOT, settings.autoStartOnBoot.toString())
-        props.setProperty(KEY_WINDOWS_CONTEXT_MENU, settings.windowsContextMenu.toString())
-        props.setProperty(KEY_UI_SCALE, settings.uiScale.coerceIn(0.75f, 1.5f).toString())
-        props.setProperty(KEY_INCLUDE_VIRTUAL_ADAPTERS, settings.includeVirtualAdapters.toString())
-        props.setProperty(KEY_GROUP_SWARM_ENABLED, settings.groupSwarmEnabled.toString())
-        props.setProperty(KEY_SWARM_HELP_SHARE, settings.swarmHelpShare.toString())
-        props.setProperty(KEY_SWARM_KEEP_FINISHED_FILES, settings.swarmKeepFinishedFiles.toString())
-        props.setProperty(KEY_LAUNCH_ANIMATION, settings.launchAnimation.toString())
-        props.setProperty(KEY_CHAT_WALLPAPER, settings.chatWallpaper.storageKey)
-        props.setProperty(KEY_CHAT_WALLPAPER_CUSTOM, settings.chatWallpaperCustom)
-        props.setProperty(KEY_HUB_CONTENT_VIA_HUB, settings.hubContentViaHub.toString())
-        if (settings.performanceMode != null) {
-            props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
-        } else {
-            props.remove(KEY_PERFORMANCE_MODE)
+    fun saveSettings(settings: DesktopSettings) {
+        var shouldSyncAutoStart = false
+        var shouldSyncContextMenu = false
+        synchronized(lock) {
+            val props = load()
+            val hasAutoStartKey = props.containsKey(KEY_AUTO_START_ON_BOOT)
+            val prevAutoStart = props.getProperty(KEY_AUTO_START_ON_BOOT, "false").toBoolean()
+            val hasContextMenuKey = props.containsKey(KEY_WINDOWS_CONTEXT_MENU)
+            val prevContextMenu = props.getProperty(KEY_WINDOWS_CONTEXT_MENU, "true").toBoolean()
+
+            shouldSyncAutoStart = if (hasAutoStartKey) {
+                prevAutoStart != settings.autoStartOnBoot
+            } else {
+                settings.autoStartOnBoot
+            }
+            shouldSyncContextMenu = if (hasContextMenuKey) {
+                prevContextMenu != settings.windowsContextMenu
+            } else {
+                true
+            }
+
+            props.setProperty(KEY_THEME_MODE, themeModeToKey(settings.themeMode))
+            props.setProperty(KEY_DISCOVERY_MODE, settings.discoveryMode.name)
+            props.setProperty(KEY_SAVE_LOCATION, settings.saveLocation)
+            props.setProperty(KEY_AUTO_DOWNLOAD_VOICE, settings.autoDownloadVoice.toString())
+            props.setProperty(KEY_AUTO_DOWNLOAD_IMAGE, settings.autoDownloadImage.toString())
+            props.setProperty(KEY_AUTO_DOWNLOAD_VIDEO, settings.autoDownloadVideo.toString())
+            props.setProperty(KEY_AUTO_DOWNLOAD_FILE, settings.autoDownloadFile.toString())
+            props.setProperty(KEY_PRIORITISE_VOICE_QUALITY, settings.prioritiseVoiceQuality.toString())
+            props.setProperty(KEY_SMALLER_VIDEO_FOR_MANY, settings.smallerVideoForMany.toString())
+            props.setProperty(KEY_DYNAMIC_ACCENT, settings.dynamicAccent.toString())
+            props.setProperty(KEY_CLOSE_TO_TRAY, settings.closeToTray.toString())
+            props.setProperty(KEY_SHOW_NOTIFICATIONS, settings.showNotifications.toString())
+            props.setProperty(KEY_AUTO_START_ON_BOOT, settings.autoStartOnBoot.toString())
+            props.setProperty(KEY_WINDOWS_CONTEXT_MENU, settings.windowsContextMenu.toString())
+            props.setProperty(KEY_UI_SCALE, settings.uiScale.coerceIn(0.75f, 1.5f).toString())
+            props.setProperty(KEY_INCLUDE_VIRTUAL_ADAPTERS, settings.includeVirtualAdapters.toString())
+            props.setProperty(KEY_GROUP_SWARM_ENABLED, settings.groupSwarmEnabled.toString())
+            props.setProperty(KEY_SWARM_HELP_SHARE, settings.swarmHelpShare.toString())
+            props.setProperty(KEY_SWARM_KEEP_FINISHED_FILES, settings.swarmKeepFinishedFiles.toString())
+            props.setProperty(KEY_LAUNCH_ANIMATION, settings.launchAnimation.toString())
+            props.setProperty(KEY_CHAT_WALLPAPER, settings.chatWallpaper.storageKey)
+            props.setProperty(KEY_CHAT_WALLPAPER_CUSTOM, settings.chatWallpaperCustom)
+            props.setProperty(KEY_HUB_CONTENT_VIA_HUB, settings.hubContentViaHub.toString())
+            props.setProperty(KEY_ANNOUNCEMENT_NOTIFICATIONS, settings.announcementNotifications.toString())
+            if (settings.performanceMode != null) {
+                props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
+            } else {
+                props.remove(KEY_PERFORMANCE_MODE)
+            }
+            save(props)
         }
-        save(props)
-        if (DesktopAutoStartManager.isSupported) {
-            DesktopAutoStartManager.setAutoStart(settings.autoStartOnBoot)
-        }
-        if (WindowsContextMenuManager.isSupported) {
-            WindowsContextMenuManager.setContextMenuEnabled(settings.windowsContextMenu, stateDir)
+        // Run registry subprocesses off the caller/UI thread and only when OS-backed flags actually change.
+        if (shouldSyncAutoStart || shouldSyncContextMenu) {
+            val autoStart = settings.autoStartOnBoot
+            val contextMenu = settings.windowsContextMenu
+            osSyncExecutor.execute {
+                if (shouldSyncAutoStart) syncAutoStart(autoStart)
+                if (shouldSyncContextMenu) syncContextMenu(contextMenu, stateDir)
+            }
         }
     }
 
@@ -180,8 +222,12 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         FlashSettingsMath.resolveDarkTheme(mode = mode, systemDark = systemDark)
 
     internal companion object {
+        private val defaultOsSyncExecutor: Executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "flash-settings-os-sync").apply { isDaemon = true }
+        }
         const val KEY_THEME_MODE: String = "theme_mode"
         const val KEY_HUB_CONTENT_VIA_HUB: String = "hub_content_via_hub"
+        const val KEY_ANNOUNCEMENT_NOTIFICATIONS: String = "announcement_notifications"
         const val KEY_DISCOVERY_MODE: String = "discovery_mode"
         const val KEY_SAVE_LOCATION: String = "save_location"
         const val KEY_AUTO_DOWNLOAD_VOICE: String = "auto_download_voice"

@@ -10,8 +10,8 @@ To compile or consume Flash modules, ensure your environment meets the following
 
 | Tool / Runtime | Required Version | Purpose |
 |---|---|---|
-| **JDK** | JDK 17 or JDK 21 | Host Java runtime and Gradle build execution |
-| **Android SDK** | `compileSdk 35` (core) / `37` (UI), `minSdk 24` | Android platform libraries |
+| **JDK** | JDK 17 (JitPack / AGP floor), JDK 21 (runtime / desktop sample), or local JDK 25 | Host Java runtime and Gradle build execution. Local builds pin JDK 25 in `gradle/gradle-daemon-jvm.properties`; JitPack removes that file (`jitpack.yml`) and builds on `openjdk17`. |
+| **Android SDK** | `compileSdk 35` (`:core:*`) / `37` (`:ui:*`, `:app`), `minSdk 24` (`:app` `targetSdk 36`) | Android platform libraries |
 | **Kotlin** | `2.2.10` | Language compiler with KMP multiplatform support |
 | **Gradle / AGP** | Gradle `9.5.0` (the repo wrapper), AGP `9.3.1` | Build system (a consumer only needs a Gradle version its own AGP supports) |
 | **Android Studio / IntelliJ** | Ladybug / 2024.2+ | Recommended IDE with Compose preview support |
@@ -33,7 +33,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") } // Flash artifacts (com.github.Soko-Aerial.Flash:<module>:v2.2.0-beta.3)
+        maven { url = uri("https://jitpack.io") } // Flash artifacts (com.github.Soko-Aerial.Flash:<module>:v2.3.0-beta.1)
         // mavenLocal() // only for a local `publishToMavenLocal` build (group com.transfer.flash)
     }
 }
@@ -50,9 +50,9 @@ Calling and [radio](../modules/core/core-radio.md) have separate dependencies an
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
-    implementation("com.github.Soko-Aerial.Flash:ui-chat:v2.2.0-beta.3")     // Optional: If Jetpack Compose UI is needed
-    implementation("com.github.Soko-Aerial.Flash:ui-theme:v2.2.0-beta.3")    // Design tokens and styling
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.3.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:ui-chat:v2.3.0-beta.1")     // Optional: If Jetpack Compose UI is needed
+    implementation("com.github.Soko-Aerial.Flash:ui-theme:v2.3.0-beta.1")    // Design tokens and styling
 }
 ```
 
@@ -63,11 +63,13 @@ or `engine.chats`; use Option A for the tutorial and for chat through the engine
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.2.0-beta.3")
-    implementation("com.github.Soko-Aerial.Flash:core-network:v2.2.0-beta.3")
-    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.3.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-network:v2.3.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-transfer:v2.3.0-beta.1")
 }
 ```
+
+> **Consumer verification harnesses in-repo:** `:sample:consumer` verifies the umbrella `core-engine` Android classpath, `:sample:consumer-granular` verifies single-module granular consumption (`:core:network` alone re-exporting `:core:common`), and `:sample:consumer-desktop` verifies JVM (`-jvm`) variant resolution from local Maven coordinates (`com.transfer.flash:core-engine:2.3.0-beta.1` and `core-network`).
 
 ---
 
@@ -81,22 +83,26 @@ has registered and wired its own implementation.
 
 The engine is the [`FlashEngine`](../../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt) interface. You do not construct it directly; you ask a factory for one with a `FlashConfig`.
 
-**Android:**
+**Android:** `Flash.create` opens the encrypted SQLite database synchronously, so call it **off the main thread** (e.g., on `Dispatchers.IO`). It throws `TransportSecurityUnavailableException` if TLS identity setup fails (there is no plaintext fallback).
 
 ```kotlin
 import com.transfer.flash.core.engine.Flash
 import com.transfer.flash.core.engine.FlashConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-val engine = Flash.create(
-    context = applicationContext,
-    config = FlashConfig(displayName = "Pixel-Alpha"),
-)
+val engine = withContext(Dispatchers.IO) {
+    Flash.create(
+        context = applicationContext,
+        config = FlashConfig(displayName = "Pixel-Alpha"),
+    )
+}
 // The engine starts itself; call engine.close() when you are done with it.
 ```
 
-**JVM desktop:** `FlashDesktop.create(config)` (in `core-engine`) returns the engine, but the implementation class lives in the
+**JVM desktop:** `FlashDesktop.create(config)` (in `core-engine`) returns the engine immediately, but the implementation class lives in the
 Flash **desktop application** (`com.transfer.flash.desktop.DesktopEngine`, module `:desktop`), not in a library. `create` loads that
-class by name, so it works inside the Flash desktop app. A standalone JVM program must register its own factory first:
+class by name, so it works inside the Flash desktop app (and refuses a second concurrent engine on the same state directory). A standalone JVM program must register its own factory first:
 
 ```kotlin
 import com.transfer.flash.core.engine.FlashDesktop
@@ -105,7 +111,7 @@ import com.transfer.flash.core.engine.awaitReady
 
 FlashDesktop.registerFactory { config -> MyEngine(config) } // your FlashEngine implementation
 val engine = FlashDesktop.create(FlashConfig(displayName = "Workstation-Alpha"))
-engine.awaitReady() // suspends until the boot finished, or throws if it failed
+engine.awaitReady() // suspends until FlashReadiness.ready is true, or throws if boot failed
 ```
 
 > **What the shipped apps do.** Neither app calls `Flash.create` for its own engine: the Android app builds it in
@@ -183,6 +189,6 @@ same list with `errorMessage` set.
 
 ## 4. Next Steps
 
-* Read the [Architecture Overview](architecture-overview.md) to understand how the 15 modules interact without circular dependencies.
+* Read the [Architecture Overview](architecture-overview.md) to understand how the 18 Flash modules (plus vendored `webrtc-kmp` = 19 published artifacts) interact without circular dependencies.
 * Review the [Core Modules Guides](../modules/core/) to understand each subsystem in depth.
-* Explore [Scenarios](../scenarios/) for specialized deployments like ultra-low RAM devices, custom BLE/LoRa transports, or writing a custom Python client.
+* Explore [Scenarios](../scenarios/) for specialized deployments like ultra-low RAM devices, custom BLE/LoRa transports, or the open wire protocol specification and interop requirements (including an untested Python handshake sketch; no runnable third-party clients ship in-repo).

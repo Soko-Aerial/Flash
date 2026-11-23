@@ -39,9 +39,10 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
         // The UI has no Cancelled bucket; surface it in Failed with a label rather than vanish it.
         DomainState.Failed, DomainState.Cancelled -> UiState.Failed
     },
-    speedBytesPerSec = speedBytesPerSec,
+    speedBytesPerSec = if (state == DomainState.Verifying) 0L else speedBytesPerSec,
     // The UI treats null / non-positive ETA as "no estimate"; normalise 0 → null at the boundary.
-    etaSeconds = etaSeconds.takeIf { it > 0L },
+    etaSeconds = if (state == DomainState.Verifying) null else etaSeconds.takeIf { it > 0L },
+    isVerifying = state == DomainState.Verifying,
     errorMessage = TransferFailureText.displayReason(errorMessage) ?: if (state == DomainState.Cancelled) "Cancelled" else null,
     verified = state == DomainState.Completed,
     // Received file path when inbound; the source URI when outbound. Enables open & share.

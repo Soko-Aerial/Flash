@@ -157,4 +157,41 @@ class JvmPttCaptureTest {
         assertFalse(packets.size > 0, "the gate only opens on a running capture")
         capture.stop()
     }
+
+    @Test
+    fun `stop waits for worker loop exit before closing the underlying input line`() {
+        val inRead = java.util.concurrent.atomic.AtomicBoolean(false)
+        val closedWhileReading = java.util.concurrent.atomic.AtomicBoolean(false)
+        val enteredRead = java.util.concurrent.CountDownLatch(1)
+        val trackingInput = object : PttPcmInput {
+            @Volatile var stopped = false
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                inRead.set(true)
+                enteredRead.countDown()
+                try {
+                    Thread.sleep(40)
+                } finally {
+                    inRead.set(false)
+                }
+                return if (stopped) -1 else 0
+            }
+            override fun stop() {
+                stopped = true
+            }
+            override fun close() {
+                if (inRead.get()) closedWhileReading.set(true)
+            }
+        }
+        val customLines = object : PttPcmLines {
+            override fun openInput(rateHz: Int, bufferBytes: Int): PttPcmInput = trackingInput
+            override fun openOutput(rateHz: Int, bufferBytes: Int): PttPcmOutput? = null
+        }
+        val capture = JvmPttCapture(customLines, 16_000, 20, { _, _ -> }, {})
+        assertIs<PttCaptureStart.Started>(capture.start())
+        assertTrue(enteredRead.await(1, java.util.concurrent.TimeUnit.SECONDS))
+
+        capture.stop()
+
+        assertFalse(closedWhileReading.get(), "close() must not race an active read() on teardown")
+    }
 }

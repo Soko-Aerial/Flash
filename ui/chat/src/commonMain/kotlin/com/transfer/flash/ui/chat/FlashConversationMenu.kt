@@ -92,8 +92,8 @@ public enum class FlashConversationMenuItem(
     GROUP_INFO("Group info", FlashIcons.Group),
     GROUP_SETTINGS("Group settings", FlashIcons.Settings),
     INVITE_LINK("Invite link", FlashIcons.Share),
-    ADD_MEMBERS("Add members", FlashIcons.Group),
-    CONTINUE_IN_NEW_GROUP("Continue in new group", FlashIcons.Group),
+    ADD_MEMBERS("Add members", FlashIcons.Connection),
+    CONTINUE_IN_NEW_GROUP("Continue in new group", FlashIcons.Forward),
     LEAVE_GROUP("Leave group", FlashIcons.Close, isDestructive = true),
 }
 

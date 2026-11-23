@@ -25,6 +25,8 @@ import com.transfer.flash.server.auth.HubApiGate
 import com.transfer.flash.server.auth.HubKeyStore
 import com.transfer.flash.server.auth.HubRateLimits
 import com.transfer.flash.server.auth.RevocationSigner
+import com.transfer.flash.server.relay.CallIceService
+import com.transfer.flash.server.relay.callConfigRoutes
 import com.transfer.flash.server.auth.SqliteRevocationService
 import com.transfer.flash.server.auth.TrustedProxies
 import com.transfer.flash.server.auth.authRoutes
@@ -225,6 +227,26 @@ class HubServices private constructor(
                 if (database == null) db.close()
                 throw e
             }
+            val joinLinksSecrets = try {
+                com.transfer.flash.server.auth.SecretBox.loadOrCreate(File(dataDir, "join-links.key").toPath(), createIfMissing = true)
+            } catch (e: Exception) {
+                if (database == null) db.close()
+                throw HubStartupException("Join-link key file could not be loaded or created.", e)
+            }
+            val prevJoinLinksFile = File(dataDir, "join-links.prev.key").toPath()
+            val prevJoinLinksSecrets = if (Files.exists(prevJoinLinksFile)) {
+                runCatching {
+                    com.transfer.flash.server.auth.SecretBox.loadOrCreate(prevJoinLinksFile, createIfMissing = false)
+                }.onFailure { err ->
+                    log.warn("Ignoring unreadable join-links.prev.key: {}", err.message)
+                }.getOrNull()
+            } else null
+            val joinLinks = com.transfer.flash.server.directory.HubGroupJoinLinks(
+                secrets = joinLinksSecrets,
+                clock = clock,
+                fallbackSecrets = listOfNotNull(prevJoinLinksSecrets, dataSecrets.takeIf { it.isActive }),
+                database = db,
+            )
 
             // 3. The delegation, pinned to the root fingerprint (config first, then the first delegation ever accepted).
             val delegationFile = if (config.devEmbeddedRoot) keyStore.delegationFile.toFile() else config.delegationPath
@@ -418,6 +440,7 @@ class HubServices private constructor(
                             announcements = announcements,
                             files = fileStore,
                             router = routerRef,
+                            groupJoinLinks = joinLinks,
                         ),
                     )
                     announcementRoutes(
@@ -427,6 +450,7 @@ class HubServices private constructor(
                         audit = audit,
                         limits = limits,
                         clock = clock,
+                        directory = directory,
                     )
                     fileRoutes(
                         store = fileStore,
@@ -445,6 +469,7 @@ class HubServices private constructor(
                         limits = limits,
                         delegationChain = { delegations.current?.let { listOf(it) } ?: emptyList() },
                         offlineGraceDays = { admins.getSetting("offlineGraceDays")?.toIntOrNull() ?: 30 },
+                        groupJoinLinks = joinLinks,
                     )
                     sealingKeyRoutes(
                         identities = identities,
@@ -454,6 +479,20 @@ class HubServices private constructor(
                         clock = clock,
                     )
                     approvalRoutes(stepUp = stepUp, principalResolver = resolver, limits = limits, audit = audit)
+                    val callIce = CallIceService(
+                        stunUrls = config.stunUrls,
+                        turnUrls = config.turnUrls,
+                        turnSharedSecret = config.turnSharedSecret,
+                        ttlSeconds = config.callIceTtlSeconds,
+                        mediaPolicy = config.callMediaPolicy,
+                        clockMs = clock,
+                    )
+                    callConfigRoutes(
+                        iceService = callIce,
+                        principalResolver = resolver,
+                        revocations = revService ?: com.transfer.flash.server.auth.RevocationService.None,
+                        limits = limits,
+                    )
                     if (authService != null && enrollService != null) {
                         authRoutes(
                             challengeAuth = authService,
@@ -469,6 +508,9 @@ class HubServices private constructor(
                             clock = clock,
                             principalResolver = resolver,
                             maxFileBytes = { FileSettings.maxFileBytes(admins::getSetting) },
+                            offLanCallingSupported = { callIce.isSupported },
+                            allowPersonalHubLink = { com.transfer.flash.server.admin.effectiveAllowPersonalHubLink(admins, config) },
+                            groupE2eeMode = { com.transfer.flash.server.admin.effectiveGroupE2eeMode(admins, config) },
                         )
                     }
                 },

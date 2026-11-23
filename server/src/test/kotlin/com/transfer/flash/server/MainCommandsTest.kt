@@ -61,4 +61,32 @@ class MainCommandsTest {
         }
         assertEquals(2, adminRecovery(arrayOf("--data-dir=${dir.path}", "--external-url=https://hub.test")), "no --username is a usage error")
     }
+
+    @Test
+    fun helpFlagsAndUnknownCommandReturnExpectedExitCodesAndUsage() {
+        for (flag in listOf("--help", "-h", "help")) {
+            val out = ByteArrayOutputStream()
+            val original = System.out
+            System.setOut(PrintStream(out))
+            val code = try {
+                runMainCommand(arrayOf(flag))
+            } finally {
+                System.setOut(original)
+            }
+            val text = out.toString()
+            assertEquals(0, code, "expected exit 0 for $flag")
+            assertTrue(text.contains("keytool revoke"), "expected keytool revoke in usage for $flag")
+        }
+
+        val err = ByteArrayOutputStream()
+        val originalErr = System.err
+        System.setErr(PrintStream(err))
+        val badCode = try {
+            runMainCommand(arrayOf("unknown-subcommand"))
+        } finally {
+            System.setErr(originalErr)
+        }
+        assertEquals(2, badCode)
+        assertTrue(err.toString().contains("keytool revoke"))
+    }
 }

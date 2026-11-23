@@ -3,6 +3,7 @@
 package com.transfer.flash.core.network.datachannel
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.logging.FlashLog
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -79,7 +80,7 @@ public class DataChannelServer(
 
     private suspend fun acceptLoop(server: ServerSocket) {
         while (running.get() && !server.isClosed) {
-            val client = runCatching { server.accept() }.getOrElse { break }
+            val client = runSuspendCatching { server.accept() }.getOrElse { break }
             scope.launch { handleConnection(client) }
         }
     }

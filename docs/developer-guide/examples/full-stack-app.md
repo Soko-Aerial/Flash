@@ -39,6 +39,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.engine.Flash
 import com.transfer.flash.core.engine.FlashConfig
 import com.transfer.flash.core.engine.FlashEngine
@@ -69,6 +72,7 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var openId by remember { mutableStateOf<String?>(null) }
                     val chats = e.chats
+                    val scope = rememberCoroutineScope()
 
                     if (openId == null) {
                         val list by chats.chatListState.collectAsState()
@@ -84,7 +88,22 @@ class MainActivity : ComponentActivity() {
                             onSendText = chats::sendText,
                             onSendReply = chats::sendReply,
                             onPersistDraft = chats::saveDraft,
-                            onAttachmentClick = { chats.openAttachmentPicker() },
+                            onAttachmentClick = chats::openAttachmentPicker,
+                            onSendFile = { uri, displayName, size ->
+                                val peerId = openId ?: return@FlashConversationScreen
+                                scope.launch(Dispatchers.IO) {
+                                    e.transfers.sendFile(
+                                        targetDevice = FlashDevice(
+                                            id = FlashDeviceId(peerId),
+                                            friendlyName = conversation.header.title,
+                                            transportType = FlashTransportType.LAN,
+                                        ),
+                                        fileUri = uri,
+                                        displayName = displayName,
+                                        fileSize = size,
+                                    )
+                                }
+                            },
                         )
                     }
                 }
@@ -99,6 +118,8 @@ class MainActivity : ComponentActivity() {
 }
 ```
 
+> **Note on `onAttachmentClick` vs `onSendFile`:** `FlashConversationScreen` wires the platform file picker shim (`rememberFlashFilePickerLauncher`) internally and invokes `onSendFile(uri, displayName, size)` once the user picks a file; `RealFlashChatRepository.openAttachmentPicker()` is a no-op host hook (required parameter `onAttachmentClick`).
+
 Sending a file to a *discovered* device is a repository call, not a screen callback:
 `engine.transfers.sendFile(targetDevice = endpoint.device, fileUri, displayName, fileSize)` (see the [beginner guide](../getting-started/beginner-guide.md)).
 The host owns the pairing consent UI, notifications, foreground service and call integration. To add pairing,
@@ -107,5 +128,5 @@ decision back with `acceptLocal()` or `declineLocal()`. `Flash.create` handles t
 writes. See the [pairing guide](../guides/pairing-and-trust.md) and the
 [Android platform notes](../../android-platform-notes.md) for permissions and service requirements.
 
-**Desktop.** The JVM engine, `DesktopEngine`, and the window shell are the `:desktop` application module, not libraries, so a desktop host today
-is that module (or a project that puts its classes on the classpath and calls `FlashDesktop.create(FlashConfig(...))`, then `engine.awaitReady()`).
+**Desktop.** The JVM engine, `DesktopEngine`, and the window shell live in the `:desktop` application module, not a published library, so a desktop host today
+is that module (or a JVM project that places `:desktop`'s classes on its classpath — or registers its own factory via `FlashDesktop.registerFactory` — calls `FlashDesktop.create(FlashConfig(...))`, and suspends on `engine.awaitReady()`).

@@ -54,7 +54,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-015 | Delivery / read states | [delivery-status.md](delivery-status.md) | IMPLEMENTED | UI-005, UI-002 |
 | UI-016 | File message card | [file-card.md](file-card.md) | IMPLEMENTED | UI-005 |
 | UI-017 | Image message | [image-grid.md](image-grid.md) | IMPLEMENTED | UI-005 |
-| UI-018 | Media viewer | [media-viewer.md](media-viewer.md) | VERIFIED | UI-017 |
+| UI-018 | Media viewer | [media-viewer.md](media-viewer.md) | Unified preview and playback IMPLEMENTED 2026-11-15. Android acceptance MEDIA-PLAY-01/02 owed. | UI-017 |
 | UI-019 | Voice message playback | [voice-message.md](voice-message.md) | IMPLEMENTED | UI-005 |
 | UI-020 | Voice recording interface | [voice-message.md](voice-message.md) | IMPLEMENTED | UI-011, UI-019 |
 | UI-021 | Chat scrolling | [chat-screen.md](chat-screen.md) | IMPLEMENTED | UI-005, UI-006 |
@@ -100,7 +100,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-054 | Group invite and join flow (invite creation/sharing, join dialog, pending status, admin join requests banner/sheet) | [group-invite-join.md](group-invite-join.md) | IMPLEMENTED 2026-10-05 (ADR-074, ADR-076, GM-10; unit-tested; device checks GMB-04, GMB-14 owed) | UI-053, UI-029, UI-001 |
 | UI-055 | Group file availability (swarm row states, wait reasons, "Delivered to k of n", "You can go offline now", Cancel for everyone) | [group-file-availability.md](group-file-availability.md) | IMPLEMENTED 2026-10-05 (ADR-072, SW-11) | UI-016, UI-047, UI-027 |
 | UI-056 | Launch splash "Ink" (the name written by hand in Hershey Script 1-stroke, then the bolt; cold start only, plays to the end, setting to turn it off; Android + desktop) | [launch-splash.md](launch-splash.md) | IMPLEMENTED 2026-10-06 (ADR-080; unit-tested; device checks SPLASH-01..08 owed) | UI-001, UI-037, UI-049 |
-| UI-057 | Group history join card (new member picks how much earlier history to receive, clamped to the signed ceiling; "Load older messages"; admin ceiling control) | [group-history-join-card.md](group-history-join-card.md) | DESIGNED 2026-10-09 (ADR-100; implementation in progress) | UI-052, UI-053, UI-029 |
+| UI-057 | Group history join card (new member picks how much earlier history to receive, clamped to the signed ceiling; "Load older messages"; admin ceiling control) | [group-history-join-card.md](group-history-join-card.md) | IMPLEMENTED on Android and desktop (ADR-100; GSY device checks owed) | UI-052, UI-053, UI-029 |
 | UI-058 | Flash Hub tab (enrolled devices only; replaces Transfers; News / People / Departments / Groups; Transfers moves to the chat-list top bar) | [flash-hub-tab.md](flash-hub-tab.md), [workspace redesign](hub-workspace-redesign.md) | Workspace redesign IMPLEMENTED 2026-11-06 (401 Hub host tests; Android APK/desktop compile; native renders; HUBWORK-01..05 owed). Original: IMPLEMENTED 2026-10-15 (H0-H10; unit-tested, NOT device-verified; ADR-133; plan `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`; device checks HUBT-01..32) | UI-046, UI-003, UI-002, UI-053 |
 
 > UI-046–UI-049 were added under Phase 8 App-Shell authority (`docs/ui-page-plan.md`, owner-approved plan).

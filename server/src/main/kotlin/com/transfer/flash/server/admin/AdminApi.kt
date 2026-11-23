@@ -20,7 +20,9 @@ import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.DirectoryConflictException
 import com.transfer.flash.server.directory.OrganizationDirectory
+import com.transfer.flash.server.identity.BeginReplacementOutcome
 import com.transfer.flash.server.identity.DeviceRecord
+import com.transfer.flash.server.identity.DeviceReplacementRecord
 import com.transfer.flash.server.identity.DeviceStatus
 import com.transfer.flash.server.identity.IdentityStore
 import com.transfer.flash.server.identity.InviteRecord
@@ -38,6 +40,9 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Everything the console API needs. Constructed once by the hub wiring; tests build it from in-memory parts.
@@ -71,6 +76,7 @@ class AdminApiDeps(
     /** The sealed file store (ADR-215); null on a hub built without one (tests that do not need it). */
     val files: com.transfer.flash.server.files.FileStore? = null,
     val router: com.transfer.flash.server.relay.RelayFrameRouter? = null,
+    val groupJoinLinks: com.transfer.flash.server.directory.HubGroupJoinLinks? = null,
 )
 
 internal const val ERR_STEP_UP = "ERR_STEP_UP"
@@ -400,11 +406,14 @@ private fun Route.overviewRoutes(d: AdminApiDeps) {
 
 // ---------------------------------------------------------------------------------------------------------- devices
 
-internal fun DeviceRecord.toDto(online: Boolean) = DeviceDto(
+internal fun DeviceRecord.toDto(online: Boolean, replacement: DeviceReplacementRecord? = null) = DeviceDto(
     deviceId, name, department, role, status.name, serial, enrolledAt, certExpiry, lastSeenAt, online, subjectPublicKey, inviteId,
+    replacementState = replacement?.state?.name,
+    replacementInviteId = replacement?.inviteId,
 )
 
 private fun Route.deviceRoutes(d: AdminApiDeps) {
+    val replaceLocks = Array(64) { Mutex() }
     route("/devices") {
         get {
             val session = call.adminSession(d) ?: return@get
@@ -424,7 +433,8 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
                 offset = q["offset"].toIntOr(0, 0..1_000_000),
                 allowedDepartments = (scope as? ConsoleScope.Departments)?.ids,
             )
-            call.respondJson(list.map { it.toDto(d.directory.isOnline(it.deviceId)) })
+            val replacements = d.identities.listDeviceReplacements(list.map { it.deviceId })
+            call.respondJson(list.map { it.toDto(d.directory.isOnline(it.deviceId), replacements[it.deviceId]) })
         }
 
         get("/{id}") {
@@ -433,7 +443,7 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
             val device = d.identities.device(call.parameters["id"].orEmpty())
             // Cross-scope object ids answer exactly like a non-existent id (no existence leak).
             if (device == null || (scope !is ConsoleScope.Org && !scope.allows(device.department))) return@get call.notFound()
-            call.respondJson(device.toDto(d.directory.isOnline(device.deviceId)))
+            call.respondJson(device.toDto(d.directory.isOnline(device.deviceId), d.identities.getDeviceReplacement(device.deviceId)))
         }
 
         put("/{id}") {
@@ -506,6 +516,174 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
             val result = revocations.unrevokeDevice(id, session.username)
             d.audit.log(session.username, "device.unrevoke", "device=$id changed=${result.changed} published=${result.publishedVersion}")
             call.respondJson(d.identities.device(id)!!.toDto(false))
+        }
+
+        post("/{id}/replace") {
+            val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
+            val id = call.parameters["id"].orEmpty()
+            val b = call.body<DeviceReplaceBody>() ?: return@post
+            val revocations = d.revocations ?: return@post call.notAvailable()
+            val enrollment = d.enrollment ?: return@post call.notAvailable()
+            val oldDevice = d.identities.device(id) ?: return@post call.notFound()
+
+            if (scope !is ConsoleScope.Org && !scope.allows(oldDevice.department)) return@post call.notFound()
+
+            val targetDept = (b.department ?: oldDevice.department)?.trim()?.ifEmpty { null }
+            val isOldAdmin = oldDevice.role == HubRoles.ADMIN
+            val targetRole = b.role ?: if (isOldAdmin && scope is ConsoleScope.Org) HubRoles.ADMIN else if (isOldAdmin) HubRoles.MEMBER else oldDevice.role
+            if (!HubRoles.isValid(targetRole)) {
+                return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Unknown role.")
+            }
+            if (scope !is ConsoleScope.Org) {
+                if (targetDept.isNullOrBlank()) {
+                    return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Choose a department for this replacement.")
+                }
+                if (!scope.allows(targetDept)) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "A head can only replace devices in their own department.")
+                }
+                if (targetRole != HubRoles.MEMBER) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "A department head can only issue member replacements.")
+                }
+            }
+            if (targetDept != null && d.directory.getDepartment(targetDept) == null) {
+                return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "That department no longer exists.")
+            }
+
+            for (groupId in (b.allowedGroups + b.autoJoinGroups)) {
+                val group = d.directory.getGroup(groupId)
+                if (group == null || (targetDept != null && group.departmentId != targetDept && scope !is ConsoleScope.Org)) {
+                    return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Invalid group for department.")
+                }
+            }
+
+            val adminsList = d.admins.listAdmins()
+            val isBoundApprover = adminsList.any { it.approverDeviceId == id }
+            val isBoundSigner = adminsList.any { it.enrolledDeviceId == id }
+            val isBoundLinked = adminsList.any { it.linkedDeviceId == id }
+
+            if (isOldAdmin || targetRole == HubRoles.ADMIN || isBoundApprover || isBoundSigner || isBoundLinked) {
+                if (scope !is ConsoleScope.Org) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Only an organisation administrator can replace an administrator or approver device.")
+                }
+            }
+            if (!call.stepUpOk(d, session, StepUpActions.REPLACE_DEVICE, id)) return@post
+
+            val lock = replaceLocks[(id.hashCode() and 0x7fffffff) % replaceLocks.size]
+            lock.withLock {
+                call.guarded {
+                    val now = d.clock()
+                    val ttl = (b.ttlMinutes ?: (d.admins.getSetting(SETTING_TTL)?.toLongOrNull() ?: DEFAULT_TTL_MINUTES))
+                        .also { require(it in 5..MAX_TTL_MINUTES) }
+                    val reason = b.reason.take(200)
+                    val inviteNote = "replacement:$id ${b.note.orEmpty()}".trim().take(128)
+                    val inviteScope = InviteScope(
+                        department = targetDept,
+                        allowedGroups = b.allowedGroups.toSet(),
+                        role = targetRole,
+                        expiry = now + ttl * 60_000L,
+                        maxUses = 1,
+                        autoJoinGroups = b.autoJoinGroups.toSet(),
+                        note = inviteNote,
+                        createdBy = session.username,
+                    )
+                    enrollment.validateInviteScope(d.config.externalUrl, inviteScope, now)
+
+                    val freshDevice = d.identities.device(id) ?: return@guarded call.notFound()
+                    if (enrollment.remainingQuotaAssumingRevoked(freshDevice.status == DeviceStatus.ACTIVE) <= 0) {
+                        return@guarded call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_QUOTA_EXCEEDED, "Device quota exceeded.")
+                    }
+
+                    val claim = d.identities.beginDeviceReplacement(
+                        oldDeviceId = id,
+                        department = targetDept,
+                        role = targetRole,
+                        allowedGroups = inviteScope.allowedGroups,
+                        autoJoinGroups = inviteScope.autoJoinGroups,
+                        ttlMinutes = ttl,
+                        note = b.note?.take(128),
+                        reason = reason,
+                        requestedBy = session.username,
+                        nowMs = now,
+                    )
+                    val replacementId = when (claim) {
+                        is BeginReplacementOutcome.Acquired -> claim.replacementId
+                        is BeginReplacementOutcome.AlreadyInProgress -> return@guarded call.respondError(
+                            HttpStatusCode.Conflict,
+                            HubErrorCodes.ERR_CONFLICT,
+                            "A replacement for this device is already in progress.",
+                        )
+                        is BeginReplacementOutcome.InviteAlreadyPending -> return@guarded call.respondError(
+                            HttpStatusCode.Conflict,
+                            HubErrorCodes.ERR_CONFLICT,
+                            "Replacement invite ${claim.invite.inviteId} is already pending for this device. Revoke it before issuing a new replacement.",
+                        )
+                        is BeginReplacementOutcome.InviteAlreadyUsed -> return@guarded call.respondError(
+                            HttpStatusCode.Conflict,
+                            HubErrorCodes.ERR_CONFLICT,
+                            "This device was already replaced using invite ${claim.invite.inviteId}.",
+                        )
+                    }
+
+                    val createdInvite = try {
+                        val created = enrollment.createInvite(d.config.externalUrl, inviteScope, now)
+                        InviteCreatedDto(created.record.toDto(now), created.token, created.link, QrCodeGenerator.generateSvg(created.link))
+                    } catch (t: Throwable) {
+                        d.identities.failDeviceReplacement(id, replacementId, t.message ?: t.javaClass.simpleName, d.clock())
+                        d.audit.log(session.username, "device.replace.failed", "oldDevice=$id replacement=$replacementId stage=invite error=${t.javaClass.simpleName}")
+                        return@guarded call.respondError(
+                            HttpStatusCode.ServiceUnavailable,
+                            HubErrorCodes.ERR_INTERNAL,
+                            "Could not issue the replacement invite. The original device was left untouched.",
+                        )
+                    }
+                    d.identities.recordReplacementInvite(id, replacementId, createdInvite.invite.inviteId, d.clock())
+
+                    try {
+                        revocations.revokeDevice(id, reason, session.username)
+                        d.bearerTokens?.revokeDevice(id)
+                        d.directory.removeDevice(id)
+                        d.onDeviceRevoked(id)
+
+                        if (isBoundApprover || isBoundSigner || isBoundLinked) {
+                            d.admins.listAdmins().forEach { admin ->
+                                if (admin.approverDeviceId == id) d.admins.clearApprover(admin.username)
+                                if (admin.enrolledDeviceId == id) d.admins.clearEnrolledDevice(admin.username)
+                                if (admin.linkedDeviceId == id) d.admins.clearLinkedDevice(admin.username)
+                            }
+                        }
+                        d.identities.completeDeviceReplacement(id, replacementId, createdInvite.invite.inviteId, d.clock())
+                    } catch (t: Throwable) {
+                        runCatching { d.identities.revokeInvite(createdInvite.invite.inviteId, d.clock()) }
+                        d.identities.failDeviceReplacement(id, replacementId, "revocation failed: ${t.message ?: t.javaClass.simpleName}", d.clock())
+                        d.audit.log(
+                            session.username,
+                            "device.replace.failed",
+                            "oldDevice=$id replacement=$replacementId stage=revoke invite=${createdInvite.invite.inviteId} error=${t.javaClass.simpleName}",
+                        )
+                        return@guarded call.respondError(
+                            HttpStatusCode.ServiceUnavailable,
+                            HubErrorCodes.ERR_INTERNAL,
+                            "Could not finish revoking the original device; the draft replacement invite was revoked.",
+                        )
+                    }
+
+                    d.audit.log(
+                        session.username,
+                        "device.replace",
+                        "oldDevice=$id replacement=$replacementId department=${targetDept.orEmpty()} role=$targetRole invite=${createdInvite.invite.inviteId} reason=$reason",
+                    )
+
+                    val updatedDevice = d.identities.device(id)!!
+                    call.respondJson(
+                        DeviceReplaceResultDto(
+                            oldDevice = updatedDevice.toDto(false, d.identities.getDeviceReplacement(id)),
+                            invite = createdInvite,
+                        ),
+                        HttpStatusCode.OK,
+                    )
+                }
+            }
         }
     }
 }
@@ -763,6 +941,8 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
                     fileRetentionDays = (fileLimits(d).retentionMs / DAY_MS).toInt(),
                     deviceStoredBytes = fileLimits(d).deviceStoredBytes,
                     globalStoredBytes = fileLimits(d).globalStoredBytes,
+                    allowPersonalHubLink = effectiveAllowPersonalHubLink(d.admins, c),
+                    groupE2eeMode = effectiveGroupE2eeMode(d.admins, c),
                 ),
             )
         }
@@ -782,6 +962,16 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
                 } else {
                     "$SETTING_USES must be a whole number between 1 and ${EnrollmentService.MAX_INVITE_USES}"
                 }
+                SETTING_ALLOW_PERSONAL_HUB_LINK -> if (b.value == "true" || b.value == "false") {
+                    null
+                } else {
+                    "$SETTING_ALLOW_PERSONAL_HUB_LINK must be 'true' or 'false'"
+                }
+                SETTING_GROUP_E2EE_MODE -> if (b.value in com.transfer.flash.server.config.ServerConfig.GROUP_E2EE_MODES) {
+                    null
+                } else {
+                    "$SETTING_GROUP_E2EE_MODE must be one of ${com.transfer.flash.server.config.ServerConfig.GROUP_E2EE_MODES}"
+                }
                 else -> com.transfer.flash.server.files.FileSettings.validate(b.key, b.value)
             }
             if (invalid != null) {
@@ -789,6 +979,12 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
             }
             if (!call.stepUpOk(d, session, StepUpActions.SETTINGS_CHANGE, "${b.key}=${b.value}")) return@put
             d.admins.putSetting(b.key, b.value, session.username)
+            if (b.key == SETTING_GROUP_E2EE_MODE && b.value != com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_HUB_INSPECTABLE) {
+                d.router?.retireReadableGroupRows()
+            }
+            if (b.key == SETTING_ALLOW_PERSONAL_HUB_LINK || b.key == SETTING_GROUP_E2EE_MODE) {
+                d.router?.broadcastGroupPolicyChanged()
+            }
             d.audit.log(session.username, "settings.change", "${b.key}=${b.value}")
             call.respondJson(OkDto())
         }
@@ -798,6 +994,25 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
 /** The administrator's file policy (ADR-215), read from the settings on every call. */
 internal fun fileLimits(d: AdminApiDeps): com.transfer.flash.server.files.FileLimits =
     com.transfer.flash.server.files.FileSettings.limits(d.admins::getSetting)
+
+internal const val SETTING_ALLOW_PERSONAL_HUB_LINK: String = "allowPersonalHubLink"
+internal const val SETTING_GROUP_E2EE_MODE: String = "groupE2eeMode"
+
+internal fun effectiveAllowPersonalHubLink(
+    admins: AdminAuthService,
+    config: com.transfer.flash.server.config.ServerConfig,
+): Boolean = when (admins.getSetting(SETTING_ALLOW_PERSONAL_HUB_LINK)) {
+    "true" -> true
+    "false" -> false
+    else -> config.allowPersonalHubLink
+}
+
+internal fun effectiveGroupE2eeMode(
+    admins: AdminAuthService,
+    config: com.transfer.flash.server.config.ServerConfig,
+): String = admins.getSetting(SETTING_GROUP_E2EE_MODE)
+    ?.takeIf { it in com.transfer.flash.server.config.ServerConfig.GROUP_E2EE_MODES }
+    ?: config.groupE2eeMode
 
 /**
  * `GET /admin/api/v1/files/stats`: what the hub is holding, for the operator. Counts and bytes only: the console never
@@ -882,7 +1097,7 @@ private fun Route.metricsRoutes(d: AdminApiDeps) {
             MetricsDto(
                 serverTimeMs = now,
                 uptimeSeconds = ((now - d.startedAtMs) / 1000L).coerceAtLeast(0),
-                onlineDevices = d.identities.listDevices(DeviceStatus.ACTIVE, limit = 500).count { d.directory.isOnline(it.deviceId) },
+                onlineDevices = d.identities.activeDeviceIds().count { d.directory.isOnline(it) },
                 queueDepth = stats.queuedCount(),
                 queueBytes = stats.queuedBytes(),
                 oldestWaitingMs = stats.oldestAgesMs(1).values.firstOrNull(),

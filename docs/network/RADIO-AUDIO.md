@@ -1,6 +1,6 @@
 # Radio voice: hearing and talking through a Bluetooth handheld
 
-Status: **built and unit-tested 2026-10-23, NOT device-verified** (ADR-225). Android and Windows desktop. On Windows the connection to the audio channel was tried once on the owner's PC (receive only): see "Desktop (Windows)" below.
+**Current status · 2026-11-15.** The Android and Windows local radio controls were built and unit-tested on 2026-10-23 (ADR-225). On 2026-10-28 the owner confirmed opening, receiving and transmitting on the phone and reported voice working with KISS connected. `RADVOICE-12` still tracks the full Windows voice run. The [Mode 3 and Mode 5 research](../plans/RADIO-MODES-IMPLEMENTATION.md#mode-3--walkie-talkie-bridge) proposes a separate Flash PTT bridge feasibility track. FO-28 remains parked.
 
 ## What this is
 
@@ -11,9 +11,7 @@ The VR-N76 / BTECH UV-Pro class handhelds expose **two** Bluetooth services to a
 | Serial Port Profile | `00001101-0000-1000-8000-00805F9B34FB` | control (GAIA) and, in KISS mode, KISS data | `KissTncDriver`, `AndroidBluetoothCatalog.openRadioLink` |
 | Vendor audio ("BS AOC", "Generic Audio") | `39144315-32fa-40db-85ed-fbfeba2d86e6` | the radio audio as framed SBC | `RadioAudioSession`, `AndroidBluetoothCatalog.openRadioAudioLink` |
 
-Source of the audio facts: HTCommander (Apache-2.0, `src/lib/radio/audio_engine.dart`, `radio_audio.dart`, `docs/Voice.md`), read
-on 2026-10-23. Everything below marked *HTCommander* is that project's behaviour, not something we measured. **Nothing here has run
-against a radio yet**; the owed checks are `RADVOICE-01..` in `docs/testing/TEST-BACKLOG.md`.
+The original implementation followed HTCommander (Apache-2.0, `src/lib/radio/audio_engine.dart`, `radio_audio.dart`, `docs/Voice.md`), read on 2026-10-23. At that point the format notes described upstream behavior awaiting a Flash hardware check. The `RADVOICE-01..` entries in `docs/testing/TEST-BACKLOG.md` record the later observations and the device checks still owed.
 
 ## Wire format (audio channel)
 

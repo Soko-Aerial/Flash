@@ -108,10 +108,13 @@ class HubSealingKeyStoreTest {
         assertTrue(afterRestart.isBlocked("bob"), "a changed key must not be forgotten by a restart")
         assertTrue(afterRestart.blocked.value.containsKey("bob"))
 
-        assertTrue(afterRestart.confirm("bob"))
+        assertEquals(HubKeyVerdict.CHANGED, afterRestart.check("bob", "k3"))
+        assertFalse(afterRestart.confirm("bob", "k2"), "the previous prompt must not approve the replacement")
+        assertEquals("k3", afterRestart.blocked.value.getValue("bob").pending)
+        assertTrue(afterRestart.confirm("bob", "k3"))
         assertFalse(afterRestart.isBlocked("bob"))
-        assertEquals(HubKeyVerdict.SAME, afterRestart.check("bob", "k2"))
-        assertFalse(afterRestart.confirm("bob"), "nothing is waiting any more")
+        assertEquals(HubKeyVerdict.SAME, afterRestart.check("bob", "k3"))
+        assertFalse(afterRestart.confirm("bob", "k3"), "nothing is waiting any more")
         assertTrue(afterRestart.blocked.value.isEmpty())
     }
 

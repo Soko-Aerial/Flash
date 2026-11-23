@@ -29,14 +29,22 @@ internal const val ROOT_PASSPHRASE_ENV = "FLASH_ROOT_PASSPHRASE"
 /**
  * Entry point. Subcommands:
  * - `serve` (default): run the hub.
- * - `keytool init-root | issue-delegation | rotate`: the OFFLINE root key tool (run it on another machine).
+ * - `keytool init-root | issue-delegation | revoke | rotate`: the OFFLINE root key tool (run it on another machine).
  * - `healthcheck`: probe this hub's own `/health` on loopback (the Docker HEALTHCHECK); exit 0 when it answers 200.
  * - `admin-recovery --username <name>`: break-glass reset of an admin (prints a new password and authenticator secret once).
  */
 fun main(args: Array<String>) {
-    val command = args.firstOrNull()?.takeUnless { it.startsWith("--") } ?: "serve"
-    val rest = if (args.firstOrNull()?.startsWith("--") == false) args.drop(1).toTypedArray() else args
-    val code = try {
+    val code = runMainCommand(args)
+    if (code != 0) exitProcess(code)
+}
+
+/** Dispatches CLI arguments to the Hub subcommand and returns the process exit code. */
+internal fun runMainCommand(args: Array<String>): Int {
+    val first = args.firstOrNull()
+    val isServeFlag = first != null && first.startsWith("--") && first != "--help"
+    val command = if (first == null || isServeFlag) "serve" else first
+    val rest = if (first == null || isServeFlag) args else args.drop(1).toTypedArray()
+    return try {
         when (command) {
             "serve" -> serve(rest)
             "keytool" -> runKeyTool(rest.toList())
@@ -53,7 +61,6 @@ fun main(args: Array<String>) {
         System.err.println("FLASH HUB: invalid configuration: ${e.message}")
         2
     }
-    if (code != 0) exitProcess(code)
 }
 
 private fun usage(code: Int): Int {
@@ -63,6 +70,8 @@ private fun usage(code: Int): Int {
           keytool init-root --out DIR [--no-passphrase]
           keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,enrol:dept_admin,revoke:member
                   [--max-devices N] [--valid-days N] [--serial N] [--out FILE]
+          keytool revoke --root-key FILE --delegation-serial N[,N] [--serial N,..] [--device-id a,..]
+                  [--base current.json] [--version N] [--out FILE]
           keytool rotate
           healthcheck                    probe /health on loopback (exit 0 = healthy)
           admin-recovery --username NAME break-glass admin reset (console only)

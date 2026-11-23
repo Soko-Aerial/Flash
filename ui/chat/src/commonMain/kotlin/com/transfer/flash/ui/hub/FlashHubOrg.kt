@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.avatar.flashAvatarColorsFor
@@ -29,12 +30,14 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.HubAnnouncementUi
 import com.transfer.flash.core.messaging.model.HubDepartmentUi
 import com.transfer.flash.core.messaging.model.HubGroupMembership
 import com.transfer.flash.core.messaging.model.HubGroupUi
 import com.transfer.flash.core.messaging.model.HubPersonUi
+import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.settings.FlashHubStatusMath
 import com.transfer.flash.ui.theme.FlashDimensions
@@ -73,7 +76,7 @@ internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, mod
             .fillMaxWidth()
             .clip(HubShapes.card)
             .background(colors.backgroundSurface)
-            .border(FlashDimensions.borderHairline, if (d.isMine) colors.accentPrimary else colors.borderSubtle, HubShapes.card)
+            .border(FlashDimensions.borderHairline, if (d.isMine) colors.accentFill else colors.borderSubtle, HubShapes.card)
             .hubClickable(onClick = onClick)
             .padding(FlashSpacing.space16)
             .semantics(mergeDescendants = true) { contentDescription = FlashHubMath.departmentAccessibility(d) },
@@ -91,6 +94,13 @@ internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, mod
             FlashText(FlashHubMath.headsLine(d), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
 
         }
+        FlashIcon(
+            icon = FlashIcons.ChevronDown,
+            contentDescription = null,
+            tint = colors.textTertiary,
+            size = FlashDimensions.iconSm,
+            modifier = Modifier.rotate(-90f),
+        )
     }
 }
 
@@ -110,10 +120,16 @@ internal fun FlashHubDepartmentContent(
     onGroupAction: (HubGroupUi) -> Unit,
     joiningGroupId: String?,
     modifier: Modifier = Modifier,
+    bottomInset: Dp = 0.dp,
 ) {
     val colors = FlashTheme.colors
     val shownMembers = members.take(MEMBER_PREVIEW)
-    Column(modifier = modifier.fillMaxWidth().padding(vertical = FlashSpacing.space8), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = FlashSpacing.space8, bottom = FlashSpacing.space16 + bottomInset),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
         Row(Modifier.padding(horizontal = FlashSpacing.space8), verticalAlignment = Alignment.CenterVertically) {
             if (onBack != null) FlashHubIconButton(FlashIcons.Back, FlashHubCopy.DEPT_BACK, onBack)
             FlashText(department.name, modifier = Modifier.weight(1f).padding(start = FlashSpacing.space8).semantics { heading() },

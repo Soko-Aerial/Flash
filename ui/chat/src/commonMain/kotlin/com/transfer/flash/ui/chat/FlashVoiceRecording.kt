@@ -2,11 +2,12 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,16 +16,19 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,7 +38,10 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,14 +51,22 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
@@ -100,21 +115,29 @@ object FlashVoiceRecordingMath {
     /**
      * Dominant-axis slide resolution for a hold drag.
      *
-     * Leftward displacement ([dx] negative) claims [FlashHoldSlideTarget.Cancel] when it
-     * dominates vertically and passes [cancelThresholdPx]; upward displacement ([dy]
-     * negative) claims [FlashHoldSlideTarget.Lock] when it dominates horizontally and
-     * passes [lockThresholdPx]. Anything else stays.
+     * Displacement toward cancel ([dx] negative in LTR, positive in RTL) claims
+     * [FlashHoldSlideTarget.Cancel] when it dominates vertically and passes [cancelThresholdPx];
+     * upward displacement ([dy] negative) claims [FlashHoldSlideTarget.Lock] when it dominates
+     * horizontally and passes [lockThresholdPx]. Anything else stays.
      */
     fun resolveHoldSlide(
         dx: Float,
         dy: Float,
         cancelThresholdPx: Float,
         lockThresholdPx: Float,
+    ): FlashHoldSlideTarget = resolveHoldSlide(dx, dy, cancelThresholdPx, lockThresholdPx, isRtl = false)
+
+    fun resolveHoldSlide(
+        dx: Float,
+        dy: Float,
+        cancelThresholdPx: Float,
+        lockThresholdPx: Float,
+        isRtl: Boolean,
     ): FlashHoldSlideTarget {
-        val leftward = -dx
+        val towardCancel = if (isRtl) dx else -dx
         val upward = -dy
         return when {
-            leftward >= cancelThresholdPx && abs(leftward) >= abs(upward) -> FlashHoldSlideTarget.Cancel
+            towardCancel >= cancelThresholdPx && abs(towardCancel) >= abs(upward) -> FlashHoldSlideTarget.Cancel
             upward >= lockThresholdPx -> FlashHoldSlideTarget.Lock
             else -> FlashHoldSlideTarget.Stay
         }
@@ -136,6 +159,72 @@ object FlashVoiceRecordingMath {
     fun shouldDiscardShortRecording(elapsedMs: Long): Boolean =
         elapsedMs < MIN_RECORD_MS
 
+    /**
+     * Whether the composer may ask the host to start capture for the gesture beginning now.
+     *
+     * Only an idle composer can start, and a gesture that already asked once cannot ask again. A
+     * refused start (permission prompt, call/PTT lease, busy encoder) must therefore leave the
+     * phase Idle: the same hold cannot slide into a recording panel that has no audio behind it.
+     */
+    fun canStartCapture(phase: FlashRecordingPhase, captureStarted: Boolean): Boolean =
+        !captureStarted && phase == FlashRecordingPhase.Idle
+
+    /**
+     * Whether a hold-drag may change the phase.
+     *
+     * Slides only mean something for the gesture that actually started capture, and only in hold
+     * mode. A locked (hands-free) recording is ended by its own trash/send controls, never by a
+     * stray drag across the trailing key that now sends it.
+     */
+    fun acceptsSlide(phase: FlashRecordingPhase, captureStarted: Boolean): Boolean =
+        captureStarted &&
+            (phase == FlashRecordingPhase.Holding || phase == FlashRecordingPhase.CancelArmed)
+
+    /**
+     * The trailing 44dp slot becomes the voice send key once a locked recording's finger is up.
+     *
+     * While the finger is still down the same slot stays the mic, so the hold/release pointer
+     * stream that produced the lock is never disposed mid-gesture (ERROR-010).
+     */
+    fun showsVoiceSend(phase: FlashRecordingPhase, lockedHandsFree: Boolean): Boolean =
+        lockedHandsFree && phase == FlashRecordingPhase.Locked
+
+    /** Outcome when a voice mic press/hold ends. */
+    enum class ReleaseAction {
+        None,
+        Cancel,
+        DiscardShortTap,
+        LockHandsFree,
+        FinishLockGesture,
+        Send,
+    }
+
+    /**
+     * Resolves what releasing the mic button does given the current gesture state.
+     *
+     * On desktop (`isDesktop == true`), a quick click (< [MIN_RECORD_MS]) locks hands-free mode
+     * so mouse users can click to start recording and click Send/Cancel to finish, whereas touch
+     * users get a "Hold to record" prompt on accidental short taps.
+     */
+    fun resolveReleaseAction(
+        phase: FlashRecordingPhase,
+        captureStarted: Boolean,
+        elapsedMs: Long,
+        isDesktop: Boolean,
+    ): ReleaseAction {
+        if (!captureStarted) return ReleaseAction.None
+        return when (phase) {
+            FlashRecordingPhase.CancelArmed -> ReleaseAction.Cancel
+            FlashRecordingPhase.Locked -> ReleaseAction.FinishLockGesture
+            FlashRecordingPhase.Holding -> when {
+                elapsedMs < MIN_RECORD_MS && isDesktop -> ReleaseAction.LockHandsFree
+                elapsedMs < MIN_RECORD_MS -> ReleaseAction.DiscardShortTap
+                else -> ReleaseAction.Send
+            }
+            FlashRecordingPhase.Idle -> ReleaseAction.None
+        }
+    }
+
     /** Window of strip samples to render: the most recent [count] amplitudes. */
     fun stripSamples(amplitudes: List<Int>, count: Int = STRIP_BAR_COUNT): List<Int> =
         if (amplitudes.size <= count) amplitudes else amplitudes.takeLast(count)
@@ -155,7 +244,13 @@ fun FlashMicButton(
     onRecordEnd: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    onInterrupted: () -> Unit = {},
+    onStartHandsFree: (() -> Unit)? = null,
 ) {
+    val startRecord by rememberUpdatedState(onStartRecord)
+    val slideUpdate by rememberUpdatedState(onSlideUpdate)
+    val recordEnd by rememberUpdatedState(onRecordEnd)
+    val interrupted by rememberUpdatedState(onInterrupted)
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
@@ -164,29 +259,28 @@ fun FlashMicButton(
     val lockThresholdPx = with(density) { FlashVoiceRecordingMath.LOCK_SLIDE_DP.dp.toPx() }
 
     val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
+    val scope = rememberCoroutineScope()
 
     var dragOffsetX by remember { mutableFloatStateOf(0f) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
-    val slideX = if (isRecording) (dragOffsetX * 0.45f).coerceIn(-cancelThresholdPx, 0f) else 0f
+    val slideX = if (isRecording) {
+        if (isRtl) (dragOffsetX * 0.45f).coerceIn(0f, cancelThresholdPx)
+        else (dragOffsetX * 0.45f).coerceIn(-cancelThresholdPx, 0f)
+    } else 0f
     val slideY = if (isRecording) (dragOffsetY * 0.45f).coerceIn(-lockThresholdPx, 0f) else 0f
-    val isNearCancel = isRecording && -dragOffsetX >= cancelThresholdPx * 0.75f
+    val isNearCancel = isRecording && (if (isRtl) dragOffsetX else -dragOffsetX) >= cancelThresholdPx * 0.75f
     val isNearLock = isRecording && -dragOffsetY >= lockThresholdPx * 0.75f
 
-    // `scale` stays a State and is read inside `graphicsLayer` (EXP-013): the spring settles over
-    // ~400ms, and only the two colour animations below genuinely need composition (they feed
-    // `background()` and a tint parameter), so unwrapping this one would extend the recomposition
-    // window to the whole spring tail for no reason. Do not "simplify" it to match them.
-    val scale = animateFloatAsState(
-        targetValue = if ((isPressed || isRecording) && !motion.reduceMotion) 0.90f else 1.0f,
-        animationSpec = motion.springSnappySpec(),
-        label = "mic_button_press_scale",
-    )
+    // `pressScale` stays an Animatable and is read inside `graphicsLayer` (EXP-013) so the spring
+    // never recomposes the button. Fast taps/clicks still dip briefly before springing back so both
+    // Desktop clicks and Android taps feel responsive.
+    val pressScale = remember { Animatable(1f) }
     val backgroundColor by animateColorAsState(
         targetValue = when {
             isNearCancel -> colors.textError.copy(alpha = 0.25f)
-            isRecording -> colors.accentPrimary
+            isRecording -> colors.accentFill
             else -> Color.Transparent
         },
         animationSpec = tween(motion.fastMillis),
@@ -195,7 +289,7 @@ fun FlashMicButton(
     val iconTint by animateColorAsState(
         targetValue = when {
             isNearCancel -> colors.textError
-            isRecording -> colors.textOnAccent
+            isRecording -> colors.onAccentFill
             else -> colors.textTertiary
         },
         animationSpec = tween(motion.fastMillis),
@@ -210,52 +304,140 @@ fun FlashMicButton(
 
     Box(
         modifier = modifier
-            .size(FlashSpacing.space44)
-            .graphicsLayer {
-                scaleX = scale.value
-                scaleY = scale.value
-                translationX = slideX
-                translationY = slideY
-            }
-            .clip(CircleShape)
-            .background(backgroundColor)
-            .pointerInput(enabled) {
+            .defaultMinSize(
+                minWidth = FlashDimensions.minTouchTarget,
+                minHeight = FlashDimensions.minTouchTarget,
+            )
+            .pointerInput(enabled, motion.reduceMotion) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    down.consume()
-                    haptics(FlashHaptic.Confirm)
-                    onStartRecord()
-                    var totalDx = 0f
-                    var totalDy = 0f
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.pressed } ?: break
-                        val delta = change.positionChange()
-                        totalDx += delta.x
-                        totalDy += delta.y
-                        dragOffsetX = totalDx
-                        dragOffsetY = totalDy
-                        onSlideUpdate(totalDx, totalDy)
-                        change.consume()
-                    }
                     dragOffsetX = 0f
                     dragOffsetY = 0f
-                    onRecordEnd()
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    val pressInteraction = PressInteraction.Press(down.position)
+                    scope.launch {
+                        interactionSource.emit(pressInteraction)
+                    }
+                    if (!motion.reduceMotion) {
+                        scope.launch {
+                            pressScale.animateTo(
+                                targetValue = 0.84f,
+                                animationSpec = spring(dampingRatio = 0.6f, stiffness = 900f),
+                            )
+                        }
+                    }
+                    haptics(FlashHaptic.Confirm)
+                    startRecord()
+                    val touchSlop = viewConfiguration.touchSlop
+                    var totalDx = 0f
+                    var totalDy = 0f
+                    var touchSlopPassed = false
+                    var released = false
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (change.isConsumed) break
+                            if (!change.pressed) {
+                                released = true
+                                change.consume()
+                                break
+                            }
+                            val delta = change.positionChange()
+                            totalDx += delta.x
+                            totalDy += delta.y
+                            if (!touchSlopPassed) {
+                                if (abs(totalDx) > touchSlop || abs(totalDy) > touchSlop) {
+                                    touchSlopPassed = true
+                                }
+                            }
+                            if (touchSlopPassed) {
+                                dragOffsetX = totalDx
+                                dragOffsetY = totalDy
+                                slideUpdate(totalDx, totalDy)
+                            } else {
+                                dragOffsetX = 0f
+                                dragOffsetY = 0f
+                                slideUpdate(0f, 0f)
+                            }
+                            change.consume()
+                        }
+                    } finally {
+                        dragOffsetX = 0f
+                        dragOffsetY = 0f
+                        scope.launch {
+                            interactionSource.emit(
+                                if (released) {
+                                    PressInteraction.Release(pressInteraction)
+                                } else {
+                                    PressInteraction.Cancel(pressInteraction)
+                                },
+                            )
+                        }
+                        if (motion.reduceMotion) {
+                            scope.launch { pressScale.snapTo(1f) }
+                        } else {
+                            scope.launch {
+                                if (pressScale.value > 0.90f) {
+                                    pressScale.animateTo(
+                                        targetValue = 0.86f,
+                                        animationSpec = spring(dampingRatio = 0.7f, stiffness = 1200f),
+                                    )
+                                }
+                                pressScale.animateTo(
+                                    targetValue = 1.0f,
+                                    animationSpec = spring(dampingRatio = 0.38f, stiffness = 520f),
+                                )
+                            }
+                        }
+                        if (!released) interrupted()
+                    }
+                    if (released) recordEnd()
                 }
             }
+            .onKeyEvent { event ->
+                if (enabled && onStartHandsFree != null && event.type == KeyEventType.KeyUp &&
+                    (event.key == Key.Enter || event.key == Key.Spacebar)
+                ) {
+                    onStartHandsFree()
+                    true
+                } else false
+            }
+            .focusable(enabled && onStartHandsFree != null)
             .semantics {
                 role = Role.Button
-                contentDescription = "Hold to record voice message"
+                contentDescription = "Voice message"
+                stateDescription = if (isRecording) "Recording" else "Ready to record"
+                if (enabled && onStartHandsFree != null) {
+                    onClick(label = "Start hands-free recording") {
+                        onStartHandsFree()
+                        true
+                    }
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
-        FlashIcon(
-            icon = currentIcon,
-            contentDescription = null,
-            tint = iconTint,
-            modifier = Modifier.size(FlashSpacing.space20),
-        )
+        Box(
+            modifier = Modifier
+                .size(FlashSpacing.space44)
+                .graphicsLayer {
+                    scaleX = pressScale.value
+                    scaleY = pressScale.value
+                    translationX = slideX
+                    translationY = slideY
+                }
+                .clip(CircleShape)
+                .background(backgroundColor),
+            contentAlignment = Alignment.Center,
+        ) {
+            FlashIcon(
+                icon = currentIcon,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(FlashSpacing.space20),
+            )
+        }
     }
 }
 
@@ -275,6 +457,7 @@ fun FlashVoiceRecordingBar(
     onTogglePause: () -> Unit,
     onSend: () -> Unit,
     modifier: Modifier = Modifier,
+    showInBarSend: Boolean = true,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -308,7 +491,7 @@ fun FlashVoiceRecordingBar(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(40.dp)
+            .heightIn(min = FlashDimensions.minTouchTarget)
             .clip(FlashShapes.composerInput)
             .background(if (isCancelArmed) colors.textError.copy(alpha = 0.12f) else colors.composerInputBackground)
             .border(
@@ -392,11 +575,18 @@ fun FlashVoiceRecordingBar(
                         style = typography.numericEmphasis.copy(fontSize = typography.metadataDefault.fontSize),
                         color = colors.textSecondary,
                     )
-                    FlashRecordingSendButton(onClick = onSend)
+                    if (showInBarSend) {
+                        FlashRecordingSendButton(onClick = onSend)
+                    }
                 }
             } else {
+                val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
                 FlashText(
-                    text = if (isCancelArmed) "Release to cancel" else "‹ Slide to cancel",
+                    text = when {
+                        isCancelArmed -> "Release to cancel"
+                        isRtl -> "Slide to cancel ›"
+                        else -> "‹ Slide to cancel"
+                    },
                     style = typography.captionDefault,
                     color = if (isCancelArmed) colors.textError else colors.textTertiary,
                     maxLines = 1,
@@ -477,7 +667,7 @@ private fun FlashRecordingSendButton(
         modifier = modifier
             .size(32.dp)
             .clip(CircleShape)
-            .background(colors.accentPrimary)
+            .background(colors.accentFill)
             .clickable(onClick = onClick)
             .semantics {
                 role = Role.Button
@@ -488,8 +678,77 @@ private fun FlashRecordingSendButton(
         FlashIcon(
             icon = FlashIcons.Send,
             contentDescription = null,
-            tint = colors.textOnAccent,
+            tint = colors.onAccentFill,
             size = FlashDimensions.iconSm,
+        )
+    }
+}
+
+/**
+ * 44dp accent send key occupying the composer's trailing slot once a locked recording is
+ * hands-free (the hold that produced the lock has ended).
+ *
+ * It replaces the mic in that slot, so tapping the prominent trailing control sends the recording
+ * instead of asking the host to start a second capture. The recording bar keeps its own 32dp send
+ * button as the in-bar alternative.
+ */
+@Composable
+internal fun FlashVoiceTrailingSendButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val haptics = rememberFlashHaptics()
+    Box(
+        modifier = modifier
+            .size(FlashSpacing.space44)
+            .clip(CircleShape)
+            .background(colors.accentFill)
+            .clickable {
+                haptics(FlashHaptic.Tick)
+                onClick()
+            }
+            .semantics {
+                role = Role.Button
+                contentDescription = "Send voice message"
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashIcon(
+            icon = FlashIcons.Send,
+            contentDescription = null,
+            tint = colors.onAccentFill,
+            modifier = Modifier.size(FlashSpacing.space20),
+        )
+    }
+}
+
+/** Compact floating pill shown above the mic during hold or after a short accidental tap. */
+@Composable
+internal fun FlashVoiceHintPill(
+    text: String,
+    isError: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    Box(
+        modifier = modifier
+            .clip(FlashShapes.chip)
+            .background(colors.backgroundSurface)
+            .border(
+                FlashDimensions.borderHairline,
+                if (isError) colors.textError else colors.borderSubtle,
+                FlashShapes.chip,
+            )
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = text,
+            style = typography.captionEmphasis,
+            color = if (isError) colors.textError else colors.textSecondary,
+            maxLines = 1,
         )
     }
 }

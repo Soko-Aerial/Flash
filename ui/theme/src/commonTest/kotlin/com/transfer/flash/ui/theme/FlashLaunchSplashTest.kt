@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.theme
 
+import androidx.compose.animation.ExitTransition
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import kotlin.math.abs
@@ -8,6 +9,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /** UI-056 / ADR-080: the Ink launch splash's timing, gate, geometry, wobble, colours and letter data. */
@@ -31,6 +33,15 @@ class FlashLaunchSplashTest {
         assertEquals(6_000L, FlashInkSplashTimeline.finishAtMillis(reduceMotion = false, engineSettled = false))
         assertEquals(800L, FlashInkSplashTimeline.finishAtMillis(reduceMotion = true, engineSettled = true))
         assertEquals(6_000L, FlashInkSplashTimeline.finishAtMillis(reduceMotion = true, engineSettled = false))
+    }
+
+    @Test
+    fun `reduceMotion skips splash fade-out without altering ADR-080 hold time`() {
+        assertEquals(250, splashFadeOutMillis(reduceMotion = false))
+        assertEquals(0, splashFadeOutMillis(reduceMotion = true))
+        assertNotEquals(ExitTransition.None, splashExitTransition(reduceMotion = false))
+        assertEquals(ExitTransition.None, splashExitTransition(reduceMotion = true))
+        assertEquals(800L, FlashInkSplashTimeline.finishAtMillis(reduceMotion = true, engineSettled = true))
     }
 
     @Test

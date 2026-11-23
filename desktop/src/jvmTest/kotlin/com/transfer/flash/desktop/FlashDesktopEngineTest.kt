@@ -10,16 +10,30 @@ import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.engine.FlashConfig
 import com.transfer.flash.core.engine.FlashDesktop
 import com.transfer.flash.core.engine.FlashEngine
 import com.transfer.flash.core.engine.FlashReadiness
 import com.transfer.flash.core.engine.awaitReady
+import com.transfer.flash.core.engine.hubfiles.ContinuityCheckpoint
+import com.transfer.flash.core.engine.hubfiles.ContinuityStatus
+import com.transfer.flash.core.engine.hubfiles.FileContinuityCheckpointStore
+import com.transfer.flash.core.engine.hubfiles.LogicalTransferIdentity
+import com.transfer.flash.core.engine.hubfiles.RouteOwner
+import com.transfer.flash.core.engine.hubfiles.VerifiedByteSpan
+import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.EmptyFlashChatRepository
+import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.persistence.db.FlashDatabase
+import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.swarm.api.FlashSwarm
+import com.transfer.flash.core.transfer.chunked.ChunkFrame
+import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
+import com.transfer.flash.core.transfer.store.TransferStore
 import java.io.File
 import java.lang.reflect.Proxy
 import java.net.InetSocketAddress
@@ -31,6 +45,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -351,6 +366,79 @@ class FlashDesktopEngineTest {
                 "a paired peer's offer is auto-accepted",
             )
         }
+
+    @Test
+    fun `restart restores an accepted receive and completes when only its missing chunk arrives`() = runBlocking<Unit> {
+        val state = dir("restart")
+        val received = dir("restart-received")
+        val sender = engine()
+        val receiver = engine(state = state, received = received)
+        // Keep the manual loopback connection from competing with a discovered LAN route.
+        sender.setDiscoveryMode(FlashDiscoveryMode.GHOST)
+        receiver.updateSettings { it.copy(saveLocation = received.absolutePath) }
+        receiver.setDiscoveryMode(FlashDiscoveryMode.GHOST)
+        assertEquals(received.canonicalFile, receiver.canonicalRoot)
+        val transferId = "tx-recovery"
+        val fileId = "0123456789abcdef0123456789abcdef"
+        val fileName = "restart.bin"
+        val chunkSize = 65_536
+        val bytes = ByteArray(chunkSize * 2) { if (it < chunkSize) 21 else 42 }
+        val digest = Sha256.digestHex(bytes)
+        val partial = File(received, "$transferId/$fileName").apply {
+            parentFile.mkdirs()
+            writeBytes(bytes.copyOfRange(0, chunkSize) + ByteArray(chunkSize))
+        }
+        val chatDir = File(state, "chat")
+        val key = ChatDbKeyStore(chatDir, testIdentityVault()).passphrase()
+        val database = openEncryptedFlashDatabase(File(chatDir, FlashDatabase.DATABASE_NAME), key)
+        try {
+            RoomTransferStore(database.transferDao(), database.transferChunkDao()).saveIdentity(
+                TransferStore.StoredTransfer(
+                    transferId, sender.localDeviceId, "Sender", fileName, "Receiving", bytes.size.toLong(),
+                    chunkSize.toLong(), "Transferring", null, null, fileId, partial.canonicalPath,
+                    System.currentTimeMillis(),
+                ),
+            )
+        } finally {
+            database.close()
+        }
+        FileContinuityCheckpointStore(File(state, "transfer-continuity").path).save(
+            ContinuityCheckpoint(
+                identity = LogicalTransferIdentity(fileId, sender.localDeviceId, receiver.localDeviceId, fileName, bytes.size.toLong(), digest),
+                verifiedSpans = listOf(VerifiedByteSpan(0L, chunkSize.toLong())),
+                activeRoute = RouteOwner.LAN,
+                routeEpoch = 1L,
+                status = ContinuityStatus.ACTIVE,
+                lanPartialPath = partial.canonicalPath,
+            ),
+        )
+
+        receiver.start()
+        sender.start()
+        receiver.awaitReady()
+        sender.awaitReady()
+        fun recovered() = receiver.transfers.activeTransfers.value.single { it.id.value == transferId }
+        assertEquals(FlashTransferState.Failed, recovered().state)
+        assertTrue(recovered().restored)
+        assertEquals(chunkSize.toLong(), recovered().bytesDone)
+
+        val peerId = FlashDeviceId(receiver.localDeviceId)
+        if (sender.network.activeSessions.value[peerId] == null) {
+            sender.network.connectManual("127.0.0.1", receiver.boundPort)
+        }
+        assertTrue(await { sender.network.activeSessions.value[peerId] is WsSession })
+        val session = sender.network.activeSessions.value.getValue(peerId) as WsSession
+        val start = ChunkFrame.FileStart(transferId, fileId, fileName, bytes.size.toLong(), 2, chunkSize, digest)
+        assertTrue(session.connection.sendBinary(ChunkFrame.serialize(start.copy(fileName = "changed.bin"))))
+        assertTrue(session.connection.sendBinary(ChunkFrame.serialize(start)))
+        assertTrue(await { recovered().state == FlashTransferState.Transferring }, "accepted receive did not reopen")
+
+        val missing = bytes.copyOfRange(chunkSize, bytes.size)
+        val chunk = ChunkFrame.Chunk(transferId, fileId, 1, missing, Sha256.digest(missing))
+        assertTrue(session.connection.sendBinary(ChunkFrame.serialize(chunk)))
+        assertTrue(await { recovered().state == FlashTransferState.Completed }, "replayed chunk did not complete the receive")
+        assertContentEquals(bytes, File(assertNotNull(recovered().localPath)).readBytes())
+    }
 
     // ---------------------------------------------------------------------------------------------------------------
     // Display name

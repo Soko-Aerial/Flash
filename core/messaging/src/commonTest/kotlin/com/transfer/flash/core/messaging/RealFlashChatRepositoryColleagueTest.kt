@@ -8,6 +8,8 @@ import com.transfer.flash.core.enterprise.OrgLease
 import com.transfer.flash.core.enterprise.OrgPeer
 import com.transfer.flash.core.enterprise.OrgPeerResolver
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
+import com.transfer.flash.core.common.model.FlashPeerPresence
+import kotlinx.coroutines.flow.first
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
@@ -205,6 +207,9 @@ class RealFlashChatRepositoryColleagueTest {
         override suspend fun makePendingDue(now: Long) {
             outbox.replaceAll { _, v -> v.copy(attempts = 0, nextAttemptAt = now) }
         }
+
+        override suspend fun makePendingDueForPeer(peerId: String, senderId: String, now: Long) =
+            error("This outbox fake has no message store")
 
         override suspend fun incrementAttempts(localId: String) {
             outbox[localId]?.let { outbox[localId] = it.copy(attempts = it.attempts + 1) }
@@ -1684,5 +1689,234 @@ class RealFlashChatRepositoryColleagueTest {
         rig.time.timeMs = 5_000_001L
         rig.repo.onInboundGroupWireFrame(colleagueAlice, msg("m-late", colleagueAlice))
         assertFalse(rig.messages.messages.values.any { it.localId == "m-late" }, "an expired roster accepts nobody")
+    }
+
+    @Test
+    fun C1_groupOnlineCountAndMemberStatusIncludeHubOnlinePeers() = runTest {
+        val convDao = FakeConversationDao()
+        convDao.upsert(ConversationEntity(id = hubGroup, title = "Platform", isGroup = true, sortOrder = 1L))
+        val members = FakeGroupMemberDao()
+        members.upsert(GroupMemberEntity(hubGroup, localDeviceId, "Me", "admin", 1L, 1L, "op", isActive = true))
+        members.upsert(GroupMemberEntity(hubGroup, colleagueAlice, "Alice", "member", 1L, 1L, "op", isActive = true))
+        members.upsert(GroupMemberEntity(hubGroup, colleagueBob, "Bob", "member", 1L, 1L, "op", isActive = true))
+        val hubOnline = MutableStateFlow(setOf(colleagueAlice))
+        val repo = RealFlashChatRepository(
+            localDeviceId = localDeviceId,
+            localDisplayName = "My Device",
+            messageDao = FakeMessageDao(),
+            conversationDao = convDao,
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            groupMemberDao = members,
+            hubOnlinePeerIds = hubOnline,
+            ioDispatcher = Dispatchers.Unconfined,
+            timeSource = MutableTimeSource(1_000L),
+        )
+        reposToClose.add(repo)
+
+        val chatItem = repo.chatListState.first { it.items.any { item -> item.id == hubGroup } }
+            .items.first { it.id == hubGroup }
+        assertEquals(1, chatItem.groupOnlineCount)
+        assertEquals(FlashPeerPresence.Online, chatItem.presence)
+
+        repo.openConversation(hubGroup)
+        val convState = repo.conversationState.first { it.header.isGroup && it.members.isNotEmpty() }
+        assertEquals(1, convState.header.onlineCount)
+        assertEquals(FlashPeerPresence.Online, convState.header.presence)
+        assertTrue(convState.members.first { it.id == colleagueAlice }.isOnline)
+        assertFalse(convState.members.first { it.id == colleagueBob }.isOnline)
+    }
+
+    private fun testCredentials() = com.transfer.flash.core.security.enterprise.EnrollmentCredentials(
+        hubUrl = "https://hub.example",
+        hubName = "Acme",
+        rootFingerprint = "fp-1",
+        rootPublicKey = "rk-1",
+        deviceCert = com.transfer.flash.core.hubprotocol.certs.DeviceCert(
+            deviceId = localDeviceId,
+            subjectPublicKey = "pk-1",
+            role = com.transfer.flash.core.hubprotocol.certs.DeviceCert.ROLE_MEMBER,
+            department = "eng",
+            validFrom = 1L,
+            validTo = 10_000_000L,
+            serial = 1L,
+            issuerPublicKey = "rk-1",
+            issuerSignature = "sig",
+        ),
+    )
+
+    @Test
+    fun C2_joinEnterpriseGroupPopulatesMembersAndTriggersSync() = runTest {
+        val trust = com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore()
+        trust.saveCredentials(testCredentials())
+        val convDao = FakeConversationDao()
+        val members = FakeGroupMemberDao()
+        val syncReasons = mutableListOf<Pair<String, Boolean>>()
+        val fakeDir = object : com.transfer.flash.core.enterprise.HubDirectoryApi {
+            override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup>())
+            override suspend fun fetchDepartmentMembers(hubUrl: String, departmentId: String) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDirectoryMember>())
+            override suspend fun fetchDepartments(hubUrl: String) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDepartment>())
+            override suspend fun requestJoin(hubUrl: String, groupId: String, message: String?) =
+                FlashResult.Success(
+                    com.transfer.flash.core.enterprise.EnterpriseJoinResult(
+                        status = com.transfer.flash.core.enterprise.EnterpriseJoinStatus.JOINED,
+                        groupId = groupId,
+                        name = "Data Group",
+                    ),
+                )
+            override suspend fun fetchJoinRequests(hubUrl: String, groupId: String?) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseJoinRequest>())
+            override suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String?) =
+                FlashResult.Failure(FlashError.Unknown("unused"))
+        }
+        val repo = RealFlashChatRepository(
+            localDeviceId = localDeviceId,
+            localDisplayName = "My Device",
+            messageDao = FakeMessageDao(),
+            conversationDao = convDao,
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            groupMemberDao = members,
+            enterpriseTrustStore = trust,
+            enterpriseDirectoryClient = fakeDir,
+            onRequestOrgSync = { reason, force -> syncReasons += reason to force },
+            ioDispatcher = Dispatchers.Unconfined,
+            timeSource = MutableTimeSource(1_000L),
+        )
+        reposToClose.add(repo)
+
+        val res = repo.joinEnterpriseGroup("g-data", "Data Group")
+        assertTrue(res is FlashResult.Success)
+        assertTrue(trust.isGroupLinkedToHub("g-data"))
+        assertEquals(listOf("group_joined" to true), syncReasons)
+        assertTrue(members.activeMembers("g-data").any { it.deviceId == localDeviceId })
+    }
+
+    @Test
+    fun groupCreateFailureLeavesNoLocalRosterAndRetryKeepsRequestId() = runTest {
+        val trust = com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore()
+        trust.saveCredentials(testCredentials())
+        val convDao = FakeConversationDao()
+        val members = FakeGroupMemberDao()
+        val syncReasons = mutableListOf<Pair<String, Boolean>>()
+        val createdGroups = mutableListOf<String>()
+        val addedMembers = mutableListOf<Set<String>>()
+        var refuse = true
+        val fakeDir = object : com.transfer.flash.core.enterprise.HubDirectoryApi {
+            override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup>())
+            override suspend fun fetchDepartmentMembers(hubUrl: String, departmentId: String) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDirectoryMember>())
+            override suspend fun fetchDepartments(hubUrl: String) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDepartment>())
+            override suspend fun requestJoin(hubUrl: String, groupId: String, message: String?) =
+                FlashResult.Failure(FlashError.Unknown("unused"))
+            override suspend fun fetchJoinRequests(hubUrl: String, groupId: String?) =
+                FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseJoinRequest>())
+            override suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String?) =
+                FlashResult.Failure(FlashError.Unknown("unused"))
+            override suspend fun fetchMe(hubUrl: String) = FlashResult.Success(
+                com.transfer.flash.core.hubprotocol.rest.MeDto(
+                    deviceId = localDeviceId,
+                    role = com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues.ROLE_ORG_ADMIN,
+                ),
+            )
+            override suspend fun createHubGroupWithMembers(
+                hubUrl: String,
+                id: String,
+                name: String,
+                departmentId: String,
+                memberIds: Set<String>,
+            ): FlashResult<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup> {
+                createdGroups += id
+                addedMembers += memberIds
+                if (refuse) return FlashResult.Failure(FlashError.Unknown("A selected member is no longer enrolled"))
+                return FlashResult.Success(
+                    com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup(
+                        groupId = id,
+                        name = name,
+                        department = departmentId,
+                        visibility = "LISTED",
+                        joinMode = "REQUEST_APPROVAL",
+                        memberCount = memberIds.size + 1,
+                        memberDeviceIds = (memberIds + localDeviceId).toList(),
+                        adminDeviceIds = listOf(localDeviceId),
+                    ),
+                )
+            }
+        }
+        val repo = RealFlashChatRepository(
+            localDeviceId = localDeviceId,
+            localDisplayName = "My Device",
+            messageDao = FakeMessageDao(),
+            conversationDao = convDao,
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            groupMemberDao = members,
+            enterpriseTrustStore = trust,
+            enterpriseDirectoryClient = fakeDir,
+            onRequestOrgSync = { reason, force -> syncReasons += reason to force },
+            ioDispatcher = Dispatchers.Unconfined,
+            timeSource = MutableTimeSource(1_000L),
+        )
+        reposToClose.add(repo)
+
+        assertTrue(repo.canCreateHubGroup())
+        val requestId = "same-group-attempt"
+        val selected = setOf(colleagueAlice)
+        val failed = repo.createHubGroupForRequest("Security Team", selected, requestId)
+        assertTrue(failed is FlashResult.Failure)
+        assertEquals(null, convDao.get(requestId))
+        assertTrue(members.activeMembers(requestId).isEmpty())
+        assertFalse(trust.isGroupLinkedToHub(requestId))
+        refuse = false
+        val res = repo.createHubGroupForRequest("Security Team", selected, requestId)
+        val gid = (res as FlashResult.Success).value
+        assertEquals(requestId, gid)
+        assertEquals(listOf(gid, gid), createdGroups)
+        assertEquals(listOf(selected, selected), addedMembers)
+        assertEquals(listOf("group_created" to true), syncReasons)
+        assertTrue(trust.isGroupLinkedToHub(gid))
+        assertEquals(setOf(localDeviceId, colleagueAlice), members.activeMembers(gid).map { it.deviceId }.toSet())
+    }
+
+    @Test
+    fun policy_allowPersonalHubLinkFalseRejectsLinkingNonHubGroup() = runTest {
+        val trust = com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore()
+        trust.saveCredentials(testCredentials())
+        val convDao = FakeConversationDao()
+        convDao.upsert(ConversationEntity(id = "local-g1", title = "Local", isGroup = true, sortOrder = 1L))
+        val repo = RealFlashChatRepository(
+            localDeviceId = localDeviceId,
+            localDisplayName = "My Device",
+            messageDao = FakeMessageDao(),
+            conversationDao = convDao,
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            enterpriseTrustStore = trust,
+            allowPersonalHubLink = { false },
+            ioDispatcher = Dispatchers.Unconfined,
+            timeSource = MutableTimeSource(1_000L),
+        )
+        reposToClose.add(repo)
+
+        val res = repo.linkGroupToHub("local-g1")
+        assertTrue(res is FlashResult.Failure)
+        assertFalse(trust.isGroupLinkedToHub("local-g1"))
     }
 }

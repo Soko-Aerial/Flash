@@ -327,6 +327,66 @@ class HubFacadeTest {
         r.scope.cancel()
     }
 
+    @Test fun `groups and news finish while the directory waits, even if the tab leaves`() {
+        val dao = FakeDao()
+        val directory = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val groups = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val news = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val src = HubTabSources(
+            dao,
+            requestSync = {
+                directory.await()
+                OrgSyncOutcome.Success(0, 0, 0, 0, false)
+            },
+            fetchGroups = {
+                groups.complete(Unit)
+                FlashResult.Success(emptyList())
+            },
+        )
+        val r = rig(dao, sources = src, announcements = {
+            news.complete(Unit)
+            FlashResult.Success(Unit)
+        })
+        try {
+            runBlocking {
+                val tab = async { r.facade.refresh() }
+                withTimeout(5_000) { groups.await(); news.await() }
+                assertFalse(tab.isCompleted)
+                tab.cancel()
+                val reopened = async { r.facade.refresh() }
+                directory.complete(Unit)
+                assertTrue(withTimeout(5_000) { reopened.await() } is FlashResult.Success)
+            }
+        } finally {
+            directory.complete(Unit)
+            r.scope.cancel()
+        }
+    }
+
+    @Test fun `manual refresh bypasses the automatic cooldown and honors server backoff`() {
+        val dao = FakeDao()
+        val clock = Clock()
+        val calls = mutableListOf<Boolean>()
+        val r = rig(dao, clock = clock, sources = HubTabSources(dao, requestSync = { force ->
+            calls += force
+            if (calls.size == 1) OrgSyncOutcome.Offline else OrgSyncOutcome.RateLimited(30)
+        }))
+        try {
+            runBlocking {
+                r.facade.refresh()
+                r.facade.refresh(userInitiated = true)
+                clock.now += 15_000
+                r.facade.refresh(userInitiated = true)
+                assertEquals(listOf(false, true), calls)
+                clock.now += 15_000
+                r.facade.refresh(userInitiated = true)
+                assertEquals(listOf(false, true, true), calls)
+            }
+        } finally {
+            r.scope.cancel()
+        }
+    }
+
     @Test fun `U17 refresh within 15 s makes no second attempt, after 15 s it does`() {
         val dao = FakeDao(); var calls = 0; val clock = Clock()
         val r = rig(dao, clock = clock, sources = HubTabSources(dao, requestSync = { _ -> calls++; OrgSyncOutcome.Success(0, 0, 0, 0, false) }))

@@ -52,4 +52,4 @@ fun main(args: Array<String>) = runBlocking {
 }
 ```
 
-State lives under the per-user state directory (`DesktopPaths.stateDir()`); on Windows the identity key is sealed with DPAPI, so a service must run as the same user that paired. Linux and headless use are not device-verified (`LNX-*` in `docs/testing/TEST-BACKLOG.md`).
+State lives under the per-user state directory (managed by internal `DesktopPaths.stateDir()`, e.g., `~/.flash` on Windows/macOS or `$XDG_DATA_HOME/flash` / `~/.local/share/flash` on Linux); on Windows the identity key is sealed with DPAPI, so a service must run as the same user that paired. Persistent transfer recovery (`enableResume = true`, the default) is supported on Desktop via encrypted Room transfer rows and validated LAN checkpoints (ADR-362). Linux and headless use are not device-verified (`LNX-*` in `docs/testing/TEST-BACKLOG.md`).

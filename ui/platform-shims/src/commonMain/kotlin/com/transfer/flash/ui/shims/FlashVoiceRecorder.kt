@@ -18,6 +18,9 @@ public interface FlashVoiceRecorder {
      */
     public fun start(): Boolean
 
+    /** Changes active capture in place. False means the requested transition failed. */
+    public fun setPaused(paused: Boolean): Boolean = false
+
     /** Current peak amplitude scaled to the waveform's 0..100 range; 0 when not recording. */
     public fun maxAmplitude(): Int
 

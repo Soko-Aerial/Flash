@@ -63,6 +63,38 @@ internal class PendingAckTable(
         return entries.remove(counter)
     }
 
+    /** Updates [txAtMs] once the driver confirms the frame left the transmitter, if still pending. */
+    fun updateTxAtMs(counter: Long, txAtMs: Long) {
+        val existing = entries[counter] ?: return
+        entries[counter] = PendingOutbound(
+            messageId = existing.messageId,
+            recipientId = existing.recipientId,
+            sentAtMs = existing.sentAtMs,
+            txAtMs = txAtMs,
+            recordedAtMs = existing.recordedAtMs,
+        )
+    }
+
+    /** Snapshot of non-expired entries for continuity across engine swaps. */
+    fun snapshot(nowMs: Long): List<Pair<Long, PendingOutbound>> {
+        expire(nowMs)
+        return entries.entries.map { it.key to it.value }
+    }
+
+    /** Restores entries from an earlier engine without overwriting newer entries. */
+    fun restore(items: List<Pair<Long, PendingOutbound>>, nowMs: Long) {
+        expire(nowMs)
+        for ((counter, item) in items) {
+            if (nowMs - item.recordedAtMs < ttlMs && counter !in entries) {
+                entries[counter] = item
+            }
+        }
+        while (entries.size > maxEntries) {
+            val eldest = entries.keys.firstOrNull() ?: break
+            entries.remove(eldest)
+        }
+    }
+
     /** The counters currently waiting, oldest first (tests and diagnostics). */
     fun counters(): List<Long> = entries.keys.toList()
 

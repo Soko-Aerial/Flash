@@ -109,13 +109,9 @@ public class AndroidPreferencesTrustStore(
         val prefKey = sessionKeyFor(deviceId.value)
         val stored = preferences.getString(prefKey, null) ?: return null
         if (stored.startsWith(SEALED_PREFIX)) {
-            val opened = sealer.open(stored.removePrefix(SEALED_PREFIX))
-            if (opened == null) {
-                // The sealing key is gone (restore, keystore wipe): this entry is unrecoverable, and a
-                // stale unreadable key would only make every inbound FLASH_SEC frame fail. Re-pair.
-                preferences.edit().remove(prefKey).apply()
-            }
-            return opened
+            // A failed unwrap can mean the keystore is temporarily unavailable. Keep the
+            // persisted key so the existing pairing can recover on a later read.
+            return sealer.open(stored.removePrefix(SEALED_PREFIX))
         }
         // Legacy plaintext Base64 (pre-S4): re-store it sealed. If sealing fails right now the legacy
         // entry is left in place and still served, rather than losing the pairing.

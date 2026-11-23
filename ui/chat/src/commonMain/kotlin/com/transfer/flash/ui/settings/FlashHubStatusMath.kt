@@ -46,6 +46,8 @@ public data class FlashHubSealingUi(
     public val readableOff: Int = 0,
     /** Old deliveries refused so a replay cannot pass as new (SEC-D15-02). */
     public val stale: Int = 0,
+    /** Short code for this device's currently published Hub security key. */
+    public val securityCode: String? = null,
 )
 
 /** A label/value pair in the connection detail sheet. */
@@ -201,6 +203,9 @@ public object FlashHubStatusMath {
     /** The private-messages lines of the connection details (ADR-126). Counts appear only when they are not zero. */
     public fun sealingLines(sealing: FlashHubSealingUi): List<FlashHubDetailLine> = buildList {
         sealing.keyState?.let { add(FlashHubDetailLine("Private messages", sealingStateText(it))) }
+        if (sealing.keyState == HubSealingKeyState.PUBLISHED && !sealing.securityCode.isNullOrBlank()) {
+            add(FlashHubDetailLine("Hub security code", sealing.securityCode))
+        }
         if (sealing.unverified > 0) {
             add(FlashHubDetailLine("Messages not opened", "${sealing.unverified}. They could not be checked, so Flash did not keep them."))
         }

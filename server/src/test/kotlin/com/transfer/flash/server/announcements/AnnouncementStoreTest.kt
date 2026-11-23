@@ -36,6 +36,29 @@ class AnnouncementStoreTest {
     }
 
     @Test
+    fun createRetriesAreScopedByAuthorAndAudience() {
+        fun create(author: String, scope: String, department: String?) = store.createAnnouncement(
+            clientRequestId = "same-draft",
+            scope = scope,
+            departmentId = department,
+            title = "Notice",
+            body = "An announcement for this audience.",
+            authorKind = "device",
+            authorRef = author,
+            authorName = "Publisher",
+            authorRole = "dept_admin",
+        )
+
+        val first = create("author-one", "department", "one")
+        val second = create("author-two", "department", "one")
+        val third = create("author-one", "department", "two")
+        val fourth = create("author-one", "org", null)
+        assertEquals(4, setOf(first.id, second.id, third.id, fourth.id).size)
+        assertEquals(first.id, create("author-one", "department", "one").id)
+        assertEquals(third.id, create("author-one", "department", "two").id)
+    }
+
+    @Test
     fun createAnnouncementAndIdempotency() {
         val item1 = store.createAnnouncement(
             clientRequestId = "req-1",

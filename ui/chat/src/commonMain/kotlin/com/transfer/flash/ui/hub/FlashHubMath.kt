@@ -147,17 +147,21 @@ public object FlashHubMath {
 
     // --- Mode and status strip ---------------------------------------------------------------------------
 
-    public fun mode(state: HubUiState, link: HubLinkState): FlashHubMode = when {
-        link == HubLinkState.REVOKED -> FlashHubMode.REVOKED
-        !state.enrolled -> FlashHubMode.HIDDEN
-        !state.loaded -> FlashHubMode.LOADING
-        state.syncStatus == HubSyncStatus.NEVER && state.peopleCount == 0 && !hubReachable(link, state.syncStatus) ->
-            FlashHubMode.NEVER_SYNCED_OFFLINE
-        else -> FlashHubMode.CONTENT
+    public fun mode(state: HubUiState, link: HubLinkState, hasSectionContent: Boolean = false): FlashHubMode {
+        if (link == HubLinkState.REVOKED) return FlashHubMode.REVOKED
+        if (!state.enrolled) return FlashHubMode.HIDDEN
+        if (!state.loaded) return FlashHubMode.LOADING
+        if (hasSectionContent) return FlashHubMode.CONTENT
+        val firstSync = state.lastSyncedAtMs == null && state.peopleCount == 0
+        if (firstSync && state.syncStatus in setOf(HubSyncStatus.NEVER, HubSyncStatus.FAILED_OFFLINE)) {
+            val connecting = link == HubLinkState.CONNECTING || link == HubLinkState.AUTHENTICATING
+            val awaitingFirstSync = state.syncStatus == HubSyncStatus.NEVER && (
+                connecting || link == HubLinkState.ONLINE || link == HubLinkState.CERT_EXPIRING
+            )
+            return if (state.isRefreshing || awaitingFirstSync) FlashHubMode.LOADING else FlashHubMode.NEVER_SYNCED_OFFLINE
+        }
+        return FlashHubMode.CONTENT
     }
-
-    private fun hubReachable(link: HubLinkState, sync: HubSyncStatus): Boolean =
-        link == HubLinkState.ONLINE && sync != HubSyncStatus.FAILED_OFFLINE
 
     /** The strip for [FlashHubMode.CONTENT] and [FlashHubMode.LOADING]; null in the other modes. Highest priority first. */
     public fun strip(state: HubUiState, link: HubLinkState, nowMs: Long): FlashHubStrip? {
@@ -182,7 +186,7 @@ public object FlashHubMath {
         if (trust is FlashHubStatusMath.OrgTrustState.Expired && state.syncStatus != HubSyncStatus.NEVER) {
             return FlashHubStrip(FlashHubCopy.STRIP_LEASE_EXPIRED, FlashHubStripTone.WARNING, FlashHubStripAction.WHY)
         }
-        if (state.isRefreshing) return FlashHubStrip(FlashHubCopy.STRIP_UPDATING, FlashHubStripTone.CALM)
+        if (state.syncStatus == HubSyncStatus.NEVER && state.lastSyncedAtMs == null && state.peopleCount == 0) return null
         val age = state.lastSyncedAtMs?.let { relativeTime(it, nowMs) }
         val offline = state.syncStatus == HubSyncStatus.FAILED_OFFLINE || (link != HubLinkState.ONLINE && link != HubLinkState.CERT_EXPIRING)
         return when {

@@ -19,11 +19,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -31,7 +35,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatListItemUi
 import com.transfer.flash.core.messaging.util.sampleFlashChatListState
 import com.transfer.flash.ui.icons.FlashIcon
@@ -117,85 +123,130 @@ fun FlashChatListSearchBar(
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
+    val focusRequester = remember { FocusRequester() }
 
-    Row(
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
+
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .background(colors.backgroundSurface)
-            .statusBarsPadding()
-            .padding(horizontal = FlashSpacing.space4),
-        verticalAlignment = Alignment.CenterVertically,
+            .statusBarsPadding(),
     ) {
-        // Close search
-        Box(
+        Row(
             modifier = Modifier
-                .size(FlashDimensions.minTouchTarget)
-                .clip(CircleShape)
-                .clickable(onClick = onClose)
-                .semantics { role = Role.Button; contentDescription = "Close search" },
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .padding(horizontal = FlashSpacing.space4, vertical = FlashSpacing.space4),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            FlashIcon(icon = FlashIcons.Back)
-        }
+            // Close search
+            Box(
+                modifier = Modifier
+                    .size(FlashDimensions.minTouchTarget)
+                    .clip(CircleShape)
+                    .clickable(onClick = onClose)
+                    .semantics { role = Role.Button; contentDescription = "Close search" },
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashIcon(icon = FlashIcons.Back)
+            }
 
-        // Query field pill
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .clip(FlashShapes.composerInput)
-                .background(colors.composerInputBackground)
-                .border(
-                    width = FlashDimensions.borderHairline,
-                    color = colors.borderSubtle,
-                    shape = FlashShapes.composerInput,
+            // Query field pill
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(FlashShapes.composerInput)
+                    .background(colors.composerInputBackground)
+                    .border(
+                        width = FlashDimensions.borderHairline,
+                        color = colors.borderSubtle,
+                        shape = FlashShapes.composerInput,
+                    )
+                    .padding(start = FlashSpacing.space12, end = FlashSpacing.space4, top = FlashSpacing.space4, bottom = FlashSpacing.space4)
+                    .semantics {
+                        contentDescription = if (resultCount != null && resultCount > 0) {
+                            "Searching ${query}, ${FlashSearchResultMath.countLabel(resultCount)}"
+                        } else {
+                            "Searching $query"
+                        }
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChanged,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(vertical = FlashSpacing.space4)
+                        .focusRequester(focusRequester),
+                    singleLine = true,
+                    textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
+                    cursorBrush = SolidColor(colors.accentFill),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { onSearchSubmit?.invoke() }),
+                    decorationBox = { innerTextField ->
+                        if (query.isEmpty()) {
+                            FlashText(
+                                text = "Search messages and files",
+                                style = typography.bodyDefault,
+                                color = colors.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        innerTextField()
+                    },
                 )
-                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
-                .semantics {
-                    contentDescription = if (resultCount != null && resultCount > 0) {
-                        "Searching ${query}, ${FlashSearchResultMath.countLabel(resultCount)}"
-                    } else {
-                        "Searching $query"
+                if (query.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .size(FlashDimensions.minTouchTarget)
+                            .clip(CircleShape)
+                            .clickable { onQueryChanged("") }
+                            .semantics { role = Role.Button; contentDescription = "Clear search" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clip(CircleShape)
+                                .background(colors.backgroundSurfaceStrong),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashIcon(
+                                icon = FlashIcons.Close,
+                                contentDescription = null,
+                                size = FlashDimensions.iconSm,
+                                tint = colors.textSecondary,
+                            )
+                        }
                     }
-                },
-        ) {
-            BasicTextField(
-                value = query,
-                onValueChange = onQueryChanged,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
-                cursorBrush = SolidColor(colors.accentPrimary),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onSearchSubmit?.invoke() }),
-                decorationBox = { innerTextField ->
-                    if (query.isEmpty()) {
-                        FlashText(
-                            text = "Search messages and files",
-                            style = typography.bodyDefault,
-                            color = colors.textTertiary,
-                            maxLines = 1,
-                        )
-                    }
-                    innerTextField()
-                },
-            )
-        }
+                }
+            }
 
-        Spacer(modifier = Modifier.size(FlashSpacing.space4))
-
-        // Live result count (polite live region for TalkBack)
-        if (resultCount == null) {
-            Spacer(modifier = Modifier.width(FlashDimensions.minTouchTarget))
-        } else {
-            FlashText(
-                text = if (resultCount == 0) "No matches" else FlashSearchResultMath.countLabel(resultCount),
-                style = typography.metadataDefault,
-                color = if (resultCount == 0) colors.textTertiary else colors.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
+            // Live result count (polite live region for TalkBack)
+            if (resultCount != null) {
+                Spacer(modifier = Modifier.size(FlashSpacing.space8))
+                FlashText(
+                    text = if (resultCount == 0) "No matches" else FlashSearchResultMath.countLabel(resultCount),
+                    style = typography.metadataDefault,
+                    color = if (resultCount == 0) colors.textTertiary else colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .padding(end = FlashSpacing.space8)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                )
+            } else {
+                Spacer(modifier = Modifier.size(FlashSpacing.space8))
+            }
         }
+        HorizontalDivider(
+            thickness = FlashDimensions.borderHairline,
+            color = colors.borderSubtle,
+        )
     }
 }
 
@@ -238,7 +289,7 @@ fun FlashRecentSearchChips(
                     FlashText(
                         text = "Clear",
                         style = typography.metadataEmphasis,
-                        color = colors.accentPrimary,
+                        color = colors.textLink,
                     )
                 }
             }

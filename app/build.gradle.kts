@@ -9,6 +9,22 @@ plugins {
     id("flash.third-party-notices")
 }
 
+val inviteLinkHost = providers.gradleProperty("flashInviteLinkHost")
+    .orElse(providers.environmentVariable("FLASH_INVITE_LINK_HOST"))
+    .orElse("invite.flash.invalid")
+    .get()
+require(inviteLinkHost.length <= 253 &&
+    Regex("""[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+""").matches(inviteLinkHost)
+) { "flashInviteLinkHost must be a lowercase DNS hostname without a scheme, port or path" }
+
+val hubInviteLinkHost = providers.gradleProperty("flashHubInviteLinkHost")
+    .orElse(providers.environmentVariable("FLASH_HUB_INVITE_LINK_HOST"))
+    .orElse(inviteLinkHost)
+    .get()
+require(Regex("""[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+""").matches(hubInviteLinkHost)) {
+    "flashHubInviteLinkHost must be a lowercase DNS hostname without a scheme, port or path"
+}
+
 android {
     namespace = "com.transfer.flash"
     compileSdk {
@@ -19,10 +35,14 @@ android {
         applicationId = "com.transfer.flash"
         minSdk = 24
         targetSdk = 36
-        versionCode = 5
-        versionName = "2.2.0"
+        versionCode = 7
+        versionName = "2.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        manifestPlaceholders["flashInviteHost"] = inviteLinkHost
+        manifestPlaceholders["flashHubInviteHost"] = hubInviteLinkHost
+        buildConfigField("String", "HUB_INVITE_LINK_HOST", "\"$hubInviteLinkHost\"")
+        buildConfigField("String", "INVITE_LINK_HOST", "\"$inviteLinkHost\"")
     }
 
     buildTypes {
@@ -58,6 +78,7 @@ android {
         }
     }
     buildFeatures {
+        buildConfig = true
         compose = true
     }
     testOptions {

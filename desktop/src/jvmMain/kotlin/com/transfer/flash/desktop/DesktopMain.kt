@@ -30,7 +30,6 @@ import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashMotion
 import com.shepeliev.webrtckmp.WebRtc
 import dev.onvoid.webrtc.logging.Logging
-import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.rememberTrayState
 import com.transfer.flash.ui.navigation.FlashDestination
@@ -43,9 +42,6 @@ import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import java.io.BufferedWriter
 import java.io.FileWriter
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -82,11 +78,24 @@ public fun main(args: Array<String> = emptyArray()) {
     // Enforce single-instance: if another instance is already running, forward files or activate, then exit.
     // Before the log sink on purpose (ERROR-744): the sink truncates `desktop.log`, and a duplicate launch used to
     // wipe the running instance's log, the file a bug report depends on.
-    if (!SingleInstanceController.acquireOrActivate(args = args)) {
+    val isPrimary = try {
+        SingleInstanceController.acquireOrActivate(args = args)
+    } catch (e: java.io.IOException) {
+        System.err.println("Could not acquire Flash's instance lock: ${e.message}")
+        if (!java.awt.GraphicsEnvironment.isHeadless()) {
+            javax.swing.JOptionPane.showMessageDialog(
+                null,
+                "Flash could not open its local data folder. Check access to the folder and try again.",
+                "Flash",
+                javax.swing.JOptionPane.ERROR_MESSAGE,
+            )
+        }
+        return
+    }
+    if (!isPrimary) {
         FlashLog.i("MAIN", "Flash is already running. Request forwarded to existing instance. Exiting duplicate instance.")
         return
     }
-
     installDesktopLogSink()
 
     installNativeWebRtcLogging()
@@ -103,13 +112,22 @@ public fun main(args: Array<String> = emptyArray()) {
             )
         }
 
+        var pendingFilesToShare by remember {
+            mutableStateOf(SingleInstanceController.consumeInitialShareFiles())
+        }
+
         // UI-056 / ADR-080: the launch animation plays once per process, at start-up. The gate lives
         // here, above `if (isWindowVisible)`, because hiding to the tray disposes the window's
-        // composition and reopening it must not replay the splash. The settings file is read
-        // synchronously when the engine is built, so the decision is made before the first frame.
+        // composition and reopening it must not replay the splash. Skip when launched directly into
+        // a file share (e.g. "Send with Flash" from Explorer) so the target sheet appears immediately.
         val launchSplash = remember {
             FlashLaunchSplashGate(nowMillis = { System.nanoTime() / 1_000_000L }).apply {
-                decide(enabled = engine.settings.value.launchAnimation)
+                decide(
+                    enabled = shouldPlayDesktopLaunchSplash(
+                        launchAnimationEnabled = engine.settings.value.launchAnimation,
+                        hasInitialShareFiles = pendingFilesToShare.isNotEmpty(),
+                    ),
+                )
             }
         }
 
@@ -120,61 +138,57 @@ public fun main(args: Array<String> = emptyArray()) {
 
     val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
 
-    // OPT-O19-07: Downscale discovery to ECO when window is hidden in tray or minimized (guarded by active workloads).
-    LaunchedEffect(isWindowVisible, windowState.isMinimized) {
-        engine.setWindowActive(isWindowVisible && !windowState.isMinimized)
+    fun bringWindowToFront() {
+        isWindowVisible = true
+        windowState.isMinimized = false
+        currentComposeWindow?.let { win ->
+            win.isVisible = true
+            if (win is java.awt.Frame) {
+                val state = win.extendedState
+                if ((state and java.awt.Frame.ICONIFIED) != 0) {
+                    win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
+                }
+            }
+            win.toFront()
+            win.requestFocus()
+        }
+        backgroundUnreadCount = 0
+        DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
     }
 
-    val trayState = rememberTrayState()
-    val desktopSettings by engine.settings.collectAsState()
-    val osReduceMotion by DesktopOsReduceMotion.preferences.collectAsState(initial = false)
     val nav = rememberFlashNavigationState()
 
     // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
-    val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)) }
-
-    var pendingFilesToShare by remember {
-        mutableStateOf(SingleInstanceController.consumeInitialShareFiles())
+    val pendingHubRoute = remember {
+        val route = if (args.firstOrNull() == SingleInstanceController.OPEN_INVITE_ARGUMENT) null else
+            com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)
+        kotlinx.coroutines.flow.MutableStateFlow(route)
     }
 
-    DisposableEffect(desktopSettings.windowsContextMenu) {
-        if (WindowsContextMenuManager.isSupported && desktopSettings.windowsContextMenu) {
-            WindowsContextMenuManager.setContextMenuEnabled(true)
-        }
-        onDispose {}
-    }
-
-    val linuxNotifier = remember {
-        if (System.getProperty("os.name", "").startsWith("Linux", ignoreCase = true)) {
-            com.transfer.flash.desktop.linux.LinuxNotifier()
-        } else {
-            null
-        }
-    }
-
-    // Desktop notification manager
+    // Phase 3: Desktop notification manager — native OS balloon / LinuxNotifier D-Bus dispatch
+    // remains intentionally unassigned (`sendNotification = null`) in favor of DesktopTransferToastWindow
+    // while `origin/linux` branch integration is deferred.
     val notificationManager = remember {
         DesktopNotificationManager(
             engine = engine,
             scope = engine.scope,
-            sendNotification = { notification ->
-                // Linux: the desktop's own notification service (ADR-093); the tray popup only when it is absent.
-                val sentNatively = linuxNotifier?.send(
-                    notification.title,
-                    notification.message,
-                    critical = notification.type == Notification.Type.Error,
-                ) == true
-                if (!sentNatively) trayState.sendNotification(notification)
-            },
+            sendNotification = null,
             isWindowVisible = { isWindowVisible },
             activeConversationId = { nav.current.conversationId },
             isNotificationsEnabled = { engine.settings.value.showNotifications },
             isWindowMinimized = { windowState.isMinimized },
             isWindowFocused = { isWindowFocused },
+            isAnnouncementNotificationsEnabled = { engine.settings.value.announcementNotifications },
         ).apply {
             onBackgroundMessageReceived = {
                 backgroundUnreadCount++
                 DesktopTaskbarBadgeManager.updateBadge(currentComposeWindow, backgroundUnreadCount)
+            }
+            onOpenAnnouncement = { announcementId ->
+                javax.swing.SwingUtilities.invokeLater {
+                    pendingHubRoute.value = "hub/announcement/$announcementId"
+                    bringWindowToFront()
+                }
             }
         }
     }
@@ -184,22 +198,58 @@ public fun main(args: Array<String> = emptyArray()) {
         onDispose { notificationManager.stop() }
     }
 
+    // OPT-O19-07: Downscale discovery to ECO when window is hidden in tray or minimized (guarded by active workloads).
+    LaunchedEffect(isWindowVisible, windowState.isMinimized) {
+        val active = isWindowVisible && !windowState.isMinimized
+        engine.setWindowActive(active)
+        notificationManager.onWindowVisibilityChanged(active)
+    }
+
+    val trayState = rememberTrayState()
+    val ready by engine.ready.collectAsState()
+    val activationInvite by SingleInstanceController.invites.collectAsState()
+    LaunchedEffect(activationInvite) {
+        if (activationInvite != null) {
+            launchSplash.skip()
+            launchSplash.finish()
+            bringWindowToFront()
+        }
+    }
+    val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
+    val desktopSettings by engine.settings.collectAsState()
+    val toastCards by notificationManager.toastCards.collectAsState()
+    var toastActionError by remember { mutableStateOf<String?>(null) }
+    val osReduceMotion by DesktopOsReduceMotion.preferences.collectAsState(initial = false)
+    var trayNavTick by remember { mutableStateOf(0) }
+
+    LaunchedEffect(ready, enterpriseCredentials != null) {
+        if (ready) nav.updateHubEnrolled(enterpriseCredentials != null)
+    }
+
+    DisposableEffect(desktopSettings.windowsContextMenu) {
+        if (WindowsContextMenuManager.isSupported && desktopSettings.windowsContextMenu) {
+            WindowsContextMenuManager.setContextMenuEnabled(true)
+        }
+        onDispose {}
+    }
+
+    val appIconPainter = remember {
+        BitmapPainter(DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0).toComposeImageBitmap())
+    }
+
     // System Tray
     if (SystemTray.isSupported()) {
-        val ready by engine.ready.collectAsState()
         val currentMode by engine.discoveryMode.collectAsState()
         val modeLabel = FlashSettingsMath.discoveryModeShortLabel(currentMode.name)
         val trayTooltip = if (ready) "Flash - Online ($modeLabel)" else "Flash - Connecting..."
+        val trayNavItems = desktopTrayNavItems(nav.hubEnrolled)
 
         Tray(
-            icon = painterResource(FlashIcons.Tray.drawableRes),
+            icon = appIconPainter,
             state = trayState,
             tooltip = trayTooltip,
             onAction = {
-                isWindowVisible = true
-                windowState.isMinimized = false
-                backgroundUnreadCount = 0
-                DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+                bringWindowToFront()
             },
             menu = {
                 Item(
@@ -208,10 +258,7 @@ public fun main(args: Array<String> = emptyArray()) {
                         if (isWindowVisible) {
                             isWindowVisible = false
                         } else {
-                            isWindowVisible = true
-                            windowState.isMinimized = false
-                            backgroundUnreadCount = 0
-                            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+                            bringWindowToFront()
                         }
                     },
                 )
@@ -238,40 +285,20 @@ public fun main(args: Array<String> = emptyArray()) {
                     },
                 )
                 Separator()
-                Item(
-                    text = "Chats",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        backgroundUnreadCount = 0
-                        DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
-                        nav.selectTab(FlashDestination.ChatList)
-                    },
-                )
-                Item(
-                    text = "Transfers",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        nav.openTransfers()
-                    },
-                )
-                Item(
-                    text = "Nearby Devices",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        nav.selectTab(FlashDestination.NearbyDevices)
-                    },
-                )
-                Item(
-                    text = "Settings",
-                    onClick = {
-                        isWindowVisible = true
-                        windowState.isMinimized = false
-                        nav.selectTab(FlashDestination.Settings)
-                    },
-                )
+                trayNavItems.forEach { navItem ->
+                    Item(
+                        text = navItem.label,
+                        onClick = {
+                            bringWindowToFront()
+                            trayNavTick++
+                            if (navItem.destination == FlashDestination.Transfers) {
+                                nav.openTransfers()
+                            } else {
+                                nav.selectTab(navItem.destination)
+                            }
+                        },
+                    )
+                }
                 Separator()
                 Item(
                     text = "Quit Flash",
@@ -279,10 +306,6 @@ public fun main(args: Array<String> = emptyArray()) {
                 )
             },
         )
-    }
-
-    val appIconPainter = remember {
-        BitmapPainter(DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0).toComposeImageBitmap())
     }
 
     if (isWindowVisible) {
@@ -316,10 +339,12 @@ public fun main(args: Array<String> = emptyArray()) {
                     isWindowFocused = true
                     backgroundUnreadCount = 0
                     DesktopTaskbarBadgeManager.clearBadge(window)
+                    notificationManager.onWindowFocusChanged(true)
                 }
 
                 override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
                     isWindowFocused = false
+                    notificationManager.onWindowFocusChanged(false)
                 }
             }
             window.addWindowFocusListener(focusListener)
@@ -364,6 +389,7 @@ public fun main(args: Array<String> = emptyArray()) {
                     dynamicAccent = desktopSettings.dynamicAccent,
                     hapticsEnabled = false,
                     minimalChrome = effectivePerformanceMode.minimalChrome,
+                    ultraLowUi = effectivePerformanceMode.ultraLowUi,
                     motion = rememberFlashMotion(reduceMotionResolved),
                 ) {
                     // Baseline text colour for the whole desktop window.
@@ -371,30 +397,26 @@ public fun main(args: Array<String> = emptyArray()) {
                         val ready by engine.ready.collectAsState()
                         val startError by engine.startError.collectAsState()
                         Box(Modifier.fillMaxSize()) {
-                            if (args.contains("--radio-demo")) {
-                                com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
-                                    controller = remember { com.transfer.flash.ui.radio.FakeRadioGatewayController().apply { setEnabled(true) } },
-                                    onBack = { exitApplication() },
-                                )
-                            } else {
-                                DesktopShell(
-                                    engine = engine,
-                                    themeMode = desktopSettings.themeMode,
-                                    onThemeModeSelected = { mode ->
-                                        engine.storeThemeMode(mode)
-                                    },
-                                    window = window,
-                                    nav = nav,
-                                    externalShareFiles = pendingFilesToShare,
-                                    onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
-                                    pendingHubRoute = pendingHubRoute,
-                                    radioGatewayController = radioGatewayController,
-                                )
-                                FlashLaunchSplashOverlay(
-                                    gate = launchSplash,
-                                    engineSettled = ready || startError != null,
-                                )
-                            }
+                            DesktopShell(
+                                engine = engine,
+                                themeMode = desktopSettings.themeMode,
+                                onThemeModeSelected = { mode ->
+                                    engine.storeThemeMode(mode)
+                                },
+                                window = window,
+                                nav = nav,
+                                trayNavTick = trayNavTick,
+                                externalShareFiles = pendingFilesToShare,
+                                onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
+                                pendingHubRoute = pendingHubRoute,
+                                radioGatewayController = radioGatewayController,
+                                notificationActionError = toastActionError,
+                                onNotificationActionErrorShown = { toastActionError = null },
+                            )
+                            FlashLaunchSplashOverlay(
+                                gate = launchSplash,
+                                engineSettled = ready || startError != null,
+                            )
                         }
                     }
                 }
@@ -403,63 +425,58 @@ public fun main(args: Array<String> = emptyArray()) {
     }
     }
 
-    // C-06: Accept / Decline (and Retry) on a card while Flash is not in front; the OS banner cannot carry buttons.
+    // Phase 3: Desktop Unified Custom Notification Center and OS Balloon Retirement.
+    // All notifications (offers, completions, failures, chat pings, calls, pairing) route into DesktopTransferToastWindow.
     run {
-        val toastReady by engine.ready.collectAsState()
-        val toastRepo = if (toastReady) engine.transfers else null
-        // OPT-O19-02: Observe a distinct, filtered flow of candidate transfers (Offered inbound or Failed retryable outbound)
-        // instead of the raw activeTransfers StateFlow. This eliminates 10-100 Hz EDT recompositions during active transfers.
-        val toastTransfersFlow = remember(toastRepo) {
-            val flow = toastRepo?.activeTransfers ?: flowOf(emptyList())
-            flow.map { list ->
-                list.filter {
-                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered &&
-                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Receiving) ||
-                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Failed &&
-                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Sending &&
-                        it.canRetry)
-                }
-            }.distinctUntilChanged { old, new ->
-                if (old.size != new.size) return@distinctUntilChanged false
-                old.indices.all { i ->
-                    val o = old[i]
-                    val n = new[i]
-                    o.id == n.id &&
-                        o.state == n.state &&
-                        o.fileName == n.fileName &&
-                        o.peerName == n.peerName &&
-                        o.direction == n.direction &&
-                        o.errorMessage == n.errorMessage &&
-                        o.canRetry == n.canRetry
-                }
-            }
-        }
-        val toastTransfers by toastTransfersFlow.collectAsState(initial = emptyList())
         val toastDark = FlashSettingsMath.resolveDarkTheme(mode = desktopSettings.themeMode, systemDark = isSystemInDarkTheme())
         val toastPerformance = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
-        FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
-            FlashTheme(
-                darkTheme = toastDark,
-                dynamicAccent = desktopSettings.dynamicAccent,
-                hapticsEnabled = false,
-                minimalChrome = toastPerformance.minimalChrome,
-                motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
-            ) {
-                DesktopTransferToastWindow(
-                    transfers = toastTransfers,
-                    appInForeground = isWindowVisible && isWindowFocused && !windowState.isMinimized,
-                    onAction = { action, id ->
-                        val repo = engine.transfers ?: return@DesktopTransferToastWindow
-                        engine.scope.launch {
-                            when (action) {
-                                ToastAction.Accept -> repo.acceptIncoming(id)
-                                ToastAction.Decline -> repo.declineIncoming(id)
-                                ToastAction.Retry -> repo.resumeTransfer(id)
-                                ToastAction.Dismiss -> Unit
-                            }
-                        }
-                    },
-                )
+        val toastBaseDensity = androidx.compose.ui.platform.LocalDensity.current
+        val toastEffectiveDensity = remember(toastBaseDensity, desktopSettings.uiScale) {
+            androidx.compose.ui.unit.Density(
+                density = toastBaseDensity.density * desktopSettings.uiScale.coerceIn(0.75f, 1.5f),
+                fontScale = toastBaseDensity.fontScale,
+            )
+        }
+        CompositionLocalProvider(
+            androidx.compose.ui.platform.LocalDensity provides toastEffectiveDensity,
+        ) {
+            FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
+                FlashTheme(
+                    darkTheme = toastDark,
+                    dynamicAccent = desktopSettings.dynamicAccent,
+                    hapticsEnabled = false,
+                    minimalChrome = toastPerformance.minimalChrome,
+                    ultraLowUi = toastPerformance.ultraLowUi,
+                    motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
+                ) {
+                    DesktopTransferToastWindow(
+                        cards = if (desktopSettings.showNotifications) toastCards else emptyList(),
+                        appInForeground = isWindowVisible && isWindowFocused && !windowState.isMinimized,
+                        onAction = { action, card ->
+                            notificationManager.handleToastAction(
+                                action = action,
+                                card = card,
+                                onReviewPairing = { javax.swing.SwingUtilities.invokeLater { bringWindowToFront() } },
+                                onActionFailed = { error ->
+                                    javax.swing.SwingUtilities.invokeLater {
+                                        toastActionError = error
+                                        bringWindowToFront()
+                                    }
+                                },
+                                onOpenConversation = { convId ->
+                                    javax.swing.SwingUtilities.invokeLater {
+                                        isWindowVisible = true
+                                        bringWindowToFront()
+                                        nav.navigate(FlashDestination.Conversation, conversationId = convId)
+                                    }
+                                },
+                            )
+                        },
+                        onDismiss = { id ->
+                            notificationManager.dismissToast(id)
+                        },
+                    )
+                }
             }
         }
     }
@@ -488,38 +505,11 @@ public fun main(args: Array<String> = emptyArray()) {
     // `stop()` stays a plain synchronous call.
     DisposableEffect(Unit) {
         SingleInstanceController.onActivate = {
-            isWindowVisible = true
-            windowState.isMinimized = false
-            currentComposeWindow?.let { win ->
-                win.isVisible = true
-                if (win is java.awt.Frame) {
-                    val state = win.extendedState
-                    if ((state and java.awt.Frame.ICONIFIED) != 0) {
-                        win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
-                    }
-                }
-                win.toFront()
-                win.requestFocus()
-            }
-            backgroundUnreadCount = 0
-            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+            bringWindowToFront()
         }
         SingleInstanceController.onShareFiles = { files ->
-            isWindowVisible = true
-            windowState.isMinimized = false
-            currentComposeWindow?.let { win ->
-                win.isVisible = true
-                if (win is java.awt.Frame) {
-                    val state = win.extendedState
-                    if ((state and java.awt.Frame.ICONIFIED) != 0) {
-                        win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
-                    }
-                }
-                win.toFront()
-                win.requestFocus()
-            }
-            backgroundUnreadCount = 0
-            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+            launchSplash.finish()
+            bringWindowToFront()
             pendingFilesToShare = (pendingFilesToShare + files).distinctBy { it.absolutePath }
         }
         onDispose {
@@ -530,6 +520,26 @@ public fun main(args: Array<String> = emptyArray()) {
         }
     }
     }
+}
+
+internal fun shouldPlayDesktopLaunchSplash(
+    launchAnimationEnabled: Boolean,
+    hasInitialShareFiles: Boolean,
+): Boolean = launchAnimationEnabled && !hasInitialShareFiles
+
+internal data class DesktopTrayNavItem(
+    val destination: FlashDestination,
+    val label: String,
+)
+
+internal fun desktopTrayNavItems(hubEnrolled: Boolean): List<DesktopTrayNavItem> = buildList {
+    add(DesktopTrayNavItem(FlashDestination.ChatList, "Chats"))
+    if (hubEnrolled) {
+        add(DesktopTrayNavItem(FlashDestination.Hub, "Hub"))
+    }
+    add(DesktopTrayNavItem(FlashDestination.Transfers, "Transfers"))
+    add(DesktopTrayNavItem(FlashDestination.NearbyDevices, "Nearby Devices"))
+    add(DesktopTrayNavItem(FlashDestination.Settings, "Settings"))
 }
 
 /**

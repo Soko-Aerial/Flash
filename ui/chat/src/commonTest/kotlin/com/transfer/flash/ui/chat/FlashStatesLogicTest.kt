@@ -1,6 +1,10 @@
 package com.transfer.flash.ui.chat
 
-import com.transfer.flash.core.messaging.model.FlashMessageUi
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import com.transfer.flash.ui.theme.FlashColors
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -59,5 +63,28 @@ class FlashStatesLogicTest {
         val copy = FlashStateCopy.emptyStateCopy(FlashStateCopy.EmptyKind.ArchivedChatsEmpty)
         assertEquals("No archived chats", copy.headline)
         assertEquals("Back to chats", copy.actionLabel)
+    }
+
+    @Test
+    fun `state view CTA buttons meet WCAG AA contrast across light, dark, and dynamic accents`() {
+        val themes = listOf(
+            FlashColors.light(),
+            FlashColors.dark(),
+            FlashColors.light().withAccent(Color(0xFF6750A4)),
+            FlashColors.dark().withAccent(Color(0xFFD0BCFF)),
+        )
+        themes.forEach { colors ->
+            val (bg, fg) = FlashStateMath.ctaColors(colors)
+            assertTrue(
+                contrastRatio(fg, bg) >= 4.5f,
+                "State CTA contrast below AA (bg=$bg, fg=$fg, ratio=${contrastRatio(fg, bg)})",
+            )
+        }
+    }
+
+    private fun contrastRatio(a: Color, b: Color): Float {
+        val la = a.luminance()
+        val lb = b.luminance()
+        return (max(la, lb) + 0.05f) / (min(la, lb) + 0.05f)
     }
 }

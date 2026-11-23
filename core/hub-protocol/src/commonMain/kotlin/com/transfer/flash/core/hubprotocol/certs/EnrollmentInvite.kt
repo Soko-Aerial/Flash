@@ -1,6 +1,7 @@
 package com.transfer.flash.core.hubprotocol.certs
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.protocol.InviteAppLink
 
 /**
  * Parsed enrolment invitation: `flash://enroll?server=<url>&token=<single-use>&root=<fingerprint>` (or an
@@ -29,7 +30,9 @@ public data class EnrollmentInvite(
 
         /** Returns the parsed invite, or null when [uriString] is not an enrolment link. Never throws. */
         public fun parseOrNull(uriString: String): EnrollmentInvite? {
-            val trimmed = uriString.trim()
+            val input = uriString.trim()
+            val trimmed = InviteAppLink.unwrap(input) ?: input
+            if (trimmed.length > InviteAppLink.MAX_LINK_CHARS) return null
             if (trimmed.isEmpty()) return null
             val isFlashLink = trimmed.startsWith("flash://enroll?") || trimmed.startsWith("flash://enroll/?")
             if (!isFlashLink && !trimmed.contains("token=")) return null

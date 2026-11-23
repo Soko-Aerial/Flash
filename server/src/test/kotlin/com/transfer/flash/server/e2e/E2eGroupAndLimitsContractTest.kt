@@ -48,8 +48,8 @@ class E2eGroupAndLimitsContractTest {
     private fun envelope(id: String, sender: String) =
         FlashEnvelope(id = id, type = "MSG_TEXT", payloadJson = "opaque-$id", senderId = sender, sentAt = System.currentTimeMillis())
 
-    private fun groupSend(id: String, group: String) =
-        RelayFrame.Send(to = "", id = id, type = "MSG_TEXT", sentAt = System.currentTimeMillis(), payload = "group-$id", group = group)
+    private fun groupSend(id: String, group: String, sender: String) =
+        RelayFrame.Send(to = "", id = id, type = HubContract.GROUP_SEALED_ENVELOPE_TYPE, sentAt = System.currentTimeMillis(), payload = com.transfer.flash.server.relay.testGroupEnvelope(group, sender), group = group)
 
     @Test
     fun aGroupMessageReachesLiveMembersQueuesForOfflineOnesAndRefusesANonMember() = runBlocking<Unit> {
@@ -68,7 +68,7 @@ class E2eGroupAndLimitsContractTest {
         c.client.relay.stop()
         assertTrue(eventually { !c.hubSeesOnline() })
 
-        assertTrue(a.client.relay.transport.sendFrame(groupSend("grp-1", "g-all")))
+        assertTrue(a.client.relay.transport.sendFrame(groupSend("grp-1", "g-all", "dev-a")))
 
         val ack = assertNotNull(awaitItem(a.acks) { it.id == "grp-1" })
         assertEquals("g-all", ack.to, "a group ack names the group")
@@ -87,11 +87,11 @@ class E2eGroupAndLimitsContractTest {
         assertEquals("g-all", replay.group)
 
         // The outsider is not a member: refused, indistinguishable from an unknown group, and nobody gets the message.
-        assertTrue(outsider.client.relay.transport.sendFrame(groupSend("grp-2", "g-all")))
+        assertTrue(outsider.client.relay.transport.sendFrame(groupSend("grp-2", "g-all", "dev-d")))
         val refused = assertNotNull(awaitItem(outsider.acks) { it.id == "grp-2" })
         assertEquals(AckStatus.REJECTED, refused.status)
         assertEquals(HubErrorCodes.ERR_NOT_MEMBER, refused.reason)
-        assertTrue(outsider.client.relay.transport.sendFrame(groupSend("grp-3", "g-nonexistent")))
+        assertTrue(outsider.client.relay.transport.sendFrame(groupSend("grp-3", "g-nonexistent", "dev-d")))
         assertEquals(HubErrorCodes.ERR_NOT_MEMBER, assertNotNull(awaitItem(outsider.acks) { it.id == "grp-3" }).reason, "no membership oracle")
         kotlinx.coroutines.delay(300)
         assertTrue(b.received.none { it.id == "grp-2" } && c.received.none { it.id == "grp-2" })
@@ -113,7 +113,7 @@ class E2eGroupAndLimitsContractTest {
         join(recipient)
         recipient.client.relay.stop()
         assertTrue(eventually { !recipient.hubSeesOnline() })
-        assertTrue(sender.client.relay.transport.sendFrame(groupSend("old-group", "g-all")))
+        assertTrue(sender.client.relay.transport.sendFrame(groupSend("old-group", "g-all", "dev-a")))
         assertTrue(sender.client.relay.sendEnvelope(recipient.id, envelope("direct", sender.id)))
         assertTrue(eventually { hub.mailboxRows(recipient.id) == 2 })
 
@@ -128,7 +128,7 @@ class E2eGroupAndLimitsContractTest {
         val dropped = assertNotNull(awaitItem(sender.queueStates) { it.id == "old-group" })
         assertEquals(QueueEvent.DROPPED, dropped.state)
         assertEquals(recipient.id, dropped.to)
-        assertTrue(sender.client.relay.transport.sendFrame(groupSend("new-group", "g-all")))
+        assertTrue(sender.client.relay.transport.sendFrame(groupSend("new-group", "g-all", "dev-a")))
         assertNotNull(awaitItem(recipient.received) { it.id == "new-group" })
         assertTrue(recipient.received.none { it.id == "old-group" })
     }

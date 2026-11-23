@@ -8,7 +8,7 @@ The `:core:engine` module provides the unified orchestrator and runtime facade f
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.3.0-beta.1")
 }
 ```
 
@@ -48,13 +48,14 @@ Two factories assemble a fully wired one:
 
 ## 3. Key Public Interfaces and Classes
 
-### 3.1 `FlashEngine`
+### 3.1 `FlashBaseEngine` & `FlashEngine`
 
-Located in [`com.transfer.flash.core.engine.FlashEngine`](../../../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt)
-(abridged; there is **no** `start()` / `stop()`: construction starts the engine and `close()` stops it):
+`FlashBaseEngine` (`...core.engine.FlashBaseEngine`) is the minimal foundation contract (`discovery`, `network`, `trustStore`, `updateFriendlyName`, `AutoCloseable`) that decouples core transport and peer discovery from optional higher-level subsystems.
+
+[`FlashEngine`](../../../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt) extends `FlashBaseEngine` (abridged; there is **no** `start()` / `stop()`: construction starts the engine and `close()` stops it):
 
 ```kotlin
-public interface FlashEngine : AutoCloseable {
+public interface FlashEngine : FlashBaseEngine {
     public val chats: FlashChatRepository
     public val transfers: FlashTransferRepository
     public val discovery: FlashDiscovery
@@ -99,7 +100,7 @@ for the JVM readiness signal, custom host injection and platform settings.
 ```kotlin
 public data class FlashConfig(
     val displayName: String? = null,          // advertised name; null = the persisted identity's name
-    val enableResume: Boolean = true,         // persist chunk progress (desktop: not yet, resumes within a session)
+    val enableResume: Boolean = true,         // persist chunk/transfer state across restarts (Android + Desktop per ADR-362)
     val autoAcceptIncoming: Boolean = false,  // paired peers only; an unpaired peer's offer always waits for the user
     val receivedFilesPath: String? = null,    // null = platform default
 )
@@ -110,20 +111,25 @@ public data class FlashConfig(
 ## 4. Practical Code Example
 
 ```kotlin
+import android.content.Context
 import com.transfer.flash.core.engine.Flash
 import com.transfer.flash.core.engine.FlashConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
-// Android, off the main thread
-val engine = Flash.create(applicationContext, FlashConfig(displayName = "Pixel-Alpha"))
+fun runEngine(applicationContext: Context, scope: CoroutineScope) {
+    // Android, call off the main thread (e.g. Dispatchers.IO)
+    val engine = Flash.create(applicationContext, FlashConfig(displayName = "Pixel-Alpha"))
 
-scope.launch {
-    engine.discovery.discoveredEndpoints.collect { peers ->
-        println("Nearby: ${peers.map { it.device.friendlyName }}")
+    scope.launch {
+        engine.discovery.discoveredEndpoints.collect { peers ->
+            println("Nearby: ${peers.map { it.device.friendlyName }}")
+        }
     }
-}
 
-// when the host goes away (Service.onDestroy / ViewModel.onCleared)
-engine.close()
+    // when the host goes away (Service.onDestroy / ViewModel.onCleared)
+    // engine.close()
+}
 ```
 
 See the [beginner guide](../../getting-started/beginner-guide.md) for sending a message and a file.

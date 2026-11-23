@@ -107,7 +107,7 @@ public class RealHubAnnouncementsApi(
         }
     }
 
-    override suspend fun fetchFeed(hubUrl: String, since: Long, limit: Int): FlashResult<AnnouncementFeedDto> =
+    override suspend fun fetchFeed(hubUrl: String, since: Long, limit: Int, epoch: String?): FlashResult<AnnouncementFeedDto> =
         withContext(ioDispatcher) {
             val reply = when (
                 val r = execute(hubUrl) { base, bearer ->
@@ -116,6 +116,9 @@ public class RealHubAnnouncementsApi(
                         // (ERROR-410: the phone never decoded it, so no announcement ever reached it).
                         parameter("since", since.coerceAtLeast(0L).toString())
                         parameter("limit", limit.coerceIn(1, 500).toString())
+                        if (!epoch.isNullOrBlank()) {
+                            parameter("epoch", epoch)
+                        }
                         authorize(bearer)
                     }
                 }

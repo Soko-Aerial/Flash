@@ -127,11 +127,11 @@ public class HubSealingPins(private val store: HubSealingPinStore) {
         pins[deviceId]?.blocked == true
     }
 
-    /** The user chose to continue with the new key. Returns false when nothing was waiting. */
-    public suspend fun confirm(deviceId: String): Boolean = lock.withLock {
+    /** Accepts only the pending key that was shown to the user. */
+    public suspend fun confirm(deviceId: String, expectedFingerprint: String): Boolean = lock.withLock {
         ensureLoaded()
         val current = pins[deviceId] ?: return@withLock false
-        if (!current.blocked) return@withLock false
+        if (current.pending != expectedFingerprint) return@withLock false
         put(deviceId, HubSealingPinMath.confirm(current))
         true
     }

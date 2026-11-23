@@ -9,8 +9,14 @@ import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.rest.ApprovalDto
 import com.transfer.flash.core.hubprotocol.rest.ApprovalSubmitBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupWithMembersBody
+import com.transfer.flash.core.hubprotocol.rest.CreateGroupJoinLinkBody
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkTarget
+import com.transfer.flash.core.hubprotocol.rest.GroupJoinLinkToken
 import com.transfer.flash.core.hubprotocol.rest.DepartmentDto
 import com.transfer.flash.core.hubprotocol.rest.GroupDto
+import com.transfer.flash.core.hubprotocol.rest.GroupMemberBody
 import com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues
 import com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
@@ -18,6 +24,7 @@ import com.transfer.flash.core.hubprotocol.rest.JoinDecisionBody
 import com.transfer.flash.core.hubprotocol.rest.JoinRequestBody
 import com.transfer.flash.core.hubprotocol.rest.JoinRequestDto
 import com.transfer.flash.core.hubprotocol.rest.JoinResponse
+import com.transfer.flash.core.hubprotocol.rest.MeDto
 import com.transfer.flash.core.hubprotocol.rest.MemberDto
 import com.transfer.flash.core.hubprotocol.rest.SealingKeyRequest
 import io.ktor.client.HttpClient
@@ -113,6 +120,19 @@ public interface HubSealingKeyApi {
     public suspend fun remove(hubUrl: String): Boolean
 }
 
+/** Organization-wide group policy flags surfaced by `GET /api/v1/hub`. */
+@FlashInternalApi
+@kotlinx.serialization.Serializable
+public data class HubGroupPolicy(
+    public val allowPersonalHubLink: Boolean = false,
+    public val groupE2eeMode: String = GROUP_E2EE_MODE_REQUIRED,
+) {
+    public companion object {
+        public const val GROUP_E2EE_MODE_REQUIRED: String = "E2EE_REQUIRED"
+        public const val GROUP_E2EE_MODE_HUB_INSPECTABLE: String = "HUB_INSPECTABLE"
+    }
+}
+
 /**
  * What the chat repository needs from the hub's directory. An interface so repository tests use a fake and the real
  * [EnterpriseDirectoryClient] stays an HTTP detail.
@@ -132,6 +152,51 @@ public interface HubDirectoryApi {
     public suspend fun fetchJoinRequests(hubUrl: String, groupId: String? = null): FlashResult<List<EnterpriseJoinRequest>>
 
     public suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String? = null): FlashResult<EnterpriseJoinResult>
+
+    /** Caller's own directory identity (`GET /api/v1/directory/me`). */
+    public suspend fun fetchMe(hubUrl: String): FlashResult<MeDto> =
+        FlashResult.Failure(FlashError.Unknown("fetchMe not implemented"))
+
+    /** Creates an organization/department group on the Hub (`POST /api/v1/groups`). */
+    public suspend fun createHubGroup(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String = "",
+        visibility: String = HubDirectoryValues.VISIBILITY_LISTED,
+        joinMode: String = HubDirectoryValues.JOIN_REQUEST_APPROVAL,
+        adminDeviceIds: List<String> = emptyList(),
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        FlashResult.Failure(FlashError.Unknown("createHubGroup not implemented"))
+
+    /** Creates the group and its entire initial roster in one Hub request. */
+    public suspend fun createHubGroupWithMembers(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String,
+        memberIds: Set<String>,
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        FlashResult.Failure(FlashError.Unknown("This Hub does not support group creation with members."))
+
+    public suspend fun createGroupJoinLink(hubUrl: String, groupId: String): FlashResult<GroupJoinLinkToken> =
+        FlashResult.Failure(FlashError.Unknown("This Hub does not support group join links."))
+
+    public suspend fun resolveGroupJoinLink(hubUrl: String, token: String): FlashResult<GroupJoinLinkTarget> =
+        FlashResult.Failure(FlashError.Unknown("This Hub does not support group join links."))
+
+    /** Adds or removes a member in a Hub group (`POST /api/v1/groups/members`). */
+    public suspend fun setHubGroupMember(
+        hubUrl: String,
+        groupId: String,
+        deviceId: String,
+        add: Boolean = true,
+    ): FlashResult<Unit> =
+        FlashResult.Failure(FlashError.Unknown("setHubGroupMember not implemented"))
+
+    /** Fetches organization group policy flags from `GET /api/v1/hub`. */
+    public suspend fun fetchHubGroupPolicy(hubUrl: String): FlashResult<HubGroupPolicy> =
+        FlashResult.Success(HubGroupPolicy())
 }
 
 /**
@@ -179,12 +244,18 @@ public class EnterpriseDirectoryClient(
     /** The hub address stored in the credentials, or null when not enrolled. When non-null, every call must match its host. */
     private val pinnedHubUrl: () -> String? = { null },
     private val allowCleartext: () -> Boolean = { false },
+    private val expectedServerId: () -> String? = { null },
 ) : HubDirectoryApi, HubSealingKeyApi, DirectorySyncApi, DirectoryPrivacyApi {
 
     private class Reply(val response: HttpResponse, val body: String)
 
     /** One authenticated request with a single refresh-and-retry on 401. */
-    private suspend fun execute(hubUrl: String, send: suspend (base: String, bearer: String?) -> HttpResponse): FlashResult<Reply> {
+    private suspend fun execute(
+        hubUrl: String,
+        publicRequest: Boolean = false,
+        bodyLimit: Int = HubContract.MAX_REST_BODY_BYTES,
+        send: suspend (base: String, bearer: String?) -> HttpResponse,
+    ): FlashResult<Reply> {
         val pinned = pinnedHubUrl()
         if (pinned != null && !HubUrlPolicy.sameHub(hubUrl, pinned)) {
             return FlashResult.Failure(FlashError.Unknown("This is not the hub this device is enrolled with."))
@@ -195,15 +266,15 @@ public class EnterpriseDirectoryClient(
         val base = HubUrlPolicy.baseUrl(hubUrl)
         var forceRefresh = false
         repeat(2) {
-            val bearer = bearerSource?.bearer(forceRefresh)
-            if (bearerSource != null && bearer == null) {
+            val bearer = if (publicRequest) null else bearerSource?.bearer(forceRefresh)
+            if (!publicRequest && bearerSource != null && bearer == null) {
                 return FlashResult.Failure(FlashError.NetworkUnavailable("This device could not sign in to the organisation hub."))
             }
             val reply = runSuspendCatching {
                 val response = send(base, bearer)
-                Reply(response, response.boundedText(HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES))
+                Reply(response, response.boundedText(bodyLimit))
             }.getOrElse { return FlashResult.Failure(FlashError.NetworkUnavailable("The hub could not be reached.")) }
-            if (reply.response.status == HttpStatusCode.Unauthorized && bearerSource != null && !forceRefresh) {
+            if (!publicRequest && reply.response.status == HttpStatusCode.Unauthorized && bearerSource != null && !forceRefresh) {
                 forceRefresh = true
             } else {
                 return FlashResult.Success(reply)
@@ -311,7 +382,7 @@ public class EnterpriseDirectoryClient(
         departmentId: String?,
     ): FlashResult<PeoplePage> = withContext(ioDispatcher) {
         val reply = when (
-            val r = execute(hubUrl) { base, bearer ->
+            val r = execute(hubUrl, bodyLimit = HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES) { base, bearer ->
                 httpClient.get("$base${HubContract.PATH_DIRECTORY_PEOPLE}") {
                     if (!cursor.isNullOrBlank()) parameter("cursor", cursor)
                     parameter("limit", limit.coerceIn(1, 500).toString())
@@ -374,6 +445,96 @@ public class EnterpriseDirectoryClient(
             HubRestCodec.decodeOrNull<JoinResponse>(body)?.toJoinResult("")
         }
 
+    override suspend fun fetchMe(hubUrl: String): FlashResult<MeDto> =
+        hubGet(hubUrl, HubContract.PATH_DIRECTORY_ME) { body ->
+            HubRestCodec.decodeOrNull<MeDto>(body)
+        }
+
+    override suspend fun createHubGroup(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String,
+        visibility: String,
+        joinMode: String,
+        adminDeviceIds: List<String>,
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        hubPost(
+            hubUrl = hubUrl,
+            path = HubContract.PATH_GROUPS,
+            body = HubRestCodec.encode(
+                CreateGroupBody(
+                    id = id,
+                    name = name,
+                    departmentId = departmentId,
+                    visibility = visibility,
+                    joinMode = joinMode,
+                    adminDeviceIds = adminDeviceIds,
+                ),
+            ),
+            refusalMayCarryBody = false,
+        ) { body ->
+            HubRestCodec.decodeOrNull<GroupDto>(body)?.toDirectoryGroup()
+        }
+
+    override suspend fun createHubGroupWithMembers(
+        hubUrl: String,
+        id: String,
+        name: String,
+        departmentId: String,
+        memberIds: Set<String>,
+    ): FlashResult<EnterpriseDirectoryGroup> =
+        hubPost(
+            hubUrl = hubUrl,
+            path = HubContract.PATH_GROUP_CREATE_WITH_MEMBERS,
+            body = HubRestCodec.encode(CreateGroupWithMembersBody(id, name, departmentId, memberIds)),
+            refusalMayCarryBody = false,
+        ) { HubRestCodec.decodeOrNull<GroupDto>(it)?.toDirectoryGroup()?.takeIf { group -> group.groupId == id } }
+
+    override suspend fun createGroupJoinLink(hubUrl: String, groupId: String): FlashResult<GroupJoinLinkToken> =
+        hubPost(
+            hubUrl, HubContract.PATH_GROUP_JOIN_LINKS, HubRestCodec.encode(CreateGroupJoinLinkBody(groupId)),
+            refusalMayCarryBody = false,
+        ) { HubRestCodec.decodeOrNull<GroupJoinLinkToken>(it) }
+
+    override suspend fun resolveGroupJoinLink(hubUrl: String, token: String): FlashResult<GroupJoinLinkTarget> =
+        hubPost(
+            hubUrl, HubContract.PATH_GROUP_JOIN_LINK_RESOLVE, HubRestCodec.encode(GroupJoinLinkToken(token)),
+            refusalMayCarryBody = false,
+        ) { HubRestCodec.decodeOrNull<GroupJoinLinkTarget>(it) }
+
+    override suspend fun setHubGroupMember(
+        hubUrl: String,
+        groupId: String,
+        deviceId: String,
+        add: Boolean,
+    ): FlashResult<Unit> =
+        hubPost(
+            hubUrl = hubUrl,
+            path = HubContract.PATH_GROUP_MEMBERS,
+            body = HubRestCodec.encode(GroupMemberBody(groupId = groupId, deviceId = deviceId, add = add)),
+            refusalMayCarryBody = false,
+        ) { Unit }
+
+    override suspend fun fetchHubGroupPolicy(hubUrl: String): FlashResult<HubGroupPolicy> = withContext(ioDispatcher) {
+        val expected = expectedServerId()
+        val reply = when (val result = execute(hubUrl, publicRequest = true, bodyLimit = HubContract.MAX_REST_BODY_BYTES) { base, _ ->
+            httpClient.get("$base${HubContract.PATH_HUB_INFO}")
+        }) {
+            is FlashResult.Failure -> return@withContext result
+            is FlashResult.Success -> result.value
+        }
+        val advertised = HubRestCodec.decodeOrNull<com.transfer.flash.core.hubprotocol.rest.HubInfo>(reply.body)
+        if (reply.response.status != HttpStatusCode.OK || advertised == null || expectedServerId() != expected ||
+            (expected != null && !advertised.serverId.equals(expected, ignoreCase = true))
+        ) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("Could not verify the Hub group policy."))
+        }
+        val policy = HubRestCodec.decodeOrNull(HubGroupPolicy.serializer(), reply.body)
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Could not read the Hub group policy."))
+        FlashResult.Success(policy)
+    }
+
     override suspend fun fetchDirectorySync(
         hubUrl: String,
         since: Long,
@@ -382,7 +543,7 @@ public class EnterpriseDirectoryClient(
         limit: Int,
     ): DirectorySyncPageResult = withContext(ioDispatcher) {
         val reply = when (
-            val r = execute(hubUrl) { base, bearer ->
+            val r = execute(hubUrl, bodyLimit = HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES) { base, bearer ->
                 httpClient.get("$base${HubContract.PATH_DIRECTORY_SYNC}") {
                     parameter("since", since.toString())
                     if (!epoch.isNullOrBlank()) parameter("epoch", epoch)

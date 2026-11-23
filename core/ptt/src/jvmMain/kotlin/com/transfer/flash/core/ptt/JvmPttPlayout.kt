@@ -26,6 +26,7 @@ internal class JvmPttPlayout(
 ) : PttPlayoutDevice {
     private val core = PttPlayoutCore(sampleRateHz, packetMs, targetDepthMs)
     private val running = AtomicBoolean(false)
+    private val outputLock = Any()
 
     @Volatile
     private var worker: Thread? = null
@@ -57,9 +58,18 @@ internal class JvmPttPlayout(
 
     override fun stop() {
         running.set(false)
-        closeOutput()
-        runCatching { worker?.join(JOIN_MS) }
+        val current = output
+        if (current != null) {
+            // flush() + stop() first: discarding the queued data wakes a blocked write without closing under the worker.
+            runCatching { current.flush() }
+            runCatching { current.stop() }
+        }
+        val thread = worker
+        if (thread != null && Thread.currentThread() !== thread) {
+            runCatching { thread.join(JOIN_MS) }
+        }
         worker = null
+        closeOutput()
     }
 
     private fun loop(line: PttPcmOutput) {
@@ -87,12 +97,15 @@ internal class JvmPttPlayout(
     }
 
     private fun closeOutput() {
-        val current = output ?: return
+        val current = synchronized(outputLock) {
+            val existing = output ?: return
+            output = null
+            existing
+        }
         // flush() before stop()/close(): discarding the queued data is what releases a write blocked on a full buffer.
         runCatching { current.flush() }
         runCatching { current.stop() }
         runCatching { current.close() }
-        if (output === current) output = null
     }
 
     private companion object {

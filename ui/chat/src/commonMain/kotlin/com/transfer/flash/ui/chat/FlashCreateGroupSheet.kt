@@ -1,27 +1,42 @@
 package com.transfer.flash.ui.chat
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.common.id.UuidIdGenerator
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
@@ -31,6 +46,8 @@ import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** One selectable trusted peer in the create-group sheet. */
 public data class FlashCreateGroupPeerUi(
@@ -50,9 +67,13 @@ public data class FlashCreateGroupPeerUi(
 public object FlashCreateGroupMath {
     public const val MAX_MEMBERS: Int = GroupPolicy.MAX_MEMBERS_V2
     public const val MAX_REMOTE_MEMBERS: Int = MAX_MEMBERS - 1
+    public const val MAX_TITLE_LENGTH: Int = 80
 
     public fun normalizedTitle(name: String): String? =
-        name.trim().takeIf { it.isNotEmpty() && it.length <= 80 }
+        name.trim().takeIf { it.isNotEmpty() && it.length <= MAX_TITLE_LENGTH }
+
+    public fun isTitleTooLong(name: String): Boolean =
+        name.trim().length > MAX_TITLE_LENGTH
 
     public fun canCreate(name: String, selectedPeers: Set<String>): Boolean =
         normalizedTitle(name) != null &&
@@ -72,23 +93,50 @@ public object FlashCreateGroupMath {
  * fail-closed by construction. Calls [onCreate] once with the normalized title and the selected
  * peer ids (the local device is implicit and never listed).
  */
+@OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
 @Composable
 public fun FlashCreateGroupSheet(
     peers: List<FlashCreateGroupPeerUi>,
     onDismiss: () -> Unit,
-    onCreate: (title: String, memberIds: Set<String>) -> Unit,
+    onCreate: (title: String, memberIds: Set<String>) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
     isEnterpriseEnrolled: Boolean = false,
     initialUseHub: Boolean = false,
     onCreateWithHub: ((title: String, memberIds: Set<String>, linkToHub: Boolean) -> Unit)? = null,
+    onFindDevicesClick: (() -> Unit)? = null,
+    allowPersonalHubLink: Boolean = true,
+    canCreateHubGroup: Boolean = false,
+    onCreateHubGroup: (suspend (title: String, memberIds: Set<String>, requestId: String) -> Unit)? = null,
+    onCreatePersonalGroup: (suspend (title: String, memberIds: Set<String>, linkToHub: Boolean) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
     var title by rememberSaveable { mutableStateOf("") }
-    var selected by remember { mutableStateOf(emptySet<String>()) }
-    var linkToHub by rememberSaveable { mutableStateOf(initialUseHub) }
-    val canCreate = FlashCreateGroupMath.canCreate(title, selected)
+    var selected by rememberSaveable(stateSaver = listSaver<Set<String>, String>(
+        save = { it.toList() },
+        restore = { it.toSet() },
+    )) { mutableStateOf(emptySet()) }
+    var linkToHub by rememberSaveable { mutableStateOf(initialUseHub && allowPersonalHubLink) }
+    var createOnHub by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    var creatingGroup by remember { mutableStateOf(false) }
+    var syncSubmitting by remember { mutableStateOf(false) }
+    LaunchedEffect(syncSubmitting) {
+        if (syncSubmitting) {
+            delay(600L)
+            syncSubmitting = false
+        }
+    }
+    val submissionLocked = creatingGroup || syncSubmitting
+    val titleTooLong = FlashCreateGroupMath.isTitleTooLong(title)
+    val requestId = rememberSaveable(FlashCreateGroupMath.normalizedTitle(title), selected) { UuidIdGenerator.newId() }
+    val canCreate = if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
+        FlashCreateGroupMath.normalizedTitle(title) != null
+    } else {
+        FlashCreateGroupMath.canCreate(title, selected)
+    }
     FlashSheetHost(
-        onDismiss = onDismiss,
+        onDismiss = { if (!submissionLocked) onDismiss() },
         containerColor = colors.backgroundSurface,
         modifier = modifier,
     ) {
@@ -99,21 +147,113 @@ public fun FlashCreateGroupSheet(
                 .padding(bottom = FlashSpacing.space24),
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         ) {
-            FlashText(text = "New group", style = FlashTheme.typography.headingMedium)
+            FlashText(text = "New group", style = typography.headingMedium)
 
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                singleLine = true,
-                label = { Text("Group name") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            if (isEnterpriseEnrolled) {
+            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
+                FlashText(
+                    text = "Group name",
+                    style = typography.metadataEmphasis,
+                    color = colors.textSecondary,
+                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { linkToHub = !linkToHub }
+                        .clip(FlashShapes.composerInput)
+                        .background(colors.composerInputBackground)
+                        .border(
+                            width = FlashDimensions.borderHairline,
+                            color = if (titleTooLong) colors.textError else colors.borderDefault,
+                            shape = FlashShapes.composerInput,
+                        )
+                        .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BasicTextField(
+                        value = title,
+                        enabled = !submissionLocked,
+                        onValueChange = { title = it },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(vertical = FlashSpacing.space4),
+                        singleLine = true,
+                        textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
+                        cursorBrush = SolidColor(colors.accentFill),
+                        decorationBox = { innerTextField ->
+                            if (title.isEmpty()) {
+                                FlashText(
+                                    text = "Enter a group name",
+                                    style = typography.bodyDefault,
+                                    color = colors.textTertiary,
+                                    maxLines = 1,
+                                )
+                            }
+                            innerTextField()
+                        },
+                    )
+                    if (title.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .size(FlashDimensions.minTouchTarget)
+                                .clip(CircleShape)
+                                .clickable(enabled = !submissionLocked) { title = "" }
+                                .semantics { role = Role.Button; contentDescription = "Clear group name" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashIcon(
+                                icon = FlashIcons.Close,
+                                contentDescription = null,
+                                size = FlashDimensions.iconSm,
+                                tint = colors.textSecondary,
+                            )
+                        }
+                    }
+                }
+                if (titleTooLong) {
+                    FlashText(
+                        text = "Group name must be ${FlashCreateGroupMath.MAX_TITLE_LENGTH} characters or fewer (${title.trim().length}/${FlashCreateGroupMath.MAX_TITLE_LENGTH})",
+                        style = typography.captionDefault,
+                        color = colors.textError,
+                    )
+                }
+            }
+
+            if (canCreateHubGroup && onCreateHubGroup != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !submissionLocked) { createOnHub = !createOnHub }
+                        .padding(vertical = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        FlashText(
+                            text = "Hub Organization Group",
+                            style = typography.bodyDefault,
+                        )
+                        FlashText(
+                            text = "Managed in the Hub directory; members sync automatically",
+                            style = typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = createOnHub,
+                        enabled = !submissionLocked,
+                        onCheckedChange = { createOnHub = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = colors.onAccentFill,
+                            checkedTrackColor = colors.accentFill,
+                        ),
+                    )
+                }
+            }
+
+            if (isEnterpriseEnrolled && allowPersonalHubLink && !createOnHub) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !submissionLocked) { linkToHub = !linkToHub }
                         .padding(vertical = FlashSpacing.space4),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -121,45 +261,82 @@ public fun FlashCreateGroupSheet(
                     Column(modifier = Modifier.weight(1f)) {
                         FlashText(
                             text = "Link to Organization Hub",
-                            style = FlashTheme.typography.bodyDefault,
+                            style = typography.bodyDefault,
                         )
                         FlashText(
                             text = "Relays new messages to remote & offline coworkers",
-                            style = FlashTheme.typography.metadataDefault,
+                            style = typography.metadataDefault,
                             color = colors.textSecondary,
                         )
                     }
                     androidx.compose.material3.Switch(
                         checked = linkToHub,
+                        enabled = !submissionLocked,
                         onCheckedChange = { linkToHub = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = colors.onAccentFill,
+                            checkedTrackColor = colors.accentFill,
+                        ),
                     )
                 }
             }
 
             FlashText(
                 text = FlashCreateGroupMath.countLabel(selected.size),
-                style = FlashTheme.typography.metadataEmphasis,
+                style = typography.metadataEmphasis,
             )
 
             if (peers.isEmpty()) {
-                FlashText(
-                    text = "Pair a device first — groups are built from trusted peers only.",
-                    style = FlashTheme.typography.bodyDefault,
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    FlashText(
+                        text = "Pair a device first — groups are built from trusted peers only.",
+                        style = typography.bodyDefault,
+                        color = colors.textSecondary,
+                    )
+                    if (onFindDevicesClick != null) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = FlashDimensions.minTouchTarget)
+                                .clip(FlashShapes.chip)
+                                .background(colors.accentFill)
+                                .clickable(enabled = !submissionLocked, onClick = onFindDevicesClick)
+                                .semantics { role = Role.Button; contentDescription = "Find devices" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashText(
+                                text = "Find devices",
+                                style = typography.bodyEmphasis,
+                                color = colors.onAccentFill,
+                            )
+                        }
+                    }
+                }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .heightIn(max = 280.dp),
+                ) {
                     items(peers, key = { it.id }) { peer ->
                         val isSelected = peer.id in selected
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(
-                                    enabled = isSelected || FlashCreateGroupMath.selectionAllowed(selected.size),
-                                ) {
-                                    selected = if (isSelected) selected - peer.id else selected + peer.id
-                                }
-                                .padding(vertical = FlashSpacing.space4)
-                                .semantics { role = Role.Checkbox },
+                                .heightIn(min = FlashDimensions.minTouchTarget)
+                                .toggleable(
+                                    value = isSelected,
+                                    enabled = !submissionLocked && (isSelected || FlashCreateGroupMath.selectionAllowed(selected.size)),
+                                    role = Role.Checkbox,
+                                    onValueChange = { checked ->
+                                        selected = if (checked) selected + peer.id else selected - peer.id
+                                    },
+                                )
+                                .padding(vertical = FlashSpacing.space4),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                         ) {
@@ -171,19 +348,23 @@ public fun FlashCreateGroupSheet(
                             Column(modifier = Modifier.weight(1f)) {
                                 FlashText(
                                     text = peer.name,
-                                    style = FlashTheme.typography.bodyDefault,
+                                    style = typography.bodyDefault,
                                     maxLines = 1,
                                 )
                                 if (peer.department != null) {
                                     FlashText(
                                         text = peer.department,
-                                        style = FlashTheme.typography.metadataDefault,
-                                        color = colors.accentPrimary,
+                                        style = typography.metadataDefault,
+                                        color = colors.textLink,
                                     )
                                 }
                             }
                             if (isSelected) {
-                                FlashIcon(icon = FlashIcons.Check, contentDescription = "Selected")
+                                FlashIcon(
+                                    icon = FlashIcons.Check,
+                                    contentDescription = null,
+                                    tint = colors.accentFill,
+                                )
                             }
                         }
                     }
@@ -195,22 +376,49 @@ public fun FlashCreateGroupSheet(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                androidx.compose.material3.TextButton(onClick = onDismiss) {
+                androidx.compose.material3.TextButton(onClick = onDismiss, enabled = !submissionLocked) {
                     Text("Cancel", color = colors.textSecondary)
                 }
                 androidx.compose.material3.TextButton(
-                    enabled = canCreate,
+                    enabled = canCreate && !submissionLocked,
                     onClick = {
+                        if (submissionLocked) return@TextButton
                         FlashCreateGroupMath.normalizedTitle(title)?.let { normalized ->
-                            if (onCreateWithHub != null) {
-                                onCreateWithHub(normalized, selected, linkToHub)
+                            if (createOnHub && canCreateHubGroup && onCreateHubGroup != null) {
+                                creatingGroup = true
+                                val selectedMembers = selected
+                                scope.launch {
+                                    try {
+                                        onCreateHubGroup(normalized, selectedMembers, requestId)
+                                    } finally {
+                                        creatingGroup = false
+                                    }
+                                }
+                            } else if (onCreatePersonalGroup != null) {
+                                creatingGroup = true
+                                val selectedMembers = selected
+                                val shouldLink = allowPersonalHubLink && linkToHub
+                                scope.launch {
+                                    try {
+                                        onCreatePersonalGroup(normalized, selectedMembers, shouldLink)
+                                    } finally {
+                                        creatingGroup = false
+                                    }
+                                }
+                            } else if (onCreateWithHub != null) {
+                                syncSubmitting = true
+                                onCreateWithHub(normalized, selected, allowPersonalHubLink && linkToHub)
                             } else {
+                                syncSubmitting = true
                                 onCreate(normalized, selected)
                             }
                         }
                     },
                 ) {
-                    Text("Create", color = if (canCreate) colors.accentPrimary else colors.textTertiary)
+                    Text(
+                        if (submissionLocked) "Creating..." else "Create",
+                        color = if (canCreate && !submissionLocked) colors.textLink else colors.textTertiary,
+                    )
                 }
             }
         }

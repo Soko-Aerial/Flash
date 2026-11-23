@@ -40,6 +40,63 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 
 ## 1. Recent call fixes (2026-09-29)
 
+### MODREV-01 — Voice pause excludes audio
+
+- **Setup:** Android and Windows with working microphones and a paired recipient.
+- **Steps:** Lock a recording, say a short phrase, tap Pause, say a different phrase, resume, say a third phrase, and send. Execute once on each platform and once more with the app closed while paused.
+- **Pass:** The recipient hears the first and third phrases and the elapsed display excludes the paused time. Closing the app discards the draft and releases capture.
+- **Source:** [UI-020](../ui/voice-message.md).
+- **Status: TODO**
+
+### MODREV-02 — Android service entry and discoverability
+
+- **Setup:** Android 14 or later with Flash Quick Settings tile installed and an active chat or transfer. Enable calls, PTT, and a connected radio where available.
+- **Steps:** Hide and reshow discoverability from the tile while the app is open, then repeat from the Quick Settings shade while a file is transferring. End a call or PTT session immediately after starting it. Trigger a background radio service start.
+- **Pass:** Device advertisements toggle and active transfers keep progressing. Chats remain usable. Logcat has no foreground-service startup timeout or uncaught start refusal. Screen-share, PTT, radio, and announcement notifications occupy distinct slots.
+- **Source:** [Android platform notes](../android-platform-notes.md).
+- **Status: TODO**
+
+### MODREV-03 — Cross-route resume and destination write failure
+
+- **Setup:** A desktop, a phone, an enrolled test Hub, a multi-gigabyte file, and a constrained test save volume.
+- **Steps:** Interrupt a mostly received LAN file and retry through Hub. Repeat Hub-to-LAN once with the destination peer gone before handoff. Separately force destination placement to fail after a staged receive.
+- **Pass:** Heap remains bounded during adoption, final SHA-256 matches, the failed handoff remains recoverable, and a staging file that cannot be published shows Failed without a successful completion.
+- **Source:** [Module review remediation](../audit/2026-11-19-feature-module-remediation.md).
+- **Status: TODO**
+
+### MODREV-04 — Hub policy and lagging directory
+
+- **Setup:** Enroll a sender and two joining devices. Use a public-to-members group with open joining and a separate group that requires approval.
+- **Steps:** Use a single open-group link from both devices. Change the group's join policy and retry the old link. Apply a membership update on the sender while the recipient's directory refresh is delayed, send an encrypted message, then allow sync to complete. Open Admin Devices and replace a test device with two distinct groups selected. Rotate the phone with a group draft open, then press Create twice quickly. Repeat for a personal group.
+- **Pass:** Both open-group joins succeed, the old link stops resolving once policy changes, approval requests remain pending, and the encrypted message appears once the recipient catches up without reconnecting. Both selected replacement groups appear on the invite. The draft retains its title and members and rapid taps create one group.
+- **Source:** [ADR-366](../decisions.md#adr-366--separate-join-link-validity-from-roster-updates-and-scope-announcement-retries).
+- **Status: TODO**
+
+### MODREV-05 — Windows local store and media lifecycle
+
+- **Setup:** A disposable Windows profile and inline playback fixtures. Use a separate copy of the encrypted state for lock and key failure checks.
+- **Steps:** Reopen a running Flash instance. Repeat using a state directory that cannot be opened. Open Flash with an unreadable encrypted database copy. Play and close several voice notes and videos.
+- **Pass:** A duplicate launch activates the existing app. An inaccessible state directory surfaces an error. The unreadable database remains in place and the warning identifies chat and restart recovery as unavailable. Closing voice playback or switching chats releases the player.
+- **Source:** [Module review remediation](../audit/2026-11-19-feature-module-remediation.md).
+- **Status: TODO**
+
+### MODREV-06 — Mixed-route group calling, PTT disconnect, and radio reconnect recovery
+
+- **Setup:** Three devices (two on the same LAN, one off-LAN via an enrolled Hub with TURN), a PTT-capable pair, and a paired handheld radio.
+- **Steps:** Start a 3-way group call mixing the LAN peer and off-LAN peer and sustain beyond one TURN credential renewal window. Start a PTT talk/listen session and abruptly disconnect the active peer's Wi-Fi/session. Temporarily take the radio out of range past fast retry exhaustion, then power it back on and retry a message.
+- **Pass:** LAN legs connect via host candidates while off-LAN legs use Hub ICE without `groupId` mismatches, and media survives TURN rotation. Disconnecting a PTT peer frees the listening floor immediately without a 5-second stall and `shutdown()` sends `Stop`/`Leave`. Radio reconnects automatically via slow background probe without duplicate bubbles on retry, and attachments remain refused during transient disconnects.
+- **Source:** [ADR-367](../decisions.md#adr-367--independent-join-link-keys-per-leg-call-ice-resolution-and-non-destructive-desktop-db-recovery).
+- **Status: TODO**
+
+### MODREV-07 — Media viewer rotation, Windows seek/speed, and Android notification/widget entry
+
+- **Setup:** Android phone (portrait/landscape rotation enabled), Windows desktop with an H.264/AAC MP4 video and voice notes, and Flash home-screen widget.
+- **Steps:** Open a video in Android `FlashMediaViewer`, mute it, seek mid-clip, and rotate the device. On Windows, seek immediately on video open, toggle mute, and play a voice note at 1x, 1.5x, and 2x. Tap the Flash widget Send action and tap Cancel on an active group-origin transfer notification vs a 1:1 transfer notification.
+- **Pass:** Android restores the viewer, playback position, and mute state across rotation. Windows seeks cleanly without stalling or killing playback and plays voice notes at 1.5x/2x without pitch shift. Widget Send opens the file picker; notification Cancel refuses group-origin cancellation while cancelling 1:1 transfers within the ANR window.
+- **Source:** [Module review remediation](../audit/2026-11-19-feature-module-remediation.md).
+- **Status: TODO**
+
+
 ### CALL-01 — Calls from the phone hosting the Wi-Fi hotspot (ERROR-079, ADR-054)
 - **Setup:** phone A hosts the hotspot; phone B and a desktop join it.
 - **Steps:**
@@ -256,6 +313,62 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
   - The tile cycles Standard → Ghost → Eco → Boost → Off.
   - No flaps in the screen-off runs.
 - **Status:** TODO
+
+## Nearby network changes and manual connection
+
+### NEARBY-NET-01 — Windows reconnects while Nearby stays open
+
+- **Setup:** Updated Windows build, Wi-Fi or Ethernet, and a Flash peer on the LAN. Keep the peer app closed for the address-only steps.
+- **Steps:** Launch Flash without a LAN, open Nearby, then join Wi-Fi or attach Ethernet. Verify the displayed IP and Flash port. Disconnect and reconnect while remaining on Nearby. Open Flash on the other device afterward.
+- **Pass:** The offline panel clears within one polling interval after Windows assigns an IPv4 address. Nearby shows the current address and returns to the offline panel when the last LAN address is lost and no peers or sessions remain. Discovery finds the peer after it starts.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### WIN-UPGRADE-01 — Upgrade from the Windows EXE wrapper
+
+- **Setup:** A spare Windows user or PC with the per-user Flash 2.3.0 package and existing Flash state. The standalone 2.3.1 MSI already passed the owner's installed-client check. Use the refreshed `dist/2.3.2` installer from `2457c0fa`. This PC's earlier 2.3.2 is covered by WIN-UPGRADE-02.
+- **Steps:** Exit Flash through the tray, launch `Flash-2.3.2.exe`, and reopen Flash after the installer finishes. Repeat from a 2.3.1 installation.
+- **Pass:** One Flash 2.3.2 registration remains at the original install path. The version shown in About is 2.3.2 and existing conversations and saved peers are present.
+- **Source:** ERROR-1044.
+- **Status:** TODO.
+
+### WIN-UPGRADE-02 — Replace the earlier installed Windows 2.3.2
+
+- **Setup:** Flash 2.3.2 with Windows product code `{71E396C5-0367-38FF-825A-7C841BC98196}` installed under the current user.
+- **Steps:** Exit Flash from the tray and run the refreshed EXE from `dist/2.3.2`. Reopen Flash and verify existing chats and peers. Use a separate installation of the earlier build to repeat with the standalone MSI.
+- **Pass:** Windows registers only `{8C805950-5360-4A1A-9E13-02462985BCD4}` at the expected path. Flash reports 2.3.2 and shows its existing state.
+- **Source:** ERROR-1051. Upgrade detection and installer payloads passed locally for both packages.
+- **Status:** TODO.
+
+### NEARBY-NET-02 — Linux package detects a late network connection
+
+- **Setup:** Build from the Linux packaging branch with the Nearby backport. Use a Linux device with Wi-Fi or Ethernet. Keep the peer app closed for the address-only steps.
+- **Steps:** Repeat the Windows sequence in NEARBY-NET-01 on Linux. Try a second network with a different IPv4 address while Nearby stays open.
+- **Pass:** The offline panel clears and returns on link transitions, and the displayed address updates when the LAN address changes. A Flash peer on the new LAN is discovered without restarting the app.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### NEARBY-NET-03 — Android follows Wi-Fi, Ethernet, and a hosted hotspot
+
+- **Setup:** Physical Android phone with the updated APK and a second Flash peer. Leave cellular data enabled. Keep the peer app closed for the address-only steps.
+- **Steps:** Start Nearby with Wi-Fi and hotspot off. Enable Wi-Fi without joining, then join a Wi-Fi LAN without internet. Disconnect, start and stop the hosted hotspot, and repeat with Ethernet if the phone supports it.
+- **Pass:** Cellular data and an unassociated Wi-Fi radio leave the no-network panel visible. Acquiring a LAN IPv4 clears it and shows the current address and port without leaving Nearby. Disconnecting the last LAN brings it back after any peer/session presence expires.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### NEARBY-NET-04 — A known IP can be used without discovery
+
+- **Setup:** Updated clients and a reachable Flash peer with a known address and listening port. Use an alternate port for one run if available.
+- **Steps:** From Nearby's offline panel, open **Connect by IP**. Try an unreachable address and check the normal failure behavior. Then use the reachable peer's IP and port without waiting for discovery, and complete any pairing prompt.
+- **Pass:** The offline panel opens the manual dialog. An unreachable address does not hang the app. A reachable peer follows the normal authenticated connection and pairing flow.
+- **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### NEARBY-NET-05 — Nearby displays multiple reachable interfaces
+
+- **Steps:** On Android, join Wi-Fi while hosting a hotspot. On Windows, connect Wi-Fi and Ethernet to different networks. Open Nearby with discovery quiet, then try manual pairing from each network using the listed address and port.
+- **Pass:** Both active IPv4 endpoints are visible. Leaving one network removes its address while the other remains available.
+- **Status:** TODO.
 
 ## 4. Older device checks still owed
 
@@ -2578,6 +2691,14 @@ UIP-02 says a caption is sent together with the files: **obsolete in part**, cap
 - **Pass:** C shows the voice note row after catch-up and the log has no `SyncPush message dropped, no valid signature`.
 - **Source:** ERROR-117 (a). **Status:** TODO
 
+### GROUP-VOICE-01 — All online group recipients receive playable audio
+
+- **Setup:** Three paired clients in the same group on LAN. Install the refreshed `dist/2.3.2` sender apps with `54a69dcb` and Windows installer fix `2457c0fa`.
+- **Steps:** Send a short voice note from each host with both recipients connected. Open and play each received note. Repeat in a larger group when available.
+- **Pass:** Each recipient sees one chat entry and receives verified, playable audio. The sender shows one entry, completes a distinct transfer for every recipient and logs no conflicting route claim.
+- **Source:** [ERROR-1050](../../logs/errors.md#error-1050--one-group-recipient-gets-a-voice-message-without-its-audio).
+- **Status:** TODO
+
 ### SWM-44 - Catch-up of a message from a faster clock
 - **Setup:** v2 group of 3; set B's clock 3 to 4 s ahead of C's (manual time, automatic time off).
 - **Steps:** B sends a text; C relays it to D (D offline when B sent, then back).
@@ -2900,6 +3021,30 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 ## Results log
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
+
+### 2026-11-23 — Refreshed group voice APK installed on the V760
+
+- **Build and device.** The release-signed arm64 2.3.2 build from `2457c0fa`, including group sender fix `54a69dcb`. V760 on Android 13.
+- **Verified.** In-place install, original install date, installed APK checksum, cold launch and more than 2 minutes and 45 seconds in the same process with the foreground service active and zero new Flash crashes.
+- **Owed.** Play a newly sent note on both recipients with the rebuilt senders under GROUP-VOICE-01.
+
+### 2026-11-23 — Signed Flash 2.3.2 in-place update on V760
+
+- **Build and device.** `fa1a4118` on `dev`. V760 on Android 13, release-signed arm64 APK. Original install Flash 2.2.0 (5), release Flash 2.3.2 (7).
+- **Verified.** Package upgrade, cold launch, original install date and installed SHA-256. The process remained alive and the foreground service stayed active for 2 minutes and 55 seconds with no new crashes. [ERROR-1048](../../logs/errors.md#error-1048--signed-android-release-crashes-during-startup-verification-on-android-13) · [ERROR-1049](../../logs/errors.md#error-1049--signed-android-update-can-leave-a-foreground-service-start-pending)
+- **Owed.** Live Hub policy and reconnect on signed Android, Quick Settings and foreground restart on API 34+, and the installed Windows steps in IFREV-02.
+
+### 2026-11-23 — Hub policy startup smoke on Android debug
+
+- **Build and device.** `692ebe5f` on `dev`. Flash 2.3.2 debug (version code 7), arm64, Infinix X6882B on Android 14.
+- **Verified.** In-place update, cold launch, existing Hub enrollment, successful directory sync and over 90 seconds in the original foreground process with no new Flash crash. [ERROR-1047](../../logs/errors.md#error-1047--android-crashes-when-reading-hub-group-policy)
+- **Owed.** IFREV-02 still needs rebuilt signed Android and installed Windows startup and the live policy changes and reconnect sequence.
+
+### 2026-11-18 — Test Hub rollout and Android installation
+
+- **Build and device.** `d3c50b78` on `dev`. Infinix X6882B on Android 14 with Flash 2.2.0 debug, build code 5. The matching Hub distribution runs on `myserver`.
+- **Verified.** In-place update and matching APK digest. Android verified the test hostname and resolved both HTTPS invite routes and `flash://g/2` to Flash. The Hub kept its server identity and passed health, invite landing and access checks. The deployed build matches the local Hub artifact.
+- **Owed.** INVITE-LINK-01 and IFREV-06 still require a real invite to reach confirmation from the browser or camera. IFREV-01..05, HUBWORK-06/07, UXPOL-16/17, MEDIA-PLAY-01..04 and DESK-RESUME-01 still need their functional device steps. See the [rollout entry](../../logs/progress.md#2026-11-18--android-test-install-and-matching-hub-rollout).
 
 ### 2026-11-08 — Release 2.2.0 signed-device pass, blockers and a functional batch (Infinix + Samsung)
 
@@ -3368,6 +3513,13 @@ Nothing below is runnable yet: the plans are design only (`docs/ENTERPRISE-HYBRI
 ### LNX-01...LNX-10 - Linux desktop port (owner confirmed Linux as a target 2026-10-08, D-L1)
 Pass conditions are in `docs/LINUX-PORT-PLAN.md` section 5 (build and CI, Secret Service key, file fallback, notifications, autostart, context menu, network band, WebRTC call, 10 GB transfer, `.deb`/`.rpm` install). All `TODO`; each needs a real Linux machine.
 
+- **REL22-LINUX-01 — Flash 2.2.0 Linux packages.** On an x86-64 Linux desktop, verify the release
+  checksums, install the `.deb` on Debian or Ubuntu and launch from the app menu, then launch the
+  portable archive from a user-owned directory. On a prior install, verify upgrade/relaunch keeps
+  identity and transfer history. **Status:** OWED. Archive layout, package metadata and SHA-256
+  passed on the Windows host; native installation and launch were not run here. See
+  [Install Flash on Linux](../install-linux.md).
+
 - **LNX-01 (partly covered):** `KeyFileVaultTest` (10 tests, 1 skipped on Windows) passes on Windows 2026-10-08; the POSIX owner-only check (`0600`) and a clean `./gradlew :desktop:compileKotlinJvm :desktop:jvmTest` still need an Ubuntu run (push to CI or a Linux box). **Status:** TODO
 - **LNX-03a (new, L0 fallback):** start `DesktopEngine` on Linux with no keyring: the identity is generated on first run (no crash), the key file (`~/.local/share/flash/identity/vault.key` on a fresh Linux install, or `~/.flash/...` if an old folder with data exists) is `-rw-------`, a restart keeps the same device id. **Source:** Linux plan C4, L0. **Status:** TODO
 - **LNX-02 (new, L1 Secret Service):** on a Linux desktop session with GNOME Keyring (Ubuntu/Fedora), then again with KDE/KWallet (or KeePassXC as the Secret Service provider). Steps: start Flash from a terminal with no prior state; quit; start again. **Pass:** first start creates no `identity/vault.key`; `seahorse` (or `secret-tool search application flash`) shows one item `Flash identity key` with `application=flash`, `account=identity-master-key`; the second start keeps the same device id; log has no `keyring` failure line. Then lock the keyring and start: the unlock prompt appears; dismissing it must not crash the start (an existing keyring-sealed identity cannot be opened without the keyring, so record exactly what the app shows). Then run with no session bus (`env -u DBUS_SESSION_BUS_ADDRESS`): it falls back to the key file. **Note to record:** a blob sealed with the key file stays tagged `0x01` and is opened from the file, so switching tiers later does not lose the identity. **Source:** ADR-092 update (L1). **Status:** TODO
@@ -3678,6 +3830,7 @@ a phone and/or the desktop app of the same build. Older builds cannot connect to
 - **Source:** ERROR-170, ADR-109. **Status:** TODO
 
 ### HUB-02 - Message relay between two enrolled devices, sender is stamped
+- **2026-11-22 retest:** The updated test Hub runs `2.3.0-beta.1`. The reported Windows sends were held by a pending sealing-key change and later reached the peer over LAN. After verifying the peer's code and confirming the new key in the Windows chat, send from Windows with LAN unavailable. Record the `chat.path` Hub route, receiving bubble and sender receipt. See ERROR-1045 and HUBH-02.
 - **Setup:** two enrolled devices (phone + desktop) online at the hub.
 - **Steps:** send a chat message from the phone to the desktop through the hub (LAN path off, or the hub-only route).
 - **Pass:** the desktop shows the message from the phone's identity; the hub log's DELIVER names the phone's device id as `from`; the phone receives `DELIVERED`.
@@ -4067,8 +4220,9 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Source:** ADR-126, CLI-05. **Status:** TODO
 
 ### HUBH-02 - A colleague's key changes after a reinstall
+- **2026-11-22 Windows observation:** A pending key change on an installed client matched the peer's Hub key and showed the confirmation above the oldest loaded chat messages. The user decision and subsequent relay send remain to be checked. See ERROR-1045.
 - **Steps:** A and B have exchanged one sealed message (HUBH-01). Uninstall and reinstall the app on B (or clear its data), enrol B again with a new invite under the same device id, wait for key publication. On A send "after reinstall".
-- **Pass:** A's chat with B shows the notice "B's security key changed" with a new and an old short code and the buttons Continue and Verify; "after reinstall" is NOT sent (hub mailbox for B stays empty, also with "Messages through the hub" ON on A) and stays waiting on A's phone; tapping Continue sends it sealed with the new key within a few seconds and B shows it; the notice disappears; restarting A's app and sending again shows no notice. Repeat once, tap Verify instead: the peer details open.
+- **Pass:** A's chat with B shows the notice "B's security key changed" beside the composer at the newest messages. "After reinstall" stays pending and the Hub mailbox for B stays empty, including with "Messages through the hub" on. **Verify key** opens the previous and new codes and **Cancel** keeps the banner. Compare the new code with B's code in Hub connection details. **Trust new key** clears the banner and the outbox sends the sealed message to B. Restart A and verify a new message goes through without another prompt.
 - **Source:** ADR-126, ERROR-362. **Status:** TODO
 
 ### HUBH-03 - Publication retries while offline and survives a rate limit
@@ -4096,10 +4250,17 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Pass:** the file is not readable text (no PKCS#8 header after the first bytes); the other Windows user cannot unprotect it (the second install makes a new key); on Linux (when run there) the file mode is 0600. Sealed messages between the desktop and a phone work as in HUBH-01.
 - **Source:** ADR-126. **Status:** TODO
 
-### HUBH-08 - A held message survives restart and is released by Continue
-- **Steps:** with a pending key change (HUBH-02) on A, send two messages to B, force-stop A's app, reopen it, open the chat; then tap Continue.
-- **Pass:** after the restart the notice is still there and neither message has been sent; both messages stay on one tick (not Failed) well beyond 15 minutes; after Continue both arrive on B, sealed, in order.
+### HUBH-08 - Held messages survive restart and resume after key confirmation
+- **Steps:** With a pending key change (HUBH-02) on A and the LAN path unavailable, send two messages to B. Force-stop A, reopen its chat, and use **Verify key** to compare the code with B. Tap **Trust new key**.
+- **Pass:** After restart, the banner says messages are waiting beside the composer. Both messages stay pending beyond 15 minutes. After confirmation, both arrive on B, sealed and in order.
 - **Source:** ADR-126, ERROR-362. **Status:** TODO
+
+- **Offline restart edge:** Leave a held message queued for more than 30 minutes. Restart the sender with the relay unavailable. Verify the message stays pending. Restore the relay and confirm the matching code. The sender retries before the previous backoff deadline.
+
+### HUBH-09 - Key verification is visible and scoped to the current direct chat
+- **Steps:** On installed Windows, Linux and Android builds, open a direct Hub chat with a pending key. Keep a long history and test at the newest messages and after scrolling back. On Android open the keyboard and test with large text and TalkBack. Open verification, cancel, then switch to another chat. Compare the contact's code using the Hub status row in Settings.
+- **Pass:** The banner remains in view next to the composer at any scroll position. Pending outgoing text changes the banner copy and is announced without moving accessibility focus. The code dialog shows the current peer's old and new codes, Cancel preserves the pending key, and another chat never inherits the prompt. The contact can read the matching published code.
+- **Source:** ERROR-1045, UI-031. **Status:** TODO
 
 
 
@@ -6647,7 +6808,7 @@ confirm the audit's reading of the code.
 ### CNCL-19 — Dismiss, Clear and 30-day history survive a restart (C-09, C-05, C-10)
 - **Setup:** one Failed, one Cancelled and one Paused 1:1 row, plus one running at ~50 %.
 - **Steps:** dismiss the Cancelled row, `adb shell am force-stop com.transfer.flash`, reopen, open Transfers. Later set the phone date 31 days ahead and reopen.
-- **Pass:** the dismissed row stays gone; Failed and Paused rows are back, the running one is Failed with "Flash was closed while this was transferring. Tap Retry to continue."; no notification storm on start; rows older than 30 days are gone. **Source:** C-09/C-05 (`3df0bfa5`, Room step 20; supersedes the "today the list starts empty" part of CNCL-11). Desktop does not persist yet (store = null, D5). **Status:** TODO
+- **Pass:** the dismissed row stays gone; Failed and Paused rows are back, the running one is Failed with "Flash was closed while this was transferring. Tap Retry to continue."; no notification storm on start; rows older than 30 days are gone. **Source:** C-09/C-05 (`3df0bfa5`, Room step 20; supersedes the "today the list starts empty" part of CNCL-11). For desktop, see DESK-RESUME-01. **Status:** TODO
 
 ### CNCL-20 — Receiver's refusal names its reason on the sender (C-11)
 - **Setup:** B with a full storage / a session ceiling reached / a write error.
@@ -7860,6 +8021,37 @@ PASS (owner, 2026-11-05; core bidirectional text after setting Automatic. Link-d
 
 ---
 
+## XFER-RETRY-02 — Sender Retry resumes durable data and updates both peers (2026-11-09)
+
+- **Setup:** Use the reported platform pair, a stable source file large enough to span many chunks,
+  and an existing LAN pairing. Record the build, transfer ID, and both peers' byte counts.
+- **Exercise:** Interrupt the connection after the receiver has saved part of the file. Wait for the
+  sender to report failure, restore connectivity, and press **Retry** on that same transfer. Repeat
+  with the direction reversed where practical.
+- **Pass:** The receiver leaves the active state when the attempt ends. Retry uses the same transfer
+  identity and skips durable chunks once their ACKs reach the sender, without asking for consent
+  again. Record any chunks sent before the ACK arrives. Both peers show resumed progress; the final SHA-256 matches.
+  An explicit cancel and a changed source remain distinct from a retryable interruption.
+- **Status:** OWED. The local candidate passed 894 host cases (two documented skips), including
+  repeat attempts with unchanged saved progress and a delayed-ACK reproduction. Physical devices
+  must still verify recovery in both directions, including another interruption before progress moves.
+
+## VOICE-BTN-01..06 — Voice-note recording controls (2026-11-09)
+
+**Status:** OWED on Android and Windows. The chat JVM and Android-host gates passed; no microphone
+or gesture on a physical device was exercised.
+
+1. **01 — Hold:** Hold the mic, speak for at least a second and release. One voice note is sent.
+2. **02 — Android lock:** Hold, slide up and release. The trailing Send submits the locked take once;
+   no unrelated PTT error appears.
+3. **03 — Windows lock:** Repeat and confirm the active take is not replaced. Verify both send controls.
+4. **04 — Refused start:** With permission denied or the mic owned by a call, hold and slide up. No
+   recording panel opens. Restore access and verify the next hold works.
+5. **05 — Failed capture:** Force a microphone start error. The UI explains the failure and the next
+   attempt can start after the mic is free.
+6. **06 — Other controls:** Short tap does not send, slide-left cancels, locked-bar controls work, and
+   a received voice note still downloads, plays, pauses and seeks.
+
 ## XFER-RETRY-01 — Retrying a restored 0-byte attachment must not kill the app (2026-11-05)
 
 ### Setup
@@ -8297,3 +8489,472 @@ Source. `docs/audit/2026-11-07-hub-feature-readiness.md`. Reuse `HUBR-03`, `ORGT
   listener hears the opening syllable"), so it needs two physically paired peers, live microphones and a
   person listening. No audio observation is possible in this session; the test pair was revoked after the
   W1 runs. The first-packet ordering remains host-tested only.
+
+
+## 2026-11-12 — Phases 1–5 UI/UX polish verification (`UXPOL-01..11`)
+
+Added after the Phases 1–5 cross-platform UI/UX polish pass across `:ui:theme`, `:ui:chat`, `:ui:callui`, `:ui:platform-shims`, `:app`, and `:desktop`. All cases below are host-verified by unit/render/wiring tests only and still require physical Android and Windows device checks.
+
+### UXPOL-01 — Light/dark theme tokens, quoted reply contrast, avatar scaling, launch splash & video player error
+- **Setup:** Android phone + Windows desktop in both Light and Dark themes (plus Dynamic Accent enabled and OS Reduced Motion toggled on); conversation containing outgoing and incoming quoted replies, single-initial avatars at multiple sizes, and an unplayable/corrupt video attachment.
+- **Steps:**
+  1. Inspect outgoing and incoming `FlashQuotedReplyCard` bubbles in Light and Dark modes.
+  2. Cold-launch the app with Reduced Motion enabled (`FlashTheme.motion.reduceMotion = true`).
+  3. Open a broken video attachment in `FlashVideoPlayer`.
+- **Pass:**
+  - Outgoing and incoming quoted reply sender names, accent bars, and snippet texts are clearly legible (`>= 4.5:1` contrast; no white-on-light-bubble washout).
+  - Error texts (`textError`), tertiary timestamps (`textTertiary`/`chatTextTimestamp`), and dynamic accent fills/links remain readable across surfaces; avatar initials scale proportionally without clipping.
+  - Launch splash exits immediately (`ExitTransition.None`, 0 ms fade) under Reduced Motion.
+  - Video player hides the centered Play button and bottom scrubber on error while keeping the top `Close` bar visible and rendering a `>= 48 dp` `"Open in system player"` button.
+- **Status:** TODO
+
+### UXPOL-02 — Radio Gateway PTT contrast, Listen/Profile M semantics & bottom inset scroll
+- **Setup:** Android phone with TalkBack enabled (Light and Dark modes) and a Radio Gateway controller/device state showing Listen switch, PTT button, Profile M un-authorised state, `"Coming later"` / `"Not supported"` rows, and hidden bottom dock.
+- **Steps:**
+  1. Open Radio Gateway in Light and Dark modes, scroll to the bottom, and toggle Listen and PTT (ready, talking, disabled/no-link states).
+  2. Inspect un-authorised Profile M, `"Coming later"`, and Profile A preview rows with TalkBack.
+- **Pass:**
+  - PTT button and `"Talking"`/`"No link"` status pills remain clearly legible in both Light and Dark modes (`accentFill`/`onAccentFill` and `accentSecondary` ink); `CHECKLIST_STEP_2` uses `→` (no `?` or `->`).
+  - Listen switch and authorisation toggles announce `Switch` role; un-authorised Profile M is not announced as `selected = true` and prompts authorisation; `"Coming later"` and `"Not supported"` rows are announced disabled and ignore clicks.
+  - Bottom list content scrolls clear of the system/navigation bottom inset when the bottom dock is hidden.
+- **Status:** TODO
+
+### UXPOL-03 — Settings no-dead-rows, collapsed Advanced section, search & Transsion theme
+- **Setup:** Android phone (including a Transsion device or pending `TranssionSetupGuide`) and Windows desktop.
+- **Steps:**
+  1. Open Settings on both Android and Desktop; verify initial collapse state of `Advanced & Power` (`Section.ADVANCED`).
+  2. Tap `Encryption`, `Trusted peers`, and `Save location` on both platforms; verify Android-only rows (`Haptics`, `Battery optimization`) on Desktop.
+  3. Expand `Advanced & Power` and toggle `Group file sharing (swarm, experimental)`, `Performance mode` chips, and `Discovery mode`.
+  4. Search `"battery"`, `"Unrestricted battery"`, and a query matching no rows; tap the search Clear (`X`) button; open `TranssionGuideDialog` in Light and Dark modes.
+- **Pass:**
+  - `Advanced & Power` starts collapsed; `Performance mode` chips wrap cleanly without `packets/s` jargon; `Help share group files` and `Keep finished files available for others` disable/indent under the master swarm toggle.
+  - Every clickable row acts (`Encryption` opens `FlashEncryptionSheet`, `Trusted peers` switches to `NearbyDevices`); Android `Save location` is read-only (`App storage / FlashReceived`) with no dead tap; Desktop hides `Haptics` and `Battery optimization` and opens `JFileChooser` for `Save location`.
+  - Search hides empty sections, returns only `Network` for `"Unrestricted battery"` and `Network` + `Advanced & Power` for `"battery"`, and clears via a `>= 48 dp` Clear target.
+  - `TranssionGuideDialog` follows user Light/Dark/Dynamic Accent `FlashTheme`.
+- **Status:** TODO
+
+### UXPOL-04 — Hub `bottomInset`, visual announcement truncation & people search
+- **Setup:** Android phone + Windows desktop enrolled in a Hub with long multi-line announcements and a populated directory.
+- **Steps:**
+  1. Scroll Hub News/People/Org lists to the very bottom on Android (with floating bottom bar) and Desktop.
+  2. Inspect short vs visually overflowing announcements in `FlashAnnouncementCard`.
+  3. Search in People (`searchHits` loading state) and press system/UI Back; inspect `PERSON_UNPAIRED_FOOTER`.
+- **Pass:**
+  - Last Hub item clears the floating bottom bar (`bottomInset`) cleanly.
+  - `"Read more"` appears only on announcements that visually overflow; `allPeople` does not flash momentarily while search results are loading; Back exits search consistently; unpaired footer directs users to `Settings → Enterprise & Organization` (`"Messages through the hub"`).
+- **Status:** TODO
+
+### UXPOL-05 — Android 840–907 dp two-pane layout, Back handling, deferred notifications, Quick Tile & Widget
+- **Setup:** Android tablet/foldable or resizable window at 840–907 dp width (and a standard phone), with `POST_NOTIFICATIONS` ungranted on first launch, Quick Settings tile added, and home-screen widget placed.
+- **Steps:**
+  1. Cold-launch the app without notification permission; watch the splash finish and observe the notification prompt; decline permanently and re-check on resume.
+  2. Resize or open on an 840–907 dp screen; switch across Chats, Transfers, Nearby, Hub, and Settings; tap a conversation, use system Back, and tap `ChatList` on the Medium navigation rail.
+  3. Share a file or `file://` URI into Flash via `ACTION_SEND` or tap the widget send icon; toggle the Quick Settings tile.
+- **Pass:**
+  - Cold start never pops a raw system notification dialog during launch; after splash settles, an inline rationale banner (`Allow` / `Not now`) appears, and permanent denial offers `Open Settings` (`ACTION_APP_NOTIFICATION_SETTINGS`) refreshed in `onResume`.
+  - 840–907 dp width enters two-pane mode (`320 dp` list + detail pane); `Settings` occupies full width; non-chat placeholders show tab-specific headers without `"Find devices"` on `NearbyDevices`/`Hub`/`Settings`; Medium rail `ChatList` tap and gated `BackHandler` clear active selections cleanly.
+  - `ACTION_SEND` / `flash://` / `SHORTCUT_*` skip the launch splash (`singleTop`); rejected `file://` URIs display toast feedback; widget send action opens the send flow; Quick Tile toggles 2-state `Active (Discoverable)` ↔ `Off` (`GHOST` reports active) with plain-text subtitles; notifications use `ic_notification_flash`.
+- **Status:** TODO
+
+### UXPOL-06 — Desktop DnD off-screen guard, share-to-group, keyboard shortcuts, toast reposition & foreground notifications
+- **Setup:** Windows desktop app on primary and secondary/compact monitor bounds, with an active chat, a trusted group, and a paired peer sending messages/files/calls.
+- **Steps:**
+  1. Open a chat, then switch to `Transfers` or `Settings` and drag-and-drop a file onto the window; also drop an empty folder onto an open chat.
+  2. Share files directly to a trusted group; test `Esc` priority (closing overlays/search/detail before chat), `Ctrl+1..4`, `Ctrl+5`/`Ctrl+T` (enrolled vs non-enrolled), sidebar tooltips/profile target, and `NearbyDetailPane` actions.
+  3. Trigger a transfer toast near the bottom-right edge and vary toast height; receive a transfer/call/pairing event while the Desktop window is foreground and active vs minimized/unfocused.
+- **Pass:**
+  - Dropping a file while another tab is active never silently sends to the off-screen chat; dropping an empty folder shows `EMPTY_FOLDER_SHARE_MESSAGE`.
+  - Direct group share delivers to the trusted group; `Settings` and `Hub` occupy full width; `Esc` and `Ctrl+1..5`/`Ctrl+T` route cleanly; sidebar items expose tooltips and `>= 48 dp` profile button.
+  - Transfer toast repositions upward cleanly inside `maximumWindowBounds` without clipping off-screen; OS notifications for transfers, ringing calls, and pairing requests are suppressed while the Desktop window is foreground and active, and appear when unfocused.
+- **Status:** TODO
+
+### UXPOL-07 — Pairing phase mapping, failure recovery, local IPv4 & peer details clarity
+- **Setup:** Two devices (Android + Android or Android + Windows) on the same LAN, plus an offline/unreachable IP test target.
+- **Steps:**
+  1. Initiate pairing and observe `AwaitingPeerNonce`/`AwaitingPeerReveal`, `RequestReceived`, `AwaitingPeerConfirmation`, and a forced failure/decline/expiry.
+  2. Open `Nearby` with radios on and off, run a manual scan with 0 peers, open `Connect by IP` and submit an unreachable IP/port, and open `FlashPeerDetailsSheet` for a `Reachable` peer.
+  3. Attempt `"Unpair device"` from `Nearby` and from `FlashPeerDetailsSheet`.
+- **Pass:**
+  - No bogus `"000 000"` code or false waiting card appears during `AwaitingPeerNonce`/`AwaitingPeerReveal`; `RequestReceived` and `AwaitingPeerConfirmation` cannot be dismissed by outside tap or Back; `Failed`/`Declined`/`Expired` show `"Try again"` and `"Close"` with `failureReason`.
+  - `Nearby` displays the local IPv4/port (`localAddressLabel`), labeled `"Connect by IP"` button, dismissible scan caption, immediate quiet-network hint on 0-peer manual scan, and `"Open Wi-Fi Settings"` when radios are off.
+  - `Connect by IP` uses numeric port input and retains typed fields on failure; `Reachable` peer details read `"Connects when you send"` with plain-language `"Verify pairing"` / `"Radio fallback"` descriptions; `"Unpair device"` requires `FlashConfirmHost` confirmation.
+- **Status:** TODO
+
+### UXPOL-08 — Transfers `Verifying` state, receive-cancel confirmation, split Clear & two-pane inspection
+- **Setup:** Two peers transferring a multi-hundred-MB file (plus failed and cancelled history rows) on Android and Desktop (wide/two-pane and narrow).
+- **Steps:**
+  1. Observe the receiver during whole-file integrity verification (`DomainState.Verifying`) and observe `Queued` rows.
+  2. Tap Cancel on an active inbound receive vs an outbound send, and decline an incoming offer; tap `"Clear cancelled"` and `"Clear failed"` separately.
+  3. Inspect sizes/speeds, tap a transfer row in wide/two-pane mode, and trigger a load error (`FlashErrorState`).
+- **Pass:**
+  - `Verifying` rows display `"Verifying file…"` with zeroed speed/ETA, are excluded from `aggregateSpeed`, and hide Pause/Resume buttons (as do `Queued` rows).
+  - Cancelling an active inbound receive prompts confirmation (`FlashCancelCopy`); `Decline`, `Cancel`, and `Dismiss` use distinct icons/semantics; `"Clear cancelled"` and `"Clear failed"` clear only their respective buckets.
+  - File sizes/speeds use consistent decimal SI units (`MB` / `MB/s`) with `done / total · %`; two-pane selection opens `detailPane` with plain-language labels and non-colliding ellipsis on long `"Saved To"` paths.
+- **Status:** TODO
+
+### UXPOL-09 — Calling stats pill, PiP top scrim, share picker & Android PTT scrim
+- **Setup:** 1:1 and group video calls on Android and Desktop (including `1.3x+` font scale at 360 dp width), screen share, and an active Android PTT session.
+- **Steps:**
+  1. In a video call, inspect the top peer header, `120 dp` PiP overlay, and `FlashShareIndicator` banner; tap the signal-quality pill to open `CallPanel.STATS` (including when `rttMs == null`).
+  2. Check control dock layout at 360 dp normal vs `1.5x` font scale and with `audioRoutes.needsPicker == true`; start screen share on Android (`usesSystemPicker == true`).
+  3. End a call (`ENDED`) and tap `X` or Back immediately; separately start an Android PTT session and tap behind the card and press Back.
+- **Pass:**
+  - `FlashShareIndicator` docks above the video canvas without overlapping the PiP or top-start header; top `160 dp` gradient scrim and trailing padding keep the header clear of PiP.
+  - Signal-quality pill opens scrollable `CallPanel.STATS` with no fabricated `"<1 ms"` when `rttMs == null`; control dock fits cleanly at 360 dp, wraps into 2 balanced rows at `1.3x+` font scale, and shows the chevron cue when audio route picker is available; Android screen share jumps directly to the system picker when `presenterId == null`.
+  - `ENDED` call dismisses immediately (`dismissedEndedCallId`); Android `PttSessionOverlay` blocks clicks on underlying UI, stops PTT on Back, caps card width at `400 dp`, renders `>= 48 dp` `Stop`/`Leave`, and displays `Good`/`Fair`/`Weak signal` labels.
+- **Status:** TODO
+
+### UXPOL-10 — Voice lock hint, single playback, delete confirmations, emoji picker, reactor sheet & media/attachments
+- **Setup:** Android phone and Windows desktop with an active conversation containing voice notes, images with captions, files, failed messages, and reacted messages.
+- **Steps:**
+  1. Tap the mic briefly (`<500 ms`), hold and observe lock hint, lock recording, and test `Enter` key on Android soft keyboard vs Desktop; play a voice note in chat and then play another in `SharedContentSheet` (`SharedAudioRow`), and try scrubbing an undownloaded voice note.
+  2. Trigger `Clear chat`, multi-select `Delete`, and context-menu `Delete` / `Delete for everyone`.
+  3. Open `"More reactions"` (`FlashExtendedEmojiPickerSheet`), long-press a reaction chip / tap `+N` (`FlashReactionsDetailSheet`), open context menu on an image-only message, and single-forward a message.
+  4. Stage up to 10 attachments (`OpenMultipleDocuments` on Android), inspect thumbnails and send; open `FlashMediaViewer` (caption, `Save`/`Share`/`Forward`, desktop `←`/`→`/`Esc`), `FlashSharedContentSheet` tabs/undownloaded file tap, `FlashGroupHistoryCard`/`FlashHubNotice` scroll position, and swipe-to-reply on incoming bubbles.
+- **Pass:**
+  - Short tap shows `"Hold to record"` feedback; holding shows `"↑ Slide up to lock"` pill; once `FlashVoiceTrailingSendButton` appears, the redundant in-bar Send hides; Android `Enter` inserts newline while Desktop `Enter` sends; starting a second voice note pauses the first across chat and `SharedAudioRow`; scrubbing is disabled until `Downloaded`.
+  - All 4 destructive chat actions require `FlashConfirmHost` confirmation.
+  - Extended emoji picker and reactor detail sheet (with emoji filter tabs) open and behave cleanly; `"Copy Text"` is hidden on blank messages and uses `FlashIcons.Copy`; single-message Forward works via multi-forward; focus overlay scrolls cleanly on tall messages.
+  - Staging tray accepts up to 10 items, renders thumbnails with `48 dp` remove buttons, and clears on enqueue; `FlashMediaViewer` shows captions and labeled actions + desktop arrow/Esc keys; `FlashGroupHistoryCard`/`FlashHubNotice` render at the top of `LazyColumn(reverseLayout = true)` without breaking scroll-to-bottom (`isAtBottom`).
+- **Status:** TODO
+
+### UXPOL-11 — Chat list declutter, search drawer, right-click menu & group sheets
+- **Setup:** Android phone (`<408 dp` narrow width) and Windows desktop with paired peers, existing groups (admin and non-admin), archived chats, and empty-peer state.
+- **Steps:**
+  1. Inspect `FlashChatListTopBar`, group rows (with online badge), archived row alignment, and narrow (`<408 dp`) multi-select toolbar (`Pin`/`Unpin`, `Mute`/`Unmute`, `Delete`).
+  2. On Desktop, right-click a chat row and right-click an image tile inside a conversation.
+  3. Open chat search with zero chats/recents, then on 360 dp width toggle `All matches` / `Hide list`.
+  4. Open `New group` / `Add members` with 0 peers and with >10 peers, `Leave group` with >5 `eligibleSuccessors`, `Group members` sheet (`Promote`/`Demote`/`Remove`), `Group settings` steppers, and `Group invite` / conversation menu.
+- **Pass:**
+  - Group rows show `FlashGroupAvatar` without an overlapping `FlashPresenceDot`; Archived medallion/divider aligns with chat rows; narrow multi-select bar fits `>= 48 dp` targets without clipping `"N selected"` and gates bulk/single delete behind `FlashConfirmHost`.
+  - Desktop right-click opens the row menu on chat rows and the bubble context menu on image tiles.
+  - Search auto-focuses, offers Clear (`X`), shows empty state instead of blank screen when empty, and keeps 2-row `FlashChatSearchBar` + drawer toggle clickable at 360 dp.
+  - Group member sheets cap list height (`<= 280 dp`), offer `"Find devices"` when empty, scroll all `eligibleSuccessors` in Leave dialog, move per-member actions into `More` with confirmation on Promote/Demote, step max members cleanly (`2 ↔ 5 ↔ 10 ↔ 15 ↔ 20`) with `48 dp` buttons and plain-language labels, and use distinct icons (`Copy`, `Connection`, `Forward`).
+- **Status:** TODO
+
+## 2026-11-12 — Android & Desktop notification robustness, dialog redesign & custom notification center (`NOTIF-01..04`)
+
+Added after implementing Android notification state management, `Verifying` state indeterminate progress, desktop receiving dialog 400 dp dynamic redesign, and desktop unified custom notification center with OS balloon retirement.
+
+### NOTIF-01 — Android transfer 100% verification progress & auto-dismissal
+- **Setup:** Android phone paired with a second device; transfer a multi-hundred MB or multi-GB synthetic file while backgrounded and while viewing the Transfers screen.
+- **Steps:**
+  1. Send a 1 GB file from Peer to Android phone.
+  2. Put Flash in the background and pull down the notification shade as download reaches 100%.
+  3. Observe the transition between chunk streaming and SHA-256 integrity verification.
+  4. Wait for verification to complete; observe notification dismissal behavior.
+  5. Repeat another transfer while Flash is foregrounded on the Transfers tab.
+- **Pass:**
+  - Upon reaching 100% bytes, the ongoing notification transitions to title `"Verifying <file>…"` with subtitle `"Checking file integrity…"` and an active indeterminate progress bar (never sits frozen at raw 100%).
+  - When verification completes, the notification transitions to Completed and automatically dismisses after 15 seconds without user intervention.
+  - When foregrounded on the Transfers tab, the completed notification is suppressed immediately.
+- **Status:** TODO
+
+### NOTIF-02 — Android notification action identity & process restart cleanup
+- **Setup:** Assigned Android phone and a paired peer. Preserve app data.
+- **Steps:**
+  1. Run `TransferNotificationIdentityInstrumentedTest` on the phone. With two concurrent transfers, act on one notification and confirm only the named transfer changes.
+  2. Kill the app process during a large transfer, relaunch, and inspect Android's notification shade.
+  3. Clear completed transfer history with a separate incoming offer still waiting.
+  4. If a test device has legacy notifications from an earlier build, upgrade in place and repeat the relaunch check.
+- **Pass:**
+  - Colliding IDs retain distinct Android action tokens. Stale and legacy transfer notices disappear on startup, and live notices reflect the current rows.
+  - Clearing completed history preserves the pending offer and active transfer notifications.
+- **Status:** TODO
+
+### NOTIF-03 — Desktop custom receiving dialog 400 dp fit & action order
+- **Setup:** Windows / Linux desktop with display scaling at 100%, 125%, and 150%.
+- **Steps:**
+  1. Trigger an incoming file offer from a paired peer with a long name (>20 chars) and a multi-GB file.
+  2. Inspect the custom toast window card layout, text wrapping, and action buttons.
+  3. Trigger an outbound transfer failure.
+- **Pass:**
+  - Card renders at 400 dp width and expands height dynamically without clipping action buttons at any DPI scaling.
+  - File size and transport label are displayed in the metadata row.
+  - Action buttons are correctly ordered: **[Decline]** (left, secondary pill) and **[Accept]** (right, accent primary pill) for offers; **[Dismiss]** (left) and **[Retry]** (right) for failures.
+  - Buttons have comfortable >= 38 dp pointer targets with visible hover reactions.
+- **Status:** TODO
+
+### NOTIF-04 — Desktop unified custom notification center & OS balloon retirement
+- **Setup:** Windows / Linux desktop with Flash running minimized / in background.
+- **Steps:**
+  1. Send a chat message, initiate a voice call, and request pairing from a phone while Flash desktop is minimized.
+  2. Observe notification presentation.
+  3. Complete a transfer while desktop is focused, then minimize.
+- **Pass:**
+  - All notifications appear exclusively in our rich custom Compose toast window (zero generic OS balloons / tray messages).
+  - Incoming calls show peer name, Voice/Video badge, green Accept and red Decline buttons. Old cards cannot act on a replacement call.
+  - Pairing opens the full code-comparison dialog. The toast and diagnostic logs omit the verification code.
+  - A different chat can show its alert while Flash is focused. Message bursts do not displace a ringing call. Test keyboard access to desktop toast actions.
+  - Completed transfers with an available file show **[Show in Folder]** and **[Open File]**. If a file disappears before the action runs, Flash shows feedback. Completion and chat cards expire after 8 seconds, and failed-transfer cards expire after 15 seconds.
+  - Transfers completed while window was focused replay deferred notifications when the window is subsequently minimized.
+- **Status:** TODO
+
+### DEV-AUDIT-01 — Nearby mobile header, compact controls and voice accessibility
+- **Setup:** Assigned Android phone and Windows desktop. Exercise 320 dp and a typical phone width, 100% and 200% text, with TalkBack and keyboard as applicable.
+- **Pass:** Scan network and Connect by IP sit beside Nearby when the full labels fit. At larger text both remain readable and tappable. Scan shows its disabled in-progress state. Long paired-device names remain distinguishable. Performance and Discovery labels stay readable and the selected item is announced.
+- **Pass:** The lock, overflow and Retry actions remain individually targetable. TalkBack or keyboard starts a hands-free voice recording and can pause, cancel or send. An interrupted hold stops the capture and releases the mic lease. A permission denial gives feedback and another press checks current access.
+- **Status:** TODO for real input and device behavior.
+
+### INVITE-LINK-01 — Verified Android invite links and camera QR opening
+- **Setup:** Build with the actual public group and Hub link hostnames and serve the distributed APK signing association on both. Use an assigned phone with Flash installed and a browser profile or device without it.
+- **Pass:** Local group and Hub enrollment links and camera QRs open the appropriate confirmation on cold and warm launches. With no app or with a self-hosted Hub that is outside the manifest, the browser can download Flash, copy the original invite, or open the app using the fallback action. An invalid fragment removes open and copy actions, and an expired or used grant is refused on confirmation.
+- **2026-11-16 evidence:** Android 14 Infinix X6882B received an in-place APK update. Android verified the live test Hub as an App Link domain and resolved both exact invite paths to Flash as a candidate. The stock browser is also a candidate on this firmware. The custom `flash://enroll` route resolved solely to Flash, and `/admin/` resolved only to the browser. The deployed landing script passed valid and malformed payload checks. Camera and confirmation UI acceptance remain open.
+- **Status:** TODO on real hostnames and Android camera.
+
+### INVITE-LINK-02 — Desktop invite protocol association
+- **Setup:** The Windows MSI and the EXE's embedded MSI contain the expected registry entries. Build the Linux DEB on a Linux host, then install each platform package in a disposable user environment.
+- **Pass:** Browser Open in Flash invokes the packaged app, opens the correct dialog at cold start and while Flash is already running, and leaves it available to paste manually. Uninstall removes the package-owned handler.
+- **Status:** TODO for live browser-to-installed-app activation.
+
+### DEV-AUDIT-02 — Cancel during receive verification
+- **Setup:** Two assigned devices with a large synthetic file. Interrupt receive verification through a supported control or the sender.
+- **Pass:** The receive stays Cancelled, the sender receives no successful completion, no final copy is published, and no stale progress card remains. A read failure with a supplied digest becomes a retryable failure and cleans the partial file.
+- **Status:** TODO for the real two-device wire and storage path. The Android-host regression covers cancellation before hash commit and read failure.
+
+### HR6-DEV-01 / ORGT-14 — Secure device replacement on Android + Desktop against live Hub
+- **Setup:** Isolated test Hub, Android phone, and Desktop client enrolled in the Hub, plus console operator access.
+- **Steps:** Issue a scoped replacement grant for the lost phone binding, redeem on a fresh Android install, verify old binding + active sessions are rejected across Hub restart and LAN revocation sync, and repeat with Desktop replacement.
+- **Pass:** Replacement succeeds with explicit department/group selection and quota checks; old/stolen credentials fail across both Hub and LAN; audit log records old -> new binding without secrets.
+- **2026-11-16 evidence:** The new Hub package passed on a separate container on `myserver` with disposable data and synthetic device keys. It enforced step-up, returned 409 for a second pending grant, revoked the old REST bearer and proof, and authenticated the replacement. The key behavior persisted after container restart. Physical app and LAN revocation propagation still need the device run.
+- **Status:** TODO (automated unit/server tests pass; physical device + isolated live Hub run owed).
+
+### HR7-DEV-01 — Title-only announcement notifications + cold start tap on Android & Desktop
+- **Setup:** Physical Android phone (Notification permission granted and denied runs) + Windows Desktop enrolled in isolated Hub.
+- **Steps:** Publish announcement via Hub console while target Android app is killed/cold, receive announcement catch-up, inspect notification shade, tap notification, and verify author/mute suppression, and on Desktop use Open Announcement from a toast while the app is foregrounded and while hidden to the tray.
+- **Pass:** Title-only notification appears (`ANN-01`/`ANN-10`/`ANN-11`/`HUBT-12` + cold start opens announcement); author suppression and mute silence notifications while feed remains readable; background OS constraints measured and matching docs.
+- **Status:** TODO (automated tests pass; physical device cold-start & Android permission/mute verification owed).
+
+### HR8-DEV-01 — Cross-route LAN <-> Hub large-file transfer continuity on physical devices
+- **Setup:** Android phone + Desktop sharing a large (>100 MB) file on LAN, toggling Wi-Fi off mid-transfer (forcing Hub resume) and on again in reverse direction.
+- **Steps:** Interrupt LAN transfer partway through, allow Hub continuation, repeat starting on Hub and finishing over LAN, verify final output file hash.
+- **Pass:** One logical transfer row, one completion row, one published file copy, byte-exact SHA-256 match across LAN -> Hub and Hub -> LAN.
+- **Status:** TODO (automated unit/integration tests including normal `sendFile`/`resumeTransfer` `LAN <-> Hub`, `FileContinuityCheckpointStore` restart persistence, and changed-source/oversized refusals pass; physical multi-hundred-MB phone <-> Desktop run owed).
+
+### HR9-DEV-01 — Off-LAN 1:1 and group voice/video calling across two independent networks + TURN relay
+- **Setup:** Android phone (cellular / separate AP) and Windows Desktop (home LAN) enrolled in isolated Hub configured with `FLASH_STUN_URLS`, `FLASH_TURN_URLS`, and `FLASH_TURN_SECRET` pointing at a disposable coturn instance (`RELAY_ONLY` and fallback runs).
+- **Steps:** Place outgoing and incoming audio and video calls from Android -> Desktop and Desktop -> Android; verify accept, decline, cancel, hang-up, direct candidate attempt, TURN relay fallback, bidirectional media playback, and existing LAN call path.
+- **Pass:** Audio and video both flow clearly on direct and relayed paths; late/replayed/revoked signaling is ignored; LAN calls still work with Hub disconnected.
+- **Status:** TODO (automated server + client + native `webrtc-java` smoke tests pass; two-network physical device + coturn run owed).
+
+### HR9-DEV-02 — Android background / Doze off-LAN call signaling measurement
+- **Setup:** Physical Android phone enrolled in isolated Hub, screen off for 5 minutes and in light Doze while app backgrounded with foreground sync vs standard idle.
+- **Steps:** Trigger `FLASH_CALL_SIGNAL` invite from Desktop to Android and record delivery latency / OS socket drop rate.
+- **Pass:** Observed background/Doze reachability matches the disclosure in `docs/protocol.md` (and documents whether foreground relay or OS push wake-up is required).
+- **Status:** TODO
+
+### HR10-DEV-01 — End-to-end encrypted group messaging on physical Android & Desktop against Hub
+- **Setup:** Physical Android phones (A, B, C) and Windows Desktop (D) enrolled in isolated Hub; a linked organisation group created with A, B, C; an older non-`hge1` or un-upgraded peer optional for legacy block check.
+- **Steps:**
+  1. Send messages across A, B, C, D in the linked group and inspect Hub `mailbox_envelopes` / server logs to verify only `GROUP_SEALED_V1` & `SEALED_V1` ciphertext traverse the Hub.
+  2. Remove C from the group; have A send post-removal messages and verify C never displays them.
+  3. Add D and rejoin C; verify new messages arrive and neither D nor C receives/decrypts pre-join or gap epochs.
+  4. Restart Android & Desktop apps offline, resume online, and verify stored epoch keys reload via Android Keystore / Desktop DPAPI vault and continue encrypting seamlessly.
+  5. Open `FlashGroupSettingsSheet` & conversation banner and verify truthful E2EE status (`Group messages are end-to-end encrypted` or fail-closed pause notice when a legacy member is present).
+- **Pass:** Plaintext never reaches the Hub database; removed members cannot read post-removal messages; new/rejoined members cannot decrypt pre-join/gap epochs; Keystore/vault survival works across process kill and reboot.
+- **Status:** TODO (automated unit/integration/server opacity + mutation tests pass; physical device run owed).
+
+### HR11-ENV-01 — HUBREADY-01..05 live VPS/isolated host deployment + restore rehearsal
+- **Setup:** Disposable VPS or isolated container host running the assembled Hub server binary with TLS leaf certificates (`tlsMode=self` or proxy ACME), backup snapshot (`flash-hub.db` + `data.key`), and Chrome Admin Console session.
+- **Steps:**
+  1. Execute `HUBREADY-01..05` end-to-end through the real TLS proxy and Chrome Admin UI (`https://<host>/admin`).
+  2. Rehearse filesystem snapshot backup and restore with matching, missing, and wrong `data.key`, plus offline `keytool delegate` rotation and `keytool revoke` signer revocation with enrolled Android & Desktop clients reconnecting live.
+  3. Trigger simulated disk pressure, quarantine alert, and expiring delegation/TLS alerts on the disposable host and verify operator scrape of `/health/detail` and `/metrics` matches `docs/deploy/HUB-SERVER-DEPLOYMENT.md`.
+- **Pass:** Live VPS health/metrics/console/restore match automated isolated drills; enrolled Android & Desktop reconnect without data loss on matching restore; missing/wrong key blocks startup.
+- **2026-11-16 evidence:** The remote test Hub accepted the saved pre-upgrade state, remained healthy and kept the same public realm ID. Its HTTPS invite routes and association file resolved. The same package in a separate loopback-only container passed management-token health and metrics, first-run console setup, enrollment, announcement synchronization and replacement. The full Chrome console and restore matrix still need dedicated runs.
+- **Status:** TODO (automated JVM Ktor `testApplication` & restore drills pass; disposable VPS + Chrome console + real TLS cert run owed).
+
+### HR11-ENV-02 — Production-profile PERF-H03 pilot load benchmark with target fleet & coturn
+- **Setup:** Production-sized Hub host + target fleet (or multi-host load generator matching intended tenant concurrency, network RTT, TLS termination, and disposable coturn TURN relay).
+- **Steps:** Measure steady-state and burst WebSocket relay throughput, p50/p99 frame latency, SQLite WAL checkpoint size, mailbox drain rate, heap/RSS growth, and TURN relay bandwidth under the documented production deployment profile.
+- **Pass:** Meets target pilot capacity without sustained queue backlog, `WAL` stall, or critical alert breach.
+- **Status:** TODO (synthetic 50-session / 500-frame JVM host benchmark recorded in `logs/experiments.md`; real multi-host + TLS + coturn pilot soak owed).
+
+## 2026-11-14 — Nearby paired availability, detail actions, Relay/Nearby icons & BottomNav motion (`UXPOL-12..15`)
+
+Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit, wiring, lint, and debug APK builds pass; physical Android and Desktop visual/interactive checks remain owed.
+
+### UXPOL-12 — Nearby paired-device availability status & offline action gating
+- **Setup:** Android phone + Windows/Linux desktop with at least one paired device currently offline (powered off or on a different network) and one paired device discovered nearby / actively connected.
+- **Steps:**
+  1. Open `Nearby` and inspect the paired-devices list (`TrustedTile`) for both the offline peer and the nearby/connected peer.
+  2. Open `FlashNearbyDetailPane` (two-pane detail on wide/desktop or detail sheet/pane on phone) for the offline paired peer, then for the discovered/connected peer.
+  3. On the offline peer's details, inspect `Voice Call`, `Video Call`, `Open Chat`, and `Send File`, and tap `Open Chat` and `Send File`.
+- **Pass:**
+  - Offline paired peer shows `Offline` in the Nearby row and `Offline · Not nearby` (offline status dot, `Not connected` connection label) in Device details; `Voice Call` and `Video Call` are visibly disabled while `Open Chat` and queued `Send File` remain enabled and actionable.
+  - Discovered/connected peer shows `Nearby` / `Online` in the Nearby row and `Available nearby` / `Online` (green dot) in Device details with `Voice Call` and `Video Call` enabled.
+- **Status:** TODO
+
+### UXPOL-13 — Compact non-scrolling single-line quick actions in `FlashNearbyDetailPane`
+- **Setup:** Android phone at narrow phone width (`<= 360 dp`, e.g. `320 dp` and `360 dp`) and Desktop narrow pane, tested at `1.0x` normal font scale and `>= 1.3x` / `200%` large font scale.
+- **Steps:**
+  1. Open Device details (`FlashNearbyDetailPane`) for a paired peer on narrow phone and Desktop widths at `1.0x` font scale.
+  2. Repeat at `>= 1.3x` / `200%` large font scale (and `< 290 dp` effective content width if available).
+- **Pass:**
+  - Primary (`Open Chat`) and quick actions (`Voice Call`, `Video Call`, `Send File`) sit directly beneath the compact hero card above the fold without requiring scrolling.
+  - All action labels render cleanly on a single line without awkward mid-word wrapping or clipping; at `< 290 dp` or `>= 1.3x` font scale, quick-action tiles stack cleanly into full-width single-line buttons.
+- **Status:** TODO
+
+### UXPOL-14 — Redesigned `FlashIcons.Relay` (Hub Relay Bridge) & `FlashIcons.Nearby` (Discovery Compass) visual clarity
+- **Setup:** Android phone and Desktop app in Light and Dark themes (enrolled in Hub so Hub/Relay badges and Nearby tab are both visible).
+- **Steps:**
+  1. Inspect `FlashIcons.Nearby` on the bottom navigation bar, Medium/Expanded navigation rail, and Nearby headers alongside Wi-Fi / Wi-Fi Direct transport icons.
+  2. Inspect `FlashIcons.Relay` wherever Hub Relay transport/status appears alongside `FlashIcons.Wifi`, `FlashIcons.WifiDirect`, and `FlashIcons.Hub`.
+- **Pass:**
+  - `FlashIcons.Nearby` reads unmistakably as a Discovery Compass (outer ring + tilted 4-point diamond needle) with zero resemblance to Wi-Fi arcs.
+  - `FlashIcons.Relay` reads unmistakably as a Hub Relay Bridge (top server node with status dot + symmetric arms to two peer endpoints) and is visually distinct from `Wifi`, `WifiDirect`, and `Hub` in both Light and Dark modes at standard icon sizes.
+- **Status:** TODO
+
+### UXPOL-15 — Bottom navigation per-tab click & reselect animations + `reduceMotion` collapse
+- **Setup:** Android phone with OS animations enabled, and separately with system Reduced Motion enabled (`FlashTheme.motion.reduceMotion = true`) and an RTL locale (`ar`/`he` or forced RTL layout direction).
+- **Steps:**
+  1. Tap across all 5 bottom navigation destinations (`Chats`, `Transfers`, `Hub`, `Nearby`, `Settings`) and tap the already-active tab again (re-select), including rapid repeated taps on `Settings`.
+  2. Enable system Reduced Motion and repeat tab switches and re-selects.
+  3. Switch to RTL layout direction and tap `Chats`, `Transfers`, and `Nearby`.
+- **Pass:**
+  - Each tab plays its distinct click/re-select motion without disturbing the pill indicator slide/squash-stretch or `PulseRing`: `Settings` rotates `+90°` cumulatively per click (preserving in-flight angle on rapid taps and resting angle on deselect); `Chats` bounces + tilts; `Transfers` executes opposing send/receive nudges; `Hub` elevates upright; `Nearby` performs a sonar micro-tilt ping.
+  - Under RTL, lateral nudges/tilts (`Chats`, `Transfers`, `Nearby`) mirror naturally.
+  - With `reduceMotion` enabled, all icon transforms and gear rotation collapse cleanly to identity with no jarring jump or residual offset.
+- **Status:** TODO
+
+### UXPOL-16 — Compact Transfers rows and conversation header
+
+- **Setup:** Android phone and desktop with narrow and wide panes, long file and peer names, and an encrypted direct chat.
+- **Steps:** Inspect Transfers with an incoming offer, an active transfer, a long failure reason and a completed receive. Repeat with large text and in dark mode. Open the chat in online and offline states. Tap Retry when offline and open encryption details by touch and with assistive input. Check a received text and voice note in both the normal and Ultra Low bubbles. Open message options and start and pause the voice note.
+- **Pass:** File name, peer and status each take one line in the list, row actions are reachable, and the detail view shows full file names and failure reasons. The username sits directly above presence. The lock opens its trust sheet and the compact Retry pill starts a reconnect. Timestamps sit close to text and voice content, and the options and playback controls remain usable.
+- **Source:** [Transfers refinement](../ui/transfers-nearby-refinement.md), [UI-004](../ui/chat-screen.md#ui-004--chat-header).
+- **Status:** TODO
+
+### UXPOL-17 — One recipient bubble per image or voice transfer
+
+- **Setup:** Two paired physical devices with a shared LAN and a chat. Use two distinct photos, including two with the same display name if available.
+- **Steps:** Send one photo and one voice note. Interrupt and reconnect the LAN during a second send and retry if needed. Select the same photo again in one draft, then press Send quickly twice. Repeat with two distinct photos in a draft, then send the original in a fresh draft. Repeat with a Hub-routed direct chat if available.
+- **Pass:** One receiver bubble and one saved file per photo or voice note, including after retry. Repeat selection in one draft creates one tray item and one sender transfer ID. Distinct photos are delivered once each, and the fresh draft creates one new transfer. If a duplicate appears, capture both logs and the corresponding transfer IDs and routes.
+- **Source:** ERROR-1024/1025 and [UI-012](../ui/attachment-button.md).
+- **Status:** TODO
+
+### UXPOL-18 — Cross-screen visual polish across Android & Desktop (Passes 1–4)
+
+- **Setup:** Physical Android phone(s) (light and dark themes, standard and large font scaling, narrow `<=360 dp` and foldable/tablet widths if available, plus home screen widget added) and Desktop app (custom UI scale e.g. `1.25x` and default `1.0x`, narrow short window height, light and dark themes).
+- **Steps:**
+  1. Check left navigation rail badges, desktop sidebar scroll in a short window with multiple tabs/badges, chat list dividers, archived chats badge, search bar/sheet clear targets, swipe + right-click row actions, and loading skeletons.
+  2. In a conversation, verify group typing status spacing, selection toolbar `48 dp` buttons and divider, full-screen media viewer long caption scrolling, attachment reply fallback labels (`Voice message`, `Photo`, file name), outgoing/incoming quoted reply legibility, `36 dp` reaction menu buttons, centered desktop sheet drag handle, and scrolling on Peer Details / Encryption / Fingerprint sheets.
+  3. Check Hub filter chips and department chevrons, Radio permission banner wrapping at narrow widths, Settings row chevrons, red destructive `"Disconnect from Organization"` row, scrollable approvals dialog, and full-width display name dialog field.
+  4. Exercise 1:1 & group audio/video calls (light & dark themes), active video PiP (including group calls), group strip badges, ended-call Close button label, Desktop `Flash` transfer toast window at non-`1.0x` UI scale, themed desktop snackbar, `48 dp` `DesktopPttButton`, and the Android home screen widget.
+- **Pass:** No clipped badges, overlapping labels, or truncated action pills; clear buttons, attachment triggers, voice bar, selection toolbar icons, and `DesktopPttButton` respond reliably to touch/mouse clicks; long captions/sheets/dialogs scroll smoothly; light-mode camera-off video call overlays remain readable on the dark placeholder backdrop; desktop toasts scale cleanly and the Android widget matches Flash `graphite`/`pulse` colors.
+- **Source:** Passes 1–4 visual polish remediation (`logs/progress.md`, `2026-11-14`).
+- **Status:** TODO
+
+### UXPOL-19 — Desktop tray icon and voice recording button
+
+- **Setup:** Windows desktop with the system tray available and an Android phone. Open a conversation with an empty composer. Repeat with reduced motion enabled.
+- **Steps:** Check the tray icon, then tap or click different parts of the mic button. On Android, verify a short tap shows the hold hint and a long press starts recording. On desktop, click to start and stop recording. Repeat after sending text so the composer switches back to the mic.
+- **Pass:** The desktop tray shows the Flash app icon. The mic responds across its target, the hint leaves the composer visible, and the press animation is suppressed with reduced motion.
+- **Source:** Desktop tray and voice message button fixes in `logs/progress.md`.
+- **Status:** TODO
+
+### DESK-RESUME-01 — Restore desktop LAN transfers after restart
+
+- **Setup:** Paired Windows or Linux desktop and physical Android device on the same LAN with a large local file. Disable Hub file routing for this check.
+- **Steps:** Quit or terminate Flash on desktop partway through receiving, reopen and retry. Repeat with desktop sending, then with both peers restarted. Check a changed send source, a deleted receive partial, a dismissed row and an SDK host with `enableResume = false`.
+- **Pass:** Interrupted work returns with Retry, and paused rows retain their state without automatic sends. Verified receiver progress is reused, the completed file hash matches and a changed source is refused. A missing partial is rebuilt from bytes received after retry. Dismissed rows stay gone, and the SDK opt-out skips restoration.
+- **Source:** ADR-362 and `FlashDesktopEngineTest`.
+- **Status:** TODO
+
+### MEDIA-PLAY-01 — Same Android viewer from poster to playback
+
+- **Setup:** Android phone with a mixed photo/video album and local H.264/AAC clips. Include landscape and portrait clips, a long caption and a corrupt video. Repeat with large text, reduced motion and Minimal visual quality.
+- **Steps:** Open a video from chat and from Shared Content. Play, pause, scrub and replay. Swipe to a photo during playback, rotate the phone, reopen the clip, background the app, then return. From a corrupt clip, use the system-player action. Try TalkBack and Android Back.
+- **Pass:** Poster stays visible until a frame renders. Close, album navigation and file actions remain in the same viewer. Playback remains correctly fitted, scrubbing does not change album page, and paging, closing or backgrounding stops audio. Back returns to the prior surface. Loading and error states remain readable, and controls are reachable at large text sizes.
+- **Source:** UI-018 and ADR-363.
+- **Status:** TODO
+
+### MEDIA-PLAY-02 — Check Android video surface and glass on supported device tiers
+
+- **Setup:** An API 24–30 phone, an API 31+ phone and a tablet or foldable if available. Use bright and dark clips and the local picker and received-file URI paths.
+- **Steps:** Compare letterboxing and glass contrast in portrait and landscape. Seek while playing a long clip and switch between videos several times. Inspect playback logs, frame drops and repeated audio output.
+- **Pass:** The graphically lighter fallback remains legible on older or constrained hardware. Chrome draws over the decoded video throughout, player resources release on page changes, and the playlist stays responsive.
+- **Source:** UI-018 and the Media3 surface note in `docs/android-platform-notes.md`.
+- **Status:** TODO
+
+### MEDIA-PLAY-03 — Windows inline video in the installed app
+
+- **Setup:** Windows installer built from ADR-364. Open a local H.264/AAC MP4 from a chat video tile and a downloaded file attachment. Include a Unicode path, a corrupt file and a second Windows GPU or architecture when available.
+- **Steps:** Open the poster, play, pause and seek, seek near the end and replay, page away and close. Try dragging the timeline and using the arrow keys. Check narrow and landscape windows at 100% and 200% text. Try the system-player action on the corrupt file. Watch audio and memory across repeated opens and closes.
+- **Pass:** Video and audio play inline. Controls draw above video and remain readable. Seek and replay land where expected, closing releases playback, and unsupported media offers the system player. Record installed DLL and package size, GPU and codec details, and any frame drops.
+- **Source:** UI-018 and ADR-364.
+- **Status:** TODO
+
+### MEDIA-PLAY-04 — Android double-tap seek and revised timeline
+
+- **Setup:** Android phone, a clip longer than 30 seconds, and an adjacent photo in the album.
+- **Steps:** Double-tap the right half during playback and while paused. Repeat quickly and near the end. Drag the timeline, toggle chrome with one tap, page to the photo and double-tap to zoom. Repeat in landscape and with large text. Use TalkBack to read and adjust playback position.
+- **Pass:** Each video gesture advances by up to ten seconds, briefly shows the jump and preserves pause. The timeline clamps at the end, responds to drag and accessibility actions, and keeps both time labels readable. Photo zoom and album paging still work.
+- **Source:** UI-018.
+- **Status:** TODO
+
+## 2026-11-18 — Module IF review follow-up
+
+### IFREV-01 — Required group encryption at the Hub boundary
+
+- **Setup:** An isolated test Hub and two enrolled test clients. Include the supported encrypted group workflow and a compatibility fixture for a readable group message.
+- **Steps:** Set group encryption to required and verify the relay contract with a recipient online and offline. Check server delivery, mailbox outcome and the sender response.
+- **Pass:** Readable group traffic is refused before forwarding or queuing, with a policy result. Encrypted group traffic still reaches members.
+- **Source:** ERROR-1031 and IF-01.
+- **Status:** TODO
+
+### IFREV-02 — Live group policy change and delayed refresh
+
+- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients from `dist/2.3.2`. Use Android `fa1a4118` and Windows `4299921c`.
+- **Steps:** Cold-launch both clients and observe the Hub connection through one 60-second policy refresh interval. Change to required while both clients are open. Delay the next policy response and exercise a reconnect and enrollment change against the test setup.
+- **Pass:** Both clients start and remain open through the refresh. Connected clients converge on current policy. Delayed responses cannot restore a superseded or wrong-enrollment policy. A refresh failure preserves confidentiality and shows an accurate state.
+- **Source:** ERROR-1032, ERROR-1047, ERROR-1048 and IF-02. The 2026-11-23 Android debug smoke passed startup with an existing enrollment. The signed V760 build passed cold launch after the in-place update.
+- **Status:** TODO
+
+### IFREV-03 — Partly successful member addition
+
+- **Setup:** An enrolled creator with two selected Hub members. Remove one member from the test directory before sending the create request.
+- **Steps:** Submit the initial roster. Compare the creator's view with the Hub, then submit a valid roster and check both hosts.
+- **Pass:** The invalid roster returns an error and creates no Hub group or local conversation. The valid request creates one group with the full roster and both hosts converge.
+- **Source:** ERROR-1033 and IF-05.
+- **Status:** TODO
+
+### IFREV-04 — Repeated Create while the Hub is slow
+
+- **Setup:** An enrolled group creator on Android or Windows and an isolated Hub fixture with a delayed create response.
+- **Steps:** Tap Create repeatedly while submitting one group. Repeat with Retry after a simulated lost response.
+- **Pass:** The action indicates an in-flight request and the directory contains exactly one group for that creation intent. A separate later creation remains possible.
+- **Source:** ERROR-1034 and IF-06.
+- **Status:** TODO
+
+### IFREV-05 — Live Hub directory group regression
+
+- **Setup:** Android and Windows clients and a test Hub built from matching source containing 070cd00a and c1afba21 or later.
+- **Steps:** Create a directory group on each host, observe cross-client roster update without manually refreshing, join through open and approval-based routes, and remove a previously preauthorized member. Verify roster version after auto-join enrollment and reject an unknown admin ID.
+- **Pass:** Host group list, header and member states agree. Join and removal produce the current signed roster on each connected client. Pending approval remains visible until decided, and a removed preauthorized device needs authorization under the current group rules.
+- **Source:** C1–C4 and S1–S3 in the [module audit](../audit/2026-11-17-module-if-review.md#earlier-hub-groups-audit-against-current-source).
+- **Status:** TODO
+
+### IFREV-06 — Hub directory invite browser and app handoff
+
+- **Setup:** A matching test Hub, Android build and installed Windows build. Have one listed Open group, one listed Request approval group, a different Hub enrollment and a device without enrollment.
+- **Steps:** Share the group link from a manager device and open it from a browser and from chat. Confirm on the enrolled device. Exercise the wrong enrollment, an expired link and a link after a roster change.
+- **Pass:** The landing page exposes Open in Flash. Flash opens confirmation and follows current group visibility, scope and approval policy. Wrong, expired and outdated tokens cannot resolve. Local peer invites still open and join through the peer flow.
+- **Source:** IF-03 and ADR-365. Android and Windows association checks are INVITE-LINK-01/02.
+- **Status:** TODO
+
+### HUBWORK-06 — Hub entry, refresh, and retry on Android and Windows
+
+- **Setup:** One enrolled device with no directory snapshot and one with a saved snapshot. Use a test Hub with a slow directory response and working Groups and News endpoints.
+- **Steps:** Open the Hub cold, switch sections, leave while refreshing, and reopen. Refresh from the header and by pulling down on Android. Test offline and recovery, then repeat with reduced motion and large text.
+- **Pass:** Cold entry shows one clear loading state. Saved content and list position survive a refresh. Groups and news can appear before the directory completes, reopening joins the existing refresh, and a retry starts without waiting for the automatic cooldown. Capture the `hub.ui.refresh` duration and directory time from the device log.
+- **Source:** The [Hub workspace refresh refinement](../ui/hub-workspace-redesign.md#2026-11-18-refresh-refinement).
+- **Status:** TODO
+
+### HUBWORK-07 — Windows Hub beside the active conversation
+
+- **Setup:** An enrolled Windows build, one existing chat, and one person or group available in Hub.
+- **Steps:** Type an unsent draft in the existing chat, scroll its messages, and choose Hub from the rail. Open a person and a group from Hub. Return to Chats, then repeat with a narrow window and use Back after opening a chat from Hub.
+- **Pass:** In the split layout, the active chat, draft, message position and divider stay in place when Hub opens. Hub stays selected when a chat opens from it. In a narrow window Back returns to Hub. Resizing never shows the wrong chat or silently loses the draft.
+- **Source:** The [desktop conversation pane refinement](../ui/hub-workspace-redesign.md#desktop-conversation-pane).
+- **Status:** TODO

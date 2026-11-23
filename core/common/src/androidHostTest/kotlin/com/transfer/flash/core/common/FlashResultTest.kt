@@ -9,6 +9,7 @@ import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.core.common.result.map
 import com.transfer.flash.core.common.result.onFailure
 import com.transfer.flash.core.common.result.onSuccess
+import kotlin.coroutines.cancellation.CancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -101,5 +102,10 @@ class FlashResultTest {
         val error = (failure as FlashResult.Failure).error
         assertTrue(error is FlashError.Unknown)
         assertEquals("boom", (error as FlashError.Unknown).message)
+    }
+
+    @Test(expected = CancellationException::class)
+    fun runCatching_rethrows_cancellation_exception() {
+        FlashResult.runCatching { throw CancellationException("cancelled") }
     }
 }

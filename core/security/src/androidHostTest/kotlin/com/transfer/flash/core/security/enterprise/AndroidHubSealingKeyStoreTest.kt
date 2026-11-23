@@ -42,10 +42,13 @@ class AndroidHubSealingKeyStoreTest {
     }
 
     @Test
-    fun aLostWrappingKeyReadsAsNoKey() = runBlocking {
+    fun aLostWrappingKeyThrowsAndPreservesWrappedKey() = runBlocking {
         store().save(HubSealingKeyPair.generate())
-        sealer.loseKey() // a keystore reset, or the preferences restored onto another phone
-        assertNull(store().load())
+        val storedBefore = prefs.all.toMap()
+        sealer.loseKey() // a keystore reset, or temporary keystore unavailability
+        val error = runCatching { store().load() }.exceptionOrNull()
+        assertTrue("must fail instead of returning null so callers do not rotate", error is IllegalStateException)
+        assertEquals("wrapped key must stay in preferences", storedBefore, prefs.all)
     }
 
     @Test

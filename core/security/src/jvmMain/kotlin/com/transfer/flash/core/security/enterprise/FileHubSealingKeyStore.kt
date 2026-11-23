@@ -29,10 +29,10 @@ public class FileHubSealingKeyStore(
 ) : HubSealingKeyStore {
 
     override suspend fun load(): HubSealingKeyPair? = withContext(ioDispatcher) {
-        if (!file.isFile) return@withContext null
-        val plain = runCatching { vault.unprotect(file.readBytes()) }.getOrNull() ?: return@withContext null
+        if (Files.notExists(file.toPath())) return@withContext null
+        val plain = vault.unprotect(file.readBytes())
         try {
-            HubSealingKeyCodec.decode(plain)
+            checkNotNull(HubSealingKeyCodec.decode(plain)) { "Stored Hub sealing key is invalid" }
         } finally {
             plain.fill(0)
         }
@@ -71,7 +71,7 @@ public class FileHubSealingPinStore(
 }
 
 /** Writes [bytes] to a private temp file next to [target] and moves it over [target]. */
-private fun writeOwnerOnly(target: File, bytes: ByteArray) {
+internal fun writeOwnerOnly(target: File, bytes: ByteArray) {
     target.parentFile?.mkdirs()
     val path = target.toPath()
     val tmp = path.resolveSibling(target.name + "." + UUID.randomUUID() + ".tmp")

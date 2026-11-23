@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,23 +30,31 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.transfer.flash.core.common.model.FlashDeviceKind
+import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.chat.fileCategoryColorFor
-import com.transfer.flash.ui.chat.formatFileSize
 import com.transfer.flash.ui.chat.FlashSwarmPieceMap
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.nearby.NearbyPeerUi
+import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
@@ -59,9 +69,94 @@ import com.transfer.flash.ui.transfers.TransferProgressBar
 
 private fun extensionOf(name: String): String = name.substringAfterLast('.', "").trim()
 
+/** Pure plain-language copy and contrast helpers for [FlashTransferDetailPane] and [FlashNearbyDetailPane]. */
+internal object FlashDetailPaneCopy {
+    fun transferSecurityTitle(
+        isVerified: Boolean,
+        isFailed: Boolean,
+        isVerifying: Boolean = false,
+    ): String = when {
+        isVerified -> "File check passed"
+        isVerifying -> "Verifying file…"
+        isFailed -> "File check failed"
+        else -> "Private transfer"
+    }
+
+    fun transferSecurityBody(
+        isVerified: Boolean,
+        isFailed: Boolean,
+        errorMessage: String?,
+        isVerifying: Boolean = false,
+    ): String = when {
+        isVerified -> "Confirmed this file matches what was sent with no changes."
+        isVerifying -> "Checking the finished file against what was sent."
+        isFailed -> errorMessage?.trim()?.takeIf { it.isNotBlank() }
+            ?: "The file couldn't be verified. Try sending it again."
+        else -> "Protected while sending. Flash checks the finished file automatically."
+    }
+
+    fun peerTrustTitle(isTrusted: Boolean): String =
+        if (isTrusted) "Paired device" else "Not paired yet"
+
+    fun peerTrustBody(isTrusted: Boolean, isColleague: Boolean, orgName: String?): String = when {
+        isTrusted -> "Both devices have confirmed a matching pairing code for private chats and files."
+        isColleague -> {
+            val org = orgName?.trim()?.takeIf { it.isNotBlank() }
+            if (org != null) {
+                "Verified coworker in $org. Pair with a code for extra verification."
+            } else {
+                "Verified coworker. Pair with a code for extra verification."
+            }
+        }
+        else -> "Pair with this device using a 6-digit code before sending files or messages."
+    }
+
+    fun peerStatusLabel(isAvailableNearby: Boolean, isOnline: Boolean): String = when {
+        isAvailableNearby -> "Available nearby"
+        isOnline -> "Online"
+        else -> "Offline · Not nearby"
+    }
+
+    fun peerConnectionLabel(
+        transport: FlashNetworkTransport,
+        isAvailableNearby: Boolean,
+        isOnline: Boolean,
+    ): String {
+        if (!isAvailableNearby && !isOnline) return "Not connected"
+        if (transport == FlashNetworkTransport.Unknown && isOnline) return "Connected"
+        return peerTransportLabel(transport)
+    }
+
+    fun peerTransportLabel(transport: FlashNetworkTransport): String = when (transport) {
+        FlashNetworkTransport.Lan -> "Local network (Wi-Fi)"
+        FlashNetworkTransport.WifiDirect -> "Wi-Fi Direct"
+        FlashNetworkTransport.Relay -> "Relay"
+        FlashNetworkTransport.Radio -> "Radio"
+        FlashNetworkTransport.Unknown -> "Nearby"
+    }
+
+    fun peerDeviceTypeLabel(kind: FlashDeviceKind): String = when (kind) {
+        FlashDeviceKind.PHONE -> "Phone"
+        FlashDeviceKind.DESKTOP -> "Computer"
+        FlashDeviceKind.UNKNOWN -> "Device"
+    }
+
+    fun buttonColors(
+        colors: FlashColors,
+        isPrimary: Boolean,
+        isDestructive: Boolean,
+        enabled: Boolean = true,
+    ): Pair<Color, Color> = when {
+        !enabled -> colors.backgroundSurfaceSubtle to colors.textTertiary
+        isDestructive -> colors.textError.copy(alpha = 0.12f) to colors.textError
+        isPrimary -> colors.accentFill to colors.onAccentFill
+        else -> colors.backgroundSurfaceStrong to colors.textPrimary
+    }
+}
+
 /**
  * Shared adaptive detail pane for transfer inspection on large displays (Tablets & Desktop).
- * Redesigned for rich inspector card language, live metrics, hash verification, and action dock.
+ * Redesigned for rich inspector card language, live metrics, verification, and action dock.
  */
 @Composable
 fun FlashTransferDetailPane(
@@ -108,7 +203,7 @@ fun FlashTransferDetailPane(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FlashText(
-                text = "Transfer Inspector",
+                text = "Transfer details",
                 style = FlashTheme.typography.headingMedium,
                 color = colors.textPrimary,
             )
@@ -116,6 +211,7 @@ fun FlashTransferDetailPane(
                 modifier = Modifier
                     .size(FlashDimensions.minTouchTarget)
                     .clip(CircleShape)
+                    .pointerHoverIcon(PointerIcon.Hand)
                     .clickable(onClick = onClose)
                     .semantics {
                         role = Role.Button
@@ -125,8 +221,10 @@ fun FlashTransferDetailPane(
             ) {
                 FlashIcon(
                     icon = FlashIcons.Close,
+                    contentDescription = null,
                     tint = colors.textSecondary,
                     size = FlashDimensions.iconMd,
+                    modifier = Modifier.clearAndSetSemantics {},
                 )
             }
         }
@@ -158,8 +256,10 @@ fun FlashTransferDetailPane(
                     } else {
                         FlashIcon(
                             icon = if (item.direction == FlashTransferDirection.Send) FlashIcons.Upload else FlashIcons.Download,
+                            contentDescription = null,
                             tint = Color.White,
                             size = FlashDimensions.iconMd,
+                            modifier = Modifier.clearAndSetSemantics {},
                         )
                     }
                 }
@@ -169,12 +269,10 @@ fun FlashTransferDetailPane(
                         text = item.fileName,
                         style = FlashTheme.typography.bodyEmphasis,
                         color = colors.textPrimary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(FlashSpacing.space4))
                     FlashText(
-                        text = formatFileSize(item.bytesTotal),
+                        text = FlashTransfersMath.formatSize(item.bytesTotal),
                         style = FlashTheme.typography.metadataDefault,
                         color = colors.textSecondary,
                     )
@@ -183,7 +281,7 @@ fun FlashTransferDetailPane(
         }
 
         // Progress & Metrics Card
-        DetailCard(title = "Progress & Performance") {
+        DetailCard(title = "Progress") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -195,7 +293,7 @@ fun FlashTransferDetailPane(
                     color = colors.textPrimary,
                 )
                 FlashText(
-                    text = "${formatFileSize(item.bytesDone)} of ${formatFileSize(item.bytesTotal)}",
+                    text = "${FlashTransfersMath.formatSize(item.bytesDone)} of ${FlashTransfersMath.formatSize(item.bytesTotal)}",
                     style = FlashTheme.typography.captionDefault,
                     color = colors.textSecondary,
                 )
@@ -207,7 +305,7 @@ fun FlashTransferDetailPane(
             TransferProgressBar(
                 fraction = fraction,
                 fillTint = fillTint,
-                isActive = item.state == FlashTransferState.Active,
+                isActive = item.state == FlashTransferState.Active && !item.isVerifying,
                 speedBytesPerSec = item.speedBytesPerSec,
                 reduceMotion = FlashTheme.motion.reduceMotion,
                 barHeight = 6.dp,
@@ -225,12 +323,12 @@ fun FlashTransferDetailPane(
                 value = FlashTransfersMath.formatSpeed(item.speedBytesPerSec).ifBlank { "—" },
             )
             DetailMetricRow(
-                label = "Estimated Time",
+                label = "Time left",
                 value = FlashTransfersMath.formatEta(item.etaSeconds).ifBlank { "—" },
             )
             if (item.transportLabel != null) {
                 DetailMetricRow(
-                    label = "Transport",
+                    label = "Connection",
                     value = item.transportLabel,
                 )
             }
@@ -239,18 +337,19 @@ fun FlashTransferDetailPane(
         // Task 3.6: Swarm Transfer Block Availability Grid Map
         // Real piece state only: a 1:1 transfer has none, so no card (it used to claim 2 peers).
         if (item.pieceBlocks.isNotEmpty()) {
-            DetailCard(title = "Swarm Block Availability") {
+            DetailCard(title = "File pieces") {
                 FlashSwarmPieceMap(
                     blocks = item.pieceBlocks,
                     holdersOnline = item.holdersOnline,
-                    isDownloading = item.state == FlashTransferState.Active && item.direction == FlashTransferDirection.Receive,
+                    isDownloading = item.state == FlashTransferState.Active && !item.isVerifying && item.direction == FlashTransferDirection.Receive,
                 )
             }
         }
 
         // Integrity & Security Card
-        DetailCard(title = "Security & Integrity") {
+        DetailCard(title = "Security & Verification") {
             val isVerified = item.state == FlashTransferState.Completed && item.verified
+            val isVerifying = item.state == FlashTransferState.Active && item.isVerifying
             val isFailed = item.state == FlashTransferState.Failed
 
             Row(
@@ -265,8 +364,8 @@ fun FlashTransferDetailPane(
                             when {
                                 isVerified -> colors.statusOnline.copy(alpha = 0.14f)
                                 isFailed -> colors.textError.copy(alpha = 0.14f)
-                                else -> colors.accentPrimary.copy(alpha = 0.12f)
-                            }
+                                else -> colors.accentFill.copy(alpha = 0.12f)
+                            },
                         ),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -276,32 +375,26 @@ fun FlashTransferDetailPane(
                             isFailed -> FlashIcons.Failed
                             else -> FlashIcons.Encryption
                         },
+                        contentDescription = null,
                         tint = when {
                             isVerified -> colors.statusOnline
                             isFailed -> colors.textError
-                            else -> colors.accentPrimary
+                            else -> colors.accentFill
                         },
                         size = FlashDimensions.iconSm,
+                        modifier = Modifier.clearAndSetSemantics {},
                     )
                 }
                 Spacer(Modifier.width(FlashSpacing.space12))
                 Column(Modifier.weight(1f)) {
                     FlashText(
-                        text = when {
-                            isVerified -> "Integrity Verified (SHA-256)"
-                            isFailed -> "Integrity Verification Failed"
-                            else -> "End-to-End Encrypted Transfer"
-                        },
+                        text = FlashDetailPaneCopy.transferSecurityTitle(isVerified, isFailed, isVerifying = isVerifying),
                         style = FlashTheme.typography.bodyEmphasis,
                         color = colors.textPrimary,
                     )
                     Spacer(Modifier.height(FlashSpacing.space2))
                     FlashText(
-                        text = when {
-                            isVerified -> "Whole-file cryptographic hash matched the sender manifest."
-                            isFailed -> item.errorMessage?.ifBlank { "Transfer failed during stream verification." } ?: "Transfer failed."
-                            else -> "TLS channel secured. Full hash verification runs upon completion."
-                        },
+                        text = FlashDetailPaneCopy.transferSecurityBody(isVerified, isFailed, item.errorMessage, isVerifying = isVerifying),
                         style = FlashTheme.typography.captionDefault,
                         color = colors.textSecondary,
                     )
@@ -326,10 +419,12 @@ fun FlashTransferDetailPane(
                         text = item.peerName,
                         style = FlashTheme.typography.bodyEmphasis,
                         color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Spacer(Modifier.height(FlashSpacing.space2))
                     FlashText(
-                        text = "Transfer ID: ${item.id.take(8)}",
+                        text = "Reference: ${item.id.take(8)}",
                         style = FlashTheme.typography.captionDefault,
                         color = colors.textSecondary,
                     )
@@ -353,7 +448,7 @@ fun FlashTransferDetailPane(
         ) {
             when (item.state) {
                 FlashTransferState.Active -> {
-                    if (onPauseResume != null) {
+                    if (!item.isVerifying && onPauseResume != null) {
                         FlashDetailButton(
                             text = "Pause",
                             onClick = onPauseResume,
@@ -444,13 +539,15 @@ fun FlashNearbyDetailPane(
 ) {
     val colors = FlashTheme.colors
     val scrollState = rememberScrollState()
+    val isReachable = peer.isAvailableNearby || peer.isOnline
+    val statusText = FlashDetailPaneCopy.peerStatusLabel(peer.isAvailableNearby, peer.isOnline)
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .verticalScroll(scrollState)
             .padding(FlashSpacing.space16),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
         // Top header with close button
         Row(
@@ -459,7 +556,7 @@ fun FlashNearbyDetailPane(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FlashText(
-                text = "Peer Details",
+                text = "Device details",
                 style = FlashTheme.typography.headingMedium,
                 color = colors.textPrimary,
             )
@@ -467,6 +564,7 @@ fun FlashNearbyDetailPane(
                 modifier = Modifier
                     .size(FlashDimensions.minTouchTarget)
                     .clip(CircleShape)
+                    .pointerHoverIcon(PointerIcon.Hand)
                     .clickable(onClick = onClose)
                     .semantics {
                         role = Role.Button
@@ -476,29 +574,32 @@ fun FlashNearbyDetailPane(
             ) {
                 FlashIcon(
                     icon = FlashIcons.Close,
+                    contentDescription = null,
                     tint = colors.textSecondary,
                     size = FlashDimensions.iconMd,
+                    modifier = Modifier.clearAndSetSemantics {},
                 )
             }
         }
 
-        // Hero Peer Card
-        DetailCard {
+        // Compact Hero Peer Card
+        DetailCard(contentPadding = FlashSpacing.space12) {
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(Modifier.height(FlashSpacing.space8))
                 FlashAvatar(
                     initials = peer.name.take(2),
-                    size = 72.dp,
+                    size = 56.dp,
                     seed = peer.name,
                 )
-                Spacer(Modifier.height(FlashSpacing.space12))
+                Spacer(Modifier.height(FlashSpacing.space8))
                 FlashText(
                     text = peer.name,
                     style = FlashTheme.typography.headingSmall,
                     color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(FlashSpacing.space4))
                 Row(
@@ -509,20 +610,121 @@ fun FlashNearbyDetailPane(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
-                            .background(colors.statusOnline),
+                            .background(if (isReachable) colors.statusOnline else colors.statusOffline),
                     )
                     FlashText(
-                        text = "Available nearby",
+                        text = statusText,
                         style = FlashTheme.typography.captionDefault,
+                        color = if (isReachable) colors.textSecondary else colors.textTertiary,
+                    )
+                }
+            }
+        }
+
+        // Primary & Quick Actions right below the hero so they are visible without scrolling.
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        ) {
+            if (!peer.isTrusted && onPair != null) {
+                if (peer.isColleague && onChat != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                    ) {
+                        FlashDetailButton(
+                            text = "Open Chat",
+                            onClick = onChat,
+                            modifier = Modifier.weight(1f),
+                            isPrimary = true,
+                            icon = FlashIcons.Chat,
+                        )
+                        FlashDetailButton(
+                            text = "Pair Device",
+                            onClick = onPair,
+                            modifier = Modifier.weight(1f),
+                            icon = FlashIcons.Connection,
+                        )
+                    }
+                } else {
+                    FlashDetailButton(
+                        text = "Pair Device",
+                        onClick = onPair,
+                        modifier = Modifier.fillMaxWidth(),
+                        isPrimary = true,
+                        icon = FlashIcons.Connection,
+                    )
+                }
+            } else if (onChat != null && (peer.isTrusted || peer.isColleague)) {
+                FlashDetailButton(
+                    text = "Open Chat",
+                    onClick = onChat,
+                    modifier = Modifier.fillMaxWidth(),
+                    isPrimary = true,
+                    icon = FlashIcons.Chat,
+                )
+            }
+
+            if (peer.isTrusted && (onVoiceCall != null || onVideoCall != null || onSendFile != null)) {
+                val quickActions = buildList {
+                    if (onVoiceCall != null) {
+                        add(Triple("Voice Call", FlashIcons.Call, Pair(peer.isOnline, onVoiceCall)))
+                    }
+                    if (onVideoCall != null) {
+                        add(Triple("Video Call", FlashIcons.VideoCall, Pair(peer.isOnline, onVideoCall)))
+                    }
+                    if (onSendFile != null) {
+                        add(Triple("Send File", FlashIcons.Attach, Pair(true, onSendFile)))
+                    }
+                }
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val stackButtons = maxWidth < 290.dp || LocalDensity.current.fontScale >= 1.3f
+                    if (stackButtons) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                        ) {
+                            quickActions.forEach { (label, icon, stateAndClick) ->
+                                val (enabled, action) = stateAndClick
+                                FlashDetailButton(
+                                    text = label,
+                                    onClick = action,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    icon = icon,
+                                    enabled = enabled,
+                                )
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                        ) {
+                            quickActions.forEach { (label, icon, stateAndClick) ->
+                                val (enabled, action) = stateAndClick
+                                FlashQuickActionTile(
+                                    text = label,
+                                    icon = icon,
+                                    onClick = action,
+                                    modifier = Modifier.weight(1f),
+                                    enabled = enabled,
+                                )
+                            }
+                        }
+                    }
+                }
+                if (!peer.isOnline && (onVoiceCall != null || onVideoCall != null)) {
+                    FlashText(
+                        text = "Offline — messages and files queue until this device is reachable.",
+                        style = FlashTheme.typography.metadataDefault,
                         color = colors.textSecondary,
                     )
                 }
-                Spacer(Modifier.height(FlashSpacing.space8))
             }
         }
 
         // Security & Verification Card
-        DetailCard(title = "Security & Trust") {
+        DetailCard(title = "Trust & Pairing", contentPadding = FlashSpacing.space12) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -533,30 +735,28 @@ fun FlashNearbyDetailPane(
                         .clip(CircleShape)
                         .background(
                             if (peer.isTrusted) colors.statusOnline.copy(alpha = 0.14f)
-                            else colors.statusTransfer.copy(alpha = 0.14f)
+                            else colors.statusTransfer.copy(alpha = 0.14f),
                         ),
                     contentAlignment = Alignment.Center,
                 ) {
                     FlashIcon(
                         icon = if (peer.isTrusted) FlashIcons.Verified else FlashIcons.Device,
+                        contentDescription = null,
                         tint = if (peer.isTrusted) colors.statusOnline else colors.statusTransfer,
                         size = FlashDimensions.iconSm,
+                        modifier = Modifier.clearAndSetSemantics {},
                     )
                 }
                 Spacer(Modifier.width(FlashSpacing.space12))
                 Column(Modifier.weight(1f)) {
                     FlashText(
-                        text = if (peer.isTrusted) "Paired & Trusted Device" else "Unpaired Device",
+                        text = FlashDetailPaneCopy.peerTrustTitle(peer.isTrusted),
                         style = FlashTheme.typography.bodyEmphasis,
                         color = colors.textPrimary,
                     )
                     Spacer(Modifier.height(FlashSpacing.space2))
                     FlashText(
-                        text = if (peer.isTrusted) {
-                            "Mutual V2 cryptographic credentials verified."
-                        } else {
-                            "Requires reciprocal PIN pairing before exchanging files or messages."
-                        },
+                        text = FlashDetailPaneCopy.peerTrustBody(peer.isTrusted, peer.isColleague, peer.orgName),
                         style = FlashTheme.typography.captionDefault,
                         color = colors.textSecondary,
                     )
@@ -565,89 +765,31 @@ fun FlashNearbyDetailPane(
             if (peer.isTrusted && peer.id.length >= 8) {
                 Spacer(Modifier.height(FlashSpacing.space8))
                 DetailMetricRow(
-                    label = "Fingerprint",
+                    label = "Security code",
                     value = "${peer.id.take(4)} · ${peer.id.substring(4, minOf(8, peer.id.length))} · ${peer.id.takeLast(4)}",
                 )
             }
         }
 
         // Connection & Hardware Details
-        DetailCard(title = "Connection Details") {
+        DetailCard(title = "Connection", contentPadding = FlashSpacing.space12) {
             DetailMetricRow(
-                label = "Transport Protocol",
-                value = peer.transport.name,
+                label = "Connection type",
+                value = FlashDetailPaneCopy.peerConnectionLabel(
+                    transport = peer.transport,
+                    isAvailableNearby = peer.isAvailableNearby,
+                    isOnline = peer.isOnline,
+                ),
             )
             DetailMetricRow(
-                label = "Device ID",
+                label = "Device code",
                 value = peer.id.take(16) + if (peer.id.length > 16) "…" else "",
             )
             if (peer.deviceKind != FlashDeviceKind.UNKNOWN) {
                 DetailMetricRow(
-                    label = "Device Class",
-                    value = when (peer.deviceKind) {
-                        FlashDeviceKind.PHONE -> "Smartphone / Mobile"
-                        FlashDeviceKind.DESKTOP -> "Desktop Computer / PC"
-                        else -> peer.deviceKind.name
-                    },
+                    label = "Device type",
+                    value = FlashDetailPaneCopy.peerDeviceTypeLabel(peer.deviceKind),
                 )
-            }
-        }
-
-        // Action Dock
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = FlashSpacing.space8),
-            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-        ) {
-            if (!peer.isTrusted && onPair != null) {
-                FlashDetailButton(
-                    text = "Pair Device",
-                    onClick = onPair,
-                    modifier = Modifier.fillMaxWidth(),
-                    isPrimary = true,
-                    icon = FlashIcons.Connection,
-                )
-            }
-            if (peer.isTrusted) {
-                if (onChat != null) {
-                    FlashDetailButton(
-                        text = "Open Chat",
-                        onClick = onChat,
-                        modifier = Modifier.fillMaxWidth(),
-                        isPrimary = true,
-                        icon = FlashIcons.Chat,
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
-                ) {
-                    if (onVoiceCall != null) {
-                        FlashDetailButton(
-                            text = "Voice Call",
-                            onClick = onVoiceCall,
-                            modifier = Modifier.weight(1f),
-                            icon = FlashIcons.Call,
-                        )
-                    }
-                    if (onVideoCall != null) {
-                        FlashDetailButton(
-                            text = "Video Call",
-                            onClick = onVideoCall,
-                            modifier = Modifier.weight(1f),
-                            icon = FlashIcons.VideoCall,
-                        )
-                    }
-                    if (onSendFile != null) {
-                        FlashDetailButton(
-                            text = "Send File",
-                            onClick = onSendFile,
-                            modifier = Modifier.weight(1f),
-                            icon = FlashIcons.Attach,
-                        )
-                    }
-                }
             }
         }
     }
@@ -657,6 +799,7 @@ fun FlashNearbyDetailPane(
 private fun DetailCard(
     modifier: Modifier = Modifier,
     title: String? = null,
+    contentPadding: Dp = FlashSpacing.space16,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = FlashTheme.colors
@@ -670,7 +813,7 @@ private fun DetailCard(
                 color = colors.borderSubtle.copy(alpha = 0.5f),
                 shape = RoundedCornerShape(FlashShapes.radius12),
             )
-            .padding(FlashSpacing.space16),
+            .padding(contentPadding),
     ) {
         if (title != null) {
             FlashText(
@@ -678,7 +821,7 @@ private fun DetailCard(
                 style = FlashTheme.typography.captionEmphasis,
                 color = colors.textSecondary,
             )
-            Spacer(Modifier.height(FlashSpacing.space12))
+            Spacer(Modifier.height(FlashSpacing.space8))
         }
         content()
     }
@@ -696,7 +839,6 @@ private fun DetailMetricRow(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = FlashSpacing.space4),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         FlashText(
@@ -704,13 +846,82 @@ private fun DetailMetricRow(
             style = FlashTheme.typography.captionDefault,
             color = colors.textSecondary,
         )
+        Spacer(Modifier.width(FlashSpacing.space12))
         FlashText(
             text = value,
+            modifier = Modifier.weight(1f),
             style = FlashTheme.typography.bodyDefault,
             color = valueColor,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
         )
+    }
+}
+
+@Composable
+private fun FlashQuickActionTile(
+    text: String,
+    icon: FlashIconSpec,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val colors = FlashTheme.colors
+    val interactionSource = remember { MutableInteractionSource() }
+    val (bg, fg) = FlashDetailPaneCopy.buttonColors(
+        colors,
+        isPrimary = false,
+        isDestructive = false,
+        enabled = enabled,
+    )
+    val shape = RoundedCornerShape(FlashShapes.radius12)
+
+    Box(
+        modifier = modifier
+            .heightIn(min = 56.dp)
+            .then(if (enabled) Modifier.flashPressScale(interactionSource) else Modifier)
+            .clip(shape)
+            .background(bg)
+            .border(
+                width = FlashDimensions.borderHairline,
+                color = if (enabled) colors.borderSubtle else colors.borderSubtle.copy(alpha = 0.5f),
+                shape = shape,
+            )
+            .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                if (!enabled) disabled()
+            }
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space8),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        ) {
+            FlashIcon(
+                icon = icon,
+                contentDescription = null,
+                tint = fg,
+                size = FlashDimensions.iconSm,
+                modifier = Modifier.clearAndSetSemantics {},
+            )
+            FlashText(
+                text = text,
+                color = fg,
+                style = FlashTheme.typography.metadataEmphasis,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
@@ -722,34 +933,47 @@ private fun FlashDetailButton(
     isDestructive: Boolean = false,
     isPrimary: Boolean = false,
     icon: FlashIconSpec? = null,
+    enabled: Boolean = true,
 ) {
     val colors = FlashTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
-
-    val bg = when {
-        isDestructive -> colors.textError.copy(alpha = 0.12f)
-        isPrimary -> colors.accentPrimary
-        else -> colors.backgroundSurfaceSubtle
-    }
-    val fg = when {
-        isDestructive -> colors.textError
-        isPrimary -> Color.White
-        else -> colors.textPrimary
-    }
+    val (bg, fg) = FlashDetailPaneCopy.buttonColors(
+        colors,
+        isPrimary = isPrimary,
+        isDestructive = isDestructive,
+        enabled = enabled,
+    )
+    val shape = RoundedCornerShape(FlashShapes.radius12)
 
     Box(
         modifier = modifier
-            .height(48.dp)
-            .flashPressScale(interactionSource)
-            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .heightIn(min = FlashDimensions.minTouchTarget)
+            .then(if (enabled) Modifier.flashPressScale(interactionSource) else Modifier)
+            .clip(shape)
             .background(bg)
+            .then(
+                if (!isPrimary && !isDestructive) {
+                    Modifier.border(
+                        FlashDimensions.borderHairline,
+                        if (enabled) colors.borderSubtle else colors.borderSubtle.copy(alpha = 0.5f),
+                        shape,
+                    )
+                } else {
+                    Modifier
+                },
+            )
+            .then(if (enabled) Modifier.pointerHoverIcon(PointerIcon.Hand) else Modifier)
             .clickable(
+                enabled = enabled,
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick,
             )
-            .semantics { role = Role.Button }
-            .padding(horizontal = FlashSpacing.space16),
+            .semantics {
+                role = Role.Button
+                if (!enabled) disabled()
+            }
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space10),
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -759,14 +983,19 @@ private fun FlashDetailButton(
             if (icon != null) {
                 FlashIcon(
                     icon = icon,
+                    contentDescription = null,
                     tint = fg,
                     size = FlashDimensions.iconSm,
+                    modifier = Modifier.clearAndSetSemantics {},
                 )
             }
             FlashText(
                 text = text,
                 color = fg,
-                style = FlashTheme.typography.bodyEmphasis,
+                style = FlashTheme.typography.captionEmphasis,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
             )
         }
     }

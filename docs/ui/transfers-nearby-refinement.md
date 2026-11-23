@@ -5,6 +5,15 @@
 The owner approved the compact Nearby and Transfers screens on 2026-11-07.
 Physical-device checks remain TABREF-01–04.
 
+### 2026-11-14 — Compact Transfers rows
+
+File name, peer metadata and status each use one line with an ellipsis when needed.
+The file badge and insets are smaller, and pairs of 48 dp actions sit side by side when
+there is room. Narrow panes and large system text can stack the actions. The row's
+accessible description retains the file name and status. Inspecting a transfer shows
+the full wrapping name, the transfer metrics and the full failure reason.
+[Compose text layout](https://developer.android.com/develop/ui/compose/text/configure-layout).
+
 ## Direction and evidence
 The owner rejected the workspace redesign and requested rollback, followed by component-by-component refinement of the previous screens, including their different states. Both production files were restored from `f999b5a5` before this design. The committed Hub remains separate. Historical rejected direction: `transfers-nearby-redesign.md`; original native evidence: `transfers-nearby-baseline/`.
 
@@ -17,7 +26,7 @@ Read the actual shared screens, Android/desktop call sites, existing UI-047/048 
 | Transfer sections | Incoming, Active, Failed, Cancelled/Declined, History; original ordering and labels | Legible section text; align and size Clear / Pause all / Clear history to 48 dp; headings wrap next to actions |
 | File row | Compact badge/content/inline-icon-control anatomy | Name up to two lines; peer and state text readable; multiline failure reasons; actions stack at narrow widths/large fonts to protect content width |
 | File badge and progress | Category colors, circles, state-specific progress colors, shimmer, existing interpolation | Keep visual language; no tall neutral cards, new metadata bands or text action rail |
-| Nearby header | Title, scan indicator, scan and manual-connect controls in header | Prevent action/name collision on narrow screens; truthful discovered count, saved pairing count separately |
+| Nearby header | Title, scan indicator, scan and manual-connect controls in header | Keep Scan network and Connect by IP beside Nearby when the full labels fit. The link icon is optional at narrow widths. Wrap only when the labels need more space. |
 | Identity card | Existing device medallion, name and connection details visible | Text takes available width; details wrap with readable contrast |
 | Discovered peer | Existing medallion, transport/device/colleague badges and Pair/Chat/Message button | Badges wrap; names and CTA have space; accent fill uses the audited pair of Flash tokens |
 | Trusted peer | Verified/encryption icon, device kind and explicit Chat / Call / Verify / Revoke | Owner follow-up: paired tiles with identity above explicit rectangular Chat/Call/Verify/Revoke buttons; radius12 card/radius8 buttons; responsive grid; no overflow menu |

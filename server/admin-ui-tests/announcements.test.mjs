@@ -7,10 +7,14 @@ import { installFakeDocument, walk } from './fakedom.mjs';
 import en from '../src/main/resources/admin-ui/js/strings/en.js';
 
 installFakeDocument();
+globalThis.window = globalThis.window || { addEventListener() {}, removeEventListener() {}, location: { hash: '' } };
+globalThis.localStorage = globalThis.localStorage || { getItem() { return null; }, setItem() {}, removeItem() {} };
 const { h, mount } = await import('../src/main/resources/admin-ui/js/dom.js');
+const { canManageAnnouncement } = await import('../src/main/resources/admin-ui/js/views/announcements.js');
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'main', 'resources', 'admin-ui', 'js');
 const annView = fs.readFileSync(path.join(root, 'views', 'announcements.js'), 'utf8');
+const orgView = fs.readFileSync(path.join(root, 'views', 'organization.js'), 'utf8');
 
 test('ADR-138: honesty notice explicitly states announcements are not end-to-end encrypted', () => {
   assert.equal(
@@ -122,6 +126,30 @@ test('the composer has an expiry field and a No expiry box, with strings for bot
   assert.ok(annView.includes('expiryFields('), 'the view decides through the pure module');
   assert.ok(annView.includes("type: 'datetime-local'"));
   for (const k of ['announcements.field.expires', 'announcements.field.expires.none', 'announcements.expiry.past', 'announcements.expiry.invalid', 'announcements.detail.expires']) {
+    assert.ok(en[k] && en[k].length > 0, `missing string ${k}`);
+  }
+});
+
+test('Department head can manage peer-head and device-authored dept announcements but not org-admin or other-dept ones', () => {
+  const headDepts = [{ id: 'dept-a', name: 'Alpha' }];
+  const peerConsole = { scope: 'department', departmentId: 'dept-a', authorRef: 'other-head', authorRole: 'DEPT_HEAD' };
+  const deviceHead = { scope: 'department', departmentId: 'dept-a', authorRef: 'dev-1', authorRole: 'dept_admin' };
+  const orgAdminDept = { scope: 'department', departmentId: 'dept-a', authorRef: 'boss', authorRole: 'ORG_ADMIN' };
+  const otherDept = { scope: 'department', departmentId: 'dept-b', authorRef: 'head-b', authorRole: 'DEPT_HEAD' };
+  const orgWide = { scope: 'org', departmentId: null, authorRef: 'boss', authorRole: 'ORG_ADMIN' };
+
+  assert.equal(canManageAnnouncement(peerConsole, false, headDepts), true);
+  assert.equal(canManageAnnouncement(deviceHead, false, headDepts), true);
+  assert.equal(canManageAnnouncement(orgAdminDept, false, headDepts), false);
+  assert.equal(canManageAnnouncement(otherDept, false, headDepts), false);
+  assert.equal(canManageAnnouncement(orgWide, false, headDepts), false);
+  assert.equal(canManageAnnouncement(orgAdminDept, true, []), true);
+  assert.equal(canManageAnnouncement(orgWide, true, []), true);
+});
+
+test('Group drawer exposes revokeJoinLinks action and strings', () => {
+  assert.ok(orgView.includes('revokeJoinLinks: true'));
+  for (const k of ['org.group.revokeLinks', 'org.group.revokeLinks.title', 'org.group.revokeLinks.text', 'org.group.revokeLinks.done']) {
     assert.ok(en[k] && en[k].length > 0, `missing string ${k}`);
   }
 });

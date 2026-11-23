@@ -11,9 +11,9 @@ public object FlashHubCopy {
     public const val WORKSPACE_EXPIRED: String = "Sign-in expired"
     public const val WORKSPACE_ATTENTION: String = "Connection needs attention"
     public const val WORKSPACE_REMOVED: String = "Access removed"
-    public const val WORKSPACE_UNENROLLED: String = "Not connected to an organization"
-    public const val WORKSPACE_NEWS: String = "Announcements"
-    public const val WORKSPACE_NEWS_HELP: String = "Updates from your organization and departments."
+    public const val WORKSPACE_UNENROLLED: String = "Not connected to an organisation"
+    public const val WORKSPACE_NEWS: String = "News"
+    public const val WORKSPACE_NEWS_HELP: String = "Updates from your organisation and departments."
     public const val WORKSPACE_PEOPLE_HELP: String = "Find a colleague and start a conversation."
     public const val WORKSPACE_DEPARTMENTS_HELP: String = "Explore teams, their people and groups."
     public const val WORKSPACE_GROUPS_HELP: String = "Continue a conversation or find a group to join."
@@ -34,7 +34,6 @@ public object FlashHubCopy {
     public const val SEGMENT_GROUPS: String = "Groups"
 
     // --- Status strip ------------------------------------------------------------------------------------
-    public const val STRIP_UPDATING: String = "Updating…"
     public const val STRIP_WHY: String = "Why?"
     public const val STRIP_LEASE_EXPIRED: String = "Reconnect to the company network to keep colleague trust up to date"
     public const val STRIP_CLOCK_WRONG: String = "Your device clock looks wrong. Colleague trust may fail until it is fixed."
@@ -63,6 +62,7 @@ public object FlashHubCopy {
     public const val SEARCH_NEWS_TITLE: String = "News"
     public const val SEARCH_GROUPS_TITLE: String = "Groups"
     public const val SEARCH_SEE_ALL_PEOPLE: String = "See all people"
+    public const val SEARCHING: String = "Searching…"
     public fun searchNothing(query: String): String = "Nothing matches \"$query\"."
     public const val SEARCH_PROMPT: String = "Type a name, a department or a word from an announcement."
     public const val DEPARTMENT_HIDDEN: String = "This department is not visible to you"
@@ -70,7 +70,7 @@ public object FlashHubCopy {
     public const val REVOKED_BODY: String =
         "Organisation news, people and groups are no longer available. Chats with people you paired with directly are not affected."
     public const val SIGN_OUT_ORG: String = "Sign out of organisation"
-    public const val LOADING: String = "Loading"
+    public const val LOADING: String = "Loading Hub"
 
     // --- News (Plan A3 section 9) ------------------------------------------------------------------------
     public const val NEWS_TITLE: String = "News"
@@ -110,7 +110,7 @@ public object FlashHubCopy {
     public const val ANN_COMPOSER_TITLE_EDIT: String = "Edit announcement"
     public const val ANN_LINK_OPEN: String = "Open"
     public const val ANN_LINK_CANCEL: String = "Cancel"
-    public const val ANN_READER_BACK: String = "Back to news"
+    public const val ANN_READER_BACK: String = "Back"
     public const val ANN_TIP_PIN_LIMIT_SCOPE: String = "Unpin one first."
     public const val ANN_SECTION_PINNED: String = "Pinned"
     public const val ANN_SECTION_LATEST: String = "Latest"
@@ -184,7 +184,7 @@ public object FlashHubCopy {
     public const val SWITCH_OFF: String = "Off"
     public fun reachabilityAccessibility(line: String): String = "Reachability: $line"
     public const val PERSON_UNPAIRED_FOOTER: String =
-        "Not paired with you. Messages go through the company server and can be read there unless you turn on private messages in Settings → Hub."
+        "Not paired with you. When \"Messages through the hub\" is on in Settings → Enterprise & Organization, messages can go through the company server and be read there; turn it off to keep messages private and direct."
     public const val PERSON_HONESTY: String =
         "Colleagues are verified by your company's server. Pair with someone when you need to be sure it is really them."
     public const val PERSON_DEPARTMENT_UNKNOWN: String = "No department"

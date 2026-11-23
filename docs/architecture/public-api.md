@@ -1,8 +1,8 @@
 # Flash Public API Specification
 
-This reference describes the Android and JVM library surface. The messaging, calling,
-persistence version and engine sections were checked against the 2.2.0-beta.1 source on
-2026-11-07. Earlier sections retain their original scope. Follow the linked Kotlin
+This reference describes the Android and JVM library surface. The common, messaging, calling,
+persistence, engine, and PTT sections were checked against the `2.3.0-beta.1` source on
+2026-11-21. Earlier sections retain their original scope. Follow the linked Kotlin
 declarations for exact signatures and overloads. APIs marked `@FlashInternalApi` are
 implementation seams and can change between builds.
 
@@ -59,14 +59,57 @@ other module depends on it, usually transitively.
       val transportType: FlashTransportType,
       val presence: FlashPeerPresence = FlashPeerPresence.Online,
       val protocolVersion: Int = 1,
+      val groupProtocol: Int = 1,
+      val identityKey: String? = null,
+      val features: Set<String> = emptySet(),
   )
 
   @JvmInline
   public value class FlashDeviceId(public val value: String)
 
-  public enum class FlashTransportType { LAN, WIFI_DIRECT, WEBSOCKET, RELAY, MESH, UNKNOWN }
+  public enum class FlashTransportType {
+      LAN, WIFI_DIRECT, WEBSOCKET, RELAY, MESH, BLUETOOTH, UNKNOWN;
+      public companion object {
+          public fun fromString(value: String): FlashTransportType
+      }
+  }
 
-  public enum class FlashPeerPresence { Online, Offline, Typing, Connecting }
+  public enum class FlashPeerPresence {
+      Online, Offline, Typing, Connecting, Reachable, RadioOnly
+  }
+  ```
+
+### `FlashPerformanceMode` & `FlashDeviceKind`
+- **Stability:** Stable
+- **Purpose:** Hardware tiering (`ULTRA_LOW`, `LOW`, `MEDIUM`, `HIGH`) governing transfer, media, transport, and UI envelopes (ADR-022), plus self-declared peer device kind classification from TXT `caps`.
+- **Definition:**
+  ```kotlin
+  public enum class FlashPerformanceMode {
+      ULTRA_LOW, LOW, MEDIUM, HIGH;
+      public val isUltraLow: Boolean
+      public val reduceMotion: Boolean
+      public val minimalChrome: Boolean
+      public val ultraLowUi: Boolean
+      public val video: FlashVideoProfile
+      public val voice: FlashVoiceProfile
+      public val transport: FlashTransportProfile
+      public val transfer: FlashTransferProfile
+      public val key: String
+      public object Keys { public const val AUTO: String; /* ULTRA_LOW, LOW, MEDIUM, HIGH */ }
+      public companion object {
+          public fun fromKey(value: String?): FlashPerformanceMode?
+          public fun toKey(mode: FlashPerformanceMode?): String
+      }
+  }
+
+  public enum class FlashDeviceKind {
+      DESKTOP, PHONE, UNKNOWN;
+      public companion object {
+          public const val CAP_DESKTOP: String = "desktop"
+          public const val CAP_MOBILE: String = "mobile"
+          public fun fromCapabilities(capabilities: Set<String>): FlashDeviceKind
+      }
+  }
   ```
 
 ### `FlashResult<T>` & `FlashError`
@@ -101,6 +144,7 @@ other module depends on it, usually transitively.
       public data class VerificationFailed(val expectedHash: String, val actualHash: String) : FlashError
       public data class StorageError(val message: String, val cause: Throwable? = null) : FlashError
       public data class Cancelled(val reason: String? = null) : FlashError
+      public data class Domain(val code: String, val message: String, val details: Any? = null) : FlashError
       public data class Unknown(val message: String, val cause: Throwable? = null) : FlashError
   }
   ```
@@ -683,26 +727,27 @@ Room + SQLCipher storage, DataStore preferences, and a pure retention policy (C1
 
 **This is the module the abstractions rule bends for.** Room's generated code needs a real
 `abstract class`, and a DataStore is one file per instance, so those two are concrete by
-construction. The schema leaks further than one would like: all 11 DAOs and all 11 `@Entity`
+construction. The schema leaks further than one would like: all 26 DAOs and all 32 `@Entity`
 types are `public`, because `FlashDatabase` is public and under `explicitApi()` a public accessor
 may not expose an `internal` return type. They are nonetheless **not** part of the intended
 surface — persistence is reached through the ports in `:core:messaging` and `:core:transfer`
-(ADR-024), and nothing outside `:core:engine` and `:app` depends on this module. Treat a DAO or
+(ADR-024), and nothing outside `:core:engine`, `:desktop`, and `:app` depends on this module. Treat a DAO or
 an entity appearing in consumer code as a layering bug, not as a supported call.
 
 ### `FlashDatabase`
 - **Stability:** Internal-ish — reachable, but reserved for `:core:engine` wiring.
 - **Definition:**
   ```kotlin
-  @Database(entities = [ /* 32 entities */ ], version = 23, exportSchema = true)
+  @Database(entities = [ /* 32 entities */ ], version = FlashDatabase.DATABASE_VERSION, exportSchema = true)
   public abstract class FlashDatabase : RoomDatabase() {
+      public fun closeWithTrim()
       public abstract fun messageDao(): MessageDao
-      // conversationDao, receiptDao, outboxDao, transferDao, transferChunkDao,
-      // recentSearchDao, trustedPeerDao, reactionDao, draftDao, readCursorDao
+      // 26 DAOs total: conversationDao, receiptDao, outboxDao, transferDao, transferChunkDao,
+      // recentSearchDao, trustedPeerDao, reactionDao, draftDao, readCursorDao, ...
 
       public companion object {
           public const val DATABASE_NAME: String = "flash.db"
-          public const val DATABASE_VERSION: Int = 13
+          public const val DATABASE_VERSION: Int = 23
       }
   }
   ```
@@ -890,7 +935,9 @@ transport. Construct it off the main thread and call `close()` when the owning s
 The common [configuration](../../core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashConfig.kt)
 accepts `displayName`, `enableResume`, `autoAcceptIncoming` and `receivedFilesPath`.
 Android also has the legacy `receivedFilesDir: File` overload. Automatic acceptance is
-limited to trusted peers. Desktop resume is in-session.
+limited to trusted peers. Both Android and desktop (`DesktopEngine`) persist direct-transfer state
+in the encrypted Room database when `enableResume = true` so interrupted transfers resume as Retry
+across restarts (ADR-362); on database open failure, desktop continues in memory.
 
 On JVM, `FlashDesktop.create(config)` needs a registered JVM host factory. Use
 `engine.awaitReady()` before relying on a live transport. A host implementing
@@ -1322,6 +1369,7 @@ app can declare, so `Flash.create` cannot supply either.
       public fun postNotice(text: String)
       public fun stopLocal()
       public fun onCallStarted()
+      public fun onPeerDisconnected(peerId: String) {}
       public fun acquireVoiceNoteLease(): String?
       public fun releaseVoiceNoteLease(leaseId: String)
 
@@ -1432,12 +1480,9 @@ to local time.
   host-integration constant the module declares.
 
 ### Dependency shape
-- `api(project(":core:messaging"))` — `PttFloorState`, `PttFloorMachine`, `PttJitterBuffer`,
-  `PttAudioLevel` and the PTT wire codecs all live there and appear in public signatures.
+- `api(project(":core:common"))` — shared models and logging facades; decoupled from `:core:messaging` (`PttFloorState`, `PttFloorMachine`, `PttJitterBuffer`, `PttAudioLevel`, and PTT wire codecs live in `:core:ptt`).
 - `api(libs.kotlinx.coroutines.core)` — `StateFlow`/`SharedFlow`/`Flow` in the interface.
-- `implementation(libs.androidx.core.ktx)`; `explicitApi()` is on, like the other `core-*` modules.
-- **Android-only.** `PttCapture`/`PttPlayout` are built on `AudioRecord`/`AudioTrack`, and the
-  engine reads `android.os.SystemClock`, so this is an AGP Android library with no JVM target — the
-  reason `:core:engine` declares it on its android target (§10).
+- `implementation(libs.androidx.core.ktx)` (Android target); `explicitApi()` is on, like the other `core-*` modules.
+- **Kotlin Multiplatform (Android + JVM).** `PttCapture`/`PttPlayout` use `AudioRecord`/`AudioTrack` on Android and `javax.sound.sampled` on JVM (`platformPttAudio()`). `:core:engine` exports `:core:ptt` on both targets (§10).
 - Ships **no `AndroidManifest.xml`**, like every other library module (§1.7): the permissions and
   the session foreground service are the app's to declare (README → Permissions).

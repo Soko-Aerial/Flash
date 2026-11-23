@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,7 +40,9 @@ public fun FlashInlineInviteCard(
 ) {
     val colors = FlashTheme.colors
     val parsedInvite = remember(inviteUrl) { FlashGroupInviteJoinMath.parseInviteUrl(inviteUrl) }
-    if (parsedInvite == null) return
+    val hubInvite = remember(inviteUrl) { FlashGroupInviteJoinMath.isHubGroupInvite(inviteUrl) }
+    if (parsedInvite == null && !hubInvite) return
+    val name = parsedInvite?.groupName?.ifBlank { "Group" } ?: "Hub group"
 
     Box(
         modifier = modifier
@@ -55,8 +58,8 @@ public fun FlashInlineInviteCard(
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         ) {
             FlashAvatar(
-                initials = parsedInvite.groupName.take(2).uppercase().ifEmpty { "GP" },
-                seed = parsedInvite.groupId,
+                initials = name.take(2).uppercase(),
+                seed = parsedInvite?.groupId ?: "hub-group",
                 size = 40.dp,
             )
 
@@ -65,7 +68,7 @@ public fun FlashInlineInviteCard(
                 verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
             ) {
                 FlashText(
-                    text = parsedInvite.groupName.ifBlank { "Group" },
+                    text = name,
                     style = FlashTheme.typography.bodyEmphasis,
                     color = colors.textPrimary,
                     maxLines = 1,
@@ -81,16 +84,17 @@ public fun FlashInlineInviteCard(
 
             Box(
                 modifier = Modifier
+                    .defaultMinSize(minHeight = FlashDimensions.minTouchTarget)
                     .clip(FlashShapes.chip)
-                    .background(colors.accentPrimary)
+                    .background(colors.accentFill)
                     .clickable { onJoinInvite(inviteUrl) }
-                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                    .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                 contentAlignment = Alignment.Center,
             ) {
                 FlashText(
                     text = "Join",
                     style = FlashTheme.typography.metadataEmphasis,
-                    color = colors.textOnAccent,
+                    color = colors.onAccentFill,
                 )
             }
         }

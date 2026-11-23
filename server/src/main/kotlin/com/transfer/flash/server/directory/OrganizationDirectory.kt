@@ -90,6 +90,7 @@ data class GroupCharter(
     val adminDeviceIds: List<String> = emptyList(),
     val memberDeviceIds: List<String> = emptyList(),
     val version: Long = 0L,
+    val joinLinkRevision: Long = version,
 ) {
     val memberSet: Set<String> by lazy(LazyThreadSafetyMode.NONE) { memberDeviceIds.toSet() }
     val adminSet: Set<String> by lazy(LazyThreadSafetyMode.NONE) { adminDeviceIds.toSet() }
@@ -334,9 +335,32 @@ class OrganizationDirectory(
 
     val tombstones = LinkedHashMap<Pair<String, String>, DirectoryTombstone>()
     private val memberStatements = LinkedHashMap<String, OrgMemberStatement>()
+    private val versionListeners = java.util.concurrent.CopyOnWriteArrayList<(Long) -> Unit>()
+    private var pendingBumpedVersion: Long? = null
+
+    /** Registers a listener invoked after a write lock releases whenever [currentVersion] advances. */
+    fun onVersionBumped(listener: (Long) -> Unit): () -> Unit {
+        versionListeners.add(listener)
+        return { versionListeners.remove(listener) }
+    }
+
+    private inline fun <T> writeLocked(block: () -> T): T {
+        var notifyVersion: Long? = null
+        val result = lock.write {
+            val r = block()
+            if (lock.writeHoldCount == 1) {
+                notifyVersion = pendingBumpedVersion
+                pendingBumpedVersion = null
+            }
+            r
+        }
+        notifyVersion?.let { v -> versionListeners.forEach { it(v) } }
+        return result
+    }
 
     private fun bumpVersionLocked(nowMs: Long = clock()): Long {
         currentVersion += 1
+        pendingBumpedVersion = currentVersion
         persist { c ->
             c.update(
                 "UPDATE directory_state SET current_version = ?, last_bumped_at_ms = ? WHERE id = 1",
@@ -401,10 +425,10 @@ class OrganizationDirectory(
         private set
 
     /** Deletes tombstones older than [retentionMs] (default 90 days) and raises [prunedThroughVersion]. Returns how many. */
-    fun pruneTombstones(retentionMs: Long = TOMBSTONE_RETENTION_MS): Int = lock.write {
+    fun pruneTombstones(retentionMs: Long = TOMBSTONE_RETENTION_MS): Int = writeLocked {
         val cutoff = clock() - retentionMs
         val old = tombstones.values.filter { it.entityType != PRUNE_MARK && it.deletedAtMs < cutoff }
-        if (old.isEmpty()) return@write 0
+        if (old.isEmpty()) return@writeLocked 0
         val watermark = maxOf(prunedThroughVersion, old.maxOf { it.deletedAtVersion })
         persist { c ->
             c.update("DELETE FROM directory_tombstone WHERE entity_type <> ? AND deleted_at_ms < ?", PRUNE_MARK, cutoff)
@@ -488,7 +512,7 @@ class OrganizationDirectory(
         requireId(id, "Department id")
         requireName(name, "Department name")
         val dept = Department(id = id.trim(), name = name.trim(), adminDeviceIds = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct())
-        return lock.write {
+        return writeLocked {
             if (departments.containsKey(dept.id)) throw DirectoryConflictException("Department '${dept.id}' already exists")
             val newVer = bumpVersionLocked()
             val deptWithVer = dept.copy(version = newVer)
@@ -505,7 +529,7 @@ class OrganizationDirectory(
         requireId(id, "Department id")
         requireName(name, "Department name")
         val dept = Department(id = id.trim(), name = name.trim(), adminDeviceIds = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct(), hidden = hidden)
-        return lock.write {
+        return writeLocked {
             if (departments.containsKey(dept.id)) throw DirectoryConflictException("Department '${dept.id}' already exists")
             val newVer = bumpVersionLocked()
             val deptWithVer = dept.copy(version = newVer)
@@ -528,7 +552,7 @@ class OrganizationDirectory(
     /** Full update including the A2 hidden flag; any change of hidden bumps the directory epoch (forces full resync). */
     fun updateDepartment(id: String, name: String?, adminDeviceIds: List<String>?, hidden: Boolean?, actor: DirectoryActor): Department {
         if (!actor.isOrgAdmin) throw SecurityException("Only organization admin can change departments")
-        return lock.write {
+        return writeLocked {
             val existing = departments[id] ?: throw DirectoryNotFoundException("Department '$id' not found")
             if (name != null) requireName(name, "Department name")
             val hiddenChanged = hidden != null && hidden != existing.hidden
@@ -552,9 +576,9 @@ class OrganizationDirectory(
 
     /** Removes [deviceId] from the admin list of [departmentId] (member moved away; idempotent). */
     fun removeFromAdmins(departmentId: String, deviceId: String) {
-        lock.write {
-            val dept = departments[departmentId] ?: return@write
-            if (deviceId !in dept.adminDeviceIds) return@write
+        writeLocked {
+            val dept = departments[departmentId] ?: return@writeLocked
+            if (deviceId !in dept.adminDeviceIds) return@writeLocked
             val v = bumpVersionLocked()
             val updated = dept.copy(adminDeviceIds = dept.adminDeviceIds - deviceId, version = v)
             persist { c -> c.update("UPDATE dir_departments SET admin_ids = ?, version = ? WHERE id = ?", encodeList(updated.adminDeviceIds), v, departmentId) }
@@ -568,9 +592,9 @@ class OrganizationDirectory(
      */
     fun addDepartmentAdmin(departmentId: String, deviceId: String) {
         if (departmentId.isBlank() || deviceId.isBlank()) return
-        lock.write {
-            val dept = departments[departmentId] ?: return@write
-            if (deviceId in dept.adminDeviceIds) return@write
+        writeLocked {
+            val dept = departments[departmentId] ?: return@writeLocked
+            if (deviceId in dept.adminDeviceIds) return@writeLocked
             val v = bumpVersionLocked()
             val updated = dept.copy(adminDeviceIds = dept.adminDeviceIds + deviceId, version = v)
             persist { c -> c.update("UPDATE dir_departments SET admin_ids = ?, version = ? WHERE id = ?", encodeList(updated.adminDeviceIds), v, departmentId) }
@@ -581,7 +605,7 @@ class OrganizationDirectory(
     /** Deletes an empty department (no groups, no members). Organisation admin only. */
     fun deleteDepartment(id: String, actor: DirectoryActor) {
         if (!actor.isOrgAdmin) throw SecurityException("Only organization admin can delete departments")
-        lock.write {
+        writeLocked {
             if (!departments.containsKey(id)) throw DirectoryNotFoundException("Department '$id' not found")
             if (groups.values.any { it.departmentId == id } || members.values.any { it.departmentId == id }) {
                 throw DirectoryConflictException("Department '$id' still has groups or members")
@@ -621,10 +645,11 @@ class OrganizationDirectory(
         joinMode: JoinMode,
         adminDeviceIds: List<String>,
         actor: DirectoryActor,
+        initialMembers: Set<String>? = null,
     ): GroupCharter {
         requireId(id, "Group id")
         requireName(name, "Group name")
-        return lock.write {
+        return writeLocked {
             if (departmentId.isBlank()) {
                 if (!actor.isOrgAdmin) throw SecurityException("Only organization admin can create organisation-wide groups")
             } else {
@@ -636,11 +661,28 @@ class OrganizationDirectory(
                     )
                 }
             }
-            if (groups.containsKey(id.trim())) throw DirectoryConflictException("Group '${id.trim()}' already exists")
-
-            val allAdmins = (adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() } + actor.deviceId)
+            val requestedAdmins = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+            val unknownAdmins = requestedAdmins.filter { !members.containsKey(it) }
+            if (unknownAdmins.isNotEmpty()) {
+                throw IllegalArgumentException("Unknown admin device ID(s): ${unknownAdmins.joinToString(", ")}")
+            }
+            val allAdmins = (requestedAdmins + actor.deviceId)
                 .filter { it != DirectoryActor.CONSOLE.deviceId }
                 .distinct()
+            val memberIds = allAdmins.toSet() + initialMembers.orEmpty()
+            if (initialMembers != null) {
+                require(memberIds.size <= GroupRosterStatement.MAX_MEMBERS) { "Too many group members" }
+                require(memberIds.all(members::containsKey)) { "One or more selected members are no longer in the directory" }
+            }
+            val existing = groups[id.trim()]
+            if (existing != null) {
+                if (initialMembers != null && actor.deviceId in existing.adminDeviceIds &&
+                    existing.name == name.trim() && existing.departmentId == departmentId.trim() &&
+                    existing.visibility == visibility && existing.joinMode == joinMode &&
+                    existing.adminDeviceIds.toSet() == allAdmins.toSet() && existing.memberDeviceIds.toSet() == memberIds
+                ) return@writeLocked existing
+                throw DirectoryConflictException("Group '${id.trim()}' already exists")
+            }
             val newVer = bumpVersionLocked()
             val group = GroupCharter(
                 id = id.trim(),
@@ -649,7 +691,7 @@ class OrganizationDirectory(
                 visibility = visibility,
                 joinMode = joinMode,
                 adminDeviceIds = allAdmins,
-                memberDeviceIds = allAdmins,
+                memberDeviceIds = memberIds.toList(),
                 version = newVer,
             )
             persist { c ->
@@ -667,21 +709,42 @@ class OrganizationDirectory(
 
     /** Changes name / visibility / join mode. Group admin, department admin or organisation admin. */
     fun updateGroup(id: String, name: String?, visibility: GroupVisibility?, joinMode: JoinMode?, actor: DirectoryActor): GroupCharter =
-        lock.write {
+        writeLocked {
             val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")
             requireManager(group, actor, "change")
             if (name != null) requireName(name, "Group name")
             val newVer = bumpVersionLocked()
+            val nextVisibility = visibility ?: group.visibility
+            val nextJoinMode = joinMode ?: group.joinMode
+            val policyChanged = nextVisibility != group.visibility || nextJoinMode != group.joinMode
             val updated = group.copy(
                 name = name?.trim() ?: group.name,
-                visibility = visibility ?: group.visibility,
-                joinMode = joinMode ?: group.joinMode,
+                visibility = nextVisibility,
+                joinMode = nextJoinMode,
                 version = newVer,
+                joinLinkRevision = if (policyChanged) newVer else group.joinLinkRevision,
             )
             persist { c ->
                 c.update(
-                    "UPDATE dir_groups SET name = ?, visibility = ?, join_mode = ?, version = ? WHERE id = ?",
-                    updated.name, updated.visibility.name, updated.joinMode.name, newVer, id,
+                    "UPDATE dir_groups SET name = ?, visibility = ?, join_mode = ?, version = ?, join_link_revision = ? WHERE id = ?",
+                    updated.name, updated.visibility.name, updated.joinMode.name, newVer, updated.joinLinkRevision, id,
+                )
+            }
+            groups[id] = updated
+            updated
+        }
+
+    /** Rotates [GroupCharter.joinLinkRevision] without changing roster membership or policy, revoking active v2/v3 links. */
+    fun rotateJoinLinkRevision(id: String, actor: DirectoryActor): GroupCharter =
+        writeLocked {
+            val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")
+            requireManager(group, actor, "change")
+            val newVer = bumpVersionLocked()
+            val updated = group.copy(version = newVer, joinLinkRevision = newVer)
+            persist { c ->
+                c.update(
+                    "UPDATE dir_groups SET version = ?, join_link_revision = ? WHERE id = ?",
+                    newVer, newVer, id,
                 )
             }
             groups[id] = updated
@@ -689,7 +752,7 @@ class OrganizationDirectory(
         }
 
     fun deleteGroup(id: String, actor: DirectoryActor) {
-        lock.write {
+        writeLocked {
             val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")
             requireManager(group, actor, "delete")
             val v = bumpVersionLocked()
@@ -707,13 +770,17 @@ class OrganizationDirectory(
     }
 
     /** Replaces a group's admin list (organisation or department admin only; a group admin may not crown others). */
-    fun setGroupAdmins(id: String, adminDeviceIds: List<String>, actor: DirectoryActor): GroupCharter = lock.write {
+    fun setGroupAdmins(id: String, adminDeviceIds: List<String>, actor: DirectoryActor): GroupCharter = writeLocked {
         val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")
         val dept = departments[group.departmentId]
         if (!actor.isOrgAdmin && !(dept != null && isDepartmentAdmin(dept, actor))) {
             throw SecurityException("Only department admin or organization admin can change group admins")
         }
         val admins = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val unknownAdmins = admins.filter { !members.containsKey(it) }
+        if (unknownAdmins.isNotEmpty()) {
+            throw IllegalArgumentException("Unknown admin device ID(s): ${unknownAdmins.joinToString(", ")}")
+        }
         val newMembers = (group.memberDeviceIds + admins).distinct()
         val newVer = bumpVersionLocked()
         val updated = group.copy(adminDeviceIds = admins, memberDeviceIds = newMembers, version = newVer)
@@ -830,7 +897,7 @@ class OrganizationDirectory(
     }
 
     /** Inserts or updates a member record; [DepartmentMember.departmentId] may be blank (departmentless). */
-    fun registerMember(member: DepartmentMember): DepartmentMember = lock.write {
+    fun registerMember(member: DepartmentMember): DepartmentMember = writeLocked {
         val newVer = bumpVersionLocked()
         val stored = member.copy(
             deviceId = member.deviceId.trim(),
@@ -874,7 +941,7 @@ class OrganizationDirectory(
     }
 
     fun removeDepartmentMember(departmentId: String, deviceId: String) {
-        lock.write {
+        writeLocked {
             val existing = members[deviceId]
             if (existing != null && existing.departmentId == departmentId) {
                 val v = bumpVersionLocked()
@@ -919,13 +986,13 @@ class OrganizationDirectory(
      * roles, its pending requests and pre-authorisations. Idempotent.
      */
     fun removeDevice(deviceId: String) {
-        lock.write {
+        writeLocked {
             val affectedGroups = groups.values.filter { deviceId in it.memberDeviceIds || deviceId in it.adminDeviceIds }
             val affectedDepartments = departments.values.filter { deviceId in it.adminDeviceIds }
             if (deviceId !in members && deviceId !in memberStatements && affectedGroups.isEmpty() &&
                 affectedDepartments.isEmpty() && joinRequests.values.none { it.deviceId == deviceId && it.status == JoinRequestStatus.PENDING } &&
                 preAuthorized.none { it.second == deviceId }
-            ) return@write
+            ) return@writeLocked
             val v = bumpVersionLocked()
             val deptOfDevice = members[deviceId]?.departmentId.orEmpty()
             recordTombstoneLocked("member", deviceId, v, departmentId = deptOfDevice, departmentHidden = departments[deptOfDevice]?.hidden == true)
@@ -969,13 +1036,17 @@ class OrganizationDirectory(
         autoJoinGroups: Set<String>,
         allowedGroups: Set<String>,
     ) {
-        lock.write {
+        writeLocked {
             registerMember(member)
             for (groupId in autoJoinGroups) {
                 val group = groups[groupId] ?: continue
                 if (member.deviceId !in group.memberDeviceIds) {
-                    persist { c -> insertGroupMember(c, groupId, member.deviceId) }
-                    groups[groupId] = group.copy(memberDeviceIds = group.memberDeviceIds + member.deviceId)
+                    val v = bumpVersionLocked()
+                    persist { c ->
+                        insertGroupMember(c, groupId, member.deviceId)
+                        c.update("UPDATE dir_groups SET version = ? WHERE id = ?", v, groupId)
+                    }
+                    groups[groupId] = group.copy(memberDeviceIds = group.memberDeviceIds + member.deviceId, version = v)
                 }
             }
             for (groupId in allowedGroups) {
@@ -998,16 +1069,16 @@ class OrganizationDirectory(
         userDeviceId: String,
         userDepartment: String?,
         message: String? = null,
-    ): JoinRequestResult = lock.write {
+    ): JoinRequestResult = writeLocked {
         val group = groups[groupId]
-            ?: return@write JoinRequestResult.Rejected(JOIN_NOT_AVAILABLE)
+            ?: return@writeLocked JoinRequestResult.Rejected(JOIN_NOT_AVAILABLE)
 
         if (group.memberDeviceIds.contains(userDeviceId)) {
-            return@write JoinRequestResult.Joined(group)
+            return@writeLocked JoinRequestResult.Joined(group)
         }
 
         if ((groupId to userDeviceId) in preAuthorized) {
-            return@write JoinRequestResult.Joined(addMemberLocked(group, userDeviceId))
+            return@writeLocked JoinRequestResult.Joined(addMemberLocked(group, userDeviceId))
         }
 
         // An admin declined an earlier request of this device: say so ONCE (the client polls its pending join), then
@@ -1021,17 +1092,17 @@ class OrganizationDirectory(
                 persist { c -> updateJoinRequest(c, seen) }
                 joinRequests[request.id] = seen
             }
-            return@write JoinRequestResult.Rejected("An administrator declined this request.")
+            return@writeLocked JoinRequestResult.Rejected("An administrator declined this request.")
         }
 
         // D-E11 / REV-06: a hidden group and a group outside the caller's scope answer exactly like a missing one: same status, same
         // body, no name, no department. Only a group the caller could list may say why it cannot be joined.
         if (group.visibility == GroupVisibility.HIDDEN || !inScope(group, userDepartment)) {
-            return@write JoinRequestResult.Rejected(JOIN_NOT_AVAILABLE)
+            return@writeLocked JoinRequestResult.Rejected(JOIN_NOT_AVAILABLE)
         }
 
         if (group.joinMode == JoinMode.ADMIN_ONLY) {
-            return@write JoinRequestResult.Rejected("This group only accepts members added by an administrator.")
+            return@writeLocked JoinRequestResult.Rejected("This group only accepts members added by an administrator.")
         }
 
         when (group.joinMode) {
@@ -1040,7 +1111,7 @@ class OrganizationDirectory(
                 val already = joinRequests.values.firstOrNull {
                     it.groupId == groupId && it.deviceId == userDeviceId && it.status == JoinRequestStatus.PENDING
                 }
-                if (already != null) return@write JoinRequestResult.Pending(already)
+                if (already != null) return@writeLocked JoinRequestResult.Pending(already)
                 val req = JoinRequest(
                     id = UUID.randomUUID().toString(),
                     groupId = groupId,
@@ -1071,7 +1142,7 @@ class OrganizationDirectory(
         requestId: String,
         actor: DirectoryActor,
         allowedDepartments: Set<String>? = null,
-    ): GroupCharter = lock.write {
+    ): GroupCharter = writeLocked {
         val req = joinRequests[requestId] ?: throw DirectoryNotFoundException("Join request '$requestId' not found")
         val group = groups[req.groupId] ?: throw DirectoryNotFoundException("Group '${req.groupId}' not found")
         requireManager(group, actor, "approve join requests for")
@@ -1134,7 +1205,7 @@ class OrganizationDirectory(
         isOrgAdmin: Boolean = false
     ): GroupCharter = addMemberToGroup(groupId, deviceId, actorOf(callerDeviceId, isOrgAdmin, "add member to group"))
 
-    fun addMemberToGroup(groupId: String, deviceId: String, actor: DirectoryActor): GroupCharter = lock.write {
+    fun addMemberToGroup(groupId: String, deviceId: String, actor: DirectoryActor): GroupCharter = writeLocked {
         val group = groups[groupId] ?: throw DirectoryNotFoundException("Group '$groupId' not found")
         requireManager(group, actor, "add member to")
         addMemberLocked(group, deviceId.trim())
@@ -1147,7 +1218,7 @@ class OrganizationDirectory(
         isOrgAdmin: Boolean = false
     ): GroupCharter = removeMemberFromGroup(groupId, deviceId, actorOf(callerDeviceId, isOrgAdmin, "remove member from group"))
 
-    fun removeMemberFromGroup(groupId: String, deviceId: String, actor: DirectoryActor): GroupCharter = lock.write {
+    fun removeMemberFromGroup(groupId: String, deviceId: String, actor: DirectoryActor): GroupCharter = writeLocked {
         val group = groups[groupId] ?: throw DirectoryNotFoundException("Group '$groupId' not found")
         requireManager(group, actor, "remove member from")
         val v = bumpVersionLocked()
@@ -1158,8 +1229,10 @@ class OrganizationDirectory(
         )
         persist { c ->
             c.update("DELETE FROM dir_group_members WHERE group_id = ? AND device_id = ?", groupId, deviceId)
+            c.update("DELETE FROM dir_preauth WHERE group_id = ? AND device_id = ?", groupId, deviceId)
             c.update("UPDATE dir_groups SET admin_ids = ?, version = ? WHERE id = ?", encodeList(updated.adminDeviceIds), v, groupId)
         }
+        preAuthorized.remove(groupId to deviceId)
         groups[groupId] = updated
         updated
     }
@@ -1232,8 +1305,8 @@ class OrganizationDirectory(
 
     private fun insertGroup(c: Connection, g: GroupCharter, now: Long) {
         c.update(
-            "INSERT INTO dir_groups(id, name, department_id, visibility, join_mode, admin_ids, created_at, version) VALUES(?,?,?,?,?,?,?,?)",
-            g.id, g.name, g.departmentId, g.visibility.name, g.joinMode.name, encodeList(g.adminDeviceIds), now, g.version,
+            "INSERT INTO dir_groups(id, name, department_id, visibility, join_mode, admin_ids, created_at, version, join_link_revision) VALUES(?,?,?,?,?,?,?,?,?)",
+            g.id, g.name, g.departmentId, g.visibility.name, g.joinMode.name, encodeList(g.adminDeviceIds), now, g.version, g.joinLinkRevision,
         )
     }
 
@@ -1458,6 +1531,7 @@ class OrganizationDirectory(
                     adminDeviceIds = decodeList(rs.getString("admin_ids")),
                     memberDeviceIds = memberRows[id].orEmpty(),
                     version = rs.getLong("version"),
+                    joinLinkRevision = rs.getLong("join_link_revision"),
                 )
             }.forEach { groups[it.id] = it }
             c.query("SELECT * FROM dir_members ORDER BY rowid") { rs ->
@@ -1631,6 +1705,12 @@ class OrganizationDirectory(
                 conn.createStatement().use { st ->
                     st.execute("ALTER TABLE directory_tombstone ADD COLUMN entity_dept TEXT")
                     st.execute("ALTER TABLE directory_tombstone ADD COLUMN entity_hidden INTEGER NOT NULL DEFAULT 0")
+                }
+            },
+            Migration(5, "directory: track join-link revision separately from roster revision") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("ALTER TABLE dir_groups ADD COLUMN join_link_revision INTEGER NOT NULL DEFAULT 0")
+                    st.execute("UPDATE dir_groups SET join_link_revision = version")
                 }
             },
         )

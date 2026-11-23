@@ -9,11 +9,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -103,7 +106,7 @@ fun FlashChatHeader(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(60.dp)
+                .heightIn(min = 60.dp)
                 .padding(horizontal = FlashSpacing.space2),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -158,12 +161,13 @@ fun FlashChatHeader(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = FlashSpacing.space10, end = FlashSpacing.space4)
+                    .padding(start = FlashSpacing.space4)
                     .graphicsLayer {
                         val travel = (1f - titleEntry.value) * TitleEntryTravel.toPx()
                         translationX = if (isRtl) travel else -travel
                         alpha = titleEntry.value
                     },
+                verticalArrangement = Arrangement.spacedBy(0.dp),
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -233,7 +237,7 @@ private fun FlashChatHeaderStatusLine(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
         ) {
             val showTypingDots = state.presence != FlashPeerPresence.Offline &&
                 (state.presence == FlashPeerPresence.Typing || state.typingMemberNames.isNotEmpty())
@@ -249,10 +253,11 @@ private fun FlashChatHeaderStatusLine(
                 showTypingDots && state.isGroup -> {
                     FlashHeaderTypingStatus()
                     if (typingLabel != null) {
+                        Spacer(modifier = Modifier.width(FlashSpacing.space4))
                         FlashText(
                             text = typingLabel,
                             style = typography.metadataEmphasis,
-                            color = colors.accentPrimary,
+                            color = colors.textLink,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -273,6 +278,7 @@ private fun FlashChatHeaderStatusLine(
                         ?: ""
                     FlashText(
                         text = label,
+                        modifier = Modifier.weight(1f, fill = false),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = typography.metadataDefault,
@@ -340,7 +346,7 @@ private fun FlashChatHeaderTransportIcon(transport: FlashNetworkTransport) {
     val spec = transport.iconSpec() ?: return
     FlashIcon(
         icon = spec,
-        size = FlashDimensions.iconSm,
+        size = FlashSpacing.space12,
         tint = FlashTheme.colors.textTertiary,
     )
 }
@@ -491,7 +497,7 @@ fun FlashColleagueTrustChip(
         FlashText(
             text = FlashOrgStrings.chipText(orgName),
             style = FlashTheme.typography.captionEmphasis,
-            color = colors.accentPrimary,
+            color = colors.textLink,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

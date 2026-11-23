@@ -9,6 +9,7 @@ import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.HubSealingFingerprint
 import com.transfer.flash.core.security.enterprise.HubSealingKeyPair
+import com.transfer.flash.core.security.enterprise.HubKeyVerdict
 import com.transfer.flash.core.security.enterprise.HubSealingPin
 import com.transfer.flash.core.security.enterprise.HubSealingPins
 import com.transfer.flash.core.security.enterprise.UnsealedPayload
@@ -45,33 +46,37 @@ public class DirectoryHubSealing(
     private val lookup: suspend (deviceId: String) -> EnterpriseDirectoryMember?,
 ) : HubSealingPort {
 
-    private class Verified(val sealingKey: ByteArray, val identityKey: ByteArray)
-
-    private suspend fun verified(deviceId: String): Verified? {
-        val member = lookup(deviceId) ?: return null
-        val identity = member.subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() } ?: return null
+    private fun verifiedSealingKey(deviceId: String, member: EnterpriseDirectoryMember?, identity: ByteArray?): ByteArray? {
+        if (member == null || identity == null) return null
         val sealing = member.sealingPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() } ?: return null
         val signature = member.sealingSignature ?: return null
         if (!HubSealingKeyPair.verifyBinding(identity, deviceId, sealing, signature)) return null
-        return Verified(sealing, identity)
+        return sealing
     }
 
+    private fun EnterpriseDirectoryMember.identityKey(): ByteArray? =
+        subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() }
+
     /** True when the directory's identity key for a directly paired colleague differs from the key saved at pairing. */
-    private suspend fun identityMismatch(deviceId: String): Boolean {
+    private fun identityMismatch(deviceId: String, identity: ByteArray?): Boolean {
         val saved = pairedIdentityFingerprint(deviceId)?.normalisedFingerprint() ?: return false
-        val identity = lookup(deviceId)?.subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() } ?: return false
-        return identity.sha256Hex() != saved
+        return identity != null && identity.sha256Hex() != saved
+    }
+
+    private suspend fun sealingStatus(deviceId: String, key: ByteArray?): HubSealingStatus {
+        if (key != null) {
+            val verdict = pins?.check(deviceId, HubSealingFingerprint.of(key))
+            return if (verdict == HubKeyVerdict.CHANGED) HubSealingStatus.KEY_CHANGED else HubSealingStatus.AVAILABLE
+        }
+        // Even when the directory gave nothing now, a change that was never confirmed keeps holding.
+        return if (hasPendingKeyChange(deviceId)) HubSealingStatus.KEY_CHANGED else HubSealingStatus.NOT_PUBLISHED
     }
 
     override suspend fun statusFor(recipientDeviceId: String): HubSealingStatus {
-        if (identityMismatch(recipientDeviceId)) return HubSealingStatus.IDENTITY_MISMATCH
-        val key = verified(recipientDeviceId)
-        if (key != null && pins != null) {
-            pins.check(recipientDeviceId, HubSealingFingerprint.of(key.sealingKey))
-        }
-        // Even when the directory gave nothing now, a change that was never confirmed keeps holding.
-        if (pins?.isBlocked(recipientDeviceId) == true) return HubSealingStatus.KEY_CHANGED
-        return if (key != null) HubSealingStatus.AVAILABLE else HubSealingStatus.NOT_PUBLISHED
+        val member = lookup(recipientDeviceId)
+        val identity = member?.identityKey()
+        if (identityMismatch(recipientDeviceId, identity)) return HubSealingStatus.IDENTITY_MISMATCH
+        return sealingStatus(recipientDeviceId, verifiedSealingKey(recipientDeviceId, member, identity))
     }
 
     override val pendingKeyChanges: StateFlow<Map<String, HubSealingPin>>
@@ -79,26 +84,36 @@ public class DirectoryHubSealing(
 
     override suspend fun canSealFor(recipientDeviceId: String): Boolean = statusFor(recipientDeviceId) == HubSealingStatus.AVAILABLE
 
-    override suspend fun confirmKeyChange(recipientDeviceId: String): Boolean = pins?.confirm(recipientDeviceId) == true
+    override suspend fun hasPendingKeyChange(recipientDeviceId: String): Boolean = pins?.isBlocked(recipientDeviceId) == true
+
+    override suspend fun confirmKeyChange(recipientDeviceId: String, expectedFingerprint: String): Boolean =
+        pins?.confirm(recipientDeviceId, expectedFingerprint) == true
 
     override suspend fun seal(recipientDeviceId: String, msgId: String, sentAt: Long, innerType: String, body: String): String? {
-        if (statusFor(recipientDeviceId) != HubSealingStatus.AVAILABLE) return null
-        val recipient = verified(recipientDeviceId) ?: return null
+        val member = lookup(recipientDeviceId)
+        val identity = member?.identityKey()
+        if (identityMismatch(recipientDeviceId, identity)) return null
+        val recipient = verifiedSealingKey(recipientDeviceId, member, identity) ?: return null
+        if (sealingStatus(recipientDeviceId, recipient) != HubSealingStatus.AVAILABLE) return null
         // A published key can be unusable even though its binding signature verifies (the signature covers the
         // bytes, it does not validate them as a P-256 point), so this null means "cannot seal now" and the bridge
         // keeps the message queued rather than sending it readable (F65 of the 2026-10-22 review).
-        return HubSealing.seal(crypto, localDeviceId, recipientDeviceId, recipient.sealingKey, msgId, sentAt, innerType, body)
+        return HubSealing.seal(crypto, localDeviceId, recipientDeviceId, recipient, msgId, sentAt, innerType, body)
     }
 
     override suspend fun open(senderDeviceId: String, msgId: String, sentAt: Long, payload: String): UnsealedPayload? {
         val key = ownKey() ?: return null
-        if (identityMismatch(senderDeviceId)) return null
-        val sender = lookup(senderDeviceId)?.subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() } ?: return null
+        val sender = identityPublicKeyEncoded(senderDeviceId) ?: return null
         return HubSealing.open(key, sender, senderDeviceId, localDeviceId, msgId, sentAt, payload)
     }
 
     override suspend fun openFailureMayClear(senderDeviceId: String): Boolean =
         runCatching { ownKey() == null || lookup(senderDeviceId)?.subjectPublicKey == null }.getOrDefault(true)
+
+    override suspend fun identityPublicKeyEncoded(deviceId: String): ByteArray? {
+        val identity = lookup(deviceId)?.identityKey()
+        return identity?.takeUnless { identityMismatch(deviceId, it) }
+    }
 }
 
 private fun String.normalisedFingerprint(): String = filter { it.isLetterOrDigit() }.uppercase()

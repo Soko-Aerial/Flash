@@ -32,39 +32,74 @@ internal class ChatDbKeyStore(
 ) {
     private val keyFile = File(dir, FILE_NAME)
 
+    internal class DeferredKey(
+        val passphrase: String,
+        val minted: Boolean,
+        private val onCommit: () -> Unit,
+    ) {
+        fun commit() = onCommit()
+    }
+
     /** The database passphrase; creates it on first use and upgrades a legacy plain-text file. */
-    fun passphrase(): String {
+    fun passphrase(): String = loadOrMintDeferred().also { it.commit() }.passphrase
+
+    /**
+     * Loads the stored passphrase or mints a fresh one in memory without writing [keyFile] until
+     * [DeferredKey.commit] is called. When [keyFile] already exists on disk but cannot be read or
+     * unprotected, throws [IllegalStateException] and leaves [keyFile] untouched.
+     */
+    fun loadOrMintDeferred(): DeferredKey {
         dir.mkdirs()
-        val bytes = runCatching { keyFile.takeIf { it.isFile }?.readBytes() }.getOrNull()
-        if (bytes == null || bytes.isEmpty() || bytes.all { it.toInt().toChar().isWhitespace() }) return mintAndStore()
-        if (bytes[0] == HEADER) {
-            val plain = try {
-                vault.unprotect(bytes.copyOfRange(1, bytes.size))
+        if (keyFile.exists()) {
+            if (!keyFile.isFile) {
+                throw IllegalStateException(
+                    "The chat database key path ${keyFile.name} exists but is not a regular file. Leaving it untouched.",
+                )
+            }
+            val bytes = try {
+                keyFile.readBytes()
             } catch (e: Exception) {
                 throw IllegalStateException(
-                    "The chat database key in ${keyFile.name} cannot be unprotected (a different Windows user, a restored copy, or a damaged file). " +
-                        "The file was left as it is.",
+                    "The chat database key in ${keyFile.name} cannot be read. The file was left as it is.",
                     e,
                 )
             }
-            return String(plain, Charsets.UTF_8)
+            if (bytes.isNotEmpty() && !bytes.all { it.toInt().toChar().isWhitespace() }) {
+                if (bytes[0] == HEADER) {
+                    val plain = try {
+                        vault.unprotect(bytes.copyOfRange(1, bytes.size))
+                    } catch (e: Exception) {
+                        throw IllegalStateException(
+                            "The chat database key in ${keyFile.name} cannot be unprotected (a different Windows user, a restored copy, or a damaged file). " +
+                                "The file was left as it is.",
+                            e,
+                        )
+                    }
+                    return DeferredKey(String(plain, Charsets.UTF_8), minted = false) {}
+                }
+                val legacy = String(bytes, Charsets.UTF_8).trim()
+                runCatching { writeBlob(protectBlob(legacy)) }
+                    .onSuccess { log("chat database key re-stored under the OS vault (was plain text)") }
+                    .onFailure { log("chat database key stays in plain text: ${it.javaClass.simpleName}") }
+                return DeferredKey(legacy, minted = false) {}
+            }
         }
-        val legacy = String(bytes, Charsets.UTF_8).trim()
-        runCatching { write(legacy) }
-            .onSuccess { log("chat database key re-stored under the OS vault (was plain text)") }
-            .onFailure { log("chat database key stays in plain text: ${it.javaClass.simpleName}") }
-        return legacy
-    }
-
-    private fun mintAndStore(): String {
         val fresh = ByteArray(32).also(random::nextBytes).joinToString("") { "%02x".format(it) }
-        // A failed write must not hand out a key that will not be there on the next start (the database would be orphaned).
-        write(fresh)
-        return fresh
+        // Protect eagerly so an unavailable vault fails before the DB opens or commits.
+        val blob = try {
+            protectBlob(fresh)
+        } catch (e: IllegalStateException) {
+            throw e
+        } catch (e: Exception) {
+            throw IllegalStateException("Cannot protect a fresh chat database key", e)
+        }
+        return DeferredKey(fresh, minted = true) { writeBlob(blob) }
     }
 
-    private fun write(passphrase: String) {
-        val blob = byteArrayOf(HEADER) + vault.protect(passphrase.toByteArray(Charsets.UTF_8))
+    private fun protectBlob(passphrase: String): ByteArray =
+        byteArrayOf(HEADER) + vault.protect(passphrase.toByteArray(Charsets.UTF_8))
+
+    private fun writeBlob(blob: ByteArray) {
         val tmp = File(dir, "$FILE_NAME.tmp")
         tmp.writeBytes(blob)
         runCatching { Files.move(tmp.toPath(), keyFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }

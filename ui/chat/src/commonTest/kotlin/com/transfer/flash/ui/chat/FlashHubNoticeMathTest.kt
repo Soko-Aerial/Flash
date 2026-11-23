@@ -2,6 +2,8 @@ package com.transfer.flash.ui.chat
 
 import com.transfer.flash.core.messaging.model.FlashHubNoticeKind
 import com.transfer.flash.core.messaging.model.FlashHubNoticeUi
+import com.transfer.flash.core.messaging.model.FlashMessageStatus
+import com.transfer.flash.core.messaging.model.FlashMessageUi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -30,15 +32,30 @@ class FlashHubNoticeMathTest {
     }
 
     @Test
+    fun `the key banner calls out pending outgoing messages`() {
+        val message = FlashMessageUi("one", "You", "Y", "12:00", "Hello", isMine = true)
+        val waitingMessage = message.copy(deliveryStatus = FlashMessageStatus.Pending)
+        assertEquals("Messages are waiting to send through the Hub.", hubKeyBannerMessage(listOf(waitingMessage)))
+        val verifyMessage = "Verify the new key to send through the Hub."
+        assertEquals(verifyMessage, hubKeyBannerMessage(emptyList()))
+        assertEquals(verifyMessage, hubKeyBannerMessage(listOf(waitingMessage.copy(isMine = false))))
+        assertEquals(verifyMessage, hubKeyBannerMessage(listOf(message.copy(deliveryStatus = FlashMessageStatus.Delivered))))
+    }
+
+    @Test
     fun `waiting for an update uses the colleague name`() {
         assertEquals("Waiting for Bob to update the app", FlashHubNoticeMath.title(n(FlashHubNoticeKind.PEER_NEEDS_UPDATE)))
         assertEquals("Waiting for your colleague to update the app", FlashHubNoticeMath.title(n(FlashHubNoticeKind.PEER_NEEDS_UPDATE, name = "")))
     }
 
     @Test
-    fun `group copy says truthfully that groups are not sealed`() {
+    fun `group copy says truthfully whether groups are readable or end-to-end encrypted`() {
         assertTrue("not sealed" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_READABLE)))
         assertTrue("not sealed" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_HUB_OFF)))
+        assertTrue("end-to-end encrypted" in FlashHubNoticeMath.title(n(FlashHubNoticeKind.GROUP_ENCRYPTED)))
+        assertTrue("cannot read them" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_ENCRYPTED)))
+        assertTrue("paused" in FlashHubNoticeMath.title(n(FlashHubNoticeKind.GROUP_E2EE_BLOCKED)))
+        assertTrue("paused instead of falling back" in FlashHubNoticeMath.body(n(FlashHubNoticeKind.GROUP_E2EE_BLOCKED)))
     }
 
     @Test

@@ -48,6 +48,7 @@ fun Route.announcementRoutes(
     audit: AuditSink = AuditSink.None,
     limits: HubRateLimits = HubRateLimits.unlimited(),
     clock: () -> Long = System::currentTimeMillis,
+    directory: com.transfer.flash.server.directory.OrganizationDirectory? = null,
 ) {
     route(HubContract.PATH_API) {
         route("/announcements") {
@@ -64,6 +65,7 @@ fun Route.announcementRoutes(
 
                 val isOrgAdmin = isOrgAdminRole(principal.role)
                 val since = call.request.queryParameters["since"]?.toLongOrNull()
+                val expectedEpoch = call.request.queryParameters["epoch"]?.trim()?.takeIf { it.isNotEmpty() }
                 val q = call.request.queryParameters["q"]
                 val scope = call.request.queryParameters["scope"]
                 val departmentId = call.request.queryParameters["departmentId"]
@@ -78,6 +80,7 @@ fun Route.announcementRoutes(
                         callerDeptId = principal.departmentId,
                         isOrgAdmin = isOrgAdmin,
                         nowMs = clock(),
+                        expectedEpoch = expectedEpoch,
                     )
                     audit.record(principal.deviceId, "announcement.feed", "since=$since,rows=${feed.items.size}")
                     call.respondJson(feed)
@@ -166,12 +169,17 @@ fun Route.announcementRoutes(
                 }
 
                 if (req.scope == "department") {
-                    if (req.departmentId.isNullOrBlank()) {
+                    val deptId = req.departmentId
+                    if (deptId.isNullOrBlank()) {
                         call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "departmentId is required for department scope")
                         return@post
                     }
-                    if (!isOrgAdmin && principal.departmentId != req.departmentId) {
+                    if (!isOrgAdmin && principal.departmentId != deptId) {
                         call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Department heads may only post to their assigned department")
+                        return@post
+                    }
+                    if (directory != null && directory.getDepartment(deptId) == null) {
+                        call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Unknown departmentId")
                         return@post
                     }
                 } else if (req.scope != "org") {
@@ -186,16 +194,22 @@ fun Route.announcementRoutes(
                     return@post
                 }
 
+                val resolvedAuthorName = directory?.getDepartmentMember(principal.deviceId)
+                    ?.displayName
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: principal.deviceId.take(8)
+
                 val created = try {
                     store.createAnnouncement(
                         clientRequestId = req.clientRequestId.ifBlank { UUID.randomUUID().toString() },
                         scope = req.scope,
-                        departmentId = req.departmentId,
+                        departmentId = if (req.scope == "org") null else req.departmentId,
                         title = cleaned.title,
                         body = cleaned.body,
                         authorKind = "device",
                         authorRef = principal.deviceId,
-                        authorName = principal.deviceId.take(8),
+                        authorName = resolvedAuthorName,
                         authorRole = principal.role,
                         pinned = req.pinned,
                         expiresAtMs = req.expiresAtMs,

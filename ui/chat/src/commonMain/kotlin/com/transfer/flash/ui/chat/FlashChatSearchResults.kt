@@ -129,7 +129,7 @@ private fun FlashChatSearchResultRow(
         buildHighlightedMessageText(
             text = hit.snippet,
             query = query,
-            highlightColor = colors.accentPrimary.copy(alpha = 0.35f),
+            highlightColor = colors.accentFill.copy(alpha = 0.25f),
         )
     }
     Row(

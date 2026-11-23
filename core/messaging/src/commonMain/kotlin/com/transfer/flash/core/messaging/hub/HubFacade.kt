@@ -26,7 +26,11 @@ import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
 import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -53,7 +57,7 @@ import kotlinx.coroutines.withContext
  *   once, filtered by department visibility, and then only joined with the cheap live data (presence sets). Nothing sorts in composition.
  * - Hidden departments (A2/D2) are filtered here too, defensively: a department that is hidden is visible only to its own members
  *   and to organisation administrators.
- * - [refresh] is single-flight with a minimum interval of [MIN_REFRESH_INTERVAL_MS]; callers inside the interval get the previous result.
+ * - [refresh] is single-flight. Automatic calls within [MIN_REFRESH_INTERVAL_MS] get the previous result.
  *
  * Complexity: a snapshot load is O(n log n) in members once per change; a presence tick is O(n); a search is O(n * tokens).
  */
@@ -87,7 +91,8 @@ public class HubFacade(
 
     private var lastAttemptMs: Long = Long.MIN_VALUE
     private var lastResult: FlashResult<Unit> = FlashResult.Success(Unit)
-    private var inFlight: CompletableDeferred<FlashResult<Unit>>? = null
+    private var rateLimitedAtMs: Long? = null
+    private var inFlight: Deferred<FlashResult<Unit>>? = null
 
     /** The directory changed (a sync committed, or the snapshot was cleared): read it again. */
     public fun invalidate() {
@@ -210,72 +215,101 @@ public class HubFacade(
             )
     }
 
-    /**
-     * Refreshes the directory, the group list and the announcements. Single-flight: a caller that arrives while one runs waits for
-     * that run. Within [MIN_REFRESH_INTERVAL_MS] of the last attempt the previous result is returned without any network call.
-     */
+    /** Refreshes each section in one shared run. Leaving the tab cancels only that caller's wait. */
     public suspend fun refresh(userInitiated: Boolean = false): FlashResult<Unit> {
-        val running = refreshMutex.withLock {
-            inFlight?.let { return@withLock it to false }
+        val task = refreshMutex.withLock {
+            inFlight?.takeUnless { it.isCompleted }?.let { return@withLock it }
+            if (inFlight?.isCancelled == true) lastAttemptMs = Long.MIN_VALUE
             val now = timeSource.nowMs()
-            if (lastAttemptMs != Long.MIN_VALUE && now - lastAttemptMs in 0 until MIN_REFRESH_INTERVAL_MS) {
+            val limitedAt = rateLimitedAtMs
+            val rateLimit = lastOutcome.value as? OrgSyncOutcome.RateLimited
+            val backoffMs = rateLimit?.retryAfterSeconds?.coerceIn(1L, Long.MAX_VALUE / 1_000)?.times(1_000)
+                ?: MIN_REFRESH_INTERVAL_MS
+            if (rateLimit != null && limitedAt != null && now - limitedAt in 0 until backoffMs) return lastResult
+            if (!userInitiated && lastAttemptMs != Long.MIN_VALUE && now - lastAttemptMs in 0 until MIN_REFRESH_INTERVAL_MS) {
                 FlashProbe.emit("hub.ui.refresh", "result" to "skipped_recent")
-                return@withLock CompletableDeferred(lastResult) to false
+                return lastResult
             }
             lastAttemptMs = now
-            val d = CompletableDeferred<FlashResult<Unit>>()
-            inFlight = d
-            d to true
+            scope.async(start = CoroutineStart.LAZY) {
+                val result = try {
+                    runRefresh(userInitiated)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    FlashLog.w("HUB_UI", "refresh failed: ${e::class.simpleName}")
+                    FlashResult.Failure(FlashError.Unknown(HubRefreshText.GENERIC))
+                }
+                refreshMutex.withLock { lastResult = result }
+                result
+            }.also { inFlight = it }
         }
-        val (deferred, owner) = running
-        if (!owner) return deferred.await()
-        val result = try {
-            runRefresh(userInitiated)
-        } catch (e: CancellationException) {
-            refreshMutex.withLock { inFlight = null; lastAttemptMs = Long.MIN_VALUE }
-            deferred.cancel(e)
-            throw e
-        } catch (e: Exception) {
-            FlashLog.w("HUB_UI", "refresh failed: ${e::class.simpleName}")
-            FlashResult.Failure(FlashError.Unknown(HubRefreshText.GENERIC))
-        }
-        refreshMutex.withLock {
-            lastResult = result
-            inFlight = null
-        }
-        deferred.complete(result)
-        return result
+        return task.await()
     }
 
-    private suspend fun runRefresh(userInitiated: Boolean): FlashResult<Unit> {
+    private suspend fun runRefresh(userInitiated: Boolean): FlashResult<Unit> = coroutineScope {
         refreshing.value = true
+        val started = timeSource.nowMs()
         try {
             val creds = credentials.first()
-                ?: return FlashResult.Failure(FlashError.Unknown(HubRefreshText.NOT_ENROLLED))
-            val sync = sources.requestSync
-            val outcome = sync?.invoke(userInitiated)
-            if (outcome != null) lastOutcome.value = outcome
-            invalidate()
-            sources.fetchGroups?.let { fetch ->
-                when (val g = fetch(creds)) {
-                    is FlashResult.Success -> {
-                        groupsCache.value = g.value
-                        groupsFailed.value = false
-                    }
-                    is FlashResult.Failure -> groupsFailed.value = true
+                ?: return@coroutineScope FlashResult.Failure(FlashError.Unknown(HubRefreshText.NOT_ENROLLED))
+            val groups = launch { refreshGroups(creds) }
+            val announcements = launch { runAnnouncementsRefresh(creds) }
+            val outcome = sources.requestSync?.invoke(userInitiated)
+            val directoryMs = timeSource.nowMs() - started
+            if (stillEnrolledAs(creds)) {
+                if (outcome != null) {
+                    lastOutcome.value = outcome
+                    rateLimitedAtMs = if (outcome is OrgSyncOutcome.RateLimited) timeSource.nowMs() else null
                 }
+                invalidate()
             }
-            runAnnouncementsRefresh()
-            FlashProbe.emit("hub.ui.refresh", "result" to (outcome?.let { it::class.simpleName } ?: "no_sync"))
-            return HubRefreshText.resultOf(outcome)
+            groups.join()
+            announcements.join()
+            FlashProbe.emit(
+                "hub.ui.refresh",
+                "result" to (outcome?.let { it::class.simpleName } ?: "no_sync"),
+                "directoryMs" to directoryMs,
+                "ms" to (timeSource.nowMs() - started),
+            )
+            HubRefreshText.resultOf(outcome)
         } finally {
             refreshing.value = false
         }
     }
 
-    private suspend fun runAnnouncementsRefresh() {
+    private suspend fun refreshGroups(creds: EnrollmentCredentials) {
+        val fetch = sources.fetchGroups ?: return
+        val result = try {
+            fetch(creds)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            FlashLog.w("HUB_UI", "group refresh failed: ${e::class.simpleName}")
+            FlashResult.Failure(FlashError.Unknown(HubRefreshText.GENERIC))
+        }
+        if (!stillEnrolledAs(creds)) return
+        when (result) {
+            is FlashResult.Success -> {
+                groupsCache.value = result.value
+                groupsFailed.value = false
+            }
+            is FlashResult.Failure -> groupsFailed.value = true
+        }
+    }
+
+    private suspend fun stillEnrolledAs(expected: EnrollmentCredentials): Boolean {
+        val current = credentials.first() ?: return false
+        return current.hubUrl == expected.hubUrl &&
+            current.rootFingerprint == expected.rootFingerprint &&
+            current.deviceId == expected.deviceId
+    }
+
+    private suspend fun runAnnouncementsRefresh(creds: EnrollmentCredentials) {
         try {
-            when (val r = refreshAnnouncements()) {
+            val r = refreshAnnouncements()
+            if (!stillEnrolledAs(creds)) return
+            when (r) {
                 is FlashResult.Success -> newsUnsupported.value = false
                 is FlashResult.Failure -> {
                     val e = r.error

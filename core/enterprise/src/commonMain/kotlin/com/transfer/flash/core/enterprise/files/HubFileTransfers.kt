@@ -21,12 +21,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 
 /** What to send through the hub. Exactly one of [toDeviceId] / [groupId]. */
@@ -106,6 +108,18 @@ public sealed interface HubDownloadOutcome {
     /** Ended for good; the partial file and its record are gone. */
     public data class Failed(public val error: HubFileError) : HubDownloadOutcome
 }
+
+/**
+ * HR8: Snapshot of verified chunks stored locally for an interrupted Hub download, used for cross-route resumption.
+ */
+@FlashInternalApi
+public data class VerifiedHubDownloadSnapshot(
+    public val fileId: String,
+    public val plainBytes: Long,
+    public val plainChunkBytes: Int,
+    public val chunkCount: Int,
+    public val doneChunks: Set<Int>,
+)
 
 /**
  * How hard one run tries before it reports [HubUploadOutcome.Interrupted]. A run never gives up on a transfer: it ends
@@ -198,6 +212,7 @@ public class HubFileTransfers(
     public suspend fun download(
         request: HubDownloadRequest,
         onProgress: (HubTransferProgress) -> Unit = {},
+        onChunkVerified: ((chunkIndex: Int) -> Unit)? = null,
     ): HubDownloadOutcome {
         val t = request.ticket
         if (!HubFileIds.isFileId(t.fileId)) return HubDownloadOutcome.Failed(HubFileError.Refused(BAD_ID))
@@ -205,7 +220,7 @@ public class HubFileTransfers(
         if (layout == null || layout.chunkCount != t.chunkCount || !HubFileIds.isSha256(t.cipherSha256)) {
             return HubDownloadOutcome.Failed(HubFileError.Integrity)
         }
-        return locked("d:${t.fileId}") { DownloadRun(request, layout, onProgress).run() }
+        return locked("d:${t.fileId}") { DownloadRun(request, layout, onProgress, onChunkVerified).run() }
     }
 
     /** Throws away a partial download and its record (situation 9: a recipient cancels). Safe to call twice. */
@@ -223,6 +238,111 @@ public class HubFileTransfers(
     /** File ids with an unfinished (or, for uploads, unreleased) record, for a host to resume at start-up. */
     public suspend fun pending(direction: HubTransferDirection): List<String> =
         runSuspendCatching { io { storage.stateIds(direction) } }.getOrElse { emptyList() }
+
+    /**
+     * HR8: Exports verified completed chunk indices and layout metadata for an interrupted Hub download,
+     * allowing LAN ReceivePipeline to adopt verified saved bytes safely.
+     */
+    public suspend fun exportVerifiedChunks(fileId: String): VerifiedHubDownloadSnapshot? {
+        if (!HubFileIds.isFileId(fileId)) return null
+        return locked("d:$fileId") {
+            val state = io { storage.readState(HubTransferDirection.DOWNLOAD, fileId) }
+                ?.let(HubFileStateCodec::decodeDownload) ?: return@locked null
+            val layout = HubFileLayout.of(state.plainBytes, state.cipherChunkBytes) ?: return@locked null
+            if (layout.chunkCount != state.chunkCount) return@locked null
+            val doneSet = (0 until layout.chunkCount).filter { state.done[it] }.toSet()
+            if (doneSet.isEmpty()) return@locked null
+            VerifiedHubDownloadSnapshot(
+                fileId = fileId,
+                plainBytes = state.plainBytes,
+                plainChunkBytes = layout.plainChunkBytes,
+                chunkCount = layout.chunkCount,
+                doneChunks = doneSet,
+            )
+        }
+    }
+
+    /**
+     * HR8: Reads verified plaintext bytes from a Hub partial file for adoption onto another route.
+     */
+    public suspend fun readPartSpan(fileId: String, offset: Long, length: Int): ByteArray? {
+        if (!HubFileIds.isFileId(fileId) || offset < 0L || length <= 0) return null
+        return locked("d:$fileId") {
+            runSuspendCatching { io { storage.readPart(fileId, offset, length) } }.getOrNull()
+        }
+    }
+
+    /**
+     * HR8: Seeds a Hub download state from verified plaintext bytes already received via LAN.
+     * Writes plaintext bytes to storage.writePart and marks only completely verified chunks in the bitmap.
+     */
+    public suspend fun seedDownloadFromVerifiedBytes(
+        request: HubDownloadRequest,
+        verifiedChunkIndexes: Set<Int>,
+        readChunkPlaintext: (index: Int, offset: Long, length: Int) -> ByteArray?,
+    ): Int = seedDownloadChunksFromVerifiedBytes(request, verifiedChunkIndexes, readChunkPlaintext).size
+
+    /** Streams chunks to disk and returns only the chunk indexes committed to the download state. */
+    public suspend fun seedDownloadChunksFromVerifiedBytes(
+        request: HubDownloadRequest,
+        verifiedChunkIndexes: Set<Int>,
+        readChunkPlaintext: (index: Int, offset: Long, length: Int) -> ByteArray?,
+    ): Set<Int> {
+        val t = request.ticket
+        if (!HubFileIds.isFileId(t.fileId)) return emptySet()
+        val layout = HubFileLayout.of(t.plainBytes, t.cipherChunkBytes) ?: return emptySet()
+        if (layout.chunkCount != t.chunkCount || !HubFileIds.isSha256(t.cipherSha256)) return emptySet()
+        if (verifiedChunkIndexes.isEmpty()) return emptySet()
+
+        return locked("d:${t.fileId}") {
+            val stored = io { storage.readState(HubTransferDirection.DOWNLOAD, t.fileId) }
+                ?.let(HubFileStateCodec::decodeDownload)
+            // Keep existing verified spans intact. DownloadRun handles any incompatible state.
+            if (stored != null && !stored.matches(request)) return@locked emptySet()
+            val bitmap = stored?.done ?: HubChunkBitmap(t.chunkCount)
+            val seeded = LinkedHashSet<Int>()
+            for (idx in verifiedChunkIndexes) {
+                coroutineContext.ensureActive()
+                if (idx !in 0 until layout.chunkCount || bitmap[idx]) continue
+                val expectedLen = layout.plainLength(idx)
+                val offset = layout.plainOffset(idx)
+                val data = readChunkPlaintext(idx, offset, expectedLen) ?: continue
+                if (data.size != expectedLen) continue
+                val writeErr = runSuspendCatching {
+                    io { storage.writePart(t.fileId, offset, data) }
+                }.exceptionOrNull()
+                if (writeErr == null) {
+                    bitmap.set(idx)
+                    seeded.add(idx)
+                }
+            }
+            if (seeded.isNotEmpty()) {
+                val state = DownloadState(
+                    fileId = t.fileId,
+                    hubUrl = request.hubUrl,
+                    cipherSha256 = t.cipherSha256,
+                    plainBytes = t.plainBytes,
+                    cipherChunkBytes = t.cipherChunkBytes,
+                    chunkCount = t.chunkCount,
+                    verifyFailures = stored?.verifyFailures ?: 0,
+                    done = bitmap,
+                )
+                val encoded = HubFileStateCodec.encode(state)
+                val err = runSuspendCatching {
+                    io { storage.writeState(HubTransferDirection.DOWNLOAD, t.fileId, encoded) }
+                }.exceptionOrNull()
+                if (err != null) return@locked emptySet()
+            }
+            seeded
+        }
+    }
+
+    private fun DownloadState.matches(request: HubDownloadRequest): Boolean {
+        val ticket = request.ticket
+        return fileId == ticket.fileId && HubUrlPolicy.sameHub(hubUrl, request.hubUrl) &&
+            cipherSha256 == ticket.cipherSha256 && plainBytes == ticket.plainBytes &&
+            cipherChunkBytes == ticket.cipherChunkBytes && chunkCount == ticket.chunkCount
+    }
 
     // ----- upload run -------------------------------------------------------------------------------------------
 
@@ -585,6 +705,7 @@ public class HubFileTransfers(
         val request: HubDownloadRequest,
         val layout: HubFileLayout,
         val onProgress: (HubTransferProgress) -> Unit,
+        val onChunkVerified: ((chunkIndex: Int) -> Unit)? = null,
     ) {
         val ticket = request.ticket
         val fileId = ticket.fileId
@@ -592,9 +713,7 @@ public class HubFileTransfers(
 
         suspend fun run(): HubDownloadOutcome {
             val stored = io { storage.readState(HubTransferDirection.DOWNLOAD, fileId) }?.let(HubFileStateCodec::decodeDownload)
-            val reusable = stored != null && HubUrlPolicy.sameHub(stored.hubUrl, request.hubUrl) &&
-                stored.cipherSha256 == ticket.cipherSha256 && stored.plainBytes == ticket.plainBytes &&
-                stored.cipherChunkBytes == ticket.cipherChunkBytes && stored.chunkCount == ticket.chunkCount
+            val reusable = stored?.matches(request) == true
             if (!reusable) runSuspendCatching { io { storage.deletePart(fileId) } }
             state = if (stored != null && reusable) stored else DownloadState(
                 fileId = fileId,
@@ -679,6 +798,7 @@ public class HubFileTransfers(
                                                 terminalIsInterrupted = true
                                             }
                                         } else {
+                                            onChunkVerified?.invoke(index)
                                             onProgress(progress())
                                         }
                                     }

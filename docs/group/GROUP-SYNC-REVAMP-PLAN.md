@@ -1,6 +1,6 @@
 # Group sync revamp and new-member history (FO-10 made concrete)
 
-**Status:** DESIGN, owner decisions taken 2026-10-08, nothing built. Needs an ADR (number on acceptance) before code.
+**Status (2026-11-15):** Implemented under ADR-100. Android and desktop expose the history choice and signed ceiling. Physical acceptance remains in the test backlog (GSY). The original design and baseline follow.
 **Owner request 2026-10-08:** "revamp syncing in groups" and, when a member is added, ask how much history to sync (messages and media).
 
 ---

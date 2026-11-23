@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.chat
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -52,7 +60,10 @@ public fun FlashGroupInviteSheet(
 ) {
     val colors = FlashTheme.colors
     val clipboardManager = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
+    var copied by remember(inviteUrl) { mutableStateOf(false) }
+    val qr = remember(inviteUrl) {
+        runCatching { QRCodeWriter().encode(inviteUrl, BarcodeFormat.QR_CODE, 0, 0) }.getOrNull()
+    }
 
     FlashSheetHost(
         onDismiss = onDismiss,
@@ -91,6 +102,27 @@ public fun FlashGroupInviteSheet(
                 modifier = Modifier.padding(bottom = FlashSpacing.space16),
             )
 
+            if (qr != null) {
+                Canvas(
+                    Modifier.align(Alignment.CenterHorizontally)
+                        .padding(bottom = FlashSpacing.space16)
+                        .size(200.dp)
+                        .semantics { contentDescription = "Group invite QR code" },
+                ) {
+                    drawRect(Color.White)
+                    val module = (size.minDimension / qr.width).toInt().coerceAtLeast(1).toFloat()
+                    val left = (size.width - qr.width * module) / 2
+                    val top = (size.height - qr.height * module) / 2
+                    for (row in 0 until qr.height) {
+                        for (column in 0 until qr.width) {
+                            if (qr.get(column, row)) {
+                                drawRect(Color.Black, Offset(left + column * module, top + row * module), Size(module, module))
+                            }
+                        }
+                    }
+                }
+            }
+
             // Link Display Box
             Box(
                 modifier = Modifier
@@ -128,10 +160,10 @@ public fun FlashGroupInviteSheet(
                         .weight(1f)
                         .height(48.dp)
                         .clip(FlashShapes.chip)
-                        .background(if (copied) colors.statusOnline.copy(alpha = 0.15f) else colors.backgroundSurfaceSubtle)
+                        .background(if (copied) colors.accentFill.copy(alpha = 0.14f) else colors.backgroundSurfaceSubtle)
                         .border(
                             FlashDimensions.borderHairline,
-                            if (copied) colors.statusOnline else colors.borderSubtle,
+                            if (copied) colors.accentFill else colors.borderSubtle,
                             FlashShapes.chip,
                         )
                         .clickable {
@@ -145,14 +177,14 @@ public fun FlashGroupInviteSheet(
                         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                     ) {
                         FlashIcon(
-                            icon = if (copied) FlashIcons.Check else FlashIcons.Share,
+                            icon = if (copied) FlashIcons.Check else FlashIcons.Copy,
                             contentDescription = if (copied) "Copied" else "Copy link",
-                            tint = if (copied) colors.statusOnline else colors.textPrimary,
+                            tint = if (copied) colors.textLink else colors.textPrimary,
                         )
                         FlashText(
                             text = if (copied) "Link copied!" else "Copy link",
                             style = FlashTheme.typography.bodyEmphasis,
-                            color = if (copied) colors.statusOnline else colors.textPrimary,
+                            color = if (copied) colors.textLink else colors.textPrimary,
                         )
                     }
                 }
@@ -164,7 +196,7 @@ public fun FlashGroupInviteSheet(
                             .weight(1f)
                             .height(48.dp)
                             .clip(FlashShapes.chip)
-                            .background(colors.accentPrimary)
+                            .background(colors.accentFill)
                             .clickable { onShare(inviteUrl) },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -175,12 +207,12 @@ public fun FlashGroupInviteSheet(
                             FlashIcon(
                                 icon = FlashIcons.Share,
                                 contentDescription = "Share link",
-                                tint = colors.textOnAccent,
+                                tint = colors.onAccentFill,
                             )
                             FlashText(
                                 text = "Share",
                                 style = FlashTheme.typography.bodyEmphasis,
-                                color = colors.textOnAccent,
+                                color = colors.onAccentFill,
                             )
                         }
                     }

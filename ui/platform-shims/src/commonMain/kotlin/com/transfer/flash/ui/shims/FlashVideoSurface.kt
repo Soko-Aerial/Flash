@@ -5,7 +5,7 @@ import androidx.compose.ui.Modifier
 
 /**
  * Platform video rendering surface shim (UI-018 video playback).
- * Hosts the native video rendering surface (e.g. VideoView on Android).
+ * Hosts the platform decoder's video surface beneath Flash's viewer controls.
  */
 @Composable
 public expect fun FlashVideoSurface(
@@ -17,4 +17,7 @@ public expect fun FlashVideoSurface(
     onError: (String) -> Unit = {},
     onSeekHandled: () -> Unit = {},
     modifier: Modifier = Modifier,
+    onFirstFrame: () -> Unit = {},
+    onBuffering: (Boolean) -> Unit = {},
+    onHostPaused: () -> Unit = {},
 )

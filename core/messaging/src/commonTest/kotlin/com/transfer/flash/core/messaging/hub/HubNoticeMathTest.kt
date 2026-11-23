@@ -50,8 +50,12 @@ class HubNoticeMathTest {
     fun `a hub linked group says truthfully how its messages travel`() {
         val on = HubNoticeMath.notice("g-1", true, true, true, "", false, null, null)
         val off = HubNoticeMath.notice("g-1", true, true, false, "", false, null, null)
+        val e2ee = HubNoticeMath.notice("g-1", true, true, false, "", false, null, null, groupE2eeEnabled = true, groupE2eeStatus = GroupE2eeCompatStatus.ENCRYPTED)
+        val e2eeBlocked = HubNoticeMath.notice("g-1", true, true, true, "", false, null, null, groupE2eeEnabled = true, groupE2eeStatus = GroupE2eeCompatStatus.LEGACY_MEMBERS_PRESENT)
         assertEquals(FlashHubNoticeKind.GROUP_READABLE, on?.kind)
         assertEquals(FlashHubNoticeKind.GROUP_HUB_OFF, off?.kind)
+        assertEquals(FlashHubNoticeKind.GROUP_ENCRYPTED, e2ee?.kind)
+        assertEquals(FlashHubNoticeKind.GROUP_E2EE_BLOCKED, e2eeBlocked?.kind)
     }
 
     @Test

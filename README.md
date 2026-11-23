@@ -8,7 +8,7 @@
 
 # Flash
 
-**Offline, LAN peer-to-peer file transfer, messaging and calling for Android and Windows desktop (Linux in progress) — no server, no
+**Offline, LAN peer-to-peer file transfer, messaging and calling for Android, Windows and Linux desktop — no server, no
 internet, no account.** Flash discovers nearby devices over your local network
 (Wi-Fi, or a phone hotspot), opens a direct encrypted channel between them, and
 streams files, chat and voice/video calls straight across. Nothing leaves the local network; there
@@ -21,15 +21,18 @@ take the whole engine or just the transport pieces you need. Supports **Android 
 
 ## Get the app
 
-Download the signed Android APK and the Windows installers from the
-[Releases page](https://github.com/Soko-Aerial/Flash/releases). The 2.2.0 release uses
-`Flash-2.2.0.msi` and `Flash-2.2.0.exe`. Verify downloads against the release’s `SHA256SUMS.txt`.
+Download the Android APK or Windows installers from the
+[Flash 2.3.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.2). Verify Android and
+Windows files against `SHA256SUMS.txt` and Linux files against `SHA256SUMS-linux.txt`.
 
 - **Android 7.0 (API 24) or newer.** Allow "install unknown apps" for your browser or file manager, then open the APK.
   **If you have `v2.0.0-beta` installed, uninstall it first** (this deletes its chats and pairings): that build was signed with a
-  debug key and Android will not update it with the release-signed 2.1.0. Updates after 2.1.0 install in place.
+  debug key and Android will not update it with the release-signed 2.1.0+ builds. Updates after 2.1.0 install in place.
 - **Windows 10/11.** Per-user install, no administrator rights. The installers are not code-signed yet, so SmartScreen shows
   "unknown publisher": choose *More info*, then *Run anyway*.
+- **Linux x86-64.** Use the `.deb` on Debian or Ubuntu, or extract the `.tar.gz` for a per-user setup. Linux desktop
+  packages are built from the permanent `linux` branch (`origin/linux`), separate from `dev` and `main`.
+  See [Install Flash on Linux](docs/install-linux.md) for the commands.
 - Both devices must be on the same Wi-Fi network (or one phone's hotspot) to find each other.
 - The Flash Hub ships on a separate experimental server beta line. The Radio gateway and Android screen presenter are experimental. See
   [CHANGELOG.md](CHANGELOG.md).
@@ -53,14 +56,13 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.3.0-beta.1")
 }
 ```
 
-The SDK beta `v2.2.0-beta.3` is available on JitPack. Independent Android and JVM projects
-compiled against this public tag; see [REL22-04](docs/testing/TEST-BACKLOG.md#rel22-04--published-beta-resolves-from-the-current-jitpack-coordinate).
-For a direct download, the [SDK beta.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
-includes a Maven repository ZIP, a SHA-256 manifest, and instructions for `com.transfer.flash` coordinates.
+The SDK beta `v2.3.0-beta.1` is published on JitPack (previous tag `v2.2.0-beta.3` was compiled by independent Android and JVM projects; see [REL22-04](docs/testing/TEST-BACKLOG.md#rel22-04--published-beta-resolves-from-the-current-jitpack-coordinate)).
+For direct Maven repository downloads or checksums, check the [2.3.0-beta.1 SDK release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.0-beta.1)
+and `com.transfer.flash` artifact coordinates.
 See [the changelog](CHANGELOG.md) for upgrade notes and [published modules](#published-modules) for smaller dependencies.
 
 ## Quick start
@@ -110,7 +112,7 @@ is done with it, after any transfers you want to finish.
 | Field | Default | Meaning |
 |---|---|---|
 | `displayName` | `null` | Friendly name advertised to peers; falls back to the stored device name. |
-| `enableResume` | `true` | `Flash.create` persists transfer state on Android for resume across restarts. The bundled desktop factory resumes within a session only; a custom JVM factory controls its own persistence. |
+| `enableResume` | `true` | Both Android (`Flash.create`) and desktop (`DesktopEngine`) persist transfer state in the encrypted Room database to resume direct transfers across restarts (ADR-362); a custom JVM factory controls its own persistence. |
 | `autoAcceptIncoming` | `false` | `true` = accept inbound offers automatically; `false` (default) = gate each with `engine.transfers.acceptIncoming(id)` / `declineIncoming(id)`. |
 | `receivedFilesPath` (Android also accepts the legacy `receivedFilesDir: File`) | `null` | Directory for received files; defaults to app-internal storage. |
 
@@ -160,7 +162,7 @@ Flash includes a comprehensive, modular documentation suite located in [`docs/de
 | [**18 Per-Module Guides**](docs/developer-guide/README.md#1-documentation-map) | Documentation for each of the 14 `:core:*` and four `:ui:*` library modules. |
 | [**Ultra-Low Resource Devices (Scenario 1)**](docs/developer-guide/scenarios/scenario-1-ultra-low-resource.md) | Building for devices far more constrained than standard phones (<512MB RAM, IoT, POS, smartwatches, 2.4GHz radios) with memory caps and single-stream transfers. |
 | [**Custom Extensions & Architecture (Scenario 2)**](docs/developer-guide/scenarios/scenario-2-custom-extensions.md) | Custom transports (Bluetooth/BLE, LoRa, USB OTG), custom storage sinks, HSM hardware cryptography, and UI whitelabeling. |
-| [**Open Protocol Specification (Scenario 3)**](docs/developer-guide/scenarios/scenario-3-open-protocol-interop.md) | Complete wire protocol specification with runnable client samples in **Python**, **Rust**, and **Go**. |
+| [**Open Protocol Specification (Scenario 3)**](docs/developer-guide/scenarios/scenario-3-open-protocol-interop.md) | Wire protocol specification and interop requirements (no runnable Python, Rust, or Go client samples are shipped; see the scenario note). |
 | [**Practical Integration Examples**](docs/developer-guide/examples/) | Standalone module usage, full-stack application integration, and running Flash as a headless background daemon. |
 
 ## Performance Modes & Hardware Tiering (ADR-022)
@@ -190,8 +192,8 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.2.0-beta.3")
-    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.3")   // optional in-call screen
+    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.3.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.3.0-beta.1")   // optional in-call screen
 }
 ```
 
@@ -242,9 +244,10 @@ navigation layer pushes and pops its call route off that one flow. Pair it with
 video, the camera) **before** calling `startCall`/`accept`: a microphone opened in the wrong audio
 mode does not switch later.
 
-**Screen share (ADR-102, 2.1.0-beta):** `FlashCalling` also exposes `listShareSources()`, `startScreenShare(...)`,
-`stopScreenShare()`, `setShareQuality(...)` and `dismissShareNotice()`. The **presenter is desktop only** (Windows and Linux);
-Android devices can *watch* a share but the Android presenter (MediaProjection) is not built. The share replaces the
+**Screen share (ADR-102, 2.1.0-beta+):** `FlashCalling` also exposes `listShareSources()`, `startScreenShare(...)`,
+`stopScreenShare()`, `setShareQuality(...)` and `dismissShareNotice()`. Desktop (Windows and Linux) supports presenting screens and windows,
+and an experimental Android `MediaProjection` presenter is wired in `MainActivity` and `FlashScreenCaptureService`
+alongside Android watching support. The share replaces the
 camera track, one presenter per call, and the presenter encodes once per watcher (calls are a mesh), so watchers are capped
 by device tier. Unit-tested, not device-verified (`SHARE-*` in `docs/testing/TEST-BACKLOG.md`).
 
@@ -489,7 +492,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.3.0-beta.1")
 }
 ```
 
@@ -500,7 +503,7 @@ resolution against the published tree.
 
 On desktop, the `:desktop` module provides a complete Compose Desktop application shell bundling
 `DesktopEngine`, Room encrypted SQLite database (`sqlite-jdbc-crypt`), system tray, single-instance
-enforcement, and native Windows installers (`Flash-2.1.0.exe` and `Flash-2.1.0.msi`). Voice and video
+enforcement, and native Windows installers (`Flash-2.3.2.exe` and `Flash-2.3.2.msi`; Linux `.deb`/`.tar.gz` packages are built from the permanent `linux` branch). Voice and video
 calling on JVM is enabled via vendored multiplatform WebRTC.
 
 ## License

@@ -8,7 +8,7 @@ The `:ui:callui` module provides the user interface for voice and video calling.
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.3.0-beta.1")
 }
 ```
 
@@ -32,6 +32,7 @@ Package `com.transfer.flash.ui.calling`. Like `:ui:chat`, the screens are **stat
 import androidx.compose.runtime.*
 import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.ui.calling.FlashCallScreen
+import kotlinx.coroutines.launch
 
 @Composable
 fun CallOverlay(calling: FlashCalling, onDismiss: () -> Unit) {

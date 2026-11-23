@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(flash_media_foundation LANGUAGES CXX)
+
+add_library(flash_media_foundation SHARED MediaFoundation.cpp)
+target_compile_features(flash_media_foundation PRIVATE cxx_std_17)
+target_compile_definitions(flash_media_foundation PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_property(TARGET flash_media_foundation PROPERTY MSVC_RUNTIME_LIBRARY MultiThreaded)
+target_link_libraries(flash_media_foundation PRIVATE mfplat mfuuid d3d11 ole32 oleaut32 uuid)

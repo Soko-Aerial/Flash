@@ -3,6 +3,8 @@ package com.transfer.flash.core.calling
 import com.shepeliev.webrtckmp.AudioStreamTrack
 import com.shepeliev.webrtckmp.BundlePolicy
 import com.shepeliev.webrtckmp.IceCandidate
+import com.shepeliev.webrtckmp.IceServer
+import com.shepeliev.webrtckmp.IceTransportPolicy
 import com.shepeliev.webrtckmp.MediaDevices
 import com.shepeliev.webrtckmp.MediaStream
 import com.shepeliev.webrtckmp.MediaStreamTrackKind
@@ -152,6 +154,12 @@ public class FlashCallSession(
     private val screenCapture: ScreenCaptureProvider = defaultScreenCaptureProvider(),
     /** The wall clock the screen-share rules read (the start counter and the first-frame watchdog); a test drives it. */
     private val shareNowMs: () -> Long = { SystemTimeSource.nowMs() },
+    /** HR9: ICE servers + transport policy for off-LAN calls (default empty = host/LAN candidates only). */
+    private val iceServers: List<IceServer> = emptyList(),
+    private val iceTransportPolicy: IceTransportPolicy = IceTransportPolicy.All,
+    /** HR9: Initial TTL (seconds) for TURN credentials and optional mid-call ICE config refresher. */
+    private val initialIceTtlSeconds: Long? = null,
+    private val refreshIceConfig: (suspend () -> CallIceResolution)? = null,
 ) : FlashCallMedia {
     private val _state = MutableStateFlow(
         FlashCallUiState(
@@ -214,6 +222,14 @@ public class FlashCallSession(
     private var peerConnection: PeerConnection? = null
     private var localStream: MediaStream? = null
     private var remoteAudio: AudioStreamTrack? = null
+    private var currentIceConfig: RtcConfiguration = RtcConfiguration(
+        iceServers = iceServers,
+        iceTransportPolicy = iceTransportPolicy,
+        bundlePolicy = BundlePolicy.MaxBundle,
+        rtcpMuxPolicy = RtcpMuxPolicy.Require,
+        iceCandidatePoolSize = 1,
+    )
+    private var iceRenewalJob: Job? = null
 
     /**
      * Our own RTP senders, kept because tuning them is not a one-shot act (D8).
@@ -1211,8 +1227,13 @@ public class FlashCallSession(
             sendStatus()
         }
         // Pinned: setRemote/createAnswer/setLocal are native.
+        val refreshed = if (_state.value.state == FlashCallState.ACTIVE) refreshIceConfigSafe() else null
         onMediaThread {
         try {
+            if (refreshed is CallIceResolution.Ready && refreshed.rtcConfiguration != currentIceConfig) {
+                runCatching { pc.setConfiguration(refreshed.rtcConfiguration) }
+                currentIceConfig = refreshed.rtcConfiguration
+            }
             setRemoteDescriptionTuned(pc, SessionDescriptionType.Offer, frame.sdp)
             flushPendingIce()
             val answer = pc.createAnswer(
@@ -1496,19 +1517,7 @@ public class FlashCallSession(
             // composed and waiting on this flow.
             _localVideoStreamTrack.value = stream.videoTracks.firstOrNull()
             stream.videoTracks.firstOrNull()?.let { watchLocalCamera(it) }
-            val pc = PeerConnection(
-                RtcConfiguration(
-                    iceServers = emptyList(), // LAN-only: host candidates (ADR-025).
-                    // Both endpoints are Flash, so bundling is a foregone conclusion —
-                    // demanding it up front means ONE ICE check list and ONE DTLS
-                    // handshake for audio+video instead of two of each.
-                    bundlePolicy = BundlePolicy.MaxBundle,
-                    rtcpMuxPolicy = RtcpMuxPolicy.Require,
-                    // Start gathering host candidates now rather than at
-                    // setLocalDescription — that is ~130 ms of media startup earlier.
-                    iceCandidatePoolSize = 1,
-                ),
-            )
+            val pc = PeerConnection(currentIceConfig)
             peerConnection = pc
             val audio = pc.addTrack(
                 stream.tracks.first { it.kind == MediaStreamTrackKind.Audio },
@@ -1712,6 +1721,7 @@ public class FlashCallSession(
                             )
                         }
                         armStatsPolling(pc)
+                        armIceRenewal(pc, initialIceTtlSeconds)
                         refreshUpgradeOffer()
                         retryUpgradeOffer()
                         // Tell the peer where our controls stand: a mute pressed while connecting went nowhere.
@@ -1949,11 +1959,87 @@ public class FlashCallSession(
      * an offer created while a remote description is half-applied is a rollback. Never throws: a
      * failed restart is one wasted attempt, and the window has more.
      */
+    private suspend fun refreshIceConfigSafe(): CallIceResolution? {
+        val resolver = refreshIceConfig ?: return null
+        return try {
+            resolver()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w("CALL", "ICE config refresh failed call=$callId: ${t.message}")
+            null
+        }
+    }
+
+    internal fun currentIceConfigForTesting(): RtcConfiguration = currentIceConfig
+
+    internal suspend fun renewIceOnceForTesting(): Boolean {
+        val next = refreshIceConfigSafe() ?: return false
+        if (next !is CallIceResolution.Ready) return false
+        var changed = false
+        signalMutex.withLock {
+            if (ended) return@withLock
+            if (next.rtcConfiguration != currentIceConfig) {
+                changed = true
+                val pc = peerConnection
+                if (pc != null) {
+                    onMediaThread { runCatching { pc.setConfiguration(next.rtcConfiguration) } }
+                }
+                currentIceConfig = next.rtcConfiguration
+            }
+        }
+        if (changed && direction == FlashCallDirection.OUTGOING && _state.value.state == FlashCallState.ACTIVE) {
+            peerConnection?.let { attemptIceRestart(it) }
+        }
+        return changed
+    }
+
+    private fun armIceRenewal(pc: PeerConnection, initialTtlSeconds: Long?) {
+        if (refreshIceConfig == null || initialTtlSeconds == null || initialTtlSeconds <= 0L) return
+        if (iceRenewalJob?.isActive == true) return
+        iceRenewalJob = scope.launch {
+            var ttlSeconds: Long = initialTtlSeconds
+            while (!ended && peerConnection === pc) {
+                val waitMs = (ttlSeconds * 750L).coerceAtLeast(MIN_ICE_RENEWAL_INTERVAL_MS)
+                delay(waitMs)
+                if (ended || peerConnection !== pc) break
+                val next = refreshIceConfigSafe() ?: continue
+                if (next is CallIceResolution.Unavailable) {
+                    FlashLog.w("CALL", "Off-LAN ICE renewal unavailable (${next.reason}) call=$callId")
+                    continue
+                }
+                next as CallIceResolution.Ready
+                var changed = false
+                signalMutex.withLock {
+                    if (ended || peerConnection !== pc) return@withLock
+                    if (next.rtcConfiguration != currentIceConfig) {
+                        changed = true
+                        onMediaThread { runCatching { pc.setConfiguration(next.rtcConfiguration) } }
+                        currentIceConfig = next.rtcConfiguration
+                    }
+                }
+                if (changed && direction == FlashCallDirection.OUTGOING && _state.value.state == FlashCallState.ACTIVE) {
+                    attemptIceRestart(pc)
+                }
+                ttlSeconds = next.ttlSeconds?.takeIf { it > 0L } ?: ttlSeconds
+            }
+        }
+    }
+
     private suspend fun attemptIceRestart(pc: PeerConnection): Boolean = signalMutex.withLock {
         if (ended) return@withLock false
+        val refreshed = refreshIceConfigSafe()
+        if (refreshed is CallIceResolution.Unavailable) {
+            FlashLog.w("CALL", "ICE restart aborted: ${refreshed.reason} call=$callId")
+            return@withLock false
+        }
         // Pinned: createOffer + setLocalDescription are native.
         onMediaThread {
         try {
+            if (refreshed is CallIceResolution.Ready && refreshed.rtcConfiguration != currentIceConfig) {
+                runCatching { pc.setConfiguration(refreshed.rtcConfiguration) }
+                currentIceConfig = refreshed.rtcConfiguration
+            }
             val offer = pc.createOffer(
                 OfferAnswerOptions(
                     iceRestart = true,
@@ -2322,6 +2408,8 @@ public class FlashCallSession(
 
     /** [releaseMedia] with the lifecycle lock already held (startMedia's ended-path). */
     private suspend fun releaseMediaLocked(): Unit = onMediaThread {
+        iceRenewalJob?.cancel()
+        iceRenewalJob = null
         statsJob?.cancel()
         statsJob = null
         // The sampler thread belongs to the call, not the process: a finished call must not
@@ -2424,5 +2512,8 @@ public class FlashCallSession(
 
         /** ADR-102: how often the presenter looks at its capture (first frame, then the captured size). */
         const val SHARE_WATCHDOG_MS = 1_000L
+
+        /** Minimum interval between proactive mid-call TURN credential renewals. */
+        const val MIN_ICE_RENEWAL_INTERVAL_MS = 15_000L
     }
 }

@@ -4,6 +4,7 @@ package com.transfer.flash.desktop
 
 import com.transfer.flash.core.common.logging.FlashLog
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -34,6 +35,8 @@ public object SingleInstanceController {
     private const val TAG = "SINGLE_INSTANCE"
     private const val COMMAND_ACTIVATE = "ACTIVATE"
     private const val COMMAND_SEND = "SEND"
+    private const val COMMAND_INVITE = "INVITE"
+    internal const val OPEN_INVITE_ARGUMENT = "--open-invite"
     private const val END_OF_TRANSMISSION = "END_SEND"
     private const val RESPONSE_OK = "OK"
 
@@ -44,6 +47,24 @@ public object SingleInstanceController {
     private var portFile: File? = null
 
     private val pendingInitialFiles = java.util.Collections.synchronizedList(mutableListOf<File>())
+    private val pendingInvite = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    internal val invites: kotlinx.coroutines.flow.StateFlow<String?> get() = pendingInvite
+
+    internal fun consumeInvite(invite: String) {
+        pendingInvite.compareAndSet(invite, null)
+    }
+
+    internal fun parseInviteArg(args: Array<String>): String? {
+        val link = when {
+            args.size == 2 && args[0] == OPEN_INVITE_ARGUMENT -> args[1]
+            args.size == 1 -> args[0]
+            else -> return null
+        }
+        return link.takeIf {
+            it.length <= MAX_LINE_CHARS && it.none { char -> char.isWhitespace() || char.isISOControl() || char == '"' } &&
+                (com.transfer.flash.core.common.protocol.InviteAppLink.isGroupInvite(it) || it.startsWith("flash://enroll?"))
+        }
+    }
 
     @Volatile
     public var onActivate: (() -> Unit)? = null
@@ -86,6 +107,7 @@ public object SingleInstanceController {
      *         `false` if another instance is already running; in this case, an activation
      *         message has been sent to the existing instance and this process must exit.
      */
+    @Throws(IOException::class)
     public fun acquireOrActivate(
         baseDir: File = DesktopPaths.stateDir(),
         args: Array<String> = emptyArray(),
@@ -95,43 +117,36 @@ public object SingleInstanceController {
         lockFile = File(baseDir, "app.lock")
         portFile = File(baseDir, "app.port")
 
-        val files = parseFilesFromArgs(args)
+        val invite = parseInviteArg(args)
+        val files = if (invite == null && args.firstOrNull() != OPEN_INVITE_ARGUMENT) parseFilesFromArgs(args) else emptyList()
 
         val acquired = tryAcquireLock()
         if (acquired) {
             if (files.isNotEmpty()) {
                 pendingInitialFiles.addAll(files)
             }
+            pendingInvite.value = invite
             startActivationServer()
             return true
         }
 
         // Another instance is already running; ping it to bring its window to front or transfer files
-        notifyRunningInstance(files)
+        notifyRunningInstance(files, invite)
         return false
     }
 
     private fun tryAcquireLock(): Boolean {
-        return try {
-            val file = lockFile ?: return true
-            val raf = RandomAccessFile(file, "rw")
-            val channel = raf.channel
-            val lock = channel.tryLock()
-            if (lock != null && lock.isValid) {
-                lockFileChannel = channel
-                fileLock = lock
-                file.deleteOnExit()
-                true
-            } else {
-                channel.close()
-                raf.close()
-                false
-            }
+        val file = checkNotNull(lockFile)
+        val channel = RandomAccessFile(file, "rw").channel
+        try {
+            val lock = channel.tryLock() ?: return false
+            lockFileChannel = channel
+            fileLock = lock
+            return true
         } catch (_: OverlappingFileLockException) {
-            false
-        } catch (t: Throwable) {
-            FlashLog.w(TAG, "File lock probe encountered exception: ${t.message}")
-            false
+            return false
+        } finally {
+            if (lockFileChannel !== channel) channel.close()
         }
     }
 
@@ -149,7 +164,6 @@ public object SingleInstanceController {
                 restrictToOwner(file)
                 file.writeText(port.toString() + "\n" + token)
             }
-            portFile?.deleteOnExit()
 
             thread(name = "FlashSingleInstanceListener", isDaemon = true) {
                 while (!server.isClosed) {
@@ -192,6 +206,15 @@ public object SingleInstanceController {
                                     write(RESPONSE_OK + "\n")
                                     flush()
                                 }
+                            } else if (trimmed == COMMAND_INVITE) {
+                                val invite = readBoundedLine(reader)?.let { parseInviteArg(arrayOf(it)) }
+                                if (invite != null) {
+                                    pendingInvite.value = invite
+                                    client.getOutputStream().bufferedWriter().apply {
+                                        write(RESPONSE_OK + "\n")
+                                        flush()
+                                    }
+                                }
                             } else if (trimmed.startsWith(COMMAND_ACTIVATE)) {
                                 FlashLog.i(TAG, "Received activation ping from duplicate instance; focusing window.")
                                 javax.swing.SwingUtilities.invokeLater {
@@ -214,7 +237,7 @@ public object SingleInstanceController {
         }
     }
 
-    private fun notifyRunningInstance(files: List<File> = emptyList()) {
+    private fun notifyRunningInstance(files: List<File> = emptyList(), invite: String? = null) {
         try {
             val lines = awaitPortFileLines()
             val port = lines.getOrNull(0)?.trim()?.toIntOrNull()
@@ -225,7 +248,10 @@ public object SingleInstanceController {
                     socket.soTimeout = 4000
                     socket.getOutputStream().bufferedWriter().apply {
                         write(token + "\n")
-                        if (files.isNotEmpty()) {
+                        if (invite != null) {
+                            write(COMMAND_INVITE + "\n")
+                            write(invite + "\n")
+                        } else if (files.isNotEmpty()) {
                             write(COMMAND_SEND + "\n")
                             for (f in files) {
                                 write(f.absolutePath + "\n")
@@ -314,11 +340,15 @@ public object SingleInstanceController {
      * Releases locks and sockets on app termination.
      */
     public fun release() {
+        pendingInvite.value = null
         try {
             serverSocket?.close()
         } catch (_: Throwable) {}
         serverSocket = null
 
+        // Remove the activation endpoint while we still own the lock. Keep the lock
+        // file itself: unlinking it can give two Unix processes different inodes to lock.
+        if (fileLock?.isValid == true) runCatching { portFile?.delete() }
         try {
             fileLock?.release()
         } catch (_: Throwable) {}
@@ -329,11 +359,7 @@ public object SingleInstanceController {
         } catch (_: Throwable) {}
         lockFileChannel = null
 
-        try {
-            portFile?.delete()
-        } catch (_: Throwable) {}
-        try {
-            lockFile?.delete()
-        } catch (_: Throwable) {}
+        portFile = null
+        lockFile = null
     }
 }

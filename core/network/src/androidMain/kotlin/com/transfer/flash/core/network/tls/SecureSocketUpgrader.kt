@@ -1,5 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.tls
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.runSuspendCatching
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetAddress
@@ -121,7 +125,7 @@ internal object SecureSocketUpgrader {
         deferPinWhenDeviceIdUnknown: Boolean = false,
         onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
     ): Result<SSLSocket> = withContext(Dispatchers.IO) {
-        val result = runCatching {
+        val result = runSuspendCatching {
             refuseIfTouched(socket)
             val context = FlashTlsContextFactory.clientContext(
                 pinVerifier,
@@ -165,7 +169,7 @@ internal object SecureSocketUpgrader {
         socket: SSLSocket,
         handshakeTimeoutMs: Long = DEFAULT_HANDSHAKE_TIMEOUT_MS,
     ): Result<SSLSocket> = withContext(Dispatchers.IO) {
-        runCatching {
+        runSuspendCatching {
             val previousTimeout = socket.soTimeout
             socket.soTimeout = handshakeTimeoutMs.toInt().coerceIn(1, Int.MAX_VALUE)
             socket.startHandshake()

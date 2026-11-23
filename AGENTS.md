@@ -101,23 +101,29 @@ Maintain a structure similar to:
 ```text
 docs/
 ├── architecture.md
+├── architecture/
+│   └── public-api.md
+├── audit/                       # Feature inventories, 27-module IF reviews, and remediation records
 ├── protocol.md
 ├── android-platform-notes.md
 ├── security.md
-├── testing.md
-├── performance.md
-├── known-issues.md
 ├── decisions.md
-├── troubleshooting.md
+├── release-build.md
+├── install-linux.md
+├── developer-guide/             # Consumer guides, per-module docs, scenarios, and examples
+├── migration/                   # KMP & adaptive UI phase docs
+├── plans/                       # Roadmaps, Hub readiness, radio, and optimization plans
 ├── testing/
 │   ├── TEST-BACKLOG.md          # Every device test still owed (see §35)
 │   └── PROBES.md                # Evidence probe vocabulary + log export header (ADR-087)
 ├── deploy/
-│   └── HUB-SERVER-DEPLOYMENT.md # Deploy the hub to any server (test and production profiles)
+│   ├── HUB-SERVER-DEPLOYMENT.md # Deploy the hub to any server (test and production profiles)
+│   └── INVITE-LINKS.md          # HTTPS App Links & universal group/enrol invite deployment
 └── ui/                          # Premium chat UI — research-first (see §34)
     ├── flash-premium-chat-ui-implementation.md
     ├── ui-research-index.md
     ├── component-doc-template.md
+    ├── performance.md
     └── <component>.md           # One research doc per major component
 
 logs/
@@ -126,6 +132,8 @@ logs/
 ├── experiments.md
 └── handoff.md
 ```
+
+*(Note: `docs/testing.md`, `docs/performance.md`, `docs/known-issues.md`, and `docs/troubleshooting.md` do not exist as top-level files; device testing lives under `docs/testing/`, UI performance under `docs/ui/performance.md`, and known defects/errors in `logs/errors.md`.)*
 
 Create missing files when needed.
 
@@ -917,6 +925,41 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-23 — Flash 2.3.2 rebuilt with group audio and Windows reinstall fixes (ERROR-1050/1051).** Commit `54a69dcb` gives each whole-file group send a recipient-specific wire file ID. Commit `2457c0fa` lets the refreshed Windows installers in `dist/2.3.2` replace the earlier 2.3.2 in the same upgrade family. Both packages detected the existing installation. WIN-UPGRADE-02 and GROUP-VOICE-01 track installed acceptance.
+
+**2026-11-23 — Signed Android 2.3.2 installed and verified on V760 (ERROR-1048/1049).** Commit `3289874a` works around invalid R8 output for the conversation screen and `fa1a4118` fixes the visible activity's delayed service timeout. The current arm64 APK in `dist/2.3.2` installed in place over signed Flash and stayed open with the foreground service active for 2 minutes and 55 seconds on Android 13. IFREV-02 tracks the remaining installed release checks.
+
+**2026-11-23 — Flash 2.3.2 release artifacts refreshed (ERROR-1047).** Commit `692ebe5f` generates the group-policy serializer. The debug APK installed in place on the enrolled Android 14 Infinix and stayed open through the next refresh interval. The refreshed Windows installers and signed Android APKs in `dist/2.3.2` contain the fix. Run IFREV-02 on signed Android and installed Windows.
+
+**2026-11-23 — Windows and Android 2.3.2 release candidate (ERROR-1046).** Hub key approval binds to the exact fingerprint, sealing uses a single directory snapshot, and persisted holds survive offline restart. Confirmation advances that peer's retry deadline. Nearby lists all LAN IPv4 endpoints. Android version code is 7 and Windows installers use the existing upgrade family. See the handoff and device backlog for the build and retest evidence.
+
+**2026-11-22 — Hub security-key confirmation banner (ERROR-1045).** Direct chats show the warning next to the composer and prompt for verification when outgoing messages are pending. The dialog compares old and new codes, and the peer can read their own code in Hub connection details. Added to Unreleased. Installed-device verification is tracked by HUBH-02 and HUBH-08/09.
+
+**2026-11-22 — Test Hub updated and desktop relay block diagnosed (ERROR-1045).** The isolated test Hub on `myserver` runs `2.3.0-beta.1` from `6def5ba1`. The live public relay challenge, Hub identity and enrolled reconnects verified. Windows held the reported sends for a pending peer sealing-key change and later sent them over LAN. The owner's key confirmation and relay-only retest remain under HUB-02 and HUBH-02. See `logs/handoff.md` for rollback evidence.
+
+**2026-11-22 — Windows installer recovery (ERROR-1044).** Windows desktop `2.3.1` fixes the same-version installer conflict. The MSI upgraded the owner's installed `2.3.0` in place and preserved the existing state files. Verified installers are in `dist/desktop-2.3.1`. NEARBY-NET-01 and WIN-UPGRADE-01 remain in the test backlog.
+
+**2026-11-22 — Nearby network recovery (ERROR-1043).** The Windows/Linux desktop and Android hosts derive the Nearby status from live LAN addresses. Nearby shows its IP and port before discovery finds peers and permits direct IP entry from the offline panel. The Windows and Android `dist/2.3.0` bundle was rebuilt from `d7efc7a7` and all 10 binaries verified. The Linux packaging backport is on local `codex/nearby-linux`. Physical acceptance is NEARBY-NET-01–04 in the test backlog.
+
+**2026-11-21 — 2.3.0 release preparation (`2.3.0` / Android `versionCode 6`, SDK `v2.3.0-beta.1`, Hub `server-v2.3.0-beta.1`).** Version targets and top-level/architecture/protocol/deploy/migration docs updated atop the verified Batch 1–4 remediation baseline on `dev`. Note that `origin/linux` (`linux` branch) is a permanent branch alongside `dev` and `main` for Linux desktop builds and packages. Signed release artifact builds, physical-device checks (`MODREV-01..07`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `IFREV-01..06`, `INVITE-LINK-01..02`), and live test-Hub verification remain owed in `docs/testing/TEST-BACKLOG.md`.
+
+**2026-11-19 — Feature and module review remediation (Batches 1–4) complete on `dev`.** Landed `11e33e40`, `266a79c2`, `84d1c6a1`, `7f08bb1c`, and `9e2123ba` covering lock-free Hub-to-LAN adoption, crash-safe checkpoints and desktop/Android DB recovery, offline `E2EE_REQUIRED` row retirement, independent `join-links.key` with per-link revocation and limits, per-leg mixed-route call ICE and TURN renewal, PTT disconnect/teardown and radio ACK/reconnect recovery, media viewer rotation restoration, desktop WSOLA 1.5x/2x voice speed, accessibility/RTL/contrast fixes, and Android/Desktop host safety. Full verified gate passed 9,320 Gradle tests (9,315 passed, 5 skips), 89 Admin UI tests, `:app:assembleDebug`, and `:app:lintDebug` (0 errors). See [the remediation record](docs/audit/2026-11-19-feature-module-remediation.md), ADR-367, ERROR-1038, and MODREV-01..07.
+
+**2026-11-19 — Feature and module review remediation.** The latest changes address voice capture pause, transfer handoff, desktop database access, Android service lifecycle, Hub authorization and retry behavior, group creation, and vault recovery. See [the remediation record](docs/audit/2026-11-19-feature-module-remediation.md), ADR-366, and the MODREV device checks in the test backlog.
+
+**2026-11-18 — Hub group audit fixes.** ADR-365 records relay encryption policy enforcement, enrollment-scoped policy refresh, atomic and replay-safe group creation, and Hub directory group invite links. Server, shared JVM and UI tests, Android debug APK assembly and desktop compile passed. IFREV-01..06 track the live Hub and installed app checks.
+
+**2026-11-15 — Windows inline video and media timeline refresh.** ADR-364 and UI-018 document the Media Foundation bridge, the shared timeline, and Android's ten-second double-tap gesture. Installed Windows and physical Android acceptance are tracked by MEDIA-PLAY-03/04.
+
+**2026-11-15 — Desktop direct-transfer restart recovery and unified Android media viewer.** See ADR-362/363 and `logs/handoff.md`. Desktop uses encrypted transfer rows and validated LAN checkpoints. Android shares the preview and playback controls. Device acceptance is DESK-RESUME-01 and MEDIA-PLAY-01/02. The desktop player recommendation is recorded in UI-018.
+
+**2026-11-14 — Cross-screen Android and desktop polish, tray icon and voice recording controls.** See `logs/handoff.md` for the commits and verification. Live acceptance is tracked by UXPOL-18 and UXPOL-19.
+
+**2026-11-14 — Compact Transfers rows, chat header and message timestamps, and attachment deduplication.** See `logs/handoff.md`, ERROR-1024/1025 and UXPOL-16/17 for physical-device acceptance. The branch inventory identified Linux Bluetooth and packaging work on `origin/linux` outside `dev`.
+
+**2026-11-14 — Hub readiness HR6–HR11 integrated into `dev`.**
+Resolved all 8 findings (`6 P1 + 2 P2`) from `docs/audit/2026-11-14-hub-completion-review.md` plus all 6 independent re-verifier defects atop `256e140d` in isolated worktree `C:\Users\KaliOxygen\Downloads\Flash.worktrees\hub-readiness`: atomic `hub_device_replacements` + startup/lease crash recovery & `409` pending-grant conflict handling (HR6), `expectedEpoch` feed reset guard (HR7), `FileContinuityCheckpointStore` disk persistence + bidirectional `sendFile`/`resumeTransfer` `LAN <-> Hub` handover (HR8), pre-replay frame validation + proactive ICE config renewal + `suspend iceConfigProvider` on call setup (HR9), bounded epochs + canonical tie-breaking (HR10), and `quarantinedOutstanding` observability (HR11). Verified after final edits (`--rerun` / `--rerun-tasks`): `87` Node Admin UI tests, `76 suites / 703 tests` in `:server:test`, `394 suites / 3,311 tests` (`4` Windows POSIX skips) across client/UI/Desktop/Android + `:app:assembleDebug` (`4,101` total automated tests, `0` failures). Physical/VPS/Chrome/coturn acceptance remains `TODO` in `docs/testing/TEST-BACKLOG.md`; see `logs/handoff.md` and `docs/plans/HUB-READINESS-REMEDIATION.md`.
+
 **2026-11-08 — Flash 2.2.0 published.** App tag `v2.2.0` and Hub prerelease
 `server-v2.2.0-beta.1` point to `322a92aa`. The release-wide host gate passed. SDK beta.3
 published on JitPack from `13e0fa3f`; beta.2 also has a verified Maven repository ZIP. See
@@ -1485,21 +1528,16 @@ Android's look preserved or improved).
 
 - **Wi‑Fi Direct transport.** No `WifiP2pManager` code exists (verified 2026-09-24); postponed (ADR-056, FO-03). The concept and the transport
   abstraction only.
-- **Adaptive layout remainder:** draggable splitter (AD-2 / AD-D3), pointer idioms and desktop selection (AD-4 / AD-D5), fold posture
-  (AD-6 / AD-D4), state continuity when a resize crosses a breakpoint (AD-7), and the adaptive quality gate (AD-8). See
-  `docs/migration/ADAPTIVE-UI-PLAN.md`.
-- **Device verification** (not missing code): the groups / discovery-resilience / removal work above, the adaptive UI, and the premium UI
-  quality gate UI-045.
+- **Adaptive layout remainder:** fold posture (AD-6 / AD-D4), full resize state continuity across breakpoints (AD-7), and the physical-device adaptive quality gate (AD-8). (Desktop draggable splitter `AD-2` in `DesktopAdaptive.kt` and desktop pointer/context-menu idioms are implemented in code; see `docs/migration/ADAPTIVE-UI-PLAN.md`.)
+- **Device verification** (not missing code): the groups / discovery-resilience / removal work above, the adaptive UI, Hub readiness (`HR6`–`HR11` / `IFREV-*`), desktop resume / inline video (`DESK-RESUME-01`, `MEDIA-PLAY-*`), Batch 1–4 remediation (`MODREV-01..07`), and the premium UI quality gate UI-045.
 - **Performance benchmarking on devices:** EXP-001…EXP-017 are individual findings, not the benchmark matrix of §23; the MEAS-* tests
   (chunk size, streams, LAN vs hotspot, thermals) and the UI-042/UI-043 device numbers are owed, and the scale measurement is postponed.
 - **Background transfer as a supported claim:** a foreground service (`connectedDevice|dataSync`) and a 15-minute WorkManager wake-up
   exist (ADR-041), but background liveness differs by handset (EXP-002: Samsung 90 %, Infinix 4 %; Transsion's freezer), so do not claim
   it is fully supported.
-- **Group gaps, accepted or open:** no per-sender keys, so a removed member keeps what it already received and can read what a member that
-  has not yet heard of the removal sends; a lying owner can vouch a key it controls; vouched members get no files (FO-04); a call leg
-  already established is not re-checked after a removal; a non-owner in a v2 group still sees "Add members" and it fails silently;
-  legacy groups keep the forgeable membership of ERROR-082 by the owner's decision.
+- **Group gaps, accepted or open:** Hub-linked groups support end-to-end encryption (`GROUP_SEALED_V1` / `GROUP_KEY_DIST_V1` with epoch rotation on membership change, HR10), whereas direct/LAN `g2-` and legacy groups do not use per-sender keys (so a removed LAN member keeps what it already received and can read what a member that has not yet heard of the removal sends); a lying owner can vouch a key it controls; vouched members get no files (FO-04); a call leg already established is not re-checked after a removal; a non-owner in a v2 group still sees "Add members" and it fails silently; legacy groups keep the forgeable membership of ERROR-082 by the owner's decision.
 - **Persisted pause intent** for transfers, and BLAKE3 (deferred until a benchmark asks for it).
+- **Platform media & key rotation gaps:** `E2eFrameCodec` static per-pairing key rotation (~2^32 GCM nonce cap), Linux/macOS native inline video playback, and OS mic-mute detection on Desktop / Android API `<29` remain open (`docs/audit/2026-11-19-feature-module-remediation.md`).
 
 ## Known Risks
 

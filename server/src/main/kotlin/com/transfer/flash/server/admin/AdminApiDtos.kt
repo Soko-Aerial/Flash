@@ -164,10 +164,29 @@ data class DeviceDto(
     val online: Boolean = false,
     val subjectPublicKey: String = "",
     val inviteId: String? = null,
+    val replacementState: String? = null,
+    val replacementInviteId: String? = null,
 )
 
 @Serializable
 data class DeviceUpdateBody(val name: String? = null, val department: String? = null, val moveToDepartment: Boolean = false)
+
+@Serializable
+data class DeviceReplaceBody(
+    val department: String? = null,
+    val role: String? = null,
+    val allowedGroups: List<String> = emptyList(),
+    val autoJoinGroups: List<String> = emptyList(),
+    val reason: String = "Device replaced",
+    val ttlMinutes: Long? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class DeviceReplaceResultDto(
+    val oldDevice: DeviceDto,
+    val invite: InviteCreatedDto,
+)
 
 @Serializable
 data class RevokeBody(val reason: String = "revoked by administrator")
@@ -235,6 +254,8 @@ data class GroupBody(
     val visibility: String? = null,
     val joinMode: String? = null,
     val adminDeviceIds: List<String>? = null,
+    val revokeJoinLinks: Boolean = false,
+    val revokeLinkId: String? = null,
 )
 
 @Serializable
@@ -349,6 +370,8 @@ data class SettingsDto(
     val fileRetentionDays: Int = com.transfer.flash.server.files.FileSettings.DEFAULT_RETENTION_DAYS,
     val deviceStoredBytes: Long = com.transfer.flash.server.files.FileSettings.DEFAULT_DEVICE_STORED_BYTES,
     val globalStoredBytes: Long = com.transfer.flash.server.files.FileSettings.DEFAULT_GLOBAL_STORED_BYTES,
+    val allowPersonalHubLink: Boolean = true,
+    val groupE2eeMode: String = com.transfer.flash.core.hubprotocol.HubContract.GROUP_E2EE_REQUIRED,
 )
 
 @Serializable

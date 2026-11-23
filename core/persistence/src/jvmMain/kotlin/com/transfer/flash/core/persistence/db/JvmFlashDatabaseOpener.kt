@@ -4,6 +4,7 @@ package com.transfer.flash.core.persistence.db
 
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.useWriterConnection
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.SQLiteDriver
 import androidx.sqlite.execSQL
@@ -12,7 +13,16 @@ import com.transfer.flash.core.common.perf.MemoryGovernor
 import com.transfer.flash.core.common.perf.MemoryTrimLevel
 import com.transfer.flash.core.common.perf.MemoryTrimListener
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /**
  * JVM open paths for [FlashDatabase] (Phase 2, slice 1).
@@ -53,10 +63,240 @@ import kotlinx.coroutines.Dispatchers
  *   tables (proven by `JdbcCipherSQLiteDriverTest`) — so a corrupted key reads as an
  *   error, never as "your chat history was deleted".
  */
+public sealed interface JvmDatabaseOpenResult {
+    public data class Opened(
+        public val database: FlashDatabase,
+        public val recoveredAction: String? = null,
+    ) : JvmDatabaseOpenResult
+
+    public data class UnavailablePreserved(
+        public val reason: Throwable,
+    ) : JvmDatabaseOpenResult
+}
+
 public fun openEncryptedFlashDatabase(file: File, key: String): FlashDatabase {
     file.parentFile?.mkdirs()
     return openFlashDatabase(file.absolutePath, JdbcCipherSQLiteDriver(key))
 }
+
+/**
+ * Opens the desktop encrypted [FlashDatabase] and validates it eagerly, performing safe recovery
+ * without data loss when needed:
+ *
+ * - If [mintedNewKey] is true and [file] (or any `-wal`/`-shm`/`-journal` sidecar) already exists,
+ *   the unreadable store and all sidecars are atomically quarantined to
+ *   `<name>.unrecoverable-<stamp><suffix>` (with rollback on partial failure) before opening a
+ *   fresh store.
+ * - If [mintedNewKey] is false and opening/validation fails with a non-corruption error (busy/lock,
+ *   I/O, permission, or schema-version mismatch), existing files are preserved untouched and
+ *   [JvmDatabaseOpenResult.UnavailablePreserved] is returned.
+ * - If opening/validation fails with SQLite corruption (`SQLITE_CORRUPT` / `SQLITE_NOTADB`):
+ *   a full forensic backup is taken first; if a WAL-less copy passes `PRAGMA integrity_check` and
+ *   [validate], only the corrupt `-wal`/`-shm`/`-journal` sidecars are quarantined so intact chat
+ *   history survives; otherwise the unrecoverable database and sidecars are quarantined and a fresh
+ *   database is opened.
+ */
+public fun openEncryptedFlashDatabaseWithRecovery(
+    file: File,
+    key: String,
+    mintedNewKey: Boolean = false,
+    nowMs: () -> Long = System::currentTimeMillis,
+    validate: suspend (FlashDatabase) -> Unit = { it.conversationDao().get("") },
+): JvmDatabaseOpenResult {
+    file.parentFile?.mkdirs()
+    val stamp = nowMs()
+
+    if (mintedNewKey) {
+        val quarantined = try {
+            quarantineFiles(file, DB_ALL_SUFFIXES, "unrecoverable-$stamp")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return JvmDatabaseOpenResult.UnavailablePreserved(e)
+        }
+        return tryOpenValidated(file, key, validate) { db ->
+            JvmDatabaseOpenResult.Opened(
+                database = db,
+                recoveredAction = if (quarantined.isNotEmpty()) {
+                    "quarantined ${quarantined.size} unreadable database file(s) after missing key: ${quarantined.joinToString { it.name }}"
+                } else {
+                    null
+                },
+            )
+        }
+    }
+
+    val initial = tryOpenValidated(file, key, validate) { JvmDatabaseOpenResult.Opened(it) }
+    if (initial is JvmDatabaseOpenResult.Opened) return initial
+    val failure = (initial as JvmDatabaseOpenResult.UnavailablePreserved).reason
+    if (!isCorruptionOrKeyMismatch(failure)) {
+        return initial
+    }
+
+    // Preserve a full copy before attempting WAL triage or quarantine.
+    val backups = try {
+        backupFiles(file, DB_ALL_SUFFIXES, "backup-$stamp")
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        return JvmDatabaseOpenResult.UnavailablePreserved(e)
+    }
+
+    // If WAL/SHM sidecars exist alongside the main DB, check whether the main DB alone is intact.
+    val hasWalOrJournal = DB_SIDECAR_ONLY_SUFFIXES.any { File(file.path + it).exists() }
+    if (file.exists() && hasWalOrJournal) {
+        val probePrefix = uniqueName(file, "repair-check-$stamp", listOf(""))
+        val probeFile = File(file.parentFile, probePrefix)
+        try {
+            Files.copy(file.toPath(), probeFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            val probeResult = tryOpenValidated(
+                file = probeFile,
+                key = key,
+                validate = { db ->
+                    val ok = db.useWriterConnection { writer ->
+                        writer.usePrepared("PRAGMA integrity_check") { stmt ->
+                            stmt.step() && stmt.getText(0).equals("ok", ignoreCase = true)
+                        }
+                    }
+                    if (!ok) error("integrity_check failed")
+                    validate(db)
+                },
+                onSuccess = { JvmDatabaseOpenResult.Opened(it) },
+            )
+            if (probeResult is JvmDatabaseOpenResult.Opened) {
+                runCatching { probeResult.database.closeWithTrim() }
+                val quarantinedSidecars = quarantineFiles(file, DB_SIDECAR_ONLY_SUFFIXES, "corrupt-wal-$stamp")
+                val reopened = tryOpenValidated(file, key, validate) { db ->
+                    JvmDatabaseOpenResult.Opened(
+                        database = db,
+                        recoveredAction = "repaired database by quarantining corrupt sidecar(s) ${quarantinedSidecars.joinToString { it.name }}; backup kept at ${backups.firstOrNull()?.name}",
+                    )
+                }
+                if (reopened is JvmDatabaseOpenResult.Opened) {
+                    return reopened
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Fall through to full quarantine below; backups remain on disk.
+        } finally {
+            DB_ALL_SUFFIXES.forEach { suffix ->
+                runCatching { File(probeFile.path + suffix).delete() }
+            }
+        }
+    }
+
+    // Main database itself is unrecoverable with this key: quarantine it (never delete) and open fresh.
+    val quarantined = try {
+        quarantineFiles(file, DB_ALL_SUFFIXES, "unrecoverable-$stamp")
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        return JvmDatabaseOpenResult.UnavailablePreserved(e)
+    }
+    // Redundant pre-quarantine copy is no longer needed once the original files are safely quarantined.
+    backups.forEach { runCatching { it.delete() } }
+
+    return tryOpenValidated(file, key, validate) { db ->
+        JvmDatabaseOpenResult.Opened(
+            database = db,
+            recoveredAction = "quarantined corrupt/unreadable database (${quarantined.joinToString { it.name }}) and opened a fresh database",
+        )
+    }
+}
+
+private inline fun tryOpenValidated(
+    file: File,
+    key: String,
+    crossinline validate: suspend (FlashDatabase) -> Unit,
+    onSuccess: (FlashDatabase) -> JvmDatabaseOpenResult,
+): JvmDatabaseOpenResult {
+    val candidate = try {
+        openEncryptedFlashDatabase(file, key)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        return JvmDatabaseOpenResult.UnavailablePreserved(e)
+    }
+    return try {
+        runBlocking { validate(candidate) }
+        onSuccess(candidate)
+    } catch (e: CancellationException) {
+        runCatching { candidate.closeWithTrim() }
+        throw e
+    } catch (e: Throwable) {
+        runCatching { candidate.closeWithTrim() }
+        JvmDatabaseOpenResult.UnavailablePreserved(e)
+    }
+}
+
+private fun isCorruptionOrKeyMismatch(error: Throwable): Boolean {
+    return generateSequence(error) { it.cause }.any { cause ->
+        val msg = cause.message?.lowercase().orEmpty()
+        msg.contains("sqlite_corrupt") ||
+            msg.contains("sqlite_notadb") ||
+            msg.contains("database disk image is malformed") ||
+            msg.contains("file is not a database") ||
+            msg.contains("file is encrypted or is not a database")
+    }
+}
+
+private fun uniqueName(baseFile: File, tag: String, suffixes: List<String>): String {
+    val parent = baseFile.parentFile
+    var attempt = 0
+    var prefix = "${baseFile.name}.$tag"
+    while (suffixes.any { suffix -> File(parent, "$prefix$suffix").exists() }) {
+        attempt++
+        prefix = "${baseFile.name}.$tag-$attempt"
+    }
+    return prefix
+}
+
+private fun backupFiles(baseFile: File, suffixes: List<String>, tag: String): List<File> {
+    val existing = suffixes.mapNotNull { suffix ->
+        File(baseFile.path + suffix).takeIf { it.exists() }?.let { suffix to it }
+    }
+    if (existing.isEmpty()) return emptyList()
+    val parent = baseFile.parentFile
+    val prefix = uniqueName(baseFile, tag, suffixes)
+    return existing.map { (suffix, source) ->
+        val target = File(parent, "$prefix$suffix")
+        Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        target
+    }
+}
+
+private fun quarantineFiles(baseFile: File, suffixes: List<String>, tag: String): List<File> {
+    val existing = suffixes.mapNotNull { suffix ->
+        File(baseFile.path + suffix).takeIf { it.exists() }?.let { suffix to it }
+    }
+    if (existing.isEmpty()) return emptyList()
+    val parent = baseFile.parentFile
+    val prefix = uniqueName(baseFile, tag, suffixes)
+    val movedPairs = ArrayList<Pair<File, File>>(existing.size)
+    for ((suffix, source) in existing) {
+        val target = File(parent, "$prefix$suffix")
+        val moved = runCatching {
+            Files.move(source.toPath(), target.toPath())
+            true
+        }.getOrElse {
+            source.renameTo(target)
+        }
+        if (!moved) {
+            for ((orig, dst) in movedPairs.asReversed()) {
+                runCatching { Files.move(dst.toPath(), orig.toPath()) }
+                    .onFailure { dst.renameTo(orig) }
+            }
+            throw IllegalStateException("Could not quarantine ${source.name} to ${target.name}")
+        }
+        movedPairs.add(source to target)
+    }
+    return movedPairs.map { it.second }
+}
+
+private val DB_ALL_SUFFIXES = listOf("", "-wal", "-shm", "-journal")
+private val DB_SIDECAR_ONLY_SUFFIXES = listOf("-wal", "-shm", "-journal")
 
 /**
  * Target-free (driver-parameterised) open for [FlashDatabase] on the JVM.
@@ -75,7 +315,7 @@ public fun openEncryptedFlashDatabase(file: File, key: String): FlashDatabase {
  * `:memory:` in `jvmTest` and the desktop path goes through [openEncryptedFlashDatabase].
  */
 public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase {
-    val trim = JvmDatabaseTrimRegistration()
+    val opened = AtomicBoolean(false)
     return Room.databaseBuilder<FlashDatabase>(
         name = name,
         factory = FlashDatabaseConstructor::initialize,
@@ -127,62 +367,50 @@ public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase 
                         FlashLog.w("DATABASE", "Failed to set SQLite pragma '$pragma' on Desktop: ${e.message}")
                     }
                 }
-                trim.attach(
-                    isOpen = { true },
-                    shrink = {
-                        try {
-                            connection.execSQL("PRAGMA shrink_memory;")
-                            // Hands at most `cache_size` free pages back to the filesystem; without
-                            // it the auto_vacuum setting above never reclaims anything.
-                            connection.execSQL("PRAGMA incremental_vacuum;")
-                            FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory + incremental_vacuum on Desktop")
-                        } catch (e: Throwable) {
-                            FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory on Desktop: ${e.message}")
-                        }
-                    },
-                )
+                opened.set(true)
             }
         })
         .setQueryCoroutineContext(Dispatchers.IO)
         .build()
-        .also { it.trimRegistration = trim }
+        .also { it.trimRegistration = JvmDatabaseTrimRegistration(it, opened) }
 }
 
-internal class JvmDatabaseTrimRegistration(
-    private val register: (MemoryTrimListener) -> Unit = MemoryGovernor::registerListener,
-    private val unregister: (MemoryTrimListener) -> Unit = MemoryGovernor::unregisterListener,
+private class JvmDatabaseTrimRegistration(
+    db: FlashDatabase,
+    opened: AtomicBoolean,
 ) : AutoCloseable {
-    private var current: MemoryTrimListener? = null
-    private val lock = Any()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scheduled = AtomicBoolean(false)
+    private val listener = MemoryTrimListener { level ->
+        if (level != MemoryTrimLevel.RUNNING_LOW &&
+            level != MemoryTrimLevel.RUNNING_CRITICAL &&
+            level != MemoryTrimLevel.COMPLETE
+        ) return@MemoryTrimListener
+        if (!opened.get() || !scheduled.compareAndSet(false, true)) return@MemoryTrimListener
 
-    fun attach(isOpen: () -> Boolean, shrink: () -> Unit) {
-        synchronized(lock) {
-            current?.let(unregister)
-            val listener = MemoryTrimListener { level ->
-                if (level == MemoryTrimLevel.RUNNING_LOW ||
-                    level == MemoryTrimLevel.RUNNING_CRITICAL ||
-                    level == MemoryTrimLevel.COMPLETE
-                ) {
-                    try {
-                        if (isOpen()) shrink()
-                    } catch (e: Throwable) {
-                        FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory on Desktop: ${e.message}")
+        // Lease the writer through Room. Its onOpen connection may be in use or already closed.
+        scope.launch {
+            try {
+                db.useWriterConnection { writer ->
+                    writer.usePrepared("PRAGMA shrink_memory") { it.step() }
+                    writer.usePrepared("PRAGMA incremental_vacuum") { statement ->
+                        while (statement.step()) { /* Drain the pragma result. */ }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                FlashLog.w("DATABASE", "Desktop database trim failed: ${e.message}")
             }
-            current = listener
-            register(listener)
-        }
+        }.invokeOnCompletion { scheduled.set(false) }
     }
 
-    fun detach() {
-        synchronized(lock) {
-            current?.let(unregister)
-            current = null
-        }
+    init {
+        MemoryGovernor.registerListener(listener)
     }
 
     override fun close() {
-        detach()
+        MemoryGovernor.unregisterListener(listener)
+        scope.cancel()
     }
 }

@@ -43,6 +43,7 @@ data class PairingUiModel(
     val request: FlashPairingRequestUi,
     val phase: FlashPairingPhase,
     val secondsLeft: Int,
+    val peerDeviceId: String? = null,
 )
 
 /**
@@ -65,10 +66,10 @@ data class PairingUiModel(
  *
  * ## Lifecycle and expiry (ADR-028 §4)
  *
- * Resets back to [PairingPhase.Idle] via [resetProtocol] on any terminal state:
+ * Resets back to [PairingPhase.Idle] via [resetProtocol]:
  * - [FlashPairingEvent.Confirmed]: after [PAIRED_LINGER_MS] so the user sees the "Paired" checkmark.
- * - [FlashPairingEvent.Expired] / [FlashPairingEvent.PeerDeclined] / [FlashPairingEvent.Failed]: after
- *   [TERMINAL_LINGER_MS] so the user sees the terminal banner.
+ * - [FlashPairingEvent.Expired] / [FlashPairingEvent.PeerDeclined] / [FlashPairingEvent.Failed]: stays
+ *   visible until the user dismisses/retries or a new pairing request begins.
  *
  * [resetProtocol] tears down the active protocol and creates a fresh instance. The underlying state
  * machine absorbs all events once terminal and exposes no public reset, so "pair again" (retry after
@@ -134,6 +135,8 @@ class PairingCoordinator(
     @Volatile
     private var protocol: DefaultFlashPairingProtocol = newProtocol()
     private var collectorJob: Job = launchCollectors()
+    @Volatile
+    private var lingerJob: Job? = null
 
     /**
      * This device was renamed: the next pairing request carries [newName].
@@ -189,6 +192,12 @@ class PairingCoordinator(
                     val name = frame::class.simpleName ?: "frame"
                     val requestId = frame.requestId.take(SHORT_ID)
                     scope.launch {
+                        if (frame is FlashPairingFrame.PairRequest) {
+                            cancelLinger()
+                            if (protocol.session.value.phase.isTerminalPhase()) {
+                                resetProtocol()
+                            }
+                        }
                         val before = protocol.session.value.phase
                         protocol.onFrame(frame)
                         FlashLog.i(
@@ -204,6 +213,10 @@ class PairingCoordinator(
 
     /** Initiator: tap Pair. Needs the peer's fingerprint (from its hello) to derive the shared code. */
     suspend fun beginPair(peerId: String, peerName: String) {
+        cancelLinger()
+        if (protocol.session.value.phase.isTerminalPhase()) {
+            resetProtocol()
+        }
         // Logged on entry as well as on failure: the interesting case is "Pair was tapped and
         // NOTHING was emitted", which is invisible if only the failure path logs.
         FlashLog.i(
@@ -244,6 +257,10 @@ class PairingCoordinator(
      * could be forced by a man-in-the-middle, so no new pairing may be made with it.
      */
     private fun beginIfPeerSupportsV2(peerId: String, peerName: String, fingerprint: String) {
+        cancelLinger()
+        if (protocol.session.value.phase.isTerminalPhase()) {
+            resetProtocol()
+        }
         val version = synchronized(fingerprints) { peerVersions[peerId] } ?: 1
         if (version < PairingWireCodec.PROTOCOL_VERSION) {
             emitMessage("$peerName is running an older Flash. Update Flash on that device, then pair again.")
@@ -272,9 +289,12 @@ class PairingCoordinator(
     /** Decline an active request, or dismiss a terminal dialog — either way, back to a clean slate. */
     fun declineLocal() {
         FlashLog.i(TAG, "declineLocal phase=${protocol.session.value.phase}")
+        cancelLinger()
+        val target = protocol
         scope.launch {
-            protocol.respondDecline()
-            resetProtocol()
+            if (protocol !== target) return@launch
+            target.respondDecline()
+            if (protocol === target) resetProtocol()
         }
     }
 
@@ -400,8 +420,10 @@ class PairingCoordinator(
                     }
                     _trustedPeers.value = loadTrusted()
                 }
-                scope.launch {
+                cancelLinger()
+                lingerJob = scope.launch {
                     delay(PAIRED_LINGER_MS) // let "Paired" show, then auto-close.
+                    lingerJob = null
                     resetProtocol()
                 }
             }
@@ -412,10 +434,7 @@ class PairingCoordinator(
                         "phase=${protocol.session.value.phase}",
                 )
                 failureMessage(event.reason)?.let(::emitMessage)
-                scope.launch {
-                    delay(TERMINAL_LINGER_MS)
-                    resetProtocol()
-                }
+                // Keep terminal state visible until the user dismisses, retries, or a new request starts.
             }
             is FlashPairingEvent.PeerDeclined,
             is FlashPairingEvent.Expired -> {
@@ -423,10 +442,7 @@ class PairingCoordinator(
                     TAG,
                     "event.terminal=${event::class.simpleName} phase=${protocol.session.value.phase}",
                 )
-                scope.launch {
-                    delay(TERMINAL_LINGER_MS) // let the terminal card show, then allow retry.
-                    resetProtocol()
-                }
+                // Keep terminal state visible until the user dismisses, retries, or a new request starts.
             }
             is FlashPairingEvent.RequestReceived -> Unit // the session collector already raises the dialog.
         }
@@ -455,13 +471,27 @@ class PairingCoordinator(
                 numericCode = s.code6 ?: "",
                 transport = FlashNetworkTransport.Lan,
                 expiresInSeconds = REQUEST_WINDOW_SECONDS,
+                peerDeviceId = s.peerDeviceId,
             ),
             phase = uiPhase,
             secondsLeft = PairingUiMapper.secondsLeft(s.expiresAtMs, timeSource.nowMs()),
+            peerDeviceId = s.peerDeviceId,
         )
     }
 
+    private fun cancelLinger() {
+        lingerJob?.cancel()
+        lingerJob = null
+    }
+
+    private fun PairingPhase.isTerminalPhase(): Boolean =
+        this == PairingPhase.Confirmed ||
+            this == PairingPhase.DeclinedByPeer ||
+            this == PairingPhase.Expired ||
+            this == PairingPhase.Failed
+
     private fun resetProtocol() {
+        cancelLinger()
         val old = protocol.session.value
         FlashLog.i(
             TAG,
@@ -589,7 +619,6 @@ class PairingCoordinator(
          */
         const val HELLO_RESEND_MS = 400L
         const val PAIRED_LINGER_MS = 1800L
-        const val TERMINAL_LINGER_MS = 2500L
         const val REQUEST_WINDOW_SECONDS = 30
         const val SHORT_ID = 8
         const val MESSAGE_BUFFER = 8

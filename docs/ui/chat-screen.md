@@ -80,6 +80,15 @@ Meets UI-004 requirements, uses UI-001/UI-002 tokens, supports P2P-specific affo
 **Layout (LTR):**  
 `[Back] [Avatar 36dp] [Title + status (weight=1)] [Call?] [Video?] [Menu]`
 
+**2026-11-14 spacing correction.** The lock uses a 16 dp layout footprint alongside the
+presence text. Foundation's clickable expands its touch area, and the trust sheet opens
+from the lock as before. The header can grow for large system text. Long status copy
+ellipsizes within the space left by the presence, transport and lock icons.
+[Compose accessibility](https://developer.android.com/develop/ui/compose/accessibility/api-defaults).
+
+The offline banner's Retry pill has a 28 dp minimum visual height. The surrounding banner
+stays 36 dp at standard text size and can grow for longer peer names or larger text.
+
 ### Interaction specification
 
 | Control | Action |
@@ -527,6 +536,18 @@ if (showEncryptionSheet) {
     FlashEncryptionSheet(state = …, onDismiss = { showEncryptionSheet = false })
 }
 ```
+
+### Hub security-key changes (2026-11-22)
+
+**Status:** IMPLEMENTED for the next release. Device follow-up is HUBH-02 and HUBH-08/09.
+
+The Windows relay investigation (ERROR-1045) found the confirmation above the oldest loaded messages. The user saw the peer connected and sent from the latest messages without seeing why the Hub held delivery.
+
+The direct chat shows the warning beside the composer whenever a Hub security-key change is pending. The banner calls out pending outgoing messages. **Verify key** opens the new and previous codes, and the peer can read their own code in Hub connection details. **Trust new key** confirms the change and lets the outbox retry. Dismissing the dialog keeps the warning and the pending key. Changing chats or receiving a different pending code closes the dialog for the previous key.
+
+The confirmation submits the full fingerprint behind the displayed code. If a replacement is observed before the approval reaches the pin store, the newer key still needs its own confirmation.
+
+A transient toast could disappear before the user returned. Automatically opening a dialog on each retry would interrupt reading and typing. The fixed banner keeps the decision available and uses a polite live region to announce changes. Use the shared Flash theme, dialog and touch targets at phone and desktop widths. [Compose accessibility semantics](https://developer.android.com/develop/ui/compose/accessibility/semantics#alerts-and-pop-ups), verified 2026-11-22.
 
 ---
 

@@ -107,6 +107,13 @@ class FlashHubSituationsTest {
         assertEquals(FlashHubMessageOutcome.Show("That is you."), FlashHubMath.messageOutcome(p, null))
     }
 
+    @Test fun unpairedFooterReferencesEnterpriseAndOrganizationPathAndOffPolarity() {
+        assertTrue(FlashHubCopy.PERSON_UNPAIRED_FOOTER.contains("Settings → Enterprise & Organization"))
+        assertTrue(FlashHubCopy.PERSON_UNPAIRED_FOOTER.contains("Messages through the hub"))
+        assertTrue(FlashHubCopy.PERSON_UNPAIRED_FOOTER.contains("turn it off"))
+        assertFalse(FlashHubCopy.PERSON_UNPAIRED_FOOTER.contains("Settings → Hub"))
+    }
+
     // --- A name that is hostile or empty -----------------------------------------------------------------
 
     @Test fun anEmptyDisplayNameStillYieldsInitialsAndASpokenRow() {

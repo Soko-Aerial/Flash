@@ -30,6 +30,8 @@ public data class EnterpriseDirectoryGroup(
     public val onlineCount: Int? = null,
     /** Pending join requests; only present for the group's admins. */
     public val pendingCount: Int? = null,
+    public val memberDeviceIds: List<String> = emptyList(),
+    public val adminDeviceIds: List<String> = emptyList(),
 )
 
 /**
@@ -77,6 +79,8 @@ internal fun GroupDto.toDirectoryGroup(): EnterpriseDirectoryGroup = EnterpriseD
     joinMode = joinMode,
     onlineCount = onlineCount,
     pendingCount = pendingCount,
+    memberDeviceIds = memberDeviceIds,
+    adminDeviceIds = adminDeviceIds,
 )
 
 internal fun MemberDto.toDirectoryMember(): EnterpriseDirectoryMember = EnterpriseDirectoryMember(

@@ -59,7 +59,11 @@ class FlashHubMathTest {
     @Test fun modeNeverSyncedOfflineNeedsNoPeopleAndNoConnection() {
         val s = state { copy(syncStatus = HubSyncStatus.NEVER, peopleCount = 0, lastSyncedAtMs = null) }
         assertEquals(FlashHubMode.NEVER_SYNCED_OFFLINE, FlashHubMath.mode(s, HubLinkState.OFFLINE))
-        assertEquals(FlashHubMode.CONTENT, FlashHubMath.mode(s, HubLinkState.ONLINE), "online and about to sync is content, not the offline empty state")
+        assertEquals(FlashHubMode.LOADING, FlashHubMath.mode(s, HubLinkState.ONLINE))
+        assertEquals(FlashHubMode.LOADING, FlashHubMath.mode(s, HubLinkState.CONNECTING))
+        assertEquals(FlashHubMode.LOADING, FlashHubMath.mode(s.copy(isRefreshing = true), HubLinkState.OFFLINE))
+        assertEquals(FlashHubMode.NEVER_SYNCED_OFFLINE, FlashHubMath.mode(s.copy(syncStatus = HubSyncStatus.FAILED_OFFLINE), HubLinkState.ONLINE))
+        assertEquals(FlashHubMode.CONTENT, FlashHubMath.mode(s, HubLinkState.ONLINE, hasSectionContent = true))
     }
 
     @Test fun modeNeverSyncedWithCachedPeopleIsContent() =
@@ -121,8 +125,12 @@ class FlashHubMathTest {
         assertEquals("Your device identity changed. Rejoin your organisation to chat with colleagues again.", s.text)
     }
 
-    @Test fun stripRefreshingSaysUpdating() {
-        assertEquals(FlashHubCopy.STRIP_UPDATING, FlashHubMath.strip(state { copy(isRefreshing = true) }, HubLinkState.ONLINE, now)!!.text)
+    @Test fun refreshingRetainsTheOfflineStrip() {
+        val s = state { copy(syncStatus = HubSyncStatus.FAILED_OFFLINE) }
+        assertEquals(
+            FlashHubMath.strip(s, HubLinkState.OFFLINE, now),
+            FlashHubMath.strip(s.copy(isRefreshing = true), HubLinkState.OFFLINE, now),
+        )
     }
 
     @Test fun stripUnsupportedServer() {
@@ -139,7 +147,9 @@ class FlashHubMathTest {
     @Test fun stripIsNullWhenRevokedHiddenOrNeverSynced() {
         assertNull(FlashHubMath.strip(state(), HubLinkState.REVOKED, now))
         assertNull(FlashHubMath.strip(state { copy(enrolled = false) }, HubLinkState.NOT_ENROLLED, now))
-        assertNull(FlashHubMath.strip(state { copy(syncStatus = HubSyncStatus.NEVER, peopleCount = 0) }, HubLinkState.OFFLINE, now))
+        val firstLoad = state { copy(syncStatus = HubSyncStatus.NEVER, peopleCount = 0, lastSyncedAtMs = null) }
+        assertNull(FlashHubMath.strip(firstLoad, HubLinkState.OFFLINE, now))
+        assertEquals(FlashHubMode.CONTENT, FlashHubMath.mode(firstLoad.copy(lastSyncedAtMs = now), HubLinkState.OFFLINE))
     }
 
     @Test fun stripNeverUsesColourAlone() {

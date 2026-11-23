@@ -8,7 +8,7 @@ The `:core:security` module provides the cryptographic engine, device identity g
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-security:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-security:v2.3.0-beta.1")
 }
 ```
 
@@ -24,8 +24,8 @@ Source layout (`core/security/src`): `crypto/` (identity, ECDH, frame codecs), `
 2. **Pairing (v2, ADR-042).** A commit-then-reveal numeric comparison: each side commits to a nonce, the responder reveals first, and the 6-digit code is `H(fp_I, fp_R, epk_I, epk_R, N_I, N_R) mod 10^6`. A man-in-the-middle cannot steer the code (a false match has probability about 10^-6), and each side requires the peer's fingerprint to equal the key TLS pinned for that connection. The classes are `PairingV2`, `NumericComparisonCode`, `PairingSessionStateMachine`, `PairingWireCodec`/`FlashPairingFrames` (desktop adds `FlashPairingCoordinator`). The 64-hex fingerprint (`FlashFingerprint`, SHA-256 of the encoded public key) is the manual fallback.
 3. **Session key.** After pairing, an ephemeral ECDH (P-256) shared secret goes through HKDF-SHA256 (`Hkdf`, info string `flash-e2e-v<protocol version>`) to a 32-byte AES-256 key.
 4. **Wire framing.**
-   * `E2eFrameCodec`: AES-256-GCM, a fresh random 12-byte nonce per frame, 128-bit tag; text frames become `FLASH_SEC payload=<base64>`. `decrypt` throws on a tag failure.
-   * `SecureBinaryFrameCodec`: the same cipher for binary frames (`decryptOrNull` returns null instead of throwing).
+   * `E2eFrameCodec` (`@FlashInternalApi`): AES-256-GCM, a fresh random 12-byte nonce per frame, 128-bit tag, AAD bound to `"flash-e2e-v${FlashProtocol.VERSION}"`; text frames become `FLASH_SEC payload=<base64>`. `decrypt` throws on a tag failure; `decryptWireFrame` returns `null` on invalid or unauthenticated frames.
+   * `SecureBinaryFrameCodec` (`@FlashInternalApi`): AES-256-GCM sealing for binary transfer frames (`ChunkFrame` payloads). Produces a 22-byte header (`FSEC` magic, `VERSION = 2`, `ENVELOPE_TYPE_AES_GCM = 1`, 12-byte random nonce, uint32-LE `CIPHERTEXT_LENGTH`) followed by ciphertext + 16-byte GCM tag, with AAD bound to `"flash-binary-e2e-v${FlashProtocol.VERSION}"`. `decrypt` throws on tampered/truncated frames, while `decryptOrNull(frame, sessionKey)` returns `null` when `sessionKey` is null, magic does not match, or authentication fails.
 5. **Trust and pinning.** `FlashTrustStore` holds paired devices, session keys and TLS identity pins, plus **vouches** (a group can vouch a member's key so a group of up to 20 needs each member paired only with the owner, ADR-044). `VouchRules` decides pin sources; the TOFU policy refuses to pin the device's own key.
 6. **Group secrets (Track GM).** `group/` has `GroupSecret`, `GroupSecretKdf` (auth and beacon keys per group id and epoch), `GroupSecretCommit`, `GroupProof` (mutual challenge proof) and `GroupInvite`/`GroupInviteCodec` (`flash://g/1/...` links). Details: `docs/security.md` section 10.
 
@@ -70,17 +70,36 @@ public interface FlashTrustStore {
 }
 ```
 
-### 3.3 `E2eFrameCodec`
+### 3.3 `E2eFrameCodec` & `SecureBinaryFrameCodec`
+
+Both codecs are `@FlashInternalApi` and require `@OptIn(FlashInternalApi::class)` in consumer code.
 
 `com.transfer.flash.core.security.crypto.E2eFrameCodec`:
 
 ```kotlin
+@FlashInternalApi
 public object E2eFrameCodec {
     public const val SEC_PREFIX: String = "FLASH_SEC"
     public fun isSecuredFrame(text: String): Boolean
     public fun encrypt(payloadJson: String, sessionKey: ByteArray): ByteArray
     public fun decrypt(frame: ByteArray, sessionKey: ByteArray): String
-    public fun encryptToWireFrame(plainText: String, sessionKey: ByteArray): String // "FLASH_SEC payload=<base64>"
+    public fun encryptToWireFrame(plainText: String, sessionKey: ByteArray): String // "FLASH_SEC payload=..."
+    public fun decryptWireFrame(text: String, sessionKey: ByteArray): String?
+}
+```
+
+`com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec`:
+
+```kotlin
+@FlashInternalApi
+public object SecureBinaryFrameCodec {
+    public val MAGIC: ByteArray // 'F', 'S', 'E', 'C'
+    public const val VERSION: Int = 2
+    public const val ENVELOPE_TYPE_AES_GCM: Byte = 1
+    public fun isSecureFrame(bytes: ByteArray): Boolean
+    public fun encrypt(plaintext: ByteArray, sessionKey: ByteArray): ByteArray
+    public fun decrypt(frame: ByteArray, sessionKey: ByteArray): ByteArray
+    public fun decryptOrNull(frame: ByteArray, sessionKey: ByteArray?): ByteArray?
 }
 ```
 
@@ -89,21 +108,29 @@ public object E2eFrameCodec {
 ## 4. Practical Code Example
 
 ```kotlin
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.FlashFingerprint
+import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 
 // Showing a human-verifiable fingerprint
-val peerPublicKeyBytes: ByteArray = ...
-val fp = FlashFingerprint.fingerprint(peerPublicKeyBytes)       // SHA-256 of the encoded key
-println(FlashFingerprint.formatHexGroups(fp))                    // grouped hex for display
+fun printPeerFingerprint(peerPublicKeyBytes: ByteArray) {
+    val fp = FlashFingerprint.fingerprint(peerPublicKeyBytes)       // SHA-256 of the encoded key
+    println(FlashFingerprint.formatHexGroups(fp))                    // grouped hex for display
+}
 
-// Encrypting a protocol frame
-val sessionKey: ByteArray = ... // 32-byte AES key from FlashCrypto.ecdhSessionKey
-val wireFrame = E2eFrameCodec.encryptToWireFrame(
-    plainText = "FLASH_MSG id=msg_100 body=Confidential",
-    sessionKey = sessionKey,
-)
-println("Encrypted wire output: $wireFrame") // "FLASH_SEC payload=..."
+// Encrypting text and binary protocol frames (requires FlashInternalApi opt-in)
+@OptIn(FlashInternalApi::class)
+fun sealFrames(sessionKey: ByteArray, chunkFrameBytes: ByteArray) {
+    val wireFrame = E2eFrameCodec.encryptToWireFrame(
+        plainText = "FLASH_MSG id=msg_100 body=Confidential",
+        sessionKey = sessionKey,
+    )
+    println("Encrypted wire output: $wireFrame") // "FLASH_SEC payload=..."
+
+    val fsecFrame = SecureBinaryFrameCodec.encrypt(chunkFrameBytes, sessionKey)
+    val plainChunk = SecureBinaryFrameCodec.decryptOrNull(fsecFrame, sessionKey)
+}
 ```
 
 ---

@@ -8,6 +8,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The desktop voice-note player's source resolution and its degrade-to-silence path.
@@ -132,10 +133,40 @@ class FlashAudioPlayerJvmTest {
         }
     }
 
+    @Test
+    fun `timeScalePcm preserves 1x identity and scales duration for 1_5x and 2x`() {
+        val wav = sineWav("tone-long.wav", durationMs = 1_000)
+        val pcm = assertNotNull(decodeJdkStreamToPcm(wav))
+        assertEquals(8_000, pcm.sampleRateHz)
+        assertEquals(1, pcm.channels)
+
+        val oneX = timeScalePcm(pcm, 1.0f)
+        assertEquals(pcm.bytes.size, oneX.bytes.size)
+
+        val oneHalfX = timeScalePcm(pcm, 1.5f)
+        val twoX = timeScalePcm(pcm, 2.0f)
+        assertTrue(oneHalfX.bytes.size in (pcm.bytes.size * 55 / 100)..(pcm.bytes.size * 78 / 100))
+        assertTrue(twoX.bytes.size in (pcm.bytes.size * 42 / 100)..(pcm.bytes.size * 58 / 100))
+        assertTrue(twoX.bytes.any { it != 0.toByte() })
+    }
+
+    @Test
+    fun `seekTo before prepare records logical position and pause cancels pending play`() {
+        val missing = File(tempDir, "absent.wav")
+        val player = JvmAudioPlayer(missing.absolutePath)
+        player.seekTo(1_250L)
+        assertEquals(1_250L, player.positionMs())
+        player.play()
+        player.pause()
+        assertFalse(player.isPlaying())
+        player.release()
+    }
+
     /** 0.1s 440Hz mono 16-bit 8kHz WAV: the smallest real container the JDK tier accepts. */
-    private fun sineWav(name: String): File {
+    private fun sineWav(name: String, durationMs: Int = 100): File {
         val rate = 8000
-        val samples = (0 until 800).map { i ->
+        val count = (rate * durationMs) / 1000
+        val samples = (0 until count).map { i ->
             (Math.sin(2.0 * Math.PI * 440.0 * i / rate) * 10000).toInt().toShort()
         }
         val data = java.nio.ByteBuffer.allocate(samples.size * 2)

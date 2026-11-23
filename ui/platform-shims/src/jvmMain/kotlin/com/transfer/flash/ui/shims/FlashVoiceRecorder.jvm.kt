@@ -1,12 +1,15 @@
 package com.transfer.flash.ui.shims
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
@@ -14,7 +17,13 @@ import javax.sound.sampled.TargetDataLine
 import kotlin.math.abs
 
 @Composable
-public actual fun rememberFlashVoiceRecorder(): FlashVoiceRecorder = remember { JvmVoiceRecorder() }
+public actual fun rememberFlashVoiceRecorder(): FlashVoiceRecorder {
+    val recorder = remember { JvmVoiceRecorder() }
+    DisposableEffect(recorder) {
+        onDispose { recorder.cancel() }
+    }
+    return recorder
+}
 
 /**
  * `javax.sound.sampled.TargetDataLine` capture, written out as a WAV.
@@ -43,11 +52,15 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
     private var drain: Thread? = null
     private var wavFile: File? = null
     private val peak = AtomicInteger(0)
+    private val captureLock = ReentrantLock()
+    private val captureChanged = captureLock.newCondition()
+    private var paused = false
+    private var captureGeneration = 0L
 
     override val isRecording: Boolean get() = line != null
 
     override fun start(): Boolean {
-        stopQuietly()
+        cancel()
         peak.set(0)
         pruneOldVoiceFiles(tempDir())
         val wav = File(tempDir(), "flash-voice-${System.currentTimeMillis()}.wav")
@@ -57,9 +70,9 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
             // composer treats `false` as "recording did not start", exactly as it does on Android when
             // the encoder cannot be prepared.
             val target = AudioSystem.getLine(info) as TargetDataLine
+            line = target
             target.open(FORMAT)
             target.start()
-            line = target
             wavFile = wav
             drain = Thread { drainLine(target, wav) }.apply {
                 isDaemon = true
@@ -90,10 +103,20 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
                 out.write(ByteArray(44))
                 val buffer = ByteArray(FORMAT.frameSize * 1024)
                 while (true) {
+                    val generation = captureLock.withLock {
+                        while (line === target && paused) captureChanged.await()
+                        captureGeneration.takeIf { line === target }
+                    } ?: break
                     val read = target.read(buffer, 0, buffer.size)
-                    if (read <= 0) break
-                    out.write(buffer, 0, read)
-                    recordPeak(buffer, read)
+                    val keepReading = captureLock.withLock {
+                        // A read may unblock across a stop/flush. Discard data from that read.
+                        if (generation != captureGeneration) return@withLock true
+                        if (read <= 0) return@withLock false
+                        out.write(buffer, 0, read)
+                        recordPeak(buffer, read)
+                        true
+                    }
+                    if (!keepReading) break
                 }
             }
         }
@@ -105,8 +128,29 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
         peak.updateAndGet { previous -> if (loudest > previous) loudest else previous }
     }
 
+    override fun setPaused(paused: Boolean): Boolean = captureLock.withLock {
+        val target = line ?: return false
+        if (this.paused == paused) return true
+        try {
+            if (paused) {
+                target.stop()
+                target.flush()
+                peak.set(0)
+            } else {
+                target.start()
+            }
+            this.paused = paused
+            captureGeneration++
+            captureChanged.signalAll()
+            true
+        } catch (e: RuntimeException) {
+            println("[FlashVoiceRecorder] Voice capture state change failed: $e")
+            false
+        }
+    }
+
     override fun maxAmplitude(): Int {
-        if (line == null) return 0
+        if (line == null || paused) return 0
         // `getAndSet(0)` mirrors `MediaRecorder.getMaxAmplitude()`, which reports the peak *since the
         // last call* and resets. A running maximum that never reset would pin the waveform at whatever
         // the loudest moment of the recording was.
@@ -118,17 +162,15 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
         val target = line
         val wav = wavFile
         val worker = drain
-        line = null
-        wavFile = null
-        drain = null
         if (target == null) return null
+        clearCapture()
         return try {
             // `stop()` then `close()` makes the blocked `read()` return 0, which ends the drain loop;
             // joining then guarantees the file is complete and closed before finalizing the header.
             target.stop()
             target.close()
             worker?.join(DRAIN_JOIN_TIMEOUT_MS)
-            if (wav == null || !wav.exists() || wav.length() <= 44L) {
+            if (worker?.isAlive == true || wav == null || !wav.exists() || wav.length() <= 44L) {
                 wav?.delete()
                 return null
             }
@@ -152,18 +194,21 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
 
     override fun cancel() {
         val wav = wavFile
-        stopQuietly()
+        val target = line
+        val worker = drain
+        clearCapture()
+        runCatching { target?.stop() }
+        runCatching { target?.close() }
+        runCatching { worker?.join(DRAIN_JOIN_TIMEOUT_MS) }
         wav?.delete()
     }
 
-    private fun stopQuietly() {
-        val target = line ?: return
-        val worker = drain
+    private fun clearCapture() = captureLock.withLock {
         line = null
         drain = null
-        runCatching { target.stop() }
-        runCatching { target.close() }
-        runCatching { worker?.join(DRAIN_JOIN_TIMEOUT_MS) }
+        wavFile = null
+        paused = false
+        captureChanged.signalAll()
     }
 
     private fun tempDir(): File =

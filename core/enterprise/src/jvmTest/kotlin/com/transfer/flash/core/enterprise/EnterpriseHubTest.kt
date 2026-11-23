@@ -333,6 +333,103 @@ class EnterpriseHubTest {
         r.hub.shutdown()
     }
 
+    @Test
+    fun callIceConfigRecoversFromInitialTransientFailureAndRenewsBeforeTtlExpiryWhileConnected() = hubTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val scope = CoroutineScope(dispatcher)
+        val org = TestOrg()
+        val device = TestCrypto()
+        val fake = FakeHub()
+        val store = MemoryEnterpriseTrustStore()
+        var now = TestOrg.T0
+        val transport = ScriptedRelayTransport { now }
+        var iceCalls = 0
+
+        fake.on("GET", FakeHub.CHALLENGE) { HttpStatusCode.OK to FakeHub.challenge(org.fingerprint) }
+        fake.on("POST", FakeHub.VERIFY) { HttpStatusCode.OK to FakeHub.verified("dev-1", "tok-1") }
+        fake.on("GET", HubContract.PATH_CALL_ICE) {
+            iceCalls++
+            when (iceCalls) {
+                1 -> HttpStatusCode.ServiceUnavailable to """{"code":"ERR_INTERNAL","message":"temporary"}"""
+                2, 3 -> HttpStatusCode.OK to HubRestCodec.encode(
+                    com.transfer.flash.core.hubprotocol.rest.HubIceConfigDto(
+                        offLanCallingSupported = true,
+                        mediaPolicy = "DIRECT_PREFERRED_RELAY_FALLBACK",
+                        ttlSeconds = 4L,
+                        iceServers = listOf(
+                            com.transfer.flash.core.hubprotocol.rest.HubIceServerDto(
+                                urls = listOf("turn:turn.flash.local:3478?transport=udp"),
+                                username = "u-gen-${iceCalls - 1}",
+                                credential = "c-gen-${iceCalls - 1}",
+                            ),
+                        ),
+                    ),
+                )
+                else -> HttpStatusCode.ServiceUnavailable to """{"code":"ERR_INTERNAL","message":"outage"}"""
+            }
+        }
+
+        val hub = EnterpriseHub(
+            deviceId = "dev-1",
+            friendlyName = "Phone",
+            crypto = device,
+            trustStore = store,
+            scope = scope,
+            httpClient = fake.client(),
+            clock = { now },
+            ioDispatcher = dispatcher,
+            reauthJitterMs = { 0L },
+            relayFactory = { idp ->
+                FlashRelayClient(
+                    deviceId = "dev-1",
+                    friendlyName = "Phone",
+                    hubUrl = "",
+                    identityProvider = idp,
+                    transport = transport,
+                    timeSource = object : FlashTimeSource { override fun nowMs(): Long = now },
+                    ioDispatcher = dispatcher,
+                    scope = CoroutineScope(dispatcher),
+                    jitter = { it },
+                )
+            },
+            hubPresencePollMs = 0L,
+            tickMs = 60_000L,
+            callIceRetryInitialMs = 200L,
+            callIceRetryMaxMs = 800L,
+        )
+        store.saveCredentials(org.credentialsFor("dev-1", device, validTo = TestOrg.T0 + 30 * TestOrg.DAY))
+        hub.start()
+        runCurrent()
+        assertEquals(HubLinkState.ONLINE, hub.status.value.state)
+        // Initial fetch failed transiently -> null right away
+        assertNull(hub.validCallIceConfig(now))
+
+        // Without toggling network or relay, automatic retry recovers after 200ms backoff
+        now += 250L
+        advanceTimeBy(250L)
+        runCurrent()
+        val firstCfg = hub.validCallIceConfig(now)
+        assertNotNull(firstCfg)
+        assertEquals("u-gen-1", firstCfg.iceServers.single().username)
+
+        // Advance past half of 4s TTL (2s) while relay stays connected -> proactively renews before expiry
+        now += 2_100L
+        advanceTimeBy(2_100L)
+        runCurrent()
+        val renewedCfg = hub.validCallIceConfig(now)
+        assertNotNull(renewedCfg)
+        assertEquals("u-gen-2", renewedCfg.iceServers.single().username)
+
+        // Advance past full 4s TTL when later refreshes fail -> expired TURN credentials are no longer returned as valid
+        now += 4_500L
+        advanceTimeBy(4_500L)
+        runCurrent()
+        assertNull(hub.validCallIceConfig(now))
+
+        hub.shutdown()
+        scope.cancel()
+    }
+
     private fun Rig.runUntilIdle(scope: TestScope) {
         scope.runCurrent()
         scope.advanceTimeBy(100L)

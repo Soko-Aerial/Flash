@@ -803,4 +803,41 @@ class RadioChatEngineTest {
             "300 unacknowledged sends must be capped, not accumulated",
         )
     }
+
+    @Test
+    fun `fast ACK arriving before sendText write completion is never dropped`() = runTest {
+        val airChannel = FakeAirChannel()
+        air = airChannel
+        val a = buildStation("station-a", backgroundScope, airChannel)
+        val b = buildStation("station-b", backgroundScope, airChannel)
+        rigA = a
+        rigB = b
+
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        b.pairingAdapter.registerPeer(b.session, "station-a")
+        a.driver.start()
+        b.driver.start()
+        withTimeout(3000) {
+            while (!a.engine.isConnected || !b.engine.isConnected) delay(20)
+        }
+
+        // Subscribe before sending and run concurrent fast sends; pendingAcks is registered
+        // prior to lane submission so even an immediate ACK on rxCollectorJob matches.
+        val receipts = mutableListOf<RadioChatReceipt>()
+        val collectJob = launch {
+            a.engine.deliveryReceipts.collect { receipts += it }
+        }
+        try {
+            repeat(10) { idx ->
+                val res = a.engine.sendText("station-b", "fast-$idx", "ping $idx", sentAtMs = 1000L + idx)
+                assertIs<RadioChatSendOutcome.SentWaitingAck>(res)
+            }
+            withTimeout(5000) {
+                while (receipts.size < 10) delay(20)
+            }
+            assertEquals((0 until 10).map { "fast-$it" }.toSet(), receipts.map { it.messageId }.toSet())
+        } finally {
+            collectJob.cancel()
+        }
+    }
 }

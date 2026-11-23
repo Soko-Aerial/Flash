@@ -5,7 +5,7 @@ import { h, mount } from '../dom.js';
 import { t } from '../i18n.js';
 import { api, guarded } from '../app.js';
 import { formatNumber, formatBytes, formatDuration, formatDateTime } from '../format.js';
-import { pageHeader, card, badge, banner, button, field, textInput, withBusy, dl, mono, tabs, copyButton, timeEl } from '../ui/widgets.js';
+import { pageHeader, card, badge, banner, button, field, textInput, selectInput, switchInput, withBusy, dl, mono, tabs, copyButton, timeEl } from '../ui/widgets.js';
 import { loadInto } from '../ui/boundary.js';
 import { toast } from '../ui/toast.js';
 import { openHelp } from '../shortcuts.js';
@@ -58,6 +58,10 @@ export function mountSettings(container, ctx) {
           { title: t('settings.files.title'), subtitle: t('settings.files.sub'), id: 'set-files' },
           fileLimitsForm(s),
           fileUsage(),
+        ),
+        card(
+          { title: t('settings.groups.title'), subtitle: t('settings.groups.sub'), id: 'set-groups' },
+          groupPolicyForm(s),
         ),
         card(
           { title: t('settings.hub.title'), id: 'set-hub' },
@@ -113,6 +117,44 @@ export function mountSettings(container, ctx) {
           if (!res) return undefined;
         }
         toast(t('settings.invite.saved'), { kind: 'success' });
+        return renderConfig();
+      });
+    });
+    return form;
+  }
+
+  function groupPolicyForm(s) {
+    const personal = switchInput({ label: t('settings.groups.allowPersonal'), checked: s.allowPersonalHubLink !== false });
+    const mode = selectInput(
+      [
+        { value: 'E2EE_REQUIRED', label: t('settings.groups.e2ee.required') },
+        { value: 'HUB_INSPECTABLE', label: t('settings.groups.e2ee.inspectable') },
+      ],
+      s.groupE2eeMode || 'E2EE_REQUIRED',
+      { ariaLabel: t('settings.groups.e2ee') },
+    );
+    const mf = field({ label: t('settings.groups.e2ee'), control: mode, hint: t('settings.groups.e2ee.hint') });
+    const save = button({ label: t('settings.groups.save'), variant: 'primary', type: 'submit' });
+    const form = h('form', { class: 'stack', novalidate: true },
+      personal.el,
+      mf.el,
+      h('div', { class: 'form-actions start' }, save));
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      return withBusy(save, async () => {
+        const changes = [];
+        const nextPersonal = Boolean(personal.input.checked);
+        const curPersonal = s.allowPersonalHubLink !== false;
+        if (nextPersonal !== curPersonal) changes.push(['allowPersonalHubLink', String(nextPersonal)]);
+        const nextMode = mode.value;
+        const curMode = s.groupE2eeMode || 'E2EE_REQUIRED';
+        if (nextMode !== curMode) changes.push(['groupE2eeMode', nextMode]);
+        if (!changes.length) return toast(t('settings.groups.unchanged'), { kind: 'info' });
+        for (const [key, value] of changes) {
+          const res = await guarded('settings.change', key + '=' + value, (id) => api.put('/settings', { key, value }, { stepUp: id }));
+          if (!res) return undefined;
+        }
+        toast(t('settings.groups.saved'), { kind: 'success' });
         return renderConfig();
       });
     });

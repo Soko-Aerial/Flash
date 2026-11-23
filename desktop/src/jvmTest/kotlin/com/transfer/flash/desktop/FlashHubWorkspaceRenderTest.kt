@@ -3,6 +3,9 @@
 package com.transfer.flash.desktop
 
 import androidx.compose.ui.ImageComposeScene
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.Alignment
@@ -11,8 +14,11 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.enterprise.HubLinkState
 import com.transfer.flash.core.messaging.model.*
+import com.transfer.flash.core.messaging.util.sampleFlashConversationState
+import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.hub.*
 import com.transfer.flash.ui.adaptive.FlashNavigationRail
 import com.transfer.flash.ui.adaptive.FlashNavigationRailTab
@@ -26,9 +32,96 @@ import java.io.File
 import javax.swing.SwingUtilities
 import org.junit.Assume.assumeTrue
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 /** Opt-in native render evidence, with sample data only. Set FLASH_HUB_RENDER_DIR to an output directory. */
 class FlashHubWorkspaceRenderTest {
+    @Test fun renderKeyChangeInActiveConversation() {
+        val output = System.getenv("FLASH_HUB_RENDER_DIR")
+        assumeTrue("Set FLASH_HUB_RENDER_DIR to capture the Hub review matrix", output != null)
+        val directory = File(output!!).apply { mkdirs() }
+        val peerId = "colleague"
+        val notice = FlashHubNoticeUi(
+            FlashHubNoticeKind.KEY_CHANGED,
+            peerId,
+            "Amara Okafor",
+            newCode = "0123 4567 89ab cdef",
+            oldCode = "aaaa bbbb cccc dddd",
+            pendingFingerprint = "0123456789abcdef".repeat(4),
+        )
+        val sample = sampleFlashConversationState()
+        val conversation = sample.copy(
+            header = sample.header.copy(
+                title = notice.peerName, avatarInitials = "AO", isGroup = false,
+                presence = FlashPeerPresence.Online, transport = FlashNetworkTransport.Relay,
+            ),
+            messages = List(32) { index ->
+                FlashMessageUi(
+                    id = "message-$index",
+                    senderName = if (index == 31) "You" else notice.peerName,
+                    senderInitials = "AO",
+                    timeLabel = "12:${index.toString().padStart(2, '0')}",
+                    text = if (index == 31) "Can you send the notes?" else "Earlier conversation",
+                    isMine = index == 31,
+                    deliveryStatus = if (index == 31) FlashMessageStatus.Pending else null,
+                )
+            },
+            hubNotice = notice,
+        )
+        data class KeyCase(val name: String, val width: Int, val height: Int, val scale: Float = 1f, val dark: Boolean = false)
+        val cases = listOf(KeyCase("desktop", 1100, 720, dark = true), KeyCase("phone", 390, 800), KeyCase("large-text", 320, 800, 2f))
+        SwingUtilities.invokeAndWait {
+            for (case in cases) {
+                var trustedKey: Pair<String, String>? = null
+                val scene = ImageComposeScene(case.width, case.height, density = Density(1f, case.scale)) {
+                    FlashTheme(darkTheme = case.dark, motion = rememberFlashMotion(reduceMotion = true)) {
+                        FlashConversationScreen(
+                            state = conversation,
+                            conversationId = peerId,
+                            isPeerTrusted = true,
+                            onBack = {},
+                            onSendText = {},
+                            onAttachmentClick = {},
+                            onConfirmHubKeyChange = { peer, key -> trustedKey = peer to key },
+                        )
+                    }
+                }
+                try {
+                    scene.render(0).close()
+                    scene.render(100_000_000).use { frame ->
+                        frame.encodeToData()!!.use { File(directory, "key-banner-${case.name}.png").writeBytes(it.bytes) }
+                    }
+                    if (case.name == "desktop") {
+                        val verify = Offset(1046f, 628f)
+                        scene.tap(verify)
+                        scene.render(200_000_000).close()
+                        scene.render(300_000_000).use { frame ->
+                            frame.encodeToData()!!.use { File(directory, "key-verification-desktop.png").writeBytes(it.bytes) }
+                        }
+                        assertNull(trustedKey, "Opening the comparison must not trust the new key")
+                        scene.tap(Offset(612f, 456f)) // Cancel in the fixed-size desktop fixture.
+                        scene.render(400_000_000).close()
+                        assertNull(trustedKey, "Cancel must leave the key pending")
+                        scene.tap(verify)
+                        scene.render(500_000_000).close()
+                        scene.tap(Offset(710f, 456f)) // Trust new key.
+                        scene.render(600_000_000).close()
+                        assertEquals(peerId, trustedKey?.first)
+                        assertEquals(notice.pendingFingerprint, trustedKey?.second)
+                    }
+                } finally {
+                    scene.close()
+                }
+            }
+        }
+    }
+
+    private fun ImageComposeScene.tap(position: Offset) {
+        sendPointerEvent(PointerEventType.Press, position, type = PointerType.Touch)
+        sendPointerEvent(PointerEventType.Release, position, type = PointerType.Touch)
+    }
+
     @Test fun renderWorkspaceStates() {
         val output = System.getenv("FLASH_HUB_RENDER_DIR")
         assumeTrue("Set FLASH_HUB_RENDER_DIR to capture the Hub review matrix", output != null)
@@ -59,15 +152,28 @@ class FlashHubWorkspaceRenderTest {
             onOpenGroup = {}, onRetryGroups = {}, onDismissTip = {}, onRouteConsumed = {},
         )
         data class Case(val name: String, val width: Int, val height: Int, val dark: Boolean = false,
-            val data: FlashHubScreenData = base, val selection: FlashHubSelection = FlashHubSelection(), val fontScale: Float = 1f)
+            val data: FlashHubScreenData = base, val selection: FlashHubSelection = FlashHubSelection(), val fontScale: Float = 1f,
+            val splitChat: Boolean = false)
         val cases = listOf(
             Case("phone-people", 390, 844),
             Case("phone-dark", 390, 844, dark = true),
             Case("phone-admin-news", 390, 844, data = base.copy(state = base.state.copy(myRole = HubPersonRole.ADMIN), posting = HubPostingRights.OrgWide()), selection = FlashHubSelection(segment = FlashHubSegment.NEWS)),
             Case("phone-offline", 390, 844, data = base.copy(link = HubLinkState.OFFLINE, state = base.state.copy(syncStatus = HubSyncStatus.FAILED_OFFLINE))),
-            Case("phone-loading", 390, 844, data = base.copy(state = base.state.copy(loaded = false))),
+            Case(
+                "phone-loading", 390, 844,
+                data = base.copy(
+                    people = emptyList(),
+                    state = base.state.copy(syncStatus = HubSyncStatus.NEVER, peopleCount = 0, lastSyncedAtMs = null, isRefreshing = true),
+                ),
+            ),
+            Case("phone-refreshing-dark", 390, 844, dark = true, data = base.copy(state = base.state.copy(isRefreshing = true))),
+            Case(
+                "phone-loading-large-text", 390, 844, fontScale = 2f,
+                data = base.copy(people = emptyList(), state = base.state.copy(loaded = false)),
+            ),
             Case("phone-large-text", 390, 844, fontScale = 2f),
             Case("desktop-departments", 1200, 800, selection = FlashHubSelection(segment = FlashHubSegment.DEPARTMENTS)),
+            Case("desktop-hub-chat", 1200, 800, dark = true, splitChat = true),
             Case("desktop-person", 1200, 800, data = base.copy(openedPerson = base.people.first()), selection = FlashHubSelection(personId = base.people.first().deviceId)),
             Case("phone-empty", 390, 844, data = base.copy(people = emptyList(), state = base.state.copy(peopleCount = 0))),
             Case("phone-groups-error", 390, 844, data = base.copy(groups = emptyList(), groupsLoadError = "Groups could not be loaded. Try again."), selection = FlashHubSelection(segment = FlashHubSegment.GROUPS)),
@@ -80,7 +186,22 @@ class FlashHubWorkspaceRenderTest {
                         if (case.width >= 840) {
                             Row(Modifier.fillMaxSize().background(FlashTheme.colors.backgroundApp)) {
                                 FlashNavigationRail(tabs, FlashDestination.Hub, {}, localDisplayName = "You")
-                                Box(Modifier.weight(1f)) { FlashHubScreen(case.data, case.selection, {}, actions) }
+                                if (case.splitChat) {
+                                    DesktopTwoPane(
+                                        listPane = { FlashHubScreen(case.data, case.selection, {}, actions) },
+                                        detailPane = {
+                                            FlashConversationScreen(
+                                                state = sampleFlashConversationState(),
+                                                onBack = {},
+                                                onSendText = {},
+                                                onAttachmentClick = {},
+                                            )
+                                        },
+                                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                                    )
+                                } else {
+                                    Box(Modifier.weight(1f)) { FlashHubScreen(case.data, case.selection, {}, actions) }
+                                }
                             }
                         } else {
                             Box(Modifier.fillMaxSize().background(FlashTheme.colors.backgroundApp)) {

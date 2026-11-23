@@ -8,6 +8,21 @@ import kotlin.test.assertNull
 class FlashVideoPlayerMathTest {
 
     @Test
+    fun `forward jumps accumulate and stop at the end without starting paused playback`() {
+        val playback = FlashVideoPlayback(autoPlay = true)
+        playback.update(duration = 24_000, position = 2_000, atEnd = false)
+        playback.pause()
+
+        assertEquals(10_000L, playback.skipForward())
+        playback.update(duration = 24_000, position = 2_050, atEnd = false)
+        assertEquals(10_000L, playback.skipForward())
+        assertEquals(2_000L, playback.skipForward())
+        assertEquals(0L, playback.skipForward())
+        assertEquals(24_000L, playback.seekToMs)
+        assertEquals(false, playback.playing)
+    }
+
+    @Test
     fun `play click toggles play state during normal playback without seeking`() {
         val pausedResult = FlashVideoPlayerMath.onPlayClick(isCompleted = false, isPlaying = true)
         assertEquals(false, pausedResult.isCompleted)
@@ -74,5 +89,56 @@ class FlashVideoPlayerMathTest {
 
         // Bug evidence: target did not change (0L == 0L), skipping seek on subsequent replay
         assertEquals(previousTarget, seekTarget)
+    }
+
+    @Test
+    fun `error state hides playback controls while keeping top close bar visible`() {
+        assertEquals(false, FlashVideoPlayerMath.showPlaybackControls("Video playback isn't available yet"))
+        assertEquals(true, FlashVideoPlayerMath.showPlaybackControls(null))
+        assertEquals(
+            true,
+            FlashVideoPlayerMath.showTopBar(
+                errorMessage = "Video playback isn't available yet",
+                controlsVisible = false,
+                isPlaying = false,
+            ),
+        )
+        assertEquals(
+            false,
+            FlashVideoPlayerMath.showTopBar(
+                errorMessage = null,
+                controlsVisible = false,
+                isPlaying = true,
+            ),
+        )
+        assertEquals(
+            true,
+            FlashVideoPlayerMath.showTopBar(
+                errorMessage = null,
+                controlsVisible = true,
+                isPlaying = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `mute state toggles and restored playback seeks to saved position`() {
+        val playback = FlashVideoPlayback(
+            autoPlay = true,
+            initialStarted = true,
+            initialPositionMs = 12_500L,
+            initialCompleted = false,
+            initialMuted = true,
+        )
+        assertEquals(true, playback.started)
+        assertEquals(true, playback.playing)
+        assertEquals(12_500L, playback.positionMs)
+        assertEquals(12_500L, playback.seekToMs)
+        assertEquals(true, playback.isMuted)
+
+        playback.toggleMute()
+        assertEquals(false, playback.isMuted)
+        playback.toggleMute()
+        assertEquals(true, playback.isMuted)
     }
 }

@@ -100,6 +100,9 @@ val trustStore = AndroidPreferencesTrustStore(context)
 The transport must be wired with the same trust store, or v2 pairing fails with `identity-mismatch`:
 
 ```kotlin
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+
+@OptIn(FlashInternalApi::class) // requireTransportSecurity is @FlashInternalApi
 val tlsOptions = requireTransportSecurity {                        // TLS is mandatory; no plaintext fallback
     TlsOptions(
         pinVerifier = TofuPinVerifier(
@@ -112,7 +115,7 @@ val tlsOptions = requireTransportSecurity {                        // TLS is man
 }
 ```
 
-`Flash.create` is the reference implementation of this whole graph: `core/engine/src/androidMain/.../Flash.kt` lines 239-300. Copy it rather than inventing it; every argument there is a decision someone already made for a reason.
+`Flash.create` is the reference implementation of this whole graph: `core/engine/src/androidMain/.../Flash.kt` lines 253-305. Copy it rather than inventing it; every argument there is a decision someone already made for a reason.
 
 ### 4.2 Wiring point 1 -- a non-blocking send that reports reachability
 
@@ -254,6 +257,16 @@ public fun isVerified(deviceId: FlashDeviceId): Boolean = false
 public fun getPin(deviceId: FlashDeviceId): String? = null
 ```
 
+In addition, `FlashTrustStore` defines **three abstract vouching methods with no default bodies** (ADR-044 V2, enforced at compile time):
+
+```kotlin
+public fun vouchingGroups(deviceId: FlashDeviceId): Set<String>
+public fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict
+public fun revokeVouch(deviceId: FlashDeviceId, groupId: String)
+```
+
+Group-capable hosts must persist vouched pins and delegate to `VouchRules.decide(...)`; a standalone 1:1-only custom store can return `emptySet()`, `VouchVerdict.INVALID` (or delegate to `VouchRules`), and a no-op respectively.
+
 An implementation that forgets to override `markVerified` produces "paired" peers that display as *Not verified* forever, and one that forgets `getPin` makes every v2 pairing fail with `identity-mismatch`. Both failures look like a protocol bug and neither throws.
 
 `revokeTrust(deviceId)` clears trust, session key **and** the verified mark. `revoke()` on the coordinator is the unfriend path; it does not touch the TLS pin (the pin is the transport's, and a re-pair with the same key is expected).
@@ -263,18 +276,32 @@ An implementation that forgets to override `markVerified` produces "paired" peer
 `FlashPairingDialog` takes a plain snapshot plus a phase, so any host can render it:
 
 ```kotlin
+import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.messaging.model.FlashNetworkTransport
+import com.transfer.flash.core.security.pairing.PairingPhase
+import com.transfer.flash.ui.chat.FlashPairingDialog
+import com.transfer.flash.ui.chat.FlashPairingMath
+import com.transfer.flash.ui.chat.FlashPairingPhase
+import com.transfer.flash.ui.chat.FlashPairingRequestUi
+
 // Ported from :app's PairingUiMapper (pure, no dependencies):
 fun corePhaseToUi(phase: PairingPhase): FlashPairingPhase = when (phase) {
     PairingPhase.Idle -> FlashPairingPhase.Idle
-    PairingPhase.AwaitingPeerReveal -> FlashPairingPhase.Idle        // no code exists yet
-    PairingPhase.AwaitingPeerNonce -> FlashPairingPhase.AwaitingPeerConfirmation
+    // Both code-less phases map to Idle so the consent card never opens without a 6-digit code:
+    PairingPhase.AwaitingPeerReveal,
+    PairingPhase.AwaitingPeerNonce -> FlashPairingPhase.Idle
     PairingPhase.RequestReceived,
     PairingPhase.AwaitingLocalDecision -> FlashPairingPhase.RequestReceived
     PairingPhase.AwaitingPeerConfirmation -> FlashPairingPhase.AwaitingPeerConfirmation
     PairingPhase.Confirmed -> FlashPairingPhase.Paired
     PairingPhase.DeclinedByPeer -> FlashPairingPhase.Declined
     PairingPhase.Expired -> FlashPairingPhase.Expired
-    PairingPhase.Failed -> FlashPairingPhase.Declined                 // the dialog has no failure card
+    PairingPhase.Failed -> FlashPairingPhase.Failed
+}
+
+fun secondsLeft(expiresAtMs: Long?, nowMs: Long): Int {
+    expiresAtMs ?: return 0
+    return ((expiresAtMs - nowMs) / 1000L).coerceAtLeast(0L).toInt()
 }
 
 val peerName = state.peerName?.ifBlank { null } ?: state.peerDeviceId.orEmpty().take(8)
@@ -294,10 +321,11 @@ FlashPairingDialog(
     onAccept = ::acceptLocal,                            // pairing.acceptLocal() / protocol.respondAccept()
     onDecline = ::declineLocal,
     onDismiss = ::declineLocal,
+    failureReason = state.failureReason,
 )
 ```
 
-Note the conflation the dialog imposes: `Failed` renders as `Declined`, and `AwaitingPeerReveal` as `Idle`. If you need a distinct "security check failed" screen, build one; do not try to express it through this dialog.
+Note how the dialog maps the phases: `AwaitingPeerReveal` and `AwaitingPeerNonce` both collapse to `Idle` so the dialog never appears before both nonces are known and a 6-digit code exists (ERROR-1010), while `PairingPhase.Failed` maps directly to `FlashPairingPhase.Failed` — `FlashPairingDialog` renders a dedicated failure card showing `failureReason` (and an optional `onRetry` action) rather than misreporting failures as declines.
 
 ---
 
@@ -433,7 +461,7 @@ Also: `PairingWireCodec` and the `:core:security` pairing package are **evaluati
 - [ ] 1 s tick runs while a session is in flight.
 - [ ] On `Confirmed`: `trustPeer` + `markVerified` + `saveSessionKey(ecdh)` -- all three.
 - [ ] Revoke clears trust and the verified mark, and the peer list is observable (a plain trust store is not).
-- [ ] `Expired` is retryable, `Failed` is not, and the dialog never shows a failure as a decline unless you chose that.
+- [ ] `Expired` is retryable, `Failed` is not, and the dialog maps `Failed` to `FlashPairingPhase.Failed` with `failureReason`.
 - [ ] The two-device matrix in section 9 passes in **both** directions.
 
 ---
@@ -455,7 +483,7 @@ check `PAIRLIB-01` in the test backlog.
 | Shared driver | `core/security/src/commonMain/.../pairing/FlashPairingCoordinator.kt` |
 | Executable specification | `core/security/src/jvmTest/.../pairing/FlashPairingCoordinatorTest.kt` |
 | Android twin + UI mapper | `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`, `PairingUiMapper.kt` |
-| Reference graph assembly (identity, TLS pins, router, session-up) | `core/engine/src/androidMain/.../Flash.kt` lines 239-300; `app/.../debug/DiscoveryEngineHolder.kt` lines ~700-800, 1560-1600, 1880-1900, 2400-2470 |
+| Reference graph assembly (identity, TLS pins, router, session-up) | `core/engine/src/androidMain/.../Flash.kt` lines 253-305; `app/.../debug/DiscoveryEngineHolder.kt` lines ~700-800, 1560-1600, 1880-1900, 2400-2470 |
 | Inbound routing order and the pairing seam | `core/engine/src/commonMain/.../FlashInboundRouter.kt` (`routeInboundText`, `PAIR_PREFIX`) |
 | Trust store defaults and semantics | `core/security/src/commonMain/.../trust/FlashTrustStore.kt`, `androidMain/.../AndroidPreferencesTrustStore.kt` |
 | "Trusted but not encrypted" (hub one-tap) | `core/messaging/src/commonMain/.../FlashChatRepository.kt` (`pairColleagueFromDirectory` KDoc) |

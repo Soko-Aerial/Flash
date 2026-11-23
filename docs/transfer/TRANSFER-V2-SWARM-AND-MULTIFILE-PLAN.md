@@ -1,6 +1,8 @@
 # Transfer engine v2, swarm group sending (FO-04) and multi-file / folder sending (FA-5): research and plan
 
-**Status: PLAN ONLY (written 2026-10-03). Nothing here is implemented, no ADR has been written, no wire format has been changed.**
+**Current status (2026-11-15).** Group swarm is implemented under ADR-071/072. See the [swarm implementation plan](GROUP-SWARM-IMPLEMENTATION-PLAN.md) and [FSW1 protocol](../protocol.md#group-swarm-wire-fsw1-v1-adr-071-implemented-device-checks-owed). FA-5 managed batches and folders remain open.
+
+**Original status on 2026-10-03:** plan only. The request and baseline below describe the project when this plan was written.
 Owner request: research whether a library can give us torrent-style group file sending, plan it together with FA-5 (multi-file and
 folder selection), consider upgrading the transport engine, and be honest about whether it will work. Basis: the code in this repository
 and the research in section 3. FO-04 (`docs/FUTURE-OPTIMIZATION.md`) stays POSTPONED (ADR-056) until the owner opens it; this document is

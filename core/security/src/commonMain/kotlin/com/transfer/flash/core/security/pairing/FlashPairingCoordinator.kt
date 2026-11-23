@@ -130,6 +130,7 @@ public class FlashPairingCoordinator(
         val numericCode: String,
         val phase: PairingPhase,
         val secondsLeft: Int,
+        val peerDeviceId: String? = null,
     )
 
     private val _pairing = MutableStateFlow<PairingUi?>(null)
@@ -166,6 +167,8 @@ public class FlashPairingCoordinator(
     @Volatile
     private var protocol: DefaultFlashPairingProtocol = newProtocol()
     private var collectorJob: Job = launchCollectors()
+    @Volatile
+    private var lingerJob: Job? = null
 
     /**
      * This device was renamed: the next pairing request carries [newName].
@@ -209,7 +212,15 @@ public class FlashPairingCoordinator(
                 if (frame is FlashPairingFrame.PairRevoke) {
                     handlePeerRevoked(peerId)
                 } else {
-                    scope.launch { protocol.onFrame(frame) }
+                    scope.launch {
+                        if (frame is FlashPairingFrame.PairRequest) {
+                            cancelLinger()
+                            if (protocol.session.value.phase.isTerminalPhase()) {
+                                resetProtocol()
+                            }
+                        }
+                        protocol.onFrame(frame)
+                    }
                 }
             }
             null -> Unit
@@ -218,6 +229,10 @@ public class FlashPairingCoordinator(
 
     /** Initiator: the user picked Pair on [peerId]. Needs the peer's fingerprint (from its hello). */
     override fun beginPair(peerId: String, peerName: String, onNeedRetry: (String) -> Unit) {
+        cancelLinger()
+        if (protocol.session.value.phase.isTerminalPhase()) {
+            resetProtocol()
+        }
         val known = fingerprints[peerId]
         if (known != null) {
             scope.launch { beginIfPeerSupportsV2(peerId, peerName, known) }
@@ -256,6 +271,10 @@ public class FlashPairingCoordinator(
      * could be forced by a man-in-the-middle, so no new pairing may be made with it.
      */
     private fun beginIfPeerSupportsV2(peerId: String, peerName: String, fingerprint: String) {
+        cancelLinger()
+        if (protocol.session.value.phase.isTerminalPhase()) {
+            resetProtocol()
+        }
         if ((peerVersions[peerId] ?: 1) < PairingWireCodec.PROTOCOL_VERSION) {
             _messages.tryEmit("$peerName is running an older Flash. Update Flash on that device, then pair again.")
             return
@@ -270,9 +289,12 @@ public class FlashPairingCoordinator(
 
     /** Decline an active request, or dismiss a terminal dialog — back to a clean slate. */
     override fun declineLocal() {
+        cancelLinger()
+        val target = protocol
         scope.launch {
-            protocol.respondDecline()
-            resetProtocol()
+            if (protocol !== target) return@launch
+            target.respondDecline()
+            if (protocol === target) resetProtocol()
         }
     }
 
@@ -371,8 +393,10 @@ public class FlashPairingCoordinator(
                     _trustedPeers.value = loadTrusted()
                 }
                 _messages.tryEmit("Paired with ${s.peerName ?: s.peerDeviceId?.take(SHORT_ID) ?: "peer"}.")
-                scope.launch {
+                cancelLinger()
+                lingerJob = scope.launch {
                     delay(PAIRED_LINGER_MS)
+                    lingerJob = null
                     resetProtocol()
                 }
             }
@@ -381,10 +405,7 @@ public class FlashPairingCoordinator(
             is FlashPairingEvent.Failed -> {
                 val detail = (event as? FlashPairingEvent.Failed)?.reason?.let(::failureMessage)
                 _messages.tryEmit(detail ?: "Pairing ended (${event::class.simpleName}).")
-                scope.launch {
-                    delay(TERMINAL_LINGER_MS)
-                    resetProtocol()
-                }
+                // Keep terminal state visible until the user dismisses, retries, or a new request starts.
             }
             is FlashPairingEvent.RequestReceived -> Unit // a host raises its dialog off `pairing`.
         }
@@ -403,10 +424,23 @@ public class FlashPairingCoordinator(
             secondsLeft = s.expiresAtMs
                 ?.let { ((it - SystemTimeSource.nowMs()).coerceAtLeast(0L) / 1000L).toInt() }
                 ?: 0,
+            peerDeviceId = s.peerDeviceId,
         )
     }
 
+    private fun cancelLinger() {
+        lingerJob?.cancel()
+        lingerJob = null
+    }
+
+    private fun PairingPhase.isTerminalPhase(): Boolean =
+        this == PairingPhase.Confirmed ||
+            this == PairingPhase.DeclinedByPeer ||
+            this == PairingPhase.Expired ||
+            this == PairingPhase.Failed
+
     private fun resetProtocol() {
+        cancelLinger()
         collectorJob.cancel()
         protocol = newProtocol()
         collectorJob = launchCollectors()
@@ -460,7 +494,6 @@ public class FlashPairingCoordinator(
         /** Re-ask cadence inside [FINGERPRINT_WAIT_MS]: ≤ 8 asks, each answered at most once. */
         const val HELLO_RESEND_MS = 400L
         const val PAIRED_LINGER_MS = 1800L
-        const val TERMINAL_LINGER_MS = 2500L
         /** Time for a best-effort `PAIR_REVOKE` to leave the writer before the host closes the socket. */
         const val PAIR_REVOKE_FLUSH_MS = 250L
         const val SHORT_ID = 8

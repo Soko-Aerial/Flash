@@ -36,6 +36,7 @@ class GroupRosterSyncTest {
         val dir = OrganizationDirectory.open(ServerDatabase.inMemory())
         if (sign) dir.rosterSigner = GroupRosterSigner { GroupRosterStatement.issue(delegate.private, it) }
         dir.createDepartment("dept-eng", "Engineering", listOf("dev-head"), isOrgAdmin = true)
+        dir.addDepartmentMember("dept-eng", "dev-head", "Eng Head", MemberRole.DEPT_ADMIN)
         return dir
     }
 

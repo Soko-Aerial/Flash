@@ -13,13 +13,17 @@
 ## Component
 
 `FlashGroupInviteJoin` — components and dialogs governing the group invite, join, and approval lifecycle:
-1. **Invite Sharing (`FlashGroupInviteSheet`):** Displays the generated `flash://g/1/...` invite, copy link button, system share sheet trigger, and explanation of who can join.
+1. **Invite Sharing (`FlashGroupInviteSheet`):** Shows the share link and its offline QR, with copy and system share actions. A configured build uses the HTTPS group link. The legacy `flash://g/1/...` format remains supported. See [invite deployment](../deploy/INVITE-LINKS.md).
 2. **Join Dialog (`FlashJoinGroupDialog`):** Link input / paste dialog (Desktop and Android fallback), plus deep-link confirmation card ("Join <Group>? Invited by <Name>").
 3. **Pending Join Status (`FlashPendingJoinCard` / Sheet):** Displays the Table 8.3 plain-English status sentence (e.g. M-03 "Waiting for a member of <group> to be nearby", M-07 "Waiting for an admin of <group> to approve"), inviter info, and a "Cancel request" button.
 4. **Admin Join Requests List (`FlashJoinRequestsSection`):** Rendered at the top of `FlashGroupMembersSheet` for admins/owners when join requests are pending. Shows applicant name, time, "Previously removed" warning chip if applicable, and Approve / Decline buttons.
 5. **Chat Inline Invite Card (`FlashInlineInviteCard`):** Renders an interactive preview card within 1:1 or group chats when an invite link is shared as message text (O-14).
 
 ---
+
+### Hub directory groups
+
+A Hub group manager can share a join link for a listed group that allows self-service join. The confirmation explains that the link uses the recipient's current Hub enrollment and may require approval. It resolves through the Hub and uses the normal directory join state. Local signed group invitations still carry their own peer join information.
 
 ## Purpose
 

@@ -14,8 +14,13 @@ import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.CallIceResolution
+import com.transfer.flash.core.calling.CallIceServerSpec
+import com.transfer.flash.core.calling.CallRouteCapabilities
 import com.transfer.flash.core.calling.FEATURE_VIDEO_UPGRADE
 import com.transfer.flash.core.calling.FlashCalling
+import com.transfer.flash.core.calling.OffLanCallEligibility
+import com.transfer.flash.core.calling.parseCallMediaPathPolicy
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
@@ -46,7 +51,9 @@ import com.transfer.flash.core.ptt.protocol.PttFrameCodec
 import com.transfer.flash.core.ptt.protocol.PttSessionCodec
 import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
-import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
+import com.transfer.flash.core.persistence.db.JvmDatabaseOpenResult
+import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabaseWithRecovery
+import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.swarm.api.FlashSwarm
 import com.transfer.flash.core.swarm.api.FlashSwarmConfig
 import com.transfer.flash.core.engine.swarm.SwarmHostBinding
@@ -82,6 +89,7 @@ import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.SourceIdentity
 import com.transfer.flash.core.transfer.SourceIdentityProvider
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
@@ -123,6 +131,7 @@ import java.io.File
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -176,8 +185,8 @@ import okio.Path.Companion.toPath
  * completes [chats] is still the honest empty repository below; the shell already
  * renders that state.
  *
- * **Resume across restart is off** (`store = null`, D5 = C pending): the Phase 16 harness runs
- * the same way, and G7 is already logged BLOCKED ON 09B-2.
+ * Direct transfer recovery uses the same encrypted database, with byte ranges in the LAN
+ * continuity checkpoint identifying the usable bytes in a partial receive.
  */
 public class DesktopEngine(
     /** Root for received files. Default: null (resolves to settings store or ~/FlashReceived). */
@@ -207,6 +216,7 @@ public class DesktopEngine(
      * an offer from a peer that is not trusted always waits for the user, whatever this says.
      */
     private val autoAcceptIncoming: Boolean = false,
+    private val enableResume: Boolean = true,
 ) : FlashEngine, FlashReadiness {
     // OPT-O14-06: Bound engine background scope concurrency via Dispatchers.IO.limitedParallelism(8).
     // Prevents idle thread fragmentation across independent engine subsystems and coroutines.
@@ -321,6 +331,9 @@ public class DesktopEngine(
 
     @Volatile
     private var orgSnapshotCoordinatorRef: com.transfer.flash.core.enterprise.OrgSnapshotCoordinator? = null
+    private val offLanCallSignalSeq = java.util.concurrent.atomic.AtomicLong(0L)
+    private val hubGroupPolicyRef = MutableStateFlow(com.transfer.flash.core.enterprise.HubGroupPolicyMonitor.SAFE_DEFAULT)
+    public val hubGroupPolicy: StateFlow<com.transfer.flash.core.enterprise.HubGroupPolicy> = hubGroupPolicyRef.asStateFlow()
 
     /** Pull-to-refresh and Hub tab opening: ask for a directory sync (honours the 60 s minimum unless [force]). */
     public fun requestOrgSync(reason: String, force: Boolean = false) {
@@ -680,6 +693,9 @@ public class DesktopEngine(
     /** Inbound group join request notification hook (for DesktopNotificationManager / shell). */
     public var onJoinRequestNotification: ((groupId: String, groupTitle: String, requesterName: String) -> Unit)? = null
 
+    /** Inbound announcement notification hook (Plan A3 §4.4 / HR7, for DesktopNotificationManager). */
+    public var onAnnouncementNotification: ((announcementId: String, title: String, departmentName: String?) -> Unit)? = null
+
     /** A member added this device to a group it cannot accept (not paired with the owner): the sentence to show (M-23). */
     public var onGroupOfferRefused: ((groupId: String, groupName: String, message: String) -> Unit)? = null
 
@@ -1031,8 +1047,8 @@ public class DesktopEngine(
      * error, never an empty chat list — proven by `JdbcCipherSQLiteDriverTest`), rather
      * than silently decrypting. A file that exists but cannot be unprotected is NOT replaced.
      */
-    private fun chatDbKey(): String =
-        ChatDbKeyStore(File(stateDir, "chat"), hubSealingVault, log = { FlashLog.i(TAG_WS, it) }).passphrase()
+    private fun loadOrMintChatDbKey(): ChatDbKeyStore.DeferredKey =
+        ChatDbKeyStore(File(stateDir, "chat"), hubSealingVault, log = { FlashLog.i(TAG_WS, it) }).loadOrMintDeferred()
 
     private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
     private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
@@ -1042,6 +1058,10 @@ public class DesktopEngine(
     private val receivedPaths = ConcurrentHashMap<String, String>()
     private val rejectedLogCache = ConcurrentHashMap.newKeySet<String>()
     private val rejectedCancelSent = ConcurrentHashMap.newKeySet<String>()
+    private val acceptingOffers = ConcurrentHashMap.newKeySet<String>()
+    private val hubAdoptedTransfers = ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var receiveDestinationResolver: ((ChunkFrame.FileStart) -> File)? = null
 
     private var sessionJobs = ConcurrentHashMap<WsSession, Job>()
 
@@ -1288,6 +1308,9 @@ public class DesktopEngine(
             openHandles.clear()
             incomingMeta.clear()
             receivedPaths.clear()
+            acceptingOffers.clear()
+            hubAdoptedTransfers.clear()
+            receiveDestinationResolver = null
             // The database closes after the scope is cancelled, so no coroutine of this engine writes to it any more.
             val db = chatDb
             val currentChat = chatImpl
@@ -1297,7 +1320,7 @@ public class DesktopEngine(
             chatDb = null
             runCatching { (currentChat as? AutoCloseable)?.close() }
             runCatching { (currentTransfer as? AutoCloseable)?.close() }
-            runCatching { db?.close() }
+            runCatching { db?.closeWithTrim() }
                 .onFailure { FlashLog.w(TAG_WS, "Closing the chat database failed: ${it.message}") }
             discoveryImpl = null
             networkImpl = null
@@ -1418,13 +1441,62 @@ public class DesktopEngine(
             }
             FileSystem.SYSTEM.source(file.absolutePath.toPath())
         }
+        val databaseFile = File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME)
+        val db = try {
+            val deferredKey = loadOrMintChatDbKey()
+            when (
+                val result = openEncryptedFlashDatabaseWithRecovery(
+                    file = databaseFile,
+                    key = deferredKey.passphrase,
+                    mintedNewKey = deferredKey.minted,
+                )
+            ) {
+                is JvmDatabaseOpenResult.Opened -> {
+                    deferredKey.commit()
+                    result.recoveredAction?.let { action ->
+                        FlashLog.w(TAG_WS, "Encrypted database recovery: $action")
+                    }
+                    result.database
+                }
+                is JvmDatabaseOpenResult.UnavailablePreserved -> {
+                    FlashLog.w(
+                        TAG_WS,
+                        "Encrypted database unavailable (existing files preserved); chat and restart recovery are unavailable this run",
+                        result.reason,
+                    )
+                    null
+                }
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            FlashLog.w(
+                TAG_WS,
+                "Encrypted database key unavailable (existing files preserved); chat and restart recovery are unavailable this run",
+                t,
+            )
+            null
+        }
+        chatDb = db
+        // HR8: Single disk-backed cross-route continuity coordinator shared by LAN transfer and HubFileBinding.
+        val transferRouteCoordinator = com.transfer.flash.core.engine.hubfiles.TransferRouteCoordinator(
+            com.transfer.flash.core.engine.hubfiles.FileContinuityCheckpointStore(
+                File(stateDir, "transfer-continuity").path,
+            ),
+        )
+        var hubFileTransfersRef: com.transfer.flash.core.enterprise.files.HubFileTransfers? = null
+        val routeContinuityPort = com.transfer.flash.core.engine.hubfiles.EngineTransferRouteContinuityPort(
+            localDeviceId = { localId },
+            coordinator = transferRouteCoordinator,
+            transfersProvider = { hubFileTransfersRef },
+        )
         val transfer = RealFlashTransferRepository(
             streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
             fileSourceOpener = fileOpener,
             sourceIdentityProvider = object : SourceIdentityProvider {
                 override suspend fun identity(fileUri: String): SourceIdentity? = readSourceIdentity(fileUri)
             },
-            store = null, // D5 = C pending (09B-2) — matches the Phase 16 harness.
+            store = db?.takeIf { enableResume }?.let { RoomTransferStore(it.transferDao(), it.transferChunkDao()) },
             repositoryScope = scope,
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
@@ -1436,8 +1508,11 @@ public class DesktopEngine(
                 receivedManifest.recordFile(root, File(placed))
                 placed
             },
+            routeContinuity = routeContinuityPort,
+            confirmResumeWithReceiver = true,
         )
         transferImpl = transfer
+        runBlocking { transfer.awaitRestoredTransfers() }
 
         // ---- presence sharing (PC4, ADR-046): the same wiring as both Android hosts ----
         // Built before the chat repository, whose Online set it feeds. Group rosters come from
@@ -1508,13 +1583,9 @@ public class DesktopEngine(
         modeController = modes
 
         // ---- durable chat (slice 4): the same repository the phone runs ----
-        // Built after the transfer repository because the attachment-progress join reads
-        // it, and before the WS server binds because inbound frames can arrive as soon as
-        // sessions do. A database failure must not abort boot (chat degrades to the honest
-        // empty repository; transfers/discovery/pairing are unaffected).
-        runCatching {
-            val db = openEncryptedFlashDatabase(File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME), chatDbKey())
-            chatDb = db
+        // The attachment-progress join needs the transfer repository, and inbound frames can
+        // arrive as soon as the WS server binds. LAN remains available if database open failed.
+        if (db != null) runCatching {
             val hubRevocations = HubRevocationCache(
                 directory = File(stateDir, "hub/revocations").path,
                 credentials = enterpriseTrustStore::getCredentials,
@@ -1553,6 +1624,23 @@ public class DesktopEngine(
                 },
                 lookup = { hub.peers.lookup(it) },
             )
+            val hubGroupE2ee = com.transfer.flash.core.messaging.hub.HubGroupE2eeCoordinator(
+                localDeviceId = localId,
+                crypto = crypto,
+                keyStore = com.transfer.flash.core.security.enterprise.FileHubGroupEpochKeyStore(
+                    File(File(stateDir, "hub"), "group-keys.dat"),
+                    hubSealingVault,
+                ),
+            )
+            scope.launch {
+                try {
+                    hubGroupE2ee.load()
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    FlashLog.e("SECURITY", "Failed to load persisted Hub group epoch keys: ${t.message}", t)
+                }
+            }
 
             val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
                 dao = db.orgDirectoryDao(),
@@ -1577,6 +1665,20 @@ public class DesktopEngine(
             val revocationGossip = HubRevocationGossip(hubRevocations, onApplied = {
                 orgPeerResolver.onRevocationsChanged()
                 hubRosterChat?.refreshHubGroupRosters()
+                val currentList = hubRevocations.current()
+                val revokedIds = currentList?.revokedDeviceIds.orEmpty()
+                val activePeerId = callsImpl?.activeCall?.value?.peerId
+                val activePeerRevoked = activePeerId != null &&
+                    (currentList?.revokesDevice(activePeerId) == true || !hubRevocations.permitsOrg())
+                if (revokedIds.isNotEmpty() || activePeerRevoked) {
+                    scope.launch {
+                        val c = callsImpl as? CallCoordinator ?: return@launch
+                        revokedIds.forEach { c.terminateCallsForRevokedPeer(it) }
+                        if (activePeerId != null && activePeerRevoked) {
+                            c.terminateCallsForRevokedPeer(activePeerId)
+                        }
+                    }
+                }
             })
             val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
                 dao = db.orgDirectoryDao(),
@@ -1596,6 +1698,16 @@ public class DesktopEngine(
                 revocationsProvider = { hubRevocations.current() },
                 scope = scope,
             )
+            val groupPolicyMonitor = com.transfer.flash.core.enterprise.HubGroupPolicyMonitor(
+                credentials = enterpriseTrustStore.credentials,
+                connected = { hub.relay.state.value.canSend },
+                fetchPolicy = hub.directory::fetchHubGroupPolicy,
+            )
+            scope.launch {
+                groupPolicyMonitor.watch(hub.relay.state.map { it.canSend }.distinctUntilChanged()) { policy ->
+                    hubGroupPolicyRef.value = policy
+                }
+            }
             val orgSnapshotCoordinator = com.transfer.flash.core.enterprise.OrgSnapshotCoordinator(
                 credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
                 relayConnected = hub.relay.state.map { it.canSend },
@@ -1617,11 +1729,23 @@ public class DesktopEngine(
                     hubGroupRosters.clear()
                 },
                 scope = scope,
-                onOutcome = { reason, outcome -> FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+                onOutcome = { reason, outcome ->
+                    FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}")
+                },
                 getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
             )
             orgSnapshotCoordinatorRef = orgSnapshotCoordinator
             orgSnapshotCoordinator.start()
+            scope.launch {
+                hub.relay.metaEvents.collect { meta ->
+                    if (meta.from != null || meta.to != null) return@collect
+                    if (meta.action == "GROUP_POLICY_CHANGED") {
+                        groupPolicyMonitor.invalidate()
+                    } else if (meta.action == "DIR_SYNC" && meta.conversationId == "__dir__") {
+                        orgSnapshotCoordinator.requestSync("ws_dir_bump", force = true)
+                    }
+                }
+            }
 
             // ERROR-703: the radio chat engine follows the gateway the Radio screen controls. Built once per engine.
             if (radioPort == null) {
@@ -1805,6 +1929,10 @@ public class DesktopEngine(
                     FlashLog.i(TAG_WS, "Inbound attachment in $conversationId from ${senderName ?: "?"} (group $groupTitle): $fileName ($mimeType)")
                     onInboundAttachmentNotification?.invoke(conversationId, senderName, fileName, mimeType, groupTitle)
                 },
+                onNewAnnouncementNotification = { announcementId, title, deptName ->
+                    FlashLog.i(TAG_WS, "Inbound announcement notification: $announcementId")
+                    onAnnouncementNotification?.invoke(announcementId, title, deptName)
+                },
                 scope = scope,
                 enterpriseTrustStore = enterpriseTrustStore,
                 hubRelay = FlashRelayHubPort(hub.relay) { enterpriseTrustStore.isEnrolled },
@@ -1822,17 +1950,37 @@ public class DesktopEngine(
                     hubPresence = hub.hubOnlinePeerIds,
                 ),
                 hubSealing = hubSealingPort,
+                hubGroupE2ee = hubGroupE2ee,
                 radioPort = radioPort,
                 hubFileDao = db.hubFileDao(),
+                offLanCallSupported = {
+                    val cfg = hub.validCallIceConfig()
+                    CallRouteCapabilities(
+                        isDirectLanReachable = false,
+                        isHubConnected = hub.relay.state.value.canSend,
+                        hubSupportsOffLanCalling = cfg?.offLanCallingSupported == true,
+                        peerSupportsOffLanCalling = true,
+                        isPeerRevoked = false,
+                        mediaPolicy = parseCallMediaPathPolicy(cfg?.mediaPolicy),
+                        iceServers = cfg?.iceServers.orEmpty()
+                            .filter { it.urls.isNotEmpty() }
+                            .map { CallIceServerSpec(it.urls, it.username, it.credential) },
+                    ).evaluateOffLanEligibility() is OffLanCallEligibility.Supported
+                },
+                allowPersonalHubLink = { groupPolicyMonitor.currentPolicy().allowPersonalHubLink },
+                groupE2eeMode = { groupPolicyMonitor.currentPolicy().groupE2eeMode },
+                onRequestOrgSync = { reason, force -> orgSnapshotCoordinator.requestSync(reason, force) },
             )
             hubRosterChat = chatImpl
             // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub; the engine keeps its
             // state under the state directory, and finished files land in the receive folder like any other.
             chatImpl?.let { c ->
+                val hubFileTransfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(stateDir, "hub-files").path))
+                hubFileTransfersRef = hubFileTransfers
                 hubFileBindingRef = HubFileBinding(
                     scope = scope,
                     dao = db.hubFileDao(),
-                    transfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(stateDir, "hub-files").path)),
+                    transfers = hubFileTransfers,
                     api = hub.files,
                     transferRepository = transfer,
                     hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
@@ -1863,6 +2011,9 @@ public class DesktopEngine(
                         val voiceFromColleague = mime.startsWith("audio/") && s.autoDownloadVoice && orgPeerResolver.isOrgPeer(peerId)
                         voiceFromColleague || shouldAutoAcceptOffer(trustStoreImpl.isTrusted(FlashDeviceId(peerId)), perKind, autoAcceptIncoming)
                     },
+                    continuityCoordinator = transferRouteCoordinator,
+                    continuityPort = routeContinuityPort,
+                    localDeviceId = { localId },
                 ).also { it.start() }
                 // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.
                 c.onHubFileMessageDeleted = { transferId -> scope.launch { hubFileBindingRef?.cancelOutgoing(transferId) } }
@@ -1938,6 +2089,13 @@ public class DesktopEngine(
             // G2: Ethernet or the Wi-Fi band, cached (netsh is a process spawn) and never blocking.
             networkBand = DesktopNetworkBand(scope).also { it.start() }::current,
             sendFrame = { frame, peerId -> sendCallFrame(network, peerId, frame) },
+            callIceResolver = { peerId ->
+                resolveCallIceForPeer(
+                    peerId = peerId,
+                    hasLanSession = network.activeSessions.value.containsKey(FlashDeviceId(peerId)),
+                    discoveredOnLan = discovery.discoveredEndpoints.value.any { it.deviceId.value == peerId },
+                )
+            },
             // Every terminated call becomes a row in the peer's thread (UI-050), mirroring the
             // app host. Each side writes its own row — no wire frame involved. Fires on
             // whichever thread ended the call, so this only logs + launches into the repo.
@@ -1959,6 +2117,25 @@ public class DesktopEngine(
             },
         )
         boot("call coordinator built")
+        enterpriseHubRef?.let { activeHub ->
+            scope.launch {
+                activeHub.relay.callSignals.collect { signal ->
+                    val coordinator = callsImpl as? CallCoordinator ?: return@collect
+                    coordinator.onInboundOffLanSignal(
+                        com.transfer.flash.core.calling.InboundOffLanCallSignal(
+                            signalId = signal.signalId,
+                            callId = signal.callId,
+                            fromPeerId = signal.from,
+                            seq = signal.seq,
+                            issuedAtMs = signal.issuedAt,
+                            ttlMs = signal.ttlMs,
+                            payloadText = signal.payload,
+                            senderCapabilities = signal.capabilities.toSet(),
+                        ),
+                    )
+                }
+            }
+        }
 
         // PTT (ADR-032, ADR-058): built via attachPtt over this host's transport. Every
         // transport access is a lazy lambda, so it does not matter that sessions come and go after this point.
@@ -1979,20 +2156,37 @@ public class DesktopEngine(
         }
         boot("ptt engine built")
 
+        fun receiveDestination(start: ChunkFrame.FileStart): File {
+            val safeRelativePath = sanitizeRelativePath(start.fileName.ifBlank { "received.bin" })
+            val safeId = sanitize(start.transferId)
+            val destDir = File(canonicalRoot, safeId).canonicalFile
+            val dest = File(destDir, safeRelativePath).canonicalFile
+            require(isContainedInReceivedRoot(canonicalRoot, destDir, dest)) {
+                "path traversal escape: ${start.fileName}"
+            }
+            return dest
+        }
+        receiveDestinationResolver = ::receiveDestination
+
         val pipeline = ReceivePipeline(
             sink = { _, _ -> error("legacy shared sink must not be invoked with sinkFactory set") },
             sinkFactory = { start ->
-                val safeRelativePath = sanitizeRelativePath(start.fileName.ifBlank { "received.bin" })
-                val safeId = sanitize(start.transferId)
-                val destDir = File(canonicalRoot, safeId).canonicalFile
-                val dest = File(destDir, safeRelativePath).canonicalFile
-                // Same containment discipline as the production composition (Sentinel). The transfer folder is checked
-                // against the ROOT too (SEC-D07-01): a symlink or junction named like the transfer id would otherwise
-                // make destDir (and so dest) resolve outside the save folder and still pass the destDir test.
-                require(isContainedInReceivedRoot(canonicalRoot, destDir, dest)) {
-                    "path traversal escape: ${start.fileName}"
-                }
+                val dest = receiveDestination(start)
+                val destDir = File(canonicalRoot, sanitize(start.transferId)).canonicalFile
                 dest.parentFile?.mkdirs()
+                if (!hubAdoptedTransfers.remove(start.transferId)) {
+                    runBlocking {
+                        transferImpl?.adoptHubPartialForLan(
+                            transferId = start.transferId,
+                            fileId = start.fileId,
+                            fileName = start.fileName,
+                            totalBytes = start.totalBytes,
+                            senderDeviceId = null,
+                            chunkSize = start.chunkSize,
+                            destPath = dest.absolutePath,
+                        )
+                    }
+                }
                 receivedManifest.record(canonicalRoot, destDir)
                 receivedPaths[start.transferId] = dest.absolutePath
                 val handle = OkioRandomAccessSinkHandle(dest.absolutePath.toPath(), start.totalBytes)
@@ -2001,6 +2195,42 @@ public class DesktopEngine(
             },
             emitSessionStarted = true,
             requireAcceptance = true,
+            resumeIndexesProvider = { start ->
+                val checkpoint = transferRouteCoordinator.snapshot(start.fileId)
+                val lanPath = checkpoint?.lanPartialPath
+                val validatedIndexes = if (lanPath == null) {
+                    null // Keep HR8's Hub-to-LAN seeding when there is no LAN partial.
+                } else {
+                    val dest = receiveDestination(start)
+                    if (dest.path == lanPath && dest.isFile && dest.length() == start.totalBytes) {
+                        transferRouteCoordinator.planResume(
+                            checkpoint.identity.copy(
+                                fileName = start.fileName,
+                                plainBytes = start.totalBytes,
+                                fileSha256Hex = start.fileSha256Hex,
+                            ),
+                            start.chunkSize,
+                        ).coveredTargetChunks.sorted()
+                    } else {
+                        val tracked = transfer.activeTransfers.value.any {
+                            it.id.value == start.transferId && it.wireFileId == start.fileId && it.localPath == lanPath
+                        }
+                        if (dest.path == lanPath || tracked) {
+                            transferRouteCoordinator.discardMissingLanPartial(start.fileId, lanPath)
+                        }
+                        emptyList()
+                    }
+                }
+                transferImpl?.prepareLanReceiveResume(
+                    transferId = start.transferId,
+                    fileId = start.fileId,
+                    fileName = start.fileName,
+                    totalBytes = start.totalBytes,
+                    senderDeviceId = null,
+                    chunkSize = start.chunkSize,
+                    verifiedIndexes = validatedIndexes,
+                ).orEmpty()
+            },
         )
 
         // ---- swarm integration (SW-8) ----
@@ -2186,10 +2416,15 @@ public class DesktopEngine(
                     // tiebreak, or a re-dial after a peer's address changes — so this accumulated
                     // steadily rather than only in a rare path.
                     sessionJobs.remove(stale)?.cancel()
+                    // Same guarantee the Android hosts get: a peer that disappears must not leave an
+                    // inbound row "Downloading" at its last byte count for ever. Durable chunks stay
+                    // on disk, so a later retry resumes instead of starting over.
+                    failInboundForPeer(stale.peerDeviceId.value, "peer disconnected")
                     FlashSessionCoordinator.onSessionDown(
                         peerDeviceId = stale.peerDeviceId.value,
                         onSignalingLost = { callsImpl?.onSignalingLost(it) },
                     )
+                    pttImpl?.onPeerDisconnected(stale.peerDeviceId.value)
                     FlashLog.i(
                         TAG_WS,
                         "Session gone peer='${stale.peer.friendlyName}' id=${stale.peerDeviceId.value}",
@@ -2248,9 +2483,13 @@ public class DesktopEngine(
                         receivePipeline?.cancelSession(control.transferId)
                         incomingMeta.remove(control.transferId)
                         receivedPaths.remove(control.transferId)
+                        hubAdoptedTransfers.remove(control.transferId)
                         openHandles.remove(control.transferId)?.let { runCatching { it.close() } }
                         rejectedLogCache.remove(control.transferId)
                         rejectedCancelSent.add(control.transferId)
+                    }
+                    RealFlashTransferRepository.ACTION_RESET_ANNOUNCEMENT -> {
+                        receivePipeline?.resetResumeAnnouncement(control.transferId)
                     }
                     RealFlashTransferRepository.ACTION_RESUME -> {
                         val tid = control.transferId
@@ -2271,7 +2510,7 @@ public class DesktopEngine(
         scope.launch {
             transfer.outgoingControl.collect { control ->
                 val peerId = control.peerDeviceId ?: return@collect
-                sendXfer(peerId, control.action, control.transferId)
+                sendXfer(peerId, control.action, control.transferId, control.reason)
             }
         }
 
@@ -2346,6 +2585,7 @@ public class DesktopEngine(
                 sendXfer(pid, RealFlashTransferRepository.ACTION_CANCEL, tid, reason)
             },
             incomingOwners = incomingOwners,
+            flushBeforeAcknowledging = enableResume && chatDb != null,
             // A re-offer of an already-accepted transfer takes the full accept path (ADR-069 / FA-2
             // storage gate, sink, progress seed, then RESUME), as it did before the shared router.
             onResumableRetry = { frame, pid, _ ->
@@ -2400,6 +2640,28 @@ public class DesktopEngine(
                         }
                     }
                 }
+            },
+        )
+    }
+
+    /**
+     * Fails every inbound transfer owned by a peer whose transport just dropped. Mirrors the
+     * Android hosts' `cleanupInbound`/`failInboundForPeer`: the pipeline session, sink handle and
+     * per-transfer maps go, the row becomes Failed with a sentence, and the durable chunk rows are
+     * deliberately kept so Retry resumes instead of restarting at zero.
+     */
+    private fun failInboundForPeer(peerDeviceId: String, reason: String) {
+        failInboundTransfersForPeer(
+            peerDeviceId = peerDeviceId,
+            incomingOwners = incomingOwners,
+            receivePipeline = receivePipeline,
+            openHandles = openHandles,
+            incomingMeta = incomingMeta,
+            receivedPaths = receivedPaths,
+            onTransferFailed = { transferId ->
+                rejectedLogCache.remove(transferId)
+                rejectedCancelSent.add(transferId)
+                transferImpl?.onIncomingFailed(transferId, reason)
             },
         )
     }
@@ -2494,13 +2756,47 @@ public class DesktopEngine(
         // ADR-069 / FA-2: refuse before the sink is resolved and the sender is released.
         if (!transfer.admitIncoming(transferId)) return
         val meta = incomingMeta[transferId] ?: return
-        if (receivePipeline?.acceptSession(transferId) == true) {
-            transfer.onIncomingStarted(
-                transferId, meta.fileId, meta.fileName, meta.totalBytes,
-                "peer", peerDeviceId, receivedPaths[transferId],
-            )
-            receivePipeline?.let { updateIncomingProgress(transfer, it, incomingMeta, transferId) }
-            sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_RESUME, transferId)
+        if (!acceptingOffers.add(transferId)) return
+        scope.launch(Dispatchers.IO) {
+            try {
+                // Perform Hub-to-LAN partial adoption outside ReceivePipeline.lock so a large handoff
+                // cannot stall concurrent transfers or inbound frame processing.
+                val dest = runCatching { receiveDestinationResolver?.invoke(meta) }.getOrNull()
+                if (dest != null) {
+                    dest.parentFile?.mkdirs()
+                    transfer.adoptHubPartialForLan(
+                        transferId = meta.transferId,
+                        fileId = meta.fileId,
+                        fileName = meta.fileName,
+                        totalBytes = meta.totalBytes,
+                        senderDeviceId = null,
+                        chunkSize = meta.chunkSize,
+                        destPath = dest.absolutePath,
+                    )
+                    hubAdoptedTransfers.add(transferId)
+                }
+                if (receivePipeline?.acceptSession(transferId) == true) {
+                    transfer.onIncomingStarted(
+                        transferId, meta.fileId, meta.fileName, meta.totalBytes,
+                        "peer", peerDeviceId, receivedPaths[transferId],
+                    )
+                    receivePipeline?.let { updateIncomingProgress(transfer, it, incomingMeta, transferId) }
+                    sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_RESUME, transferId)
+                } else if (incomingMeta.containsKey(transferId)) {
+                    // Session is still present in incomingMeta (not cancelled/declined), meaning sinkFactory failed.
+                    incomingMeta.remove(transferId)
+                    receivedPaths.remove(transferId)
+                    incomingOwners.remove(transferId)
+                    openHandles.remove(transferId)?.let { runCatching { it.close() } }
+                    transfer.onIncomingFailed(transferId, "write_failed")
+                    if (peerDeviceId.isNotEmpty()) {
+                        sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_CANCEL, transferId, TransferFailureText.REFUSE_WRITE_FAILED)
+                    }
+                }
+            } finally {
+                hubAdoptedTransfers.remove(transferId)
+                acceptingOffers.remove(transferId)
+            }
         }
     }
 
@@ -2515,6 +2811,7 @@ public class DesktopEngine(
         receivePipeline?.declineSession(transferId)
         incomingMeta.remove(transferId)
         receivedPaths.remove(transferId)
+        hubAdoptedTransfers.remove(transferId)
         openHandles.remove(transferId)?.let { runCatching { it.close() } }
     }
 
@@ -2522,11 +2819,52 @@ public class DesktopEngine(
     private fun peerIdFor(transferId: String): String =
         transferImpl?.activeTransfers?.value?.firstOrNull { it.id.value == transferId }?.peerDeviceId.orEmpty()
 
+    private suspend fun resolveCallIceForPeer(
+        peerId: String,
+        hasLanSession: Boolean,
+        discoveredOnLan: Boolean,
+    ): CallIceResolution {
+        val isRevoked = trustStore.isRevoked(FlashDeviceId(peerId)) ||
+            (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isRevokedColleague(peerId) == true)
+        if (isRevoked) {
+            return CallIceResolution.Unavailable(OffLanCallEligibility.Unavailable.Reason.PEER_REVOKED)
+        }
+        if (hasLanSession || !enterpriseTrustStore.isEnrolled) {
+            return CallRouteCapabilities(
+                isDirectLanReachable = true,
+                isHubConnected = false,
+                hubSupportsOffLanCalling = false,
+                peerSupportsOffLanCalling = false,
+                isPeerRevoked = false,
+            ).resolveCallIce()
+        }
+        val hub = enterpriseHubRef
+        val cfg = hub?.let { it.ensureFreshCallIceConfig() ?: it.validCallIceConfig() }
+        val caps = CallRouteCapabilities(
+            isDirectLanReachable = false,
+            isHubConnected = hub?.relay?.state?.value?.canSend == true,
+            hubSupportsOffLanCalling = cfg?.offLanCallingSupported == true,
+            peerSupportsOffLanCalling = orgPeerResolverRef?.isOrgPeer(peerId) == true ||
+                hub?.hubOnlinePeerIds?.value?.contains(peerId) == true,
+            isPeerRevoked = false,
+            mediaPolicy = parseCallMediaPathPolicy(cfg?.mediaPolicy),
+            iceServers = cfg?.iceServers.orEmpty()
+                .filter { it.urls.isNotEmpty() }
+                .map { CallIceServerSpec(it.urls, it.username, it.credential) },
+        )
+        val resolved = caps.resolveCallIce(ttlSeconds = cfg?.ttlSeconds)
+        return if (resolved is CallIceResolution.Unavailable && discoveredOnLan) {
+            caps.copy(isDirectLanReachable = true).resolveCallIce()
+        } else {
+            resolved
+        }
+    }
+
     /**
      * Outbound call signaling frame → text, mirroring the app host. An invite races session
      * establishment (the user taps Call on a discovered peer whose session is still coming
      * up), so invites wait up to 2 s for the session the way the holder does; anything else
-     * sends only on a live session. Blocking `sendTextAsync`, like the host.
+     * sends on a live LAN session first and falls back to authenticated Hub off-LAN signaling when configured.
      */
     private suspend fun sendCallFrame(
         network: JvmWsFlashNetwork,
@@ -2548,6 +2886,38 @@ public class DesktopEngine(
             session.connection.sendTextAsync(encoded)
             FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
             return true
+        }
+        val hub = enterpriseHubRef
+        val iceCfg = if (hub != null && hub.relay.state.value.canSend) hub.ensureFreshCallIceConfig() else null
+        val offLanCaps = CallRouteCapabilities(
+            isDirectLanReachable = false,
+            isHubConnected = hub?.relay?.state?.value?.canSend == true,
+            hubSupportsOffLanCalling = iceCfg?.offLanCallingSupported == true,
+            peerSupportsOffLanCalling = (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isOrgPeer(peerId) == true) ||
+                hub?.hubOnlinePeerIds?.value?.contains(peerId) == true,
+            isPeerRevoked = trustStore.isRevoked(FlashDeviceId(peerId)) ||
+                (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isRevokedColleague(peerId) == true),
+            mediaPolicy = parseCallMediaPathPolicy(iceCfg?.mediaPolicy),
+            iceServers = iceCfg?.iceServers.orEmpty()
+                .filter { it.urls.isNotEmpty() }
+                .map { CallIceServerSpec(it.urls, it.username, it.credential) },
+        )
+        if (hub != null && offLanCaps.evaluateOffLanEligibility() is OffLanCallEligibility.Supported) {
+            val sent = hub.relay.sendCallSignal(
+                com.transfer.flash.core.hubprotocol.relay.RelayFrame.CallSignal(
+                    to = peerId,
+                    from = identity.deviceId.value,
+                    callId = frame.callId,
+                    signalId = com.transfer.flash.core.common.id.UuidIdGenerator.newId(),
+                    seq = offLanCallSignalSeq.incrementAndGet(),
+                    issuedAt = com.transfer.flash.core.common.time.SystemTimeSource.nowMs(),
+                    ttlMs = com.transfer.flash.core.hubprotocol.HubContract.CALL_SIGNAL_DEFAULT_TTL_MS,
+                    payload = encoded,
+                    capabilities = listOf(com.transfer.flash.core.hubprotocol.HubContract.FEATURE_HUB_CALLING),
+                ),
+            )
+            FlashLog.i(TAG_WS, "Call sendFrame via Hub off-LAN action=${frame.javaClass.simpleName} peer=$peerId sent=$sent")
+            return sent
         }
         FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
         return false
@@ -2628,14 +2998,6 @@ public class DesktopEngine(
             val options = factoryOptions
             val stateDir = options?.stateDir ?: DesktopPaths.stateDir()
             val key = runCatching { stateDir.canonicalPath }.getOrElse { stateDir.absolutePath }
-            if (config.enableResume) {
-                // The factory's `store = null` (D5 = C): there is no persistent transfer store on desktop yet.
-                FlashLog.w(
-                    TAG_WS,
-                    "FlashConfig.enableResume=true is not supported on desktop yet (no persistent transfer store, " +
-                        "D5 = C): transfers resume within a session only. Set enableResume = false to silence this.",
-                )
-            }
             val engine = synchronized(liveStateDirs) {
                 val owner = liveStateDirs[key]
                 check(owner == null || owner.closed) {
@@ -2649,6 +3011,7 @@ public class DesktopEngine(
                     pttAudio = options?.pttAudio ?: platformPttAudio(),
                     displayName = config.displayName,
                     autoAcceptIncoming = config.autoAcceptIncoming,
+                    enableResume = config.enableResume,
                 ).also { liveStateDirs[key] = it }
             }
             try {
@@ -2705,3 +3068,33 @@ internal fun <S> selectStreamSession(active: Map<FlashDeviceId, S>, peerDeviceId
     } else {
         active[FlashDeviceId(peerDeviceId)]
     }
+
+/**
+ * Teardown shared by the desktop peer-disconnect path: drops every inbound transfer the peer owns.
+ *
+ * Kept as a top-level function so the map/handle cleanup is covered by a focused JVM test without
+ * booting the whole desktop engine. `onTransferFailed` publishes the row state; the chunk rows are
+ * not touched here, because they are the resume state a later retry uses.
+ *
+ * @return the transfer ids that were failed, in map iteration order.
+ */
+internal fun failInboundTransfersForPeer(
+    peerDeviceId: String,
+    incomingOwners: MutableMap<String, String>,
+    receivePipeline: ReceivePipeline?,
+    openHandles: MutableMap<String, RandomAccessSinkHandle>,
+    incomingMeta: MutableMap<String, ChunkFrame.FileStart>,
+    receivedPaths: MutableMap<String, String>,
+    onTransferFailed: (String) -> Unit,
+): List<String> {
+    val ids = incomingOwners.filterValues { it == peerDeviceId }.keys.toList()
+    for (transferId in ids) {
+        receivePipeline?.cancelSession(transferId)
+        openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
+        incomingMeta.remove(transferId)
+        receivedPaths.remove(transferId)
+        incomingOwners.remove(transferId)
+        onTransferFailed(transferId)
+    }
+    return ids
+}

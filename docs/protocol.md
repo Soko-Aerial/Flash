@@ -976,8 +976,7 @@ FLASH_GMEDIA groupId=… msgId=… transferId=… wireFileId=… from=… name=�
 ```
 
 - The origin adds the four fields only for members whose HELLO had `sw1`. Every other member gets today's frame, unchanged, and today's push.
-- `transferId` stays per recipient: it is the receiver's row id, as today. `wireFileId` keeps today's value and is not used by the swarm (no
-  FILE_START follows).
+- `transferId` is the receiver's row id and is unique per recipient. A whole-file push uses a recipient-specific `wireFileId` in both the announcement and `FILE_START`, so route ownership binds it to that recipient. The swarm announcement can share a `wireFileId` because swarm uses the signed content root and no `FILE_START` follows.
 - `sig` (today's v2 message signature) stays. `rootSig` signs the announce statement above.
 - A receiver drops a `swarm=1` announcement, and creates no bubble, when `rootSig` does not verify against the origin's roster key, `root` is
   not 64 hex characters, `pieceSize` is outside the limits, or `size` is 0 or more than 16,384 × `pieceSize`.
@@ -1375,8 +1374,9 @@ connection's cleanup never removes the new registration.
 mailbox, then closes. A client treats it like any disconnect.
 
 **Operational endpoints.** `GET /health` is public and returns only `{"status":"ok"|"degraded"|"down"}` (HTTP 503 when the database does not
-answer). `GET /health/detail` (JSON) and `GET /metrics` (Prometheus text) require the management bearer token or a loopback caller without
+answer; `"degraded"` when any critical operational alert fires or database latency is slow while still reachable). `GET /health/detail` (JSON) and `GET /metrics` (Prometheus text) require the management bearer token or a loopback caller without
 proxy headers; otherwise `403 ERR_FORBIDDEN`. Unhandled errors answer `500 ERR_INTERNAL` with a fixed sentence and a `correlationId`.
+`/health/detail` returns `{status, serverVersion, uptimeSeconds, sessions, openConnections, mailbox: {queuedRows, queuedBytes, oldestAgeSeconds, deliveredTotal, expiredTotal, droppedTotal, quarantinedTotal, quarantinedOutstanding}, database?: {ok, latencyMs, walPages?}, disk?: {totalBytes, usableBytes, usedPercent}, delegationDaysRemaining?, tlsDaysRemaining?, alerts: [{id, severity, summary, action}], memory: {usedBytes, maxBytes}}`.
 
 ### Hub REST contract (`/api/v1`)
 
@@ -1395,6 +1395,7 @@ JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDto
 | `POST /api/v1/enroll` | invite token + PoP | `EnrollRequest {token, deviceId, subjectPublicKey, friendlyName, proof}` | `EnrollResponse {status ENROLLED, serverId, rootFingerprint, rootPublicKey, deviceCert, delegationChain, hubName}` | served |
 | `POST /api/v1/enroll/renew` | signature | `RenewRequest {serverNonce, clientNonce, deviceId, deviceCert, delegationChain, signature}` | `EnrollResponse {status RENEWED, ...}` with a NEW serial | served (Phase 2 SERVER-A) |
 | `GET /api/v1/revocations` | none (rate limited per client address) | none | signed `RevocationList` (`version` only grows; signed by the hub's delegate key, which the client checks against the delegation certificate in its stored chain); `ERR_NOT_FOUND` until the first revocation has been signed. PUBLIC since ADR-124: a revoked device has no bearer and must still be able to confirm its own revocation | served (Phase 2 SERVER-A, ADR-113; public ADR-124) |
+| `GET /api/v1/calls/ice-config` | bearer | none | `HubIceConfigDto {offLanCallingSupported, mediaPolicy, ttlSeconds, iceServers: [HubIceServerDto]}` with short-lived RFC 5766 HMAC-SHA1 TURN credentials (`ttlSeconds` clamped to `60..86400`, default `3600`); returns `429 ERR_RATE_LIMIT` under excessive polling (`HubRateLimits`) | served (HR9) |
 | `POST /api/v1/device/unenroll` | bearer | none | the device revokes its own certificates and frees its id | served (Phase 2 SERVER-A) |
 | `GET /api/v1/directory/me` | bearer | none | the caller's own `MemberDto` and department | served |
 | `GET /api/v1/directory/sync` | bearer | `since` (or `sinceVersion`), `epoch` (or `directoryEpoch`), `limit` (or `pageSize`), `cursor` optional | `DirectorySyncDto`: synchronisation stream of departments, members with signed `OrgMemberStatement`, tombstones, and active delegation chain for offline organization trust; rate-limited per device to a burst of 60 pages then 1 per second (`429 ERR_RATE_LIMIT`; one 20,000-member full sync is 40 pages) | served (Plan B Phase B1) |
@@ -1408,8 +1409,11 @@ JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDto
 | `DELETE /api/v1/device/sealing-key` | bearer (the device itself) | none | `OkResponse`; the key is also removed when the device is revoked, unenrolled or deleted | served (ADR-124) |
 | `POST /api/v1/departments` | bearer (organisation admin) | `CreateDepartmentBody {id, name, adminDeviceIds}` | `201` `DepartmentDto`; `400 ERR_BAD_REQUEST` for an invalid id; audited as `directory.department.create` | served (REV docs round) |
 | `POST /api/v1/groups` | bearer (organisation or department admin) | `CreateGroupBody {id, name, departmentId, visibility, joinMode, adminDeviceIds}` | `201` `GroupDto`; `400` for an invalid id, visibility or join mode; `403` outside the caller's scope | served |
-| `PUT /api/v1/groups/{id}` | bearer (group admin) | `UpdateGroupBody {name?, visibility?, joinMode?}` | `GroupDto`; a group the caller may not see answers `404` exactly like a missing one | served |
+| `PUT /api/v1/groups/{id}` | bearer (group admin) | `UpdateGroupBody {name?, visibility?, joinMode?, revokeJoinLinks?, revokeLinkId?}` | `GroupDto`; a group the caller may not see answers `404` exactly like a missing one | served |
 | `DELETE /api/v1/groups/{id}` | bearer (group admin) | none | `OkResponse`; same `404` rule | served |
+| `POST /api/v1/groups/create-with-members` | bearer (organisation or department admin) | `CreateGroupWithMembersBody {id, name, departmentId, memberDeviceIds}` | `201` with `GroupDto` after the full initial roster is persisted. An identical retry with the same id and creator returns the existing group. Invalid roster creation makes no group, and a conflicting retry returns `409`. | served |
+| `POST /api/v1/groups/join-links` | bearer (group manager) | `CreateGroupJoinLinkBody {groupId, maxUses?}` | `201` with an opaque, authenticated token for a listed group that supports self-service joining. | served |
+| `POST /api/v1/groups/join-links/resolve` | bearer | `GroupJoinLinkToken {token}` | `200` with `{groupId, name}` for an unexpired token and a group currently visible to this device. Joining still uses `/groups/join-request`. | served |
 | `POST /api/v1/groups/members` | bearer (group admin) | `GroupMemberBody {groupId, deviceId, add}` (`add` false removes) | `GroupDto`; audited `directory.group.member.add` / `.remove` | served |
 
 #### Directory privacy v1 (Plan A2, option C, ADR-137; owner D2 + D9)
@@ -1467,7 +1471,7 @@ Announcements are stored and broadcast in **plain text** on the hub. Hub adminis
 
 | Method and path | Auth | Request | Response | State |
 |---|---|---|---|---|
-| `GET /api/v1/announcements?since=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned), or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
+| `GET /api/v1/announcements?since=&epoch=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned) plus optional `epoch` so post-empty `since=0` checks receive delta instead of full resync, or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
 | `GET /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` (404 if deleted or caller lacks access) | served (A3) |
 | `POST /api/v1/announcements` | bearer | `PostAnnouncementRequestDto` | `201 Created` with `AnnouncementItemDto` | served (A3) |
 | `PUT /api/v1/announcements/{id}` | bearer | `UpdateAnnouncementRequestDto` (expiry is tri-state, see below) | `AnnouncementItemDto` (409 if `expectedSeq` mismatch; 400 if `expiresAtMs` and `clearExpiry` are both set) | served (A3) |
@@ -1523,6 +1527,12 @@ HTTP mapping used by the hub (`statusFor`; `ERR_EXPIRED` is 410 on `POST /api/v1
 
 ### Enrolment invite link
 
+New Hub invites use `https://<issuing-hub>/invite/enroll#<base64url>`. Local group invites use
+`https://<configured-flash-link-host>/invite/group#<base64url>`. The fragment is the unpadded base64url
+encoding of the complete legacy invite as UTF-8. It is read by the app or the browser fallback and
+never participates in the HTTP request. The fallback serves static content and passes the original invite
+to the app after a user gesture. See [invite deployment and verification](deploy/INVITE-LINKS.md).
+
 `flash://enroll?server=<percent-encoded URL>&token=<percent-encoded>&root=<percent-encoded upper-case hex SHA-256 of the root key>`.
 There is one parser (`EnrollmentInvite.parseOrNull`) used by Android, desktop and the chat UI; it never throws. A client refuses an invite
 whose `root` is blank (it would pin nothing), and, from Phase 3, an invite whose `server` is cleartext `http://` unless the user confirms.
@@ -1540,8 +1550,8 @@ Errors are `{"code": "...", "message": "<fixed sentence>", "correlationId": "...
 |---|---|---|
 | Setup and session | `GET setup/status`, `POST setup/begin`, `POST setup/complete`, `POST login`, `POST logout`, `GET session` | setup needs the setup token (file `<data>/setup-token.txt`) and a confirmed TOTP code; login is username + password + TOTP or a recovery code; attempts are reserved before verification |
 | Overview | `GET overview` | device counts and online devices, delegation status and days left, revocation version, mailbox figures |
-| Devices | `GET devices`, `GET devices/{id}`, `PUT devices/{id}` (rename, move to a department), `POST devices/{id}/revoke`, `POST devices/{id}/unrevoke` | revoke and unrevoke need step-up; revoke also kills the bearer, removes the directory entry and kicks the socket |
-| Invites | `GET invites`, `POST invites`, `POST invites/bulk`, `POST invites/{id}/revoke` | real `EnrollmentService` registry; state `ACTIVE`, `USED`, `EXPIRED`, `REVOKED`; a non-member role needs step-up; the response carries the `flash://enroll` link and the QR as one SVG path |
+| Devices | `GET devices`, `GET devices/{id}`, `PUT devices/{id}` (rename, move to a department), `POST devices/{id}/replace`, `POST devices/{id}/revoke`, `POST devices/{id}/unrevoke` | revoke and unrevoke need step-up; `replace` (`DeviceReplaceBody {department?, role?, allowedGroups, autoJoinGroups, reason?, ttlMinutes?, note?}` -> `DeviceReplaceResultDto {oldDevice, invite}`) requires step-up `device.replace`, checks quota `remainingQuotaAssumingRevoked`, enforces org/dept scope and org-admin-only rules for admin/approver/signer/linked devices, revokes the old binding/bearer/directory entry, clears admin bindings on the old device, and mints a one-use replacement invite; revoke also kills the bearer, removes the directory entry and kicks the socket |
+| Invites | `GET invites`, `POST invites`, `POST invites/bulk`, `POST invites/{id}/revoke` | real `EnrollmentService` registry; state `ACTIVE`, `USED`, `EXPIRED`, `REVOKED`; a non-member role needs step-up; the response carries the share link and its QR as one SVG path |
 | Revocations | `GET revocations`, `POST revocations/serial`, `POST revocations/install` | the signed list state and entries; revoking a bare serial needs step-up; `install` takes a root-signed list from `keytool revoke` (step-up `revocation.install`, REV-04) |
 | Delegation | `GET delegation`, `POST delegation/reload`, `POST delegation` | install takes a delegation certificate, accepted only under the pinned root, for this hub's key, with a higher serial; both need step-up |
 | Settings | `GET settings`, `PUT settings` | a change needs step-up |
@@ -1567,12 +1577,12 @@ Step-up signatures: `stepup/verify` accepts the signature as DER (devices) or as
 
 Static routes (no cookie needed). Every response under `/admin`, `/enroll` and `/enroll-assets/` carries: CSP `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, COOP and CORP `same-origin`, a restrictive Permissions-Policy and `X-Frame-Options: DENY`. `GET /admin/` is the shell (`no-store`); `GET /admin/ui/*` are assets (`no-cache` plus ETag, 304 honoured); `GET /enroll-assets/*` are the invite landing page's own script and style. The old `/admin/login`, `/admin/setup`, `/admin/dashboard`, `/admin/departments`, `/admin/groups`, `/admin/invites` and `/admin/audit` pages answer 302 to the matching console route. When the listener policy closes `/admin` (public port without `FLASH_ADMIN_ON_PUBLIC_PORT`), all console routes answer 404.
 
-Step-up actions (the `action` of a challenge): `device.revoke`, `device.unrevoke`, `delegation.install`, `delegation.reload`, `admin.create`,
-`admin.disable`, `settings.change`, `revocation.install`, `recovery.regenerate`.
+Step-up actions (the `action` of a challenge): `device.revoke`, `device.unrevoke`, `device.move`, `device.replace`, `delegation.install`, `delegation.reload`, `admin.create`,
+`admin.disable`, `admin.signer.replace`, `approver.change`, `settings.change`, `revocation.install`, `recovery.regenerate`.
 
 **Command line** (`server <command>`, the launcher of `:server:installDist` or `java -jar`): `serve` (default); `keytool init-root --out DIR
 [--no-passphrase]`; `keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,enrol:dept_admin,revoke:member [--max-devices N]
-[--valid-days N] [--serial N] [--out FILE]`; `keytool rotate`; `healthcheck` (exit 0 only when the hub's own `/health` answers 200); `admin-recovery
+[--valid-days N] [--serial N] [--out FILE]`; `keytool revoke --root-key FILE --delegation-serial N[,N] [--serial N,..] [--device-id a,..] [--base current.json] [--version N] [--out revocations.signed]`; `keytool rotate`; `healthcheck` (exit 0 only when the hub's own `/health` answers 200); `admin-recovery
 --username NAME` (console only, prints a new password, authenticator secret and recovery codes once). Exit codes: 0 ok, 1 refused to start or
 failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keytool pass-phrase non-interactively.
 
@@ -1583,10 +1593,11 @@ failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keyto
 | `FLASH_PORT` / `FLASH_HOST` | 8443 / 0.0.0.0 | public listener (relay, REST, enrol, `/health`) |
 | `FLASH_ADMIN_PORT` / `FLASH_ADMIN_HOST` | 8444 / 127.0.0.1 | management listener (admin console and API) |
 | `FLASH_ADMIN_ON_PUBLIC_PORT` | false | also serve `/admin` on the public port (must be true when the two ports are equal) |
-| `FLASH_DATA_DIR` | `./data` | database `flash-hub.db`, `server-identity.pk8/.pub`, `delegation.cert`, `setup-token.txt`, `tls/` |
+| `FLASH_DATA_DIR` | `./data` | database `flash-hub.db`, `data.key`, `join-links.key` / `join-links.prev.key`, `server-identity.pk8/.pub`, `delegation.cert`, `setup-token.txt`, `files/`, `tls/` |
 | `FLASH_TLS_MODE` | proxy | `proxy` (plain HTTP behind a TLS proxy), `self` (the hub terminates TLS), `none` (needs `FLASH_ALLOW_INSECURE`) |
 | `FLASH_TLS_KEYSTORE`, `FLASH_TLS_KEYSTORE_PASSWORD` | unset | supply a PKCS12 instead of the generated self-signed certificate |
 | `FLASH_EXTERNAL_URL` | `https://<lan-ip>:<port>` | address placed in invites and QR codes; must be https unless insecure |
+| `FLASH_INVITE_ANDROID_FINGERPRINTS` | empty | comma-separated SHA-256 APK signing certificate fingerprints served in `assetlinks.json` |
 | `FLASH_ALLOW_INSECURE` | false | permit `tls none`, an `http://` external URL and `--dev-embedded-root`; loud in the log |
 | `FLASH_DEV_EMBEDDED_ROOT` / `--dev-embedded-root` | false | DEVELOPMENT ONLY: the hub keeps its own root key |
 | `FLASH_DELEGATION_FILE` | `<data>/delegation.cert` | the root-signed delegation |
@@ -1598,6 +1609,12 @@ failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keyto
 | `FLASH_HUB_NAME`, `FLASH_DEVICE_QUOTA` | `Flash Hub`, from the delegation | name shown to devices; device cap (never above the delegation's) |
 | `FLASH_DEVICE_CERT_VALIDITY_DAYS`, `FLASH_RENEW_EARLY_DAYS`, `FLASH_RENEW_GRACE_DAYS` | 30, derived, derived | device certificate lifetime (1..365); optional fixed renewal window before expiry and grace after it |
 | `FLASH_CHALLENGE_TIMEOUT_MS`, `FLASH_MAILBOX_TTL_DAYS` | 60000, 7 | challenge lifetime; mailbox TTL |
+| `FLASH_STUN_URLS`, `FLASH_TURN_URLS` | empty | comma-separated `stun:`/`stuns:` and `turn:`/`turns:` URLs advertised by `/api/v1/calls/ice-config` |
+| `FLASH_TURN_SECRET` | unset | shared HMAC-SHA1 secret (`coturn` `use-auth-secret`) for ephemeral TURN credentials |
+| `FLASH_CALL_ICE_TTL_SECONDS` | `3600` | lifetime of minted ICE credentials (`60..86400` seconds) |
+| `FLASH_CALL_MEDIA_POLICY` | `DIRECT_PREFERRED_RELAY_FALLBACK` | `DIRECT_ONLY`, `DIRECT_PREFERRED_RELAY_FALLBACK`, or `RELAY_ONLY` |
+| `FLASH_ALLOW_PERSONAL_HUB_LINK` | `true` | whether clients may link personal/local groups to this Hub |
+| `FLASH_GROUP_E2EE_MODE` | `E2EE_REQUIRED` | organisation group encryption mode: `E2EE_REQUIRED` or `HUB_INSPECTABLE` |
 
 ### Hub review round REV-01..REV-16 (2026-10-13): contract changes
 
@@ -1644,6 +1661,8 @@ What a phone or desktop does with the relay wire above. Unit-tested, not device-
 - **Outbound.** LAN first; the hub path starts after `HUB_FALLBACK_GRACE_MS` (2 s) or at once when LAN fails. The hub is used only for recipients whose directory standing is MEMBER. `FLASH_ACK` / `FLASH_QUEUE_STATE` drive the outbox: `DELIVERED` / `HELD` keep the message SENT (give-up 8 days, `HUB_GIVE_UP_AFTER_MS`; resend 15 min); `UNDELIVERABLE`, `QUOTA`, `REFUSED`, `EXPIRED`, `DROPPED` fail it.
 - **Sealed envelope `SEALED_V1`** (ADR-121), used for `payloadJson` of a hub message: `SEALED_V1.<epk>.<nonce>.<ciphertext>.<signature>`, each part Base64. `epk` is a fresh P-256 public key; the key is `HKDF(ECDH(epk, recipient sealing key), info = canon(epk, recipient sealing key))`; the cipher is AES-GCM with AAD = canon(`RELAY_WIRE_VERSION`, sender device id, recipient device id, message id, sentAt). The signature is the sender's identity-key signature over canon(AAD, epk, nonce, ciphertext). A receiver opens it only after the signature verifies. Sealing public keys are published with a binding signature by the device identity key over (deviceId, sealing key). **The hub serves sealing keys since ADR-124**: a device publishes with `PUT /api/v1/device/sealing-key` (the hub verifies the binding before it stores anything, see the endpoint table), and `GET /api/v1/directory/members` returns `sealingPublicKey` / `sealingSignature` on `MemberDto` to authenticated callers in scope of the member, null until the member published. The client MUST verify the binding against the member's `subjectPublicKey` itself. Binding bytes: tag `flash-hub-sealkey-v1`, then the device id, then the raw SPKI bytes (golden vector `SEALING_BINDING_HEX` in `CertGoldenVectorTest`). No version or serial is signed (ADR-121): a rotation is a new key, and the hub refuses to take back a key the device retired. The host apps do not publish a key yet, so plaintext through the hub is still sent only when the user turned "Messages through the hub" on.
 - **Frame limits.** A WebSocket frame over 256 KiB is closed by the WebSocket layer (close code 1009) with no error frame; a frame under that whose payload is over 64 KiB gets `FLASH_ERROR ERR_TOO_LARGE` and then the close; more than the frame budget (burst 120, 60 per second) per session gets `FLASH_ERROR ERR_RATE_LIMIT` for the excess frames (ADR-124 contract tests).
+- **Group encryption policy.** When the mode requires E2EE, the relay refuses readable group frames with `ERR_FORBIDDEN` before fanout or mailbox insertion. It also skips earlier readable group frames when replaying or spilling buffered messages under required mode. A group policy write broadcasts a server-only `FLASH_META` action `GROUP_POLICY_CHANGED`. Android and desktop invalidate the cached policy on receipt, refresh while connected and apply only responses bound to the current enrollment. Without a current policy, clients require encryption and pause Hub use for personal groups. Existing personal links resume if the organization allows them again.
+- **Hub group links.** An authenticated manager can issue a 24-hour join link for a visible, self-service Hub group. The token is sealed with the issuing Hub's data key and bound to the current group version. It stops resolving when the roster or group settings change. The receiving app resolves the token against its own enrolled Hub and runs that group's ordinary join or approval flow.
 - **Group join.** `POST /api/v1/groups/join-request` answers `JOINED`, `PENDING` or `REJECTED`; a repeated request answers `PENDING` until decided; after an admin REJECTED the request, the NEXT request from that device answers `REJECTED` once (status `REJECTED_SEEN` in the hub) and a request after that starts a new `PENDING` row (ADR-124, ERROR-332). Admins list with `GET /api/v1/groups/join-requests` and decide with `POST /api/v1/groups/join-requests/decision`. The client polls pending joins every 60 s.
 - **Unenrol.** `POST /api/v1/device/unenroll` with the bearer (`404` counts as already done); when the hub cannot be reached the intention is stored and retried.
 
@@ -1837,7 +1856,7 @@ A 1:1 transfer is steered by text frames `FLASH_XFER` with fields `action` (`pau
 and, since ADR-221, an optional `reason`. Fields the receiver does not know are ignored, so the extension is compatible
 both ways.
 
-`reason` is only meaningful on `action=cancel` sent **by the receiving side**. It says the receiver could not take the
+On `action=cancel` sent **by the receiving side**, these `reason` values say the receiver could not take the
 file, rather than the person changing their mind:
 
 | `reason` | Sent when | Sender shows |
@@ -1850,6 +1869,17 @@ A sender that sees one of these tokens marks the row **Failed** (retryable) with
 `reason`, or with a token it does not know, is a plain cancel (**Cancelled**, final). A re-declared session
 (`SESSION_CONFLICT`) is deliberately never refused this way, because that would end a healthy running transfer. An older
 sender ignores `reason` and shows "Cancelled by the other device", the behaviour before ADR-221.
+
+A sender whose attempt fails without an explicit cancellation can send `pause` with
+`reason=sender_interrupted`. An updated receiver marks an accepted transfer as **Failed** and
+retryable, preserving saved chunks. An unaccepted offer remains **Offered**. Older receivers treat
+the frame as an ordinary pause. An explicit cancellation still uses `cancel`.
+
+On an identical `FILE_START` re-offer, the receiver can re-announce its verified saved chunk indexes
+with existing `ACK_BATCH` frames. Updated senders skip those indexes once the ACKs arrive; chunks
+already sent before then may be duplicated. The receiver suppresses duplicate announcements within
+an attempt and resets that suppression on interruption or resume. Different file facts are still
+a session conflict; the receiver still checks the final whole-file digest.
 
 ## Offline Hub revocations on the LAN (ADR-359)
 
@@ -1875,3 +1905,38 @@ delegation cutoffs. The signed list is saved atomically before it changes trust.
 directory lease. The LAN directory carries statement serials rather than the remote device's current certificate
 serial. Device-ID and delegation revocations apply remotely and certificate-serial revocations apply to the local
 enrolment credential. No manual pairing pin is changed.
+
+## Cross-Route LAN ↔ Hub File Transfer Continuity (HR8)
+
+- **Logical identity (`LogicalTransferIdentity`):** Binds `(logicalTransferId, senderDeviceId, recipientDeviceId, plainBytes, fileSha256Hex)`. New 1:1 LAN sends generate 32-lowercase-hex `wireFileId` values (`RealFlashTransferRepository.newWireFileId`), preserving the exact `transferId` and `wireFileId` across LAN and Hub routes (`RealFlashTransferRepository` / `HubFileBinding`).
+- **Route ownership & restart durability (`TransferRouteCoordinator` / `FileContinuityCheckpointStore` / `EngineTransferRouteContinuityPort`):** Serializes active route transitions (`RouteOwner.NONE | LAN | HUB`) under a monotonic `routeEpoch` persisted atomically to `<noBackupFilesDir>/transfer-continuity/*.chk` (Android) / `<stateDir>/transfer-continuity/*.chk` (Desktop) including verified spans, `lanPartialPath`, `senderSourceFingerprint`, and terminal cancel/complete fences. Restart normalization clears stale `activeRoute` ownership while bumping `routeEpoch` and preserving verified spans and terminal fences (`isTerminalElsewhere`).
+- **Bidirectional user handover & verified byte continuity (`TransferRouteFallback` / `HubFileBinding` / `TransferByteAlignment`):** When a direct `sendFile` fails or resumes offline, `RealFlashTransferRepository.resumeTransfer` invokes `TransferRouteFallback` (`HubFileBinding.tryHandoverFromLan`) to transition `LAN -> HUB` using the same `transferId`, `wireFileId`, and `senderSourceFingerprint`; conversely, resuming an incomplete `HUB` upload while the peer is directly reachable (`HubFileBinding.tryHandoverOutToLan`) stops/retires the `hub_file` row cleanly and resumes on LAN via `resumeHubSendOnLan`. Exports only cryptographically verified byte spans (`[offset, length)` from Hub `.part` + `HubChunkBitmap` or LAN `ReceivePipeline`) and marks a target chunk completed only when the verified span completely covers `[chunkStart, chunkEndExclusive)`. On completion or corruption, tampered partial bytes, oversized Hub limits, or source digest/fingerprint mismatches fail closed (`cancelled` / `FILE_CHANGED` / `INCOMPATIBLE`) without publishing or falling back silently.
+
+## Off-LAN Voice and Video Calling (HR9)
+
+- **Capability advertising:** `GET /api/v1/hub` (`HubInfo`) exposes `offLanCallingSupported: Boolean` (`true` only when the Hub has STUN or TURN URLs configured and is ready to mint ICE config). Clients show off-LAN call controls only when `offLanCallingSupported` is true, ICE servers are available, and the relay WebSocket is connected; LAN call controls continue to rely on direct LAN session availability.
+- **Short-lived ICE config:** `GET /api/v1/calls/ice-config` (device bearer, revocation-enforced, rate-limited) returns `HubIceConfigDto {offLanCallingSupported, mediaPolicy, ttlSeconds, iceServers: [HubIceServerDto]}` (`HubIceServerDto {urls, username, credential}`, default `ttlSeconds = 3600`, coerced to `60..86400`). When `FLASH_TURN_SECRET` is configured, each `turn:`/`turns:` entry receives RFC 5766 HMAC-SHA1 time-limited credentials (`username = "<expiryEpochSec>:<deviceId>"`, `credential = Base64(HMAC-SHA1(secret, username))`).
+- **Ephemeral relay frame `FLASH_CALL_SIGNAL` (`RelayFrame.CallSignal`):**
+  Fields: `to`, `from` (stamped by Hub from the authenticated device ID, never caller-trusted), `callId`, `signalId`, `seq` (monotonic per sender per call), `issuedAt` (Unix ms), `ttlMs` (`1..60_000`), `payload` (existing `FLASH_CALL` SDP/ICE/state frame), `capabilities` (optional set).
+  **Routing & security rules:**
+  1. Never stored in the offline mailbox. If the recipient has no live authenticated relay connection, the Hub answers immediately with `ERR_NOT_FOUND` (offline undeliverable).
+  2. Revoked senders or recipients, expired TTLs (`now - issuedAt > ttlMs`), and >30 s future skew are rejected (`ERR_REVOKED`, `ERR_EXPIRED`, `ERR_BAD_REQUEST`).
+  3. Receivers enforce `OffLanCallSignalGuard`: per-call `signalId` replay rejection, per-sender monotonic `seq`, terminal call locking (`hangup`/`decline`/`ended`), and immediate teardown (`terminateCallsForRevokedPeer`) on peer revocation.
+  4. Background / platform note: because off-LAN call signals are strictly ephemeral live WebSocket frames (no APNs/FCM push wake-up bridge yet), receiving an incoming off-LAN call requires the Flash foreground/background service or desktop app to hold an active relay session. Externally managed push wake-up remains a separate owner decision.
+
+## Hub-relayed Group End-to-End Encryption (HR10)
+
+- **Capability advertising:** Clients advertise `HubContract.FEATURE_GROUP_E2EE` (`"hge1"`) in relay `HELLO`. Pairwise identity and sealing keys come from the signed Organisation Directory (`EnterpriseDirectoryMember.sealingPublicKey` + `sealingSignature` + `subjectPublicKey` identity PIN).
+- **Group envelope (`GROUP_SEALED_V1`, `HubContract.GROUP_SEALED_ENVELOPE_TYPE`):**
+  `1.<b64url(groupId)>.<epoch>.<b64url(keyId)>.<b64url(senderId)>.<b64url(innerType)>.<b64url(nonce)>.<b64url(ciphertext)>.<b64url(signature)>`
+  - **AEAD:** 256-bit AES-GCM per `(groupId, epoch, keyId)`, fresh 96-bit CSPRNG nonce.
+  - **AAD (`flash-group-e2ee-v1`):** length-prefixed binary encoding of `(groupId, epoch, keyId, senderId, msgId, sentAt, innerType)`.
+  - **Author signature:** ECDSA P-256 (`crypto.sign(aad || nonce || ciphertext)`), verified against the directory-pinned identity public key of `senderId` so neither the Hub nor another group member can forge authorship.
+- **Pairwise epoch key distribution (`GROUP_KEY_DIST_V1` inside `SEALED_V1`):**
+  - `1|<groupId>|<epoch>|<keyId>|<b64url(keyBytes)>|<rosterVersion>|<sortedMemberCsv>|<creatorDeviceId>|<createdAtMs>`
+  - Distributed exclusively via `HubSealing.seal` (`SEALED_V1`) to active group members with valid sealing keys; never sent plaintext on the Hub or in `GROUP_SEALED_V1`.
+  - Only the key creator (`creatorDeviceId == localDeviceId`) distributes a `GROUP_KEY_DIST_V1` payload; receivers verify `dist.creatorDeviceId == fromDeviceId`.
+- **Epoch rotation & compatibility rules:**
+  - Any membership change (`add`, `remove`, `leave`, `rejoin`, or roster sync change) calls `onMembershipChanged`, marking prior epoch keys decrypt-only (`canSend = false`) and minting a fresh epoch key on the next send.
+  - Simultaneous creations at the same `rosterVersion` break ties deterministically by `(rosterVersion, epoch, keyId)`.
+  - Fail-closed policy: if any active member lacks a valid sealing key (`LEGACY_MEMBERS_PRESENT`), has an unconfirmed key change (`BLOCKED_KEY_CHANGED`), or fails identity pin verification (`BLOCKED_IDENTITY_MISMATCH`), sending fails closed (`HubChatBridge` refuses plaintext fallback) and surfaces an honest compatibility disclosure (`FlashHubNoticeKind.GROUP_E2EE_BLOCKED` / `GROUP_ENCRYPTED` in `FlashGroupSettingsSheet`). Unsealed inbound `GROUP_FRAME` / `LEGACY_GROUP` frames are rejected when group E2EE is active.

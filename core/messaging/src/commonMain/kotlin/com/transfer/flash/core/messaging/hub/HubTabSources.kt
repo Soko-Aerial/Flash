@@ -21,7 +21,7 @@ public class HubTabSources(
     public val directoryDao: OrgDirectoryDao,
     /**
      * Runs the organisation directory sync now and says how it ended (`null` = it could not start, for example no coordinator).
-     * [force] bypasses the coordinator's own minimum interval; the facade applies its 15 s rule before calling.
+     * [force] bypasses the coordinator's own minimum interval; the facade throttles automatic requests and honors server backoff.
      */
     public val requestSync: (suspend (force: Boolean) -> OrgSyncOutcome?)? = null,
     /** True while the device clock looks wrong (the sync's skew detector). */

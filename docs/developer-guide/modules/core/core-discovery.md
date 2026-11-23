@@ -8,7 +8,7 @@ The `:core:discovery` module enables zero-configuration, decentralized peer disc
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-discovery:v2.3.0-beta.1")
 }
 ```
 
@@ -18,13 +18,10 @@ dependencies {
 
 `CompositeDiscovery` runs several `FlashRadioTransport`s at once and merges their sightings into one endpoint list
 (`StandardEndpointDirectory` de-duplicates by device id and emits a presence change when a peer reappears). Every transport
-announces the same identity, carried as TXT attributes (`TxtCodec`): `device_id`, `name`, `model`, `proto`, `caps` (feature
-tokens such as `gs1`, `cv1`) and `fp8` (a short identity-key fingerprint prefix).
+announces the same identity, carried as TXT attributes (`TxtCodec`): `device_id`, `name`, `model`, `proto`, `caps` (discovery mode capability tokens such as `kiosk` from `DiscoveryModePolicy.CAP_KIOSK`; feature tokens such as `gs1`/`cv1` travel later over the WebSocket `HELLO` via `HelloFeatures` in `:core:network`, not in mDNS TXT) and `fp8` (a short identity-key fingerprint prefix).
 
-1. **Android NSD** (`NsdTransport`, `NsdFlashDiscovery`): `android.net.nsd.NsdManager`, service type
-   `_flash-transfer._tcp.` (and `_flashws._tcp.` for the WebSocket port). Resolves go through a queue (`NsdResolveQueue`) because
-   NSD cannot resolve concurrently; link drops re-arm browsing.
-2. **JmDNS** (`JmdnsTransport`, JVM/desktop): the same service type over JmDNS. Virtual adapters (VPN, Hyper-V, WSL) are filtered
+1. **Android NSD** (`NsdTransport`): `android.net.nsd.NsdManager`, service type `_flash-transfer._tcp.`. Resolves go through a queue (`NsdResolveQueue`) because NSD cannot resolve concurrently; link drops re-arm browsing. (The legacy single-transport `NsdFlashDiscovery` also defines `SERVICE_TYPE_WS = "_flashws._tcp."` alongside `SERVICE_TYPE_LAN = "_flash-transfer._tcp."`.)
+2. **JmDNS** (`JmdnsTransport`, JVM/desktop): the same `_flash-transfer._tcp.` service type (`_flash-transfer._tcp.local.` in JmDNS). Virtual adapters (VPN, Hyper-V, WSL) are filtered
    out (`VirtualAdapters`) but the filter never leaves the list empty, and a hotspot adapter counts as real (DR5).
 3. **UDP multicast** (`MulticastTransport`, both platforms): a Flash-own announcement on `224.0.0.168:45823` that already carries
    the address and WebSocket port, so there is no second resolution step to fail. It is the fallback when mDNS is flaky.
@@ -82,12 +79,23 @@ implementation for hosts and tests that have no radio.
 ## 4. Practical Code Example
 
 ```kotlin
-import com.transfer.flash.core.discovery.FlashDiscovery
+import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.discovery.core.CompositeDiscovery
+import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
-fun startPeerMonitoring(discovery: FlashDiscovery, listenPort: Int) {
+fun startPeerMonitoring(
+    discovery: CompositeDiscovery,
+    listenPort: Int,
+    identity: FlashAdvertisedIdentity,
+    scope: CoroutineScope,
+) {
     scope.launch {
-        discovery.startAdvertising(listenPort)
-        discovery.startDiscovery()
+        // On CompositeDiscovery, startAll(port, identity) stores the identity and starts both
+        // advertising and browsing. Calling FlashDiscovery.startAdvertising(listenPort) before an
+        // identity is set returns FlashResult.Failure.
+        discovery.startAll(listenPort, identity)
 
         discovery.discoveredEndpoints.collect { peers ->
             println("=== Discovered Flash Peers (${peers.size}) ===")

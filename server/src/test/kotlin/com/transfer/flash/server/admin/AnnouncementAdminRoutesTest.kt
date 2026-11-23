@@ -11,6 +11,8 @@ import com.transfer.flash.core.hubprotocol.rest.PostAnnouncementRequestDto
 import com.transfer.flash.core.hubprotocol.rest.UpdateAnnouncementRequestDto
 import com.transfer.flash.server.announcements.AnnouncementStore
 import com.transfer.flash.server.auth.HubRateLimits
+import com.transfer.flash.server.auth.generateEcKeyPair
+import com.transfer.flash.server.auth.issue
 import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.OrganizationDirectory
@@ -18,6 +20,7 @@ import com.transfer.flash.server.identity.IdentityStore
 import com.transfer.flash.server.storage.ServerDatabase
 import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -274,5 +277,101 @@ class AnnouncementAdminRoutesTest {
             assertEquals(null, last.nextBefore)
         }
         assertEquals(HttpStatusCode.BadRequest, client.getA("/announcements?beforeId=missing-time", boss).status)
+    }
+
+    @Test
+    fun concurrentDeleteReturns404InsteadOf500AcrossModifyRoutes() = testApplication {
+        val r = Realm()
+        mount(r)
+        val boss = client.loginAs(r, "boss", bossPassword, r.bossTotp)
+        val item = HubRestCodec.decode<AnnouncementItemDto>(
+            client.postA("/announcements", boss, PostAnnouncementRequestDto("org", null, "To Delete", "Body")).bodyAsText(),
+        )
+        // Simulate a concurrent delete right before modify routes reach AnnouncementStore.
+        r.store.deleteAnnouncement(item.id, actorRole = "ORG_ADMIN", actorRef = "other-boss")
+
+        // Also test a racing AnnouncementStore where getAnnouncement sees the row and delete/update/pin/unpin hits AnnouncementNotFoundException.
+        val putResp = client.put("/admin/api/v1/announcements/${item.id}") {
+            withSession(boss)
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(UpdateAnnouncementRequestDto(expectedSeq = item.seq, title = "Edit")))
+        }
+        assertEquals(HttpStatusCode.NotFound, putResp.status)
+        assertEquals(HttpStatusCode.NotFound, client.delete("/admin/api/v1/announcements/${item.id}") { withSession(boss) }.status)
+        assertEquals(HttpStatusCode.NotFound, client.postA("/announcements/${item.id}/pin", boss, "").status)
+        assertEquals(HttpStatusCode.NotFound, client.postA("/announcements/${item.id}/unpin", boss, "").status)
+
+        // Direct store check: AnnouncementNotFoundException is thrown on already-deleted rows (would 500 if uncaught in route).
+        kotlin.test.assertFailsWith<com.transfer.flash.server.announcements.AnnouncementNotFoundException> {
+            r.store.deleteAnnouncement(item.id, actorRole = "ORG_ADMIN", actorRef = "boss")
+        }
+    }
+
+    @Test
+    fun previewDepartmentCountExcludesRevokedAndIsNotCappedAt100() = testApplication {
+        val r = Realm()
+        mount(r)
+        val boss = client.loginAs(r, "boss", bossPassword, r.bossTotp)
+        val issuer = com.transfer.flash.core.security.crypto.FlashCrypto.generateEcKeyPair()
+        val issuerPub = java.util.Base64.getEncoder().encodeToString(issuer.public.encoded)
+        r.identities.createInvite("tok-dept-a", "dept-a", "member", emptySet(), emptySet(), r.now + 100_000_000, 200, r.now)
+        for (i in 1..108) {
+            val id = "dept-a-dev-%03d".format(i)
+            val key = java.util.Base64.getEncoder().encodeToString(com.transfer.flash.core.security.crypto.FlashCrypto.generateEcKeyPair().public.encoded)
+            r.identities.enroll("tok-dept-a", id, key, "Dev $i", r.now, 500, 1L) { serial, _ ->
+                com.transfer.flash.core.hubprotocol.certs.DeviceCert.issue(
+                    issuer.private, issuerPub, id, key, "member", "dept-a", r.now - 1000, r.now + 100_000_000, serial,
+                )
+            }
+            if (i > 105) {
+                r.identities.setStatus(id, com.transfer.flash.server.identity.DeviceStatus.REVOKED, r.now)
+            }
+        }
+
+        val resp = client.postA(
+            "/announcements/preview",
+            boss,
+            AnnouncementPreviewRequestDto(scope = "department", departmentId = "dept-a", title = "Scale", body = "Check count"),
+        )
+        assertEquals(HttpStatusCode.OK, resp.status, resp.bodyAsText())
+        val preview = HubRestCodec.decode<AnnouncementPreviewResponseDto>(resp.bodyAsText())
+        assertEquals(105, preview.estimatedRecipients)
+
+        // Unknown departmentId is rejected on both preview and post.
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            client.postA("/announcements/preview", boss, AnnouncementPreviewRequestDto(scope = "department", departmentId = "no-such-dept", title = "Bad", body = "Body")).status,
+        )
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            client.postA("/announcements", boss, PostAnnouncementRequestDto("department", "no-such-dept", "Bad", "Body")).status,
+        )
+    }
+
+    @Test
+    fun departmentHeadCanModifyAndDeleteDeviceAuthoredDepartmentAnnouncement() = testApplication {
+        val r = Realm()
+        mount(r)
+        val head = client.loginAs(r, "head-a", headPassword, r.headTotp)
+        val created = r.store.createAnnouncement(
+            scope = "department",
+            departmentId = "dept-a",
+            title = "Device Head Note",
+            body = "Initial body",
+            authorKind = "device",
+            authorRef = "dev-head-a",
+            authorName = "Device Head",
+            authorRole = "dept_admin",
+        )
+
+        val edited = client.put("/admin/api/v1/announcements/${created.id}") {
+            withSession(head)
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(UpdateAnnouncementRequestDto(expectedSeq = created.seq, title = "Updated by Console Head")))
+        }
+        assertEquals(HttpStatusCode.OK, edited.status, edited.bodyAsText())
+        assertEquals(HttpStatusCode.OK, client.postA("/announcements/${created.id}/pin", head, "").status)
+        assertEquals(HttpStatusCode.OK, client.postA("/announcements/${created.id}/unpin", head, "").status)
+        assertEquals(HttpStatusCode.OK, client.delete("/admin/api/v1/announcements/${created.id}") { withSession(head) }.status)
     }
 }

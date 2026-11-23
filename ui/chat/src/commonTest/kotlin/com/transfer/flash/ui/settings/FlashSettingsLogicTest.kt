@@ -111,8 +111,9 @@ class FlashSettingsLogicTest {
 
     /** ERROR-033. Auto is the absence of a pin, so it needs a label of its own alongside the tiers. */
     @Test
-    fun `the performance picker labels auto separately from the three tiers`() {
+    fun `the performance picker labels auto separately from the four tiers`() {
         assertEquals("Auto", FlashSettingsMath.performanceModeLabel(null))
+        assertEquals("Ultra Low", FlashSettingsMath.performanceModeLabel(FlashPerformanceMode.ULTRA_LOW))
         assertEquals("Low", FlashSettingsMath.performanceModeLabel(FlashPerformanceMode.LOW))
         assertEquals("Medium", FlashSettingsMath.performanceModeLabel(FlashPerformanceMode.MEDIUM))
         assertEquals("High", FlashSettingsMath.performanceModeLabel(FlashPerformanceMode.HIGH))
@@ -159,12 +160,18 @@ class FlashSettingsLogicTest {
             detected = FlashPerformanceMode.LOW,
         )
 
+        val ultraLow = FlashSettingsMath.performanceModeSubtitle(
+            pinned = FlashPerformanceMode.ULTRA_LOW,
+            detected = FlashPerformanceMode.HIGH,
+        )
         assertNotEquals(high, low)
         assertTrue(low.contains("360p15"), "LOW must show its capture size: $low")
         assertTrue(high.contains("1080p30"), "HIGH must show its capture size: $high")
-        // 60 ms frames vs 20 ms: the packet rate is what the Belfone was actually choking on.
-        assertTrue(low.contains("16 voice packets/s"), "LOW must show its packet rate: $low")
-        assertTrue(high.contains("50 voice packets/s"), "HIGH must show its packet rate: $high")
+        assertTrue(ultraLow.contains("ultra-light voice"), "ULTRA_LOW must describe voice mode plainly: $ultraLow")
+        assertTrue(low.contains("power-saving voice"), "LOW must describe voice mode plainly: $low")
+        assertTrue(high.contains("full-quality voice"), "HIGH must describe voice mode plainly: $high")
+        assertFalse(low.contains("packets/s"), "Subtitles must avoid packet-rate jargon: $low")
+        assertFalse(high.contains("packets/s"), "Subtitles must avoid packet-rate jargon: $high")
         assertTrue(low.contains("animations off"), "LOW must disclose that it stops animating: $low")
         assertFalse(high.contains("animations off"), "HIGH animates, so it must not claim otherwise: $high")
     }

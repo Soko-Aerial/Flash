@@ -407,8 +407,8 @@ class AdminConsoleApiTest {
 
     private fun Realm.enrolIn(deviceId: String, department: String) {
         val key = FlashCrypto.generateEcKeyPair()
-        val token = enrollment.generateInviteLink("https://hub.test", InviteScope(department = department, expiry = now + 3_600_000), now)
-            .substringAfter("token=").substringBefore("&")
+        val token = enrollment.createInvite("https://hub.test", InviteScope(department = department, expiry = now + 3_600_000), now)
+            .token
         val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), enrollment.serverId))
         enrollment.enrollDevice(token, deviceId, key.toBase64Spki(), proof, currentTimeMs = now).getOrThrow()
     }

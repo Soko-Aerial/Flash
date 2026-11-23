@@ -4,17 +4,22 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.sp
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
-import kotlin.math.absoluteValue
+import kotlin.math.abs
 
 @Composable
 fun FlashAvatar(
@@ -26,9 +31,20 @@ fun FlashAvatar(
     foreground: Color? = null,
 ) {
     val colors = FlashTheme.colors
-    val paletteIndex = seed.hashCode().absoluteValue % colors.avatarPaletteBackgrounds.size
+    val typography = FlashTheme.typography.metadataEmphasis
+    val paletteIndex = (abs(seed.hashCode().toLong()) % colors.avatarPaletteBackgrounds.size).toInt()
     val resolvedBackground = background ?: colors.avatarPaletteBackgrounds[paletteIndex]
     val resolvedForeground = foreground ?: colors.avatarPaletteForegrounds[paletteIndex]
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    val badgeTextScale = fontScale.coerceAtMost(1.2f) / fontScale
+    val fontSize = flashAvatarInitialFontSize(size) * badgeTextScale
+    val initialStyle = remember(typography, fontSize) {
+        typography.copy(
+            fontSize = fontSize,
+            lineHeight = fontSize,
+            fontWeight = FontWeight.Bold,
+        )
+    }
 
     Box(
         modifier = modifier
@@ -37,14 +53,21 @@ fun FlashAvatar(
             .background(resolvedBackground),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        FlashText(
             text = initials.take(2).uppercase(),
-            style = FlashTheme.typography.metadataEmphasis,
+            style = initialStyle,
             color = resolvedForeground,
-            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            textAlign = TextAlign.Center,
         )
     }
 }
+
+internal fun flashAvatarInitialFontSize(size: Dp): TextUnit =
+    (size.value * AVATAR_INITIAL_FONT_RATIO).coerceAtLeast(MIN_AVATAR_FONT_SIZE_SP).sp
+
+private const val AVATAR_INITIAL_FONT_RATIO = 0.38f
+private const val MIN_AVATAR_FONT_SIZE_SP = 6f
 
 fun avatarSeed(name: String): String = name
 
@@ -55,6 +78,6 @@ fun avatarSeed(name: String): String = name
 @Composable
 fun flashAvatarColorsFor(seed: String): Pair<Color, Color> {
     val colors = FlashTheme.colors
-    val paletteIndex = seed.hashCode().absoluteValue % colors.avatarPaletteBackgrounds.size
+    val paletteIndex = (abs(seed.hashCode().toLong()) % colors.avatarPaletteBackgrounds.size).toInt()
     return colors.avatarPaletteBackgrounds[paletteIndex] to colors.avatarPaletteForegrounds[paletteIndex]
 }

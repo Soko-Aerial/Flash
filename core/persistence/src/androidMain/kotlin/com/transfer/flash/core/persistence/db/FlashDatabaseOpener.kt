@@ -107,7 +107,10 @@ public object FlashDatabaseOpener {
                 }
             })
             .build()
-            .also { it.trimRegistration = trim }
+            .also {
+                it.trimRegistration = trim
+                it.queryCallbackRegistration = AutoCloseable { queryExecutor.shutdown() }
+            }
     }
 
     /**

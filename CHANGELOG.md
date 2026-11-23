@@ -10,6 +10,48 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## Unreleased
 
+## [2.3.2] - 2026-11-23
+
+- **Hub chat** shows a security-key banner beside the composer. When outgoing messages are waiting, it prompts you to verify the new key. Compare the code with your contact before trusting it. Your own code appears in Hub connection details.
+- Hub approval applies to the exact key shown in the prompt. Queued messages stay eligible for relay delivery across an offline restart and become due when the key is approved.
+- Nearby lists the available LAN addresses and port on Android and Windows so peers can connect using the address for their network.
+- Android uses version code 7. The Windows 2.3.2 MSI and EXE use the existing upgrade family and supersede the earlier 2.3.0 and 2.3.1 test installers.
+
+## [2.3.0] - 2026-11-21
+
+### Flash for Android and Desktop 2.3.0
+
+- **Desktop direct-transfer restart recovery (ADR-362):** Desktop restores interrupted direct transfers from its encrypted Room store (`RoomTransferStore` + validated LAN continuity checkpoints) and offers Retry without automatic sends at startup. Retries reuse the verified byte ranges the receiving peer confirms.
+- **Non-destructive desktop DB & checkpoint recovery (ADR-367):** `ChatDbKeyStore` and `openEncryptedFlashDatabaseWithRecovery` preserve unreadable keys and existing stores on disk, attempt WAL-only integrity salvage before quarantining unrecoverable files, and `FileContinuityCheckpointStore` writes via `.bak` recovery moves before mutating memory.
+- **Inline video viewer on Android and Windows (ADR-363, ADR-364):** Android plays videos in the shared Compose media viewer via Media3 ExoPlayer with translucent controls, an integrated timeline, and ten-second double-tap skip; Windows plays video inline via Media Foundation (`IMFMediaEngine` frame server) with shared playback controls, rotation/state preservation (`rememberSaveable`), and mute toggle.
+- **Desktop voice playback speed:** `JvmAudioPlayer` adds WSOLA pitch-preserving 1x / 1.5x / 2x playback speed alongside seek/pause race fixes.
+- **Compact UI, navigation & accessibility polish:** Transfers and chat use compact rows, updated timestamps, and single-bubble incoming image/voice attachments; Hub loads sections independently, keeps cached content visible during refresh, and opens beside the active chat on Windows. Added RTL layout support, WCAG AA light-mode contrast updates (`textSuccess`, `statusTransfer`), 48 dp touch targets, `ANIMATOR_DURATION_SCALE` observation, and Android/Desktop host safety fixes.
+- **Mixed-route group call ICE & TURN renewal (ADR-367):** `CallCoordinator` and `FlashGroupCallSession` resolve ICE per remote peer leg (`CallRouteCapabilities.resolveCallIce`), allowing LAN and off-LAN Hub legs in one group call, and renew TURN credentials at 75% TTL with `iceRestart` offers.
+- **PTT disconnect & radio recovery:** `FlashPtt.onPeerDisconnected` releases listening floors and fan-out legs on session loss; capture/playout workers synchronize teardown; `RadioGatewayManager` recovers automatically after transient disconnects via background probes and `RadioChatBridge` preserves attachment refusal during transient disconnects.
+
+### Upgrading the apps
+
+- **Android:** `versionName 2.3.0`, `versionCode 6`. Install over a release-signed `2.1.0` or `2.2.0` build using the same release signing key and APK ABI variant. Existing `v2.0.0-beta` debug-signed installs still require uninstall first (deleting local data).
+- **Windows:** Use the 2.3.2 installers above. The rebuilt 2.3.0 packages failed a same-version update.
+- **Linux:** `.deb` and `.tar.gz` desktop packages are built and released separately from the permanent `linux` branch (`origin/linux`). See [Install Flash on Linux](docs/install-linux.md).
+
+### KMP library 2.3.0-beta.1
+
+- Target JitPack coordinate `com.github.Soko-Aerial.Flash:<module>:v2.3.0-beta.1` (Android + JVM KMP artifacts, plus vendored `webrtc-kmp`).
+- Updated `FlashConfig.enableResume` across Android and Desktop (`DesktopEngine`), added `FlashPtt.onPeerDisconnected`, `FlashDevice` fields (`groupProtocol`, `identityKey`, `features`), `FlashPerformanceMode.ULTRA_LOW`, `FlashTransportType.BLUETOOTH`, `FlashPeerPresence.Reachable`/`RadioOnly`, and `FlashError.Domain` in the public API reference.
+
+### Hub server 2.3.0-beta.1
+
+- Target Hub distribution tag `server-v2.3.0-beta.1`.
+- **Group creation, E2EE policy & offline row retirement (ADR-365, ADR-366, ADR-367):** Atomic group creation with initial members (`POST /api/v1/groups/create-with-members`); relay enforcement of `FLASH_GROUP_E2EE_MODE` (`E2EE_REQUIRED` vs `HUB_INSPECTABLE`) including immediate retirement of undelivered readable mailbox rows on startup or policy switch (`retireReadableGroupRows`); enrollment-scoped policy refresh (`FLASH_ALLOW_PERSONAL_HUB_LINK`).
+- **Hub directory group join links & key lifecycle (ADR-361, ADR-365, ADR-366, ADR-367):** HTTPS fragment invite links (`/invite/enroll`, `/invite/group`) and `flash://g/2/…` Hub group join links sealed with dedicated `join-links.key` (plus `join-links.prev.key` fallback), optional `maxUses` consumption limits (`CreateGroupJoinLinkBody`), per-link and group-wide revocation (`UpdateGroupBody.revokeJoinLinks` / `revokeLinkId`), and policy-revision invalidation.
+- **Hardening & operations:** Scoped announcement create-retry idempotency, 64-stripe device replacement locks, uncapped `/metrics` `onlineDevices`, and `GET /api/v1/calls/ice-config` support.
+
+### Verification status
+
+- Host automated verification on `dev` (`9e2123ba`) passed **9,409 automated tests (9,404 passed, 0 failed, 5 pre-existing/opt-in skips)**: 9,320 Gradle tests across 1,056 suites + 89 Admin UI Node tests, plus `:app:assembleDebug` and `:app:lintDebug` (0 errors).
+- Signed release artifacts, physical-device checks (`MODREV-01..07`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `IFREV-01..06`, `INVITE-LINK-01..02`), and live test-Hub acceptance remain owed in `docs/testing/TEST-BACKLOG.md`.
+
 ## SDK 2.2.0-beta.3 - 2026-11-08
 
 - Added verified Linux AAPT2 and Compose Desktop metadata checksums for JitPack. The stable

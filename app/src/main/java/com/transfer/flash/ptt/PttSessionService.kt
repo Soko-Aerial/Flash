@@ -58,7 +58,7 @@ import kotlinx.coroutines.launch
  */
 public class PttSessionService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var stateJob: Job? = null
     private var currentFgsType = -1
     private var startForegroundCalled = false
@@ -74,12 +74,23 @@ public class PttSessionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val engine = com.transfer.flash.debug.DiscoveryEngineHolder.currentPttSession()
-        if (engine == null) {
-            Log.w(TAG, "No PTT engine — stopping service")
+        val initialState = engine?.state?.value
+        if (engine == null || initialState == null || initialState is PttFloorState.Idle) {
+            Log.w(TAG, "PTT session already stopped")
+            if (!startForegroundCalled) {
+                val notice = NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_notification_flash)
+                    .setContentTitle("Flash push to talk")
+                    .setSilent(true)
+                    .build()
+                tryStartForeground(notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            }
             stopSelf()
             return START_NOT_STICKY
         }
         if (stateJob?.isActive != true) {
+            render(initialState, engine.stats.value)
             stateJob = scope.launch {
                 var latestStats: PttSessionStats? = engine.stats.value
                 launch {
@@ -250,7 +261,7 @@ public class PttSessionService : Service() {
     public companion object {
         private const val TAG = "PTTSVC"
         private const val CHANNEL_ID = "flash_ptt"
-        public const val NOTIFICATION_ID: Int = 43
+        public const val NOTIFICATION_ID: Int = 44
         private const val REQUEST_STOP = 2001
         private const val STATS_SAMPLE_MS = 1000L
 
@@ -262,6 +273,8 @@ public class PttSessionService : Service() {
 
         /** Start the session FGS. Best-effort: a backgrounded press may be refused (API 31+). */
         public fun start(context: Context) {
+            val state = com.transfer.flash.debug.DiscoveryEngineHolder.currentPttSession()?.state?.value
+            if (state == null || state is PttFloorState.Idle) return
             val intent = Intent(context.applicationContext, PttSessionService::class.java)
             runCatching {
                 ContextCompat.startForegroundService(context.applicationContext, intent)

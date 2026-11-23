@@ -1,6 +1,6 @@
 // Throwaway desktop consumer — NOT published (no `maven-publish`, no publishing block).
 // Phase 24 Step 2 / D9 = Option A: prove variant-aware resolution by depending on the ROOT
-// coordinates (the same `com.transfer.flash:core-…:2.2.0-beta.3` root coordinate an Android
+// coordinates (the same `com.transfer.flash:core-…:2.3.0-beta.1` root coordinate an Android
 // consumer can use with a local publication) from mavenLocal(). A `kotlin("jvm")` build picks
 // the `-jvm` artifact. The Android samples `:sample:consumer` and `:sample:consumer-granular`
 // compile against project dependencies; the external JitPack consumer check is REL22-04.
@@ -37,10 +37,10 @@ tasks.withType<JavaCompile>().configureEach {
 dependencies {
     // Mirror of :sample:consumer's umbrella shape, resolved from the published tree:
     // core-engine's api exposure must make the whole public vocabulary compilable.
-    implementation("com.transfer.flash:core-engine:2.2.0-beta.3")
+    implementation("com.transfer.flash:core-engine:2.3.0-beta.1")
     // Mirror of :sample:consumer-granular's single-artifact shape for the desktop tier:
     // core-network alone must re-expose core-common's FlashDevice through its api edge.
-    implementation("com.transfer.flash:core-network:2.2.0-beta.3")
+    implementation("com.transfer.flash:core-network:2.3.0-beta.1")
 }
 // No project-level `repositories {}`: the root settings' FAIL_ON_PROJECT_REPOS mode governs,
 // and its mavenLocal()-first order (added for this module in Phase 24 Step 2) is what makes

@@ -136,6 +136,7 @@ class DirectorySyncTransportTest {
     @Test
     fun aDeviceInMoreGroupsThanTheLimitIsToldTheRosterListIsIncomplete() { // SRVHUB-14
         val dir = directory(members = 2)
+        dir.addDepartmentMember("dept-eng", "dev-head", "Eng Head", MemberRole.DEPT_ADMIN)
         repeat(HubContract.MAX_DIRECTORY_SYNC_ROSTERS + 6) {
             dir.createGroup("grp-" + it.toString().padStart(3, '0'), "G$it", "dept-eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY, listOf("dev-head"), admin)
         }
@@ -148,6 +149,7 @@ class DirectorySyncTransportTest {
     @Test
     fun aCompleteRosterListIsNotMarkedTruncated() {
         val dir = directory(members = 2)
+        dir.addDepartmentMember("dept-eng", "dev-head", "Eng Head", MemberRole.DEPT_ADMIN)
         repeat(2) { dir.createGroup("grp-$it", "G$it", "dept-eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY, listOf("dev-head"), admin) }
         val last = allPages(dir, 200, DirectoryActor("dev-head", "dept-eng")).last()
         assertEquals(2, last.groupRosters.size)
@@ -157,6 +159,7 @@ class DirectorySyncTransportTest {
     @Test
     fun withoutASignerAGroupMemberIsToldTheListIsIncomplete() {
         val dir = directory(members = 2, sign = false)
+        dir.addDepartmentMember("dept-eng", "dev-head", "Eng Head", MemberRole.DEPT_ADMIN)
         dir.createGroup("grp-1", "G", "dept-eng", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY, listOf("dev-head"), admin)
         val last = allPages(dir, 200, DirectoryActor("dev-head", "dept-eng")).last()
         assertEquals(0, last.groupRosters.size)

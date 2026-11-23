@@ -26,6 +26,7 @@ import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.MainActivity
+import com.transfer.flash.R
 import com.transfer.flash.notifications.FlashNotificationManager
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -118,6 +119,10 @@ class FlashBackgroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A started service can receive a new request after foreground promotion was refused in onCreate.
+        if (intent != null && !isForeground && startAsForeground()) {
+            promotionRefused.set(false)
+        }
         // C-02: a transfer the platform paused (foreground-service time limit) continues once the service runs again.
         if (isForeground) {
             scope.launch { runCatching { DiscoveryEngineHolder.currentTransfers()?.resumeSystemPaused() } }
@@ -127,7 +132,13 @@ class FlashBackgroundService : Service() {
             if (transferId != null) {
                 scope.launch {
                     val transfers = DiscoveryEngineHolder.currentTransfers()
+                    val row = transfers?.activeTransfers?.value?.find { it.id.value == transferId }
+                    if (!shouldCancelTransferFromNotification(row?.groupOrigin)) {
+                        Log.w(TAG, "Refusing to cancel group file $transferId from a notification")
+                        return@launch
+                    }
                     transfers?.cancelTransfer(FlashTransferId(transferId))
+                    FlashNotificationManager.clearTransfer(applicationContext, transferId)
                 }
             }
         }
@@ -140,6 +151,12 @@ class FlashBackgroundService : Service() {
         if (activeInstance == this) {
             activeInstance = null
         }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.cancel(NOTIFICATION_ID)
+        }
+        FlashNotificationManager.clearAllTransfers(this)
         previousTransferStates.clear()
         lastProgressPostMs.clear()
         lastProgressPercent.clear()
@@ -170,24 +187,22 @@ class FlashBackgroundService : Service() {
             // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
             timeoutCleanupScope.launch { runCatching { transfers?.pauseForSystem(transfer.id, "SERVICE_TIMEOUT") } }
         }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.cancel(NOTIFICATION_ID)
+        }
+        FlashNotificationManager.clearAllTransfers(this)
         stopSelf()
         super.onTimeout(startId, fgsType)
     }
 
     private fun buildIdleNotification(activeTransfersCount: Int = 0): Notification {
         val mode = DiscoveryEngineHolder.currentDiscoveryMode()
-        val (title, text) = when (mode) {
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.STANDARD ->
-                "Flash is discoverable" to "Nearby devices can find and reach this phone."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.GHOST ->
-                "Flash is hidden" to "Browse only — nearby devices cannot see this phone."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.ECO ->
-                "Flash is in eco mode" to "Battery-saving discovery active."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.BOOST ->
-                "Flash is in boost mode" to "High-responsiveness discovery active."
-            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.RECEIVE_KIOSK ->
-                "Flash is in kiosk mode" to "Advertising kiosk availability."
-        }
+        val content = FlashBackgroundNotificationCopy.idleContent(
+            mode = mode,
+            activeTransfersCount = activeTransfersCount,
+        )
         val tapIntent = PendingIntent.getActivity(
             this,
             NOTIFICATION_ID,
@@ -196,15 +211,10 @@ class FlashBackgroundService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val bodyText = if (activeTransfersCount > 0) {
-            "$text • $activeTransfersCount active transfer(s)"
-        } else {
-            text
-        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(bodyText)
-            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+            .setContentTitle(content.title)
+            .setContentText(content.body)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentIntent(tapIntent)
             .setProgress(0, 0, false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -352,9 +362,19 @@ class FlashBackgroundService : Service() {
     private fun handleTransfersChanged(transfers: List<FlashTransfer>) {
         if (isFirstTransferCollection) {
             isFirstTransferCollection = false
+            FlashNotificationManager.reconcileTransferNotifications(
+                this,
+                transfers.filter {
+                    it.state == FlashTransferState.Transferring ||
+                        it.state == FlashTransferState.Verifying ||
+                        it.state == FlashTransferState.Offered
+                }.mapTo(HashSet()) { it.id.value },
+            )
             for (transfer in transfers) {
                 previousTransferStates[transfer.id.value] = transfer.state
-                if (transfer.state == FlashTransferState.Transferring || transfer.state == FlashTransferState.Verifying) {
+                if (FlashRestorationCleanupPolicy.shouldClearRestoredNotification(transfer)) {
+                    FlashNotificationManager.clearTransfer(this, transfer.id.value)
+                } else if (transfer.state == FlashTransferState.Transferring || transfer.state == FlashTransferState.Verifying) {
                     FlashNotificationManager.showTransferProgress(this, transfer)
                 } else if (transfer.state == FlashTransferState.Offered) {
                     FlashNotificationManager.showTransferOffered(this, transfer)
@@ -375,7 +395,9 @@ class FlashBackgroundService : Service() {
 
             if (prevState == null && transfer.restored) {
                 // Read back from the store after a restart (C-09): listed in Transfers, not announced again.
-                Unit
+                if (FlashRestorationCleanupPolicy.shouldClearRestoredNotification(transfer)) {
+                    FlashNotificationManager.clearTransfer(this, id)
+                }
             } else if (prevState == null) {
                 when (transfer.state) {
                     FlashTransferState.Completed -> {
@@ -511,6 +533,9 @@ class FlashBackgroundService : Service() {
         const val ACTION_CANCEL_TRANSFER = "com.transfer.flash.action.CANCEL_TRANSFER"
         const val EXTRA_TRANSFER_ID = "extra_transfer_id"
 
+        internal fun shouldCancelTransferFromNotification(groupOrigin: Boolean?): Boolean =
+            groupOrigin != true
+
         private val promotionRefused = AtomicBoolean(false)
         private val timeoutCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         @Volatile
@@ -519,10 +544,16 @@ class FlashBackgroundService : Service() {
         /** True while a service instance exists — i.e. something else owns the engine's lifetime. */
         fun isActive(): Boolean = activeInstance != null
 
-        fun start(context: Context) {
+        fun start(context: Context, fromVisibleActivity: Boolean = false) {
             val intent = Intent(context.applicationContext, FlashBackgroundService::class.java)
             runCatching {
-                ContextCompat.startForegroundService(context.applicationContext, intent)
+                if (fromVisibleActivity) {
+                    // The visible activity can start the service directly. Promotion stays inside the service,
+                    // so a delayed onCreate on an installed-app restart cannot trip the foreground-start watchdog.
+                    context.startService(intent)
+                } else {
+                    ContextCompat.startForegroundService(context.applicationContext, intent)
+                }
             }.onFailure { error ->
                 Log.e(TAG, "Unable to start background mesh foreground service", error)
             }
@@ -569,5 +600,47 @@ class FlashBackgroundService : Service() {
 
         fun currentKeepAliveTier(): TranssionHiberKeepAlive.KeepAliveTier =
             activeInstance?.keepAlive?.currentTier ?: TranssionHiberKeepAlive.KeepAliveTier.NONE
+    }
+}
+
+internal data class FlashIdleNotificationContent(
+    val title: String,
+    val body: String,
+)
+
+internal object FlashBackgroundNotificationCopy {
+    fun idleContent(
+        mode: com.transfer.flash.core.discovery.core.FlashDiscoveryMode,
+        activeTransfersCount: Int = 0,
+    ): FlashIdleNotificationContent {
+        val (title, baseText) = when (mode) {
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.STANDARD ->
+                "Flash is discoverable" to "Nearby devices can find and connect to this phone."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.GHOST ->
+                "Flash is hidden" to "Searching nearby — other devices cannot see this phone."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.ECO ->
+                "Flash is saving battery" to "Battery-saving nearby discovery is on."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.BOOST ->
+                "Flash is in fast discovery" to "High-responsiveness nearby discovery is on."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.RECEIVE_KIOSK ->
+                "Flash is ready to receive" to "Waiting for incoming files from paired devices."
+        }
+        val body = if (activeTransfersCount > 0) {
+            val transferLabel = if (activeTransfersCount == 1) {
+                "1 active transfer"
+            } else {
+                "$activeTransfersCount active transfers"
+            }
+            "$baseText • $transferLabel"
+        } else {
+            baseText
+        }
+        return FlashIdleNotificationContent(title = title, body = body)
+    }
+}
+
+internal object FlashRestorationCleanupPolicy {
+    fun shouldClearRestoredNotification(transfer: FlashTransfer): Boolean {
+        return transfer.restored && (transfer.state == FlashTransferState.Failed || transfer.state == FlashTransferState.Completed)
     }
 }

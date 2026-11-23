@@ -86,7 +86,7 @@ public class AutoConnector(
      */
     public suspend fun ensureSession(deviceId: String, budgetMs: Long = DIAL_ON_DEMAND_BUDGET_MS): Boolean {
         if (links.hasLiveSession(deviceId)) return true
-        val known = runCatching { sightings() }.getOrDefault(emptyList())
+        val known = runSuspendCatching { sightings() }.getOrDefault(emptyList())
             .filter { it.deviceId == deviceId }
             .distinctBy { it.host to it.port }
         if (known.isEmpty()) return false

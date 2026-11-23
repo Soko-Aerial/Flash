@@ -38,8 +38,8 @@ class RegistryPrincipalTest {
 
     private fun enrol(deviceId: String, department: String): Enrolled {
         val key = FlashCrypto.generateEcKeyPair()
-        val token = enrollment.generateInviteLink("https://hub.test", InviteScope(department = department, expiry = now + 60_000), now)
-            .substringAfter("token=").substringBefore("&")
+        val token = enrollment.createInvite("https://hub.test", InviteScope(department = department, expiry = now + 60_000), now)
+            .token
         val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), enrollment.serverId))
         val cert = enrollment.enrollDevice(token, deviceId, key.toBase64Spki(), proof, currentTimeMs = now).getOrThrow().deviceCert
         return Enrolled(deviceId, key, cert)

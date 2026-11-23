@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -142,6 +143,7 @@ fun FlashMessageBubble(
     inSelectionMode: Boolean = false,
     onSelectToggle: () -> Unit = {},
     onToggleReaction: (String) -> Unit = {},
+    onOpenReactionDetails: ((com.transfer.flash.core.messaging.model.FlashReaction?) -> Unit)? = null,
     onReplySwipe: () -> Unit = {},
     onJumpToMessage: (String) -> Unit = {},
     onImageClick: (index: Int, image: com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit = { _, _ -> },
@@ -284,6 +286,8 @@ fun FlashMessageBubble(
                 reactions = message.reactions,
                 outgoing = message.isMine,
                 onToggleReaction = onToggleReaction,
+                onLongClickReaction = { reaction -> onOpenReactionDetails?.invoke(reaction) },
+                onOverflowClick = { onOpenReactionDetails?.invoke(null) },
                 modifier = Modifier.padding(top = FlashSpacing.space4),
             )
         }
@@ -363,8 +367,10 @@ private fun FlashMessageBubbleUltraLow(
     ) {
         Column(
             modifier = Modifier.padding(
-                horizontal = FlashSpacing.space12,
-                vertical = FlashSpacing.space8,
+                start = FlashSpacing.space12,
+                end = FlashSpacing.space12,
+                top = FlashSpacing.space8,
+                bottom = FlashSpacing.space4,
             ),
         ) {
             message.replyTo?.let { reply ->
@@ -405,7 +411,7 @@ private fun FlashMessageBubbleUltraLow(
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
-                message.voiceAttachments.forEach { voice ->
+                message.voiceAttachments.forEachIndexed { index, voice ->
                     VoiceCardItem(
                         voice = voice,
                         isParentOutgoing = message.isMine,
@@ -416,7 +422,9 @@ private fun FlashMessageBubbleUltraLow(
                         onOpenActions = onOpenActions,
                         haptics = haptics,
                     )
-                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    if (index != message.voiceAttachments.lastIndex || message.text.isNotBlank() || message.callEvent != null) {
+                        Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    }
                 }
             }
             message.callEvent?.let { call ->
@@ -441,14 +449,23 @@ private fun FlashMessageBubbleUltraLow(
                         onJoinInvite = { onJoinInvite?.invoke(it) },
                     )
                 }
-                Spacer(modifier = Modifier.height(FlashSpacing.space4))
             }
             FlashMessageTimestampRowUltraLow(
                 message = message,
+                modifier = Modifier.align(Alignment.End).padding(top = FlashSpacing.space2),
                 deliveryStatus = deliveryStatus,
                 onRetryMessage = onRetryMessage,
             )
-            FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
+            FlashMessageFailedRetryRow(
+                message = message,
+                onRetryMessage = onRetryMessage,
+                modifier = Modifier.align(Alignment.End),
+            )
+            FlashRadioDeliveryLine(
+                message = message,
+                modifier = Modifier.align(Alignment.End),
+                onStopRadioRetry = onStopRadioRetry,
+            )
         }
     }
 }
@@ -466,7 +483,7 @@ private fun FlashMessageTimestampRowUltraLow(
     val timestampColor = if (message.isMine) colors.chatTextTimestampOutgoing else colors.chatTextTimestamp
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -477,6 +494,7 @@ private fun FlashMessageTimestampRowUltraLow(
                 lineHeight = 14.sp,
             ),
             color = timestampColor,
+            maxLines = 1,
         )
         if (message.isMine) {
             Spacer(modifier = Modifier.width(FlashSpacing.space4))
@@ -486,9 +504,8 @@ private fun FlashMessageTimestampRowUltraLow(
                 val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
                 FlashDeliveryStatusIcon(
                     status = status,
-                    onRetry = if (status == com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed && onRetryMessage != null) {
-                        { onRetryMessage(message.id) }
-                    } else null,
+                    // FlashMessageFailedRetryRow immediately below owns the 48dp retry target.
+                    onRetry = null,
                 )
             }
         }
@@ -610,8 +627,10 @@ private fun FlashBubbleSurface(
     ) {
         Column(
             modifier = Modifier.padding(
-                horizontal = FlashSpacing.space12,
-                vertical = FlashSpacing.space8,
+                start = FlashSpacing.space12,
+                end = FlashSpacing.space12,
+                top = FlashSpacing.space8,
+                bottom = FlashSpacing.space4,
             ),
         ) {
             message.replyTo?.let { reply ->
@@ -657,7 +676,7 @@ private fun FlashBubbleSurface(
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
-                message.voiceAttachments.forEach { voice ->
+                message.voiceAttachments.forEachIndexed { index, voice ->
                     VoiceCardItem(
                         voice = voice,
                         isParentOutgoing = message.isMine,
@@ -668,7 +687,9 @@ private fun FlashBubbleSurface(
                         onOpenActions = onOpenActions,
                         haptics = haptics,
                     )
-                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    if (index != message.voiceAttachments.lastIndex || message.text.isNotBlank() || message.callEvent != null) {
+                        Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    }
                 }
             }
             message.callEvent?.let { call ->
@@ -710,16 +731,25 @@ private fun FlashBubbleSurface(
                         onJoinInvite = { onJoinInvite?.invoke(it) },
                     )
                 }
-                Spacer(modifier = Modifier.height(FlashSpacing.space4))
             }
             FlashMessageTimestampRow(
                 message = message,
+                modifier = Modifier.align(Alignment.End).padding(top = FlashSpacing.space2),
                 deliveryStatus = deliveryStatus,
                 onOpenActions = onOpenActions,
                 onOpenMessageInfo = onOpenMessageInfo,
                 onRetryMessage = onRetryMessage,
             )
-            FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
+            FlashMessageFailedRetryRow(
+                message = message,
+                onRetryMessage = onRetryMessage,
+                modifier = Modifier.align(Alignment.End),
+            )
+            FlashRadioDeliveryLine(
+                message = message,
+                modifier = Modifier.align(Alignment.End),
+                onStopRadioRetry = onStopRadioRetry,
+            )
         }
     }
 }
@@ -741,7 +771,6 @@ private fun FlashRadioDeliveryLine(
     val typography = FlashTheme.typography
     Row(
         modifier = modifier
-            .fillMaxWidth()
             .padding(top = FlashSpacing.space4),
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
@@ -821,7 +850,7 @@ private fun FlashMessageTimestampRow(
     }
 
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -832,6 +861,7 @@ private fun FlashMessageTimestampRow(
                 lineHeight = 14.sp,
             ),
             color = timestampColor,
+            maxLines = 1,
         )
         if (message.isMine) {
             Spacer(modifier = Modifier.padding(start = FlashSpacing.space4))
@@ -875,9 +905,8 @@ private fun FlashMessageTimestampRow(
                     val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
                     FlashDeliveryStatusIcon(
                         status = status,
-                        onRetry = if (status == com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed && onRetryMessage != null) {
-                            { onRetryMessage(message.id) }
-                        } else null,
+                        // FlashMessageFailedRetryRow immediately below owns the 48dp retry target.
+                        onRetry = null,
                     )
                 }
             }
@@ -886,7 +915,7 @@ private fun FlashMessageTimestampRow(
             Spacer(modifier = Modifier.width(FlashSpacing.space4))
             Box(
                 modifier = Modifier
-                    .size(16.dp)
+                    .size(width = 24.dp, height = FlashSpacing.space20)
                     .clip(CircleShape)
                     .clickable(
                         onClick = {
@@ -900,10 +929,61 @@ private fun FlashMessageTimestampRow(
                 FlashIcon(
                     icon = FlashIcons.More,
                     contentDescription = "Message options",
-                    size = 12.dp,
+                    size = 14.dp,
                     tint = timestampColor.copy(alpha = 0.7f),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun FlashMessageFailedRetryRow(
+    message: FlashMessageUi,
+    onRetryMessage: ((String) -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    if (!message.isMine ||
+        message.deliveryStatus != com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed ||
+        onRetryMessage == null
+    ) {
+        return
+    }
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val haptics = rememberFlashHaptics()
+    Row(
+        modifier = modifier
+            .padding(top = FlashSpacing.space2),
+        horizontalArrangement = Arrangement.End,
+    ) {
+        Row(
+            modifier = Modifier
+                .defaultMinSize(minHeight = FlashDimensions.minTouchTarget)
+                .clip(FlashShapes.chip)
+                .clickable {
+                    haptics(FlashHaptic.Confirm)
+                    onRetryMessage(message.id)
+                }
+                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "Failed to send. Tap to retry."
+                },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        ) {
+            FlashIcon(
+                icon = FlashIcons.Retry,
+                contentDescription = null,
+                tint = colors.textError,
+                size = FlashDimensions.iconSm,
+            )
+            FlashText(
+                text = "Tap to retry",
+                style = typography.metadataEmphasis,
+                color = colors.textError,
+            )
         }
     }
 }

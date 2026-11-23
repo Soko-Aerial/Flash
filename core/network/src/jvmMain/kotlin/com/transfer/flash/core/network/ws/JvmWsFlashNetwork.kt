@@ -189,7 +189,7 @@ public class JvmWsFlashNetwork(
         server = serverImpl
         // 2026-10-22 review F8: honour the requested port. `0` keeps the historical behaviour — the preferred port with
         // an ephemeral fallback — so a caller that does not care is unchanged.
-        val port = runCatching {
+        val port = runSuspendCatching {
             if (listenPort > 0) serverImpl.start(listenPort) else serverImpl.start()
         }.getOrElse {
             running.set(false)
@@ -308,7 +308,7 @@ public class JvmWsFlashNetwork(
             val actualPort = if (port > 0) port else WsTransferServer.PREFERRED_PORT
             val resolvedPeerDeviceId = peerDeviceId ?: knownEndpoints.entries.firstOrNull { it.value.host == host && it.value.port == actualPort }?.key
 
-            val connection = runCatching {
+            val connection = runSuspendCatching {
                 client.connect(host, actualPort, resolvedPeerDeviceId)
             }.getOrElse { error ->
                 // The dial named a peer and our own TLS check refused the key that answered: the

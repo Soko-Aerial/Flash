@@ -19,6 +19,15 @@ import com.transfer.flash.core.messaging.model.*
 import com.transfer.flash.ui.nearby.*
 import com.transfer.flash.ui.transfers.*
 import com.transfer.flash.core.common.model.FlashDeviceKind
+import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.ui.chat.FlashChatHeader
+import com.transfer.flash.ui.chat.FlashChatSearchBar
+import com.transfer.flash.ui.chat.FlashConnectionBanner
+import com.transfer.flash.ui.chat.FlashConnectionHealth
+import com.transfer.flash.ui.chat.FlashEncryptionBadgeState
+import com.transfer.flash.ui.chat.FlashMediaViewer
+import com.transfer.flash.ui.chat.FlashMediaViewerItem
+import com.transfer.flash.ui.chat.FlashMessageBubble
 import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.ui.chat.FlashPairingRequestUi
 import com.transfer.flash.core.transfer.model.FlashTransferWaitReason
@@ -71,14 +80,52 @@ class FlashWorkspaceTabsRenderTest {
         )
         data class Case(val name: String, val nearbyState: NearbyUiState? = null,
             val transferState: TransfersUiState = transfers, val width: Int = 390, val height: Int = 844,
-            val dark: Boolean = false, val fontScale: Float = 1f, val optionalActions: Boolean = true, val frames: Int = 30)
+            val dark: Boolean = false, val fontScale: Float = 1f, val optionalActions: Boolean = true, val frames: Int = 30,
+            val chatHeader: FlashChatHeaderUiState? = null, val messages: List<FlashMessageUi> = emptyList(),
+            val media: List<FlashMediaViewerItem> = emptyList(), val startVideo: Boolean = false)
+        val chatHeader = FlashChatHeaderUiState(
+            title = "Amara Okafor", avatarInitials = "AO", avatarSeed = "amara",
+            presence = FlashPeerPresence.Reachable, transport = FlashNetworkTransport.Lan,
+            isEncrypted = true, showCallActions = true,
+        )
+        val textMessage = FlashMessageUi(
+            id = "text", senderName = "Amara Okafor", senderInitials = "AO", timeLabel = "11:18",
+            text = "I’ll send the photo now.", isMine = false, showSenderHeader = false,
+        )
+        val voiceMessage = textMessage.copy(
+            id = "voice", text = "", timeLabel = "11:19",
+            voiceAttachments = listOf(FlashVoiceAttachmentUi(id = "sample-voice", durationMs = 7_000)),
+        )
         val request = FlashPairingRequestUi("Amara’s phone", "AO", "123456", FlashNetworkTransport.Lan)
+        val mediaCases = System.getenv("FLASH_TABS_RENDER_VIDEO")?.let { source ->
+            val preview = FlashMediaViewerItem(
+                FlashImageAttachmentUi("preview", File(source).absolutePath, isVideo = true, caption = "A clip from the trip"),
+                "Amara Okafor", "11:19",
+            )
+            val album = listOf(preview, preview.copy(image = preview.image.copy(id = "next")))
+            val missing = preview.copy(image = preview.image.copy(uri = File(source).resolveSibling("missing-video.mp4").path))
+            listOf(
+                Case("media-preview-portrait", dark = true, media = album),
+                Case("media-preview-landscape", width = 844, height = 390, media = album),
+                Case("media-preview-large-text", width = 320, fontScale = 2f, media = album),
+                Case("media-system-player-fallback", dark = true, media = listOf(missing), startVideo = true),
+            ) + if (System.getProperty("os.name").startsWith("Windows")) listOf(
+                Case("media-playing-windows", dark = true, media = album, startVideo = true),
+                Case("media-playing-windows-landscape", width = 844, height = 390, media = album, startVideo = true),
+                Case("media-playing-windows-large-text", width = 320, fontScale = 2f, media = album, startVideo = true),
+            ) else emptyList()
+        }.orEmpty()
         val cases = listOf(
             Case("nearby-phone", nearby), Case("nearby-dark", nearby, dark = true),
             Case("nearby-desktop", nearby, width = 1200, height = 800),
             Case("nearby-large-text", nearby, fontScale = 2f),
             Case("nearby-empty", NearbyUiState()), Case("nearby-loading", NearbyUiState(isLoading = true)),
             Case("nearby-network-off", NearbyUiState(radiosAvailable = false)),
+            Case("nearby-network-off-with-settings", NearbyUiState(radiosAvailable = false), width = 370, height = 520,
+                fontScale = 2f),
+            Case("nearby-empty-with-address", NearbyUiState(
+                identity = nearby.identity.copy(localAddresses = listOf("192.168.1.25", "192.168.43.1")),
+            ), width = 320, fontScale = 2f),
             Case("transfers-phone"), Case("transfers-dark", dark = true),
             Case("transfers-desktop", width = 1200, height = 800),
             Case("transfers-large-text", fontScale = 2f),
@@ -87,7 +134,15 @@ class FlashWorkspaceTabsRenderTest {
             Case("transfers-loading", transferState = TransfersUiState(isLoading = true)),
             Case("transfers-error", transferState = TransfersUiState(isError = true)),
             Case("transfers-history", transferState = transfers.copy(active = emptyList())),
-        ) + listOf(
+            Case("chat-header-online", width = 320, height = 120, chatHeader = chatHeader),
+            Case("chat-header-offline", height = 120, dark = true,
+                chatHeader = chatHeader.copy(presence = FlashPeerPresence.Offline, transport = FlashNetworkTransport.Unknown)),
+            Case("chat-header-large-text", height = 120, fontScale = 2f, chatHeader = chatHeader),
+            Case("chat-search", width = 360, height = 180, chatHeader = chatHeader),
+            Case("chat-bubbles", width = 320, height = 320, chatHeader = chatHeader, messages = listOf(textMessage, voiceMessage)),
+            Case("chat-bubbles-large-text", height = 460, dark = true, fontScale = 2f,
+                chatHeader = chatHeader, messages = listOf(textMessage.copy(isMine = true), voiceMessage)),
+        ) + mediaCases + listOf(
             Case("nearby-menu", nearby),
             Case("nearby-optional-actions-absent", nearby, optionalActions = false),
             Case("nearby-paused", nearby.copy(isScanning = false)),
@@ -131,16 +186,34 @@ class FlashWorkspaceTabsRenderTest {
                                 FlashNearbyScreen(case.nearbyState, {}, {}, {}, {},
                                     onVerifyTrustedClick = if (case.optionalActions) ({}) else null,
                                     onManualConnect = if (case.optionalActions) ({ _, _ -> }) else null,
-                                    onScanNetwork = if (case.optionalActions) ({}) else null)
+                                    onScanNetwork = if (case.optionalActions) ({}) else null,
+                                    onOpenWifiSettings = if (case.name == "nearby-network-off-with-settings") ({}) else null)
                             } else {
                                 FlashTransfersScreen(case.transferState, {}, {}, {}, {},
                                     onFindDevices = {}, onAcceptOffer = {}, onDeclineOffer = {}, onHistoryShare = {},
+                                    onItemClick = {},
                                     onClearHistory = if (case.optionalActions) ({}) else null,
                                     onDismissItem = if (case.optionalActions) ({}) else null,
                                     onClearFailed = if (case.optionalActions) ({}) else null)
                             }
                         }
-                        if (case.width >= 840) {
+                        if (case.media.isNotEmpty()) {
+                            FlashMediaViewer(case.media, initialIndex = 0, onDismiss = {}, initialPlayVideo = case.startVideo)
+                        } else if (case.chatHeader != null) {
+                            Column(Modifier.fillMaxSize().background(FlashTheme.colors.backgroundApp)) {
+                                if (case.name == "chat-search") {
+                                    FlashChatSearchBar("photo", {}, 0, 3, {}, {}, {}, onToggleResults = {})
+                                } else {
+                                    FlashChatHeader(case.chatHeader, {}, {}, encryptionState = FlashEncryptionBadgeState.EncryptedTrusted)
+                                }
+                                if (case.chatHeader.presence == FlashPeerPresence.Offline) {
+                                    FlashConnectionBanner(FlashConnectionHealth.Offline, peerName = case.chatHeader.title)
+                                }
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    case.messages.forEach { FlashMessageBubble(it, onOpenActions = {}) }
+                                }
+                            }
+                        } else if (case.width >= 840) {
                             Row(Modifier.fillMaxSize().background(FlashTheme.colors.backgroundApp)) {
                                 FlashNavigationRail(tabs, destination, {}, localDisplayName = "Jordan")
                                 Box(Modifier.weight(1f)) { content() }

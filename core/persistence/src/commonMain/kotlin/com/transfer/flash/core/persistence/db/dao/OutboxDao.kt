@@ -49,6 +49,14 @@ public interface OutboxDao {
     @Query("UPDATE outbox SET attempts = 0, nextAttemptAt = :now")
     public suspend fun makePendingDue(now: Long)
 
+    /** Bypass retry backoff for the peer whose Hub key was just approved. */
+    @Query(
+        "UPDATE outbox SET nextAttemptAt = :now WHERE nextAttemptAt > :now AND localId IN " +
+            "(SELECT localId FROM messages WHERE conversationId = :peerId AND senderId = :senderId " +
+            "AND deletedAt IS NULL AND status NOT IN ('DELIVERED', 'READ', 'FAILED'))",
+    )
+    public suspend fun makePendingDueForPeer(peerId: String, senderId: String, now: Long)
+
     /** Single-statement atomic increment; safe under concurrent claimers. */
     @Query("UPDATE outbox SET attempts = attempts + 1 WHERE localId = :localId")
     public suspend fun incrementAttempts(localId: String)

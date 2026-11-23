@@ -96,6 +96,8 @@ row; it stores a device-local policy and does not synchronize a privacy preferen
 
 ## 8. Telemetry and position (phase 2, not built)
 
+See the [Mode 4 implementation proposal](RADIO-MODES-IMPLEMENTATION.md#mode-4--tactical-radar) for the updated host strategy, wire compatibility work, consent and test plan. The sketch below records the original direction.
+
 Design sketch, to be agreed before code:
 
 - A **position report** is a `BEACON` frame whose body is a small versioned payload (`v`, `latE7`, `lonE7`, `accM`,

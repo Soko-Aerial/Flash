@@ -6,7 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
@@ -17,6 +20,8 @@ import com.transfer.flash.R
 import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
+import com.transfer.flash.core.transfer.model.FlashTransferState
+import com.transfer.flash.ui.navigation.FlashDestination
 import java.io.File
 import java.util.Locale
 import kotlin.concurrent.Volatile
@@ -47,6 +52,7 @@ object FlashNotificationManager {
     const val CHANNEL_CALLS = "flash_calls_v2"
     private const val LEGACY_CHANNEL_CALLS = "flash_calls"
     const val CHANNEL_DISCOVERY = "flash_discovery_bg"
+    const val CHANNEL_ANNOUNCEMENTS = "flash_announcements"
 
     // Backward compatibility alias
     private const val CHANNEL_ID = CHANNEL_MESSAGES
@@ -62,6 +68,9 @@ object FlashNotificationManager {
     /** Base ID for individual active/completed/failed transfer notifications */
     const val TRANSFER_NOTIFICATION_BASE = 3000
     const val TRANSFER_NOTIFICATION_SLOTS = 1000
+    /** Base ID for announcement notifications */
+    const val ANNOUNCEMENT_NOTIFICATION_BASE = 4000
+    const val ANNOUNCEMENT_NOTIFICATION_SLOTS = 1000
 
     /** Actions */
     const val ACTION_VIEW_TRANSFERS = "com.transfer.flash.action.VIEW_TRANSFERS"
@@ -73,14 +82,23 @@ object FlashNotificationManager {
     const val EXTRA_PEER_DEVICE_ID = "com.transfer.flash.EXTRA_PEER_DEVICE_ID"
     const val EXTRA_TRANSFER_ID = "extra_transfer_id"
     const val EXTRA_FILE_PATH = "extra_file_path"
+    const val EXTRA_HUB_ROUTE = "com.transfer.flash.extra.HUB_ROUTE"
 
     /** Set true in MainActivity.onStart, false in onStop. */
     @Volatile
     var appForeground: Boolean = false
 
+    /** The destination currently open on screen, or null. Maintained by the shell. */
+    @Volatile
+    var currentDestination: FlashDestination? = null
+
     /** The conversation currently open on screen, or null. Maintained by the shell. */
     @Volatile
     var openConversationId: String? = null
+
+    private const val TRANSFER_NOTIFICATION_TAG_PREFIX = "flash.transfer:"
+    const val COMPLETED_AUTO_DISMISS_DELAY_MS: Long = 15_000L
+    private val legacyExpiryHandler by lazy { Handler(Looper.getMainLooper()) }
 
     private val channelsInitialized = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -144,11 +162,19 @@ object FlashNotificationManager {
             "Flash nearby presence",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Background mesh and discovery keepalive"
+            description = "Keeps nearby discovery ready in the background"
+        }
+
+        val announcementsChannel = NotificationChannel(
+            CHANNEL_ANNOUNCEMENTS,
+            "Company announcements",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Notifications for company and department announcements"
         }
 
         manager.createNotificationChannels(
-            listOf(messagesChannel, transfersChannel, pttChannel, pairingChannel, callsChannel, discoveryChannel),
+            listOf(messagesChannel, transfersChannel, pttChannel, pairingChannel, callsChannel, discoveryChannel, announcementsChannel),
         )
         channelsInitialized.set(true)
     }
@@ -202,6 +228,48 @@ object FlashNotificationManager {
         post(context, groupId, groupName.ifBlank { "Group" }, message)
     }
 
+    /**
+     * Plan A3 §4.4 / HR7: System notification for an eligible new company or department announcement.
+     * Content is STRICTLY title-only (lock-screen confidentiality). Tapping opens the announcement.
+     */
+    @SuppressLint("MissingPermission")
+    fun showAnnouncement(
+        context: Context,
+        announcementId: String,
+        title: String,
+        departmentName: String? = null,
+    ) {
+        val appContext = context.applicationContext
+        initChannels(appContext)
+
+        val content = announcementNotificationContent(title, departmentName)
+        val notifId = notificationIdForAnnouncement(announcementId)
+
+        val intent = Intent(appContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_HUB_ROUTE, "hub/announcement/$announcementId")
+        }
+        val contentIntent = PendingIntent.getActivity(
+            appContext,
+            notifId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ANNOUNCEMENTS)
+            .setSmallIcon(R.drawable.ic_notification_flash)
+            .setContentTitle(content.title)
+            .setContentText(content.body)
+            .setCategory(NotificationCompat.CATEGORY_EVENT)
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+            .build()
+
+        runCatching {
+            NotificationManagerCompat.from(appContext).notify(notifId, notification)
+        }.onFailure { Log.w(TAG, "Failed to post announcement notification", it) }
+    }
+
     /** Clears the notification for a conversation (e.g. the user just opened it). */
     fun clearConversation(context: Context, conversationId: String) {
         runCatching {
@@ -211,14 +279,13 @@ object FlashNotificationManager {
 
     /**
      * Posts or updates an ongoing progress notification on [CHANNEL_TRANSFERS] for an active file transfer.
-     * Uses stable id [notificationIdForTransfer] which smoothly morphs into completed/failed upon finish.
+     * Uses stable id [transferNotificationTag] which smoothly morphs into completed/failed upon finish.
      */
     @SuppressLint("MissingPermission")
     fun showTransferProgress(context: Context, transfer: FlashTransfer) {
         val appContext = context.applicationContext
         initChannels(appContext)
         val transferId = transfer.id.value
-        val notificationId = notificationIdForTransfer(transferId)
         val isReceiving = transfer.direction == FlashTransferDirection.Receiving
         val content = transferProgressNotificationContent(
             fileName = transfer.fileName,
@@ -229,23 +296,25 @@ object FlashNotificationManager {
             isReceiving = isReceiving,
             holdersOnline = transfer.holdersOnline,
             canGoOffline = transfer.canGoOffline,
+            state = transfer.state,
         )
-        val percent = if (transfer.bytesTotal > 0L) {
-            ((transfer.bytesDone * 100) / transfer.bytesTotal).toInt().coerceIn(0, 100)
-        } else 0
+        val progress = calculateNotificationProgress(transfer.state, transfer.bytesDone, transfer.bytesTotal)
 
-        val requestCodeView = ((notificationId * 2) + 1) and 0x7FFFFFFF
-        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
+        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, transferId)
 
         // Cancelling the origin of a group file tombstones it for every member; that is confirmed in the app,
         // never from a one-tap notification button (audit B-04).
-        val cancelPendingIntent = if (transfer.groupOrigin) null else createCancelTransferPendingIntent(appContext, transferId)
+        val cancelPendingIntent = if (transfer.groupOrigin || transfer.state == FlashTransferState.Verifying) {
+            null
+        } else {
+            createCancelTransferPendingIntent(appContext, transferId)
+        }
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
-            .setProgress(100, percent, transfer.bytesTotal <= 0L)
+            .setProgress(progress.max, progress.progress, progress.indeterminate)
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -259,22 +328,29 @@ object FlashNotificationManager {
         }
 
         runCatching {
-            NotificationManagerCompat.from(appContext).notify(notificationId, builder.build())
+            NotificationManagerCompat.from(appContext)
+                .notify(transferNotificationTag(transferId), TRANSFER_NOTIFICATION_BASE, builder.build())
         }.onFailure { Log.w(TAG, "Failed to post transfer progress notification", it) }
     }
 
     /**
      * Posts a dismissable completion notification when a file transfer successfully finishes.
-     * Replaces the progress notification with the same [notificationIdForTransfer] and explicitly clears progress.
+     * Replaces the progress notification with the same [transferNotificationTag] and explicitly clears progress.
      * Includes "Open" action (routing through MainActivity to ensure notification dismissal and error handling)
      * and "View Transfers" navigation.
      */
     @SuppressLint("MissingPermission")
     fun showTransferCompleted(context: Context, transfer: FlashTransfer) {
         val appContext = context.applicationContext
-        initChannels(appContext)
         val transferId = transfer.id.value
-        val notificationId = notificationIdForTransfer(transferId)
+
+        // Immediate dismissal if user is already viewing Transfers screen in foreground
+        if (appForeground && currentDestination == FlashDestination.Transfers) {
+            clearTransfer(appContext, transferId)
+            return
+        }
+
+        initChannels(appContext)
         val isReceiving = transfer.direction == FlashTransferDirection.Receiving
         val content = transferCompletedNotificationContent(
             fileName = transfer.fileName,
@@ -282,17 +358,16 @@ object FlashNotificationManager {
             isReceiving = isReceiving,
         )
 
-        val requestCodeOpen = (notificationId * 2) and 0x7FFFFFFF
-        val requestCodeView = ((notificationId * 2) + 1) and 0x7FFFFFFF
-        val openIntent = createOpenFilePendingIntent(appContext, requestCodeOpen, transfer.localPath, transferId)
-        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
+        val openIntent = createOpenFilePendingIntent(appContext, transfer.localPath, transferId)
+        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, transferId)
         val contentIntent = openIntent ?: viewTransfersIntent
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setProgress(0, 0, false)
+            .setTimeoutAfter(COMPLETED_AUTO_DISMISS_DELAY_MS)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setAutoCancel(true)
             .setOngoing(false)
@@ -312,8 +387,23 @@ object FlashNotificationManager {
         )
 
         runCatching {
-            NotificationManagerCompat.from(appContext).notify(notificationId, builder.build())
+            val notification = builder.build()
+            val tag = transferNotificationTag(transferId)
+            NotificationManagerCompat.from(appContext).notify(tag, TRANSFER_NOTIFICATION_BASE, notification)
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                legacyExpiryHandler.postDelayed({
+                    val manager = appContext.getSystemService(NotificationManager::class.java)
+                    if (manager?.activeNotifications?.any {
+                            it.tag == tag && it.notification.`when` == notification.`when` &&
+                                it.notification.category == NotificationCompat.CATEGORY_STATUS
+                        } == true
+                    ) {
+                        clearTransfer(appContext, transferId)
+                    }
+                }, COMPLETED_AUTO_DISMISS_DELAY_MS)
+            }
         }.onFailure { Log.w(TAG, "Failed to post transfer completed notification", it) }
+
     }
 
     /**
@@ -325,7 +415,6 @@ object FlashNotificationManager {
         val appContext = context.applicationContext
         initChannels(appContext)
         val transferId = transfer.id.value
-        val notificationId = notificationIdForTransfer(transferId)
         val isReceiving = transfer.direction == FlashTransferDirection.Receiving
         val content = transferFailedNotificationContent(
             fileName = transfer.fileName,
@@ -333,11 +422,10 @@ object FlashNotificationManager {
             isReceiving = isReceiving,
         )
 
-        val requestCodeView = ((notificationId * 2) + 1) and 0x7FFFFFFF
-        val contentIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
+        val contentIntent = createTransfersTabPendingIntent(appContext, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setProgress(0, 0, false)
@@ -362,7 +450,8 @@ object FlashNotificationManager {
             .build()
 
         runCatching {
-            NotificationManagerCompat.from(appContext).notify(notificationId, notification)
+            NotificationManagerCompat.from(appContext)
+                .notify(transferNotificationTag(transferId), TRANSFER_NOTIFICATION_BASE, notification)
         }.onFailure { Log.w(TAG, "Failed to post transfer failed notification", it) }
     }
 
@@ -375,20 +464,18 @@ object FlashNotificationManager {
         val appContext = context.applicationContext
         initChannels(appContext)
         val transferId = transfer.id.value
-        val notificationId = notificationIdForTransfer(transferId)
         val content = transferOfferedNotificationContent(
             fileName = transfer.fileName,
             bytesTotal = transfer.bytesTotal,
             peerName = transfer.peerName,
         )
 
-        val requestCodeView = ((notificationId * 2) + 1) and 0x7FFFFFFF
-        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
+        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, transferId)
         val acceptIntent = createAcceptTransferPendingIntent(appContext, transferId)
         val declineIntent = createDeclineTransferPendingIntent(appContext, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setCategory(NotificationCompat.CATEGORY_STATUS)
@@ -408,7 +495,8 @@ object FlashNotificationManager {
             )
 
         runCatching {
-            NotificationManagerCompat.from(appContext).notify(notificationId, builder.build())
+            NotificationManagerCompat.from(appContext)
+                .notify(transferNotificationTag(transferId), TRANSFER_NOTIFICATION_BASE, builder.build())
         }.onFailure { Log.w(TAG, "Failed to post transfer offered notification", it) }
     }
 
@@ -421,7 +509,6 @@ object FlashNotificationManager {
         val appContext = context.applicationContext
         initChannels(appContext)
         val transferId = transfer.id.value
-        val notificationId = notificationIdForTransfer(transferId)
         val isReceiving = transfer.direction == FlashTransferDirection.Receiving
         val content = transferPausedNotificationContent(
             fileName = transfer.fileName,
@@ -433,12 +520,11 @@ object FlashNotificationManager {
             ((transfer.bytesDone * 100) / transfer.bytesTotal).toInt().coerceIn(0, 100)
         } else 0
 
-        val requestCodeView = ((notificationId * 2) + 1) and 0x7FFFFFFF
-        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
+        val viewTransfersIntent = createTransfersTabPendingIntent(appContext, transferId)
         val resumePendingIntent = createResumeTransferPendingIntent(appContext, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_notification_flash)
             .setContentTitle(content.title)
             .setContentText(content.body)
             .setProgress(100, percent, false)
@@ -458,24 +544,39 @@ object FlashNotificationManager {
             )
 
         runCatching {
-            NotificationManagerCompat.from(appContext).notify(notificationId, builder.build())
+            NotificationManagerCompat.from(appContext)
+                .notify(transferNotificationTag(transferId), TRANSFER_NOTIFICATION_BASE, builder.build())
         }.onFailure { Log.w(TAG, "Failed to post transfer paused notification", it) }
     }
 
-    /** Clears the progress, completion, or failure notification for a specific transfer. */
     fun clearTransfer(context: Context, transferId: String) {
         runCatching {
-            NotificationManagerCompat.from(context).cancel(notificationIdForTransfer(transferId))
+            NotificationManagerCompat.from(context).cancel(transferNotificationTag(transferId), TRANSFER_NOTIFICATION_BASE)
         }
     }
 
-    /** Clears all transfer notifications across the entire allocated range. */
-    fun clearAllTransfers(context: Context) {
-        val manager = NotificationManagerCompat.from(context)
-        for (i in 0 until TRANSFER_NOTIFICATION_SLOTS) {
-            runCatching { manager.cancel(TRANSFER_NOTIFICATION_BASE + i) }
-        }
+    fun clearAllTransfers(context: Context) = reconcileTransferNotifications(context, emptySet())
+
+    /** The OS owns the active set across process restarts. Untagged slots belong to older builds. */
+    fun reconcileTransferNotifications(context: Context, keepTransferIds: Set<String>) {
+        runCatching {
+            val manager = context.getSystemService(NotificationManager::class.java) ?: return
+            val keepTags = keepTransferIds.mapTo(HashSet(), ::transferNotificationTag)
+            for (notice in manager.activeNotifications) {
+                val tag = notice.tag
+                val legacy = tag == null && notice.id in TRANSFER_NOTIFICATION_BASE until
+                    TRANSFER_NOTIFICATION_BASE + TRANSFER_NOTIFICATION_SLOTS
+                if (legacy || (tag?.startsWith(TRANSFER_NOTIFICATION_TAG_PREFIX) == true && tag !in keepTags)) {
+                    manager.cancel(tag, notice.id)
+                }
+            }
+        }.onFailure { Log.w(TAG, "Failed to reconcile transfer notifications", it) }
     }
+
+    internal fun transferNotificationTag(transferId: String): String = TRANSFER_NOTIFICATION_TAG_PREFIX + transferId
+
+    internal fun transferActionIdentity(transferId: String): String =
+        "flash-notification://transfer/" + java.net.URLEncoder.encode(transferId, "UTF-8")
 
     /**
      * PTT ping alert (v1): a paired device pressed its hardware PTT button. Single shared
@@ -630,7 +731,6 @@ object FlashNotificationManager {
 
     private fun createOpenFilePendingIntent(
         context: Context,
-        requestCode: Int,
         localPath: String?,
         transferId: String,
     ): PendingIntent? {
@@ -639,43 +739,43 @@ object FlashNotificationManager {
         if (!file.exists() || !file.isFile) return null
         val intent = Intent(context, MainActivity::class.java).apply {
             action = ACTION_OPEN_FILE
+            data = Uri.parse(transferActionIdentity(transferId))
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             putExtra(EXTRA_TRANSFER_ID, transferId)
             putExtra(EXTRA_FILE_PATH, localPath)
         }
         return PendingIntent.getActivity(
             context,
-            requestCode,
+            0,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
 
-    private fun createTransfersTabPendingIntent(context: Context, requestCode: Int, transferId: String? = null): PendingIntent {
+    private fun createTransfersTabPendingIntent(context: Context, transferId: String): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             action = ACTION_VIEW_TRANSFERS
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            if (transferId != null) {
-                putExtra(EXTRA_TRANSFER_ID, transferId)
-            }
+            data = Uri.parse(transferActionIdentity(transferId))
+            putExtra(EXTRA_TRANSFER_ID, transferId)
         }
         return PendingIntent.getActivity(
             context,
-            requestCode,
+            0,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     }
 
-    private fun createCancelTransferPendingIntent(context: Context, transferId: String): PendingIntent {
+    internal fun createCancelTransferPendingIntent(context: Context, transferId: String): PendingIntent {
         val cancelIntent = Intent(context, FlashTransferActionReceiver::class.java).apply {
             action = FlashTransferActionReceiver.ACTION_CANCEL_TRANSFER
+            data = Uri.parse(transferActionIdentity(transferId))
             putExtra(FlashTransferActionReceiver.EXTRA_TRANSFER_ID, transferId)
         }
-        val requestCode = (notificationIdForTransfer(transferId) + 3000) and 0x7FFFFFFF
         return PendingIntent.getBroadcast(
             context,
-            requestCode,
+            0,
             cancelIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -684,12 +784,12 @@ object FlashNotificationManager {
     private fun createResumeTransferPendingIntent(context: Context, transferId: String): PendingIntent {
         val resumeIntent = Intent(context, FlashTransferActionReceiver::class.java).apply {
             action = FlashTransferActionReceiver.ACTION_RESUME_TRANSFER
+            data = Uri.parse(transferActionIdentity(transferId))
             putExtra(FlashTransferActionReceiver.EXTRA_TRANSFER_ID, transferId)
         }
-        val requestCode = (notificationIdForTransfer(transferId) + 4000) and 0x7FFFFFFF
         return PendingIntent.getBroadcast(
             context,
-            requestCode,
+            0,
             resumeIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -698,12 +798,12 @@ object FlashNotificationManager {
     private fun createAcceptTransferPendingIntent(context: Context, transferId: String): PendingIntent {
         val acceptIntent = Intent(context, FlashTransferActionReceiver::class.java).apply {
             action = FlashTransferActionReceiver.ACTION_ACCEPT_TRANSFER
+            data = Uri.parse(transferActionIdentity(transferId))
             putExtra(FlashTransferActionReceiver.EXTRA_TRANSFER_ID, transferId)
         }
-        val requestCode = (notificationIdForTransfer(transferId) + 5000) and 0x7FFFFFFF
         return PendingIntent.getBroadcast(
             context,
-            requestCode,
+            0,
             acceptIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -712,12 +812,12 @@ object FlashNotificationManager {
     private fun createDeclineTransferPendingIntent(context: Context, transferId: String): PendingIntent {
         val declineIntent = Intent(context, FlashTransferActionReceiver::class.java).apply {
             action = FlashTransferActionReceiver.ACTION_DECLINE_TRANSFER
+            data = Uri.parse(transferActionIdentity(transferId))
             putExtra(FlashTransferActionReceiver.EXTRA_TRANSFER_ID, transferId)
         }
-        val requestCode = (notificationIdForTransfer(transferId) + 6000) and 0x7FFFFFFF
         return PendingIntent.getBroadcast(
             context,
-            requestCode,
+            0,
             declineIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -727,36 +827,31 @@ object FlashNotificationManager {
     fun notificationIdFor(conversationId: String): Int =
         NOTIFICATION_ID_BASE + (conversationId.hashCode() and 0x7FFFFFFF) % 1000
 
-    private val transferNotificationIds = HashMap<String, Int>()
 
-    /**
-     * Stable id per transfer: collapses updates for the same transfer. The hash picks the slot, but a slot already
-     * held by another transfer is skipped (audit B-16): two live transfers sharing an id overwrote each other's
-     * progress, and a Cancel pressed on one carried the other's transfer id. The assignment lives for the process,
-     * which is as long as the notifications it names are managed here.
-     */
-    fun notificationIdForTransfer(transferId: String): Int = synchronized(transferNotificationIds) {
-        transferNotificationIds[transferId]?.let { return it }
-        val start = (transferId.hashCode() and 0x7FFFFFFF) % TRANSFER_NOTIFICATION_SLOTS
-        val taken = transferNotificationIds.values.toHashSet()
-        var slot = start
-        var probes = 0
-        while (TRANSFER_NOTIFICATION_BASE + slot in taken && probes < TRANSFER_NOTIFICATION_SLOTS) {
-            slot = (slot + 1) % TRANSFER_NOTIFICATION_SLOTS
-            probes++
-        }
-        // Every slot taken (a thousand live transfers): fall back to sharing the hashed one.
-        val id = TRANSFER_NOTIFICATION_BASE + if (probes < TRANSFER_NOTIFICATION_SLOTS) slot else start
-        if (transferNotificationIds.size >= TRANSFER_NOTIFICATION_SLOTS * 4) transferNotificationIds.clear()
-        transferNotificationIds[transferId] = id
-        id
-    }
+    /** Stable id per announcement within [ANNOUNCEMENT_NOTIFICATION_BASE] range. */
+    fun notificationIdForAnnouncement(announcementId: String): Int =
+        ANNOUNCEMENT_NOTIFICATION_BASE + (announcementId.hashCode() and 0x7FFFFFFF) % ANNOUNCEMENT_NOTIFICATION_SLOTS
 }
 
 internal data class FlashNotificationContent(
     val title: String,
     val body: String,
 )
+
+/**
+ * Generates notification title and body for an announcement.
+ * Strict lock-screen confidentiality: body is strictly the announcement title (never the announcement body).
+ */
+internal fun announcementNotificationContent(
+    title: String,
+    departmentName: String? = null,
+): FlashNotificationContent {
+    val notifTitle = if (departmentName.isNullOrBlank()) "New announcement" else "New announcement · $departmentName"
+    return FlashNotificationContent(
+        title = notifTitle,
+        body = title.trim(),
+    )
+}
 
 internal fun messageNotificationContent(
     conversationId: String,
@@ -858,6 +953,28 @@ private fun attachmentKind(mimeType: String): String = when {
     else -> "File"
 }
 
+internal data class NotificationProgress(
+    val max: Int,
+    val progress: Int,
+    val indeterminate: Boolean,
+)
+
+internal fun calculateNotificationProgress(
+    state: FlashTransferState,
+    bytesDone: Long,
+    bytesTotal: Long,
+): NotificationProgress {
+    val isVerifying = state == FlashTransferState.Verifying
+    val percent = if (bytesTotal > 0L) {
+        ((bytesDone * 100) / bytesTotal).toInt().coerceIn(0, 100)
+    } else 0
+    return NotificationProgress(
+        max = if (isVerifying) 0 else 100,
+        progress = if (isVerifying) 0 else percent,
+        indeterminate = isVerifying || bytesTotal <= 0L,
+    )
+}
+
 internal fun transferProgressNotificationContent(
     fileName: String,
     bytesDone: Long,
@@ -867,7 +984,14 @@ internal fun transferProgressNotificationContent(
     isReceiving: Boolean,
     holdersOnline: Int = 0,
     canGoOffline: Boolean = false,
+    state: FlashTransferState = FlashTransferState.Transferring,
 ): FlashNotificationContent {
+    if (state == FlashTransferState.Verifying) {
+        return FlashNotificationContent(
+            title = "Verifying $fileName…",
+            body = "Checking file integrity…",
+        )
+    }
     val percent = if (bytesTotal > 0L) {
         ((bytesDone * 100) / bytesTotal).toInt().coerceIn(0, 100)
     } else 0

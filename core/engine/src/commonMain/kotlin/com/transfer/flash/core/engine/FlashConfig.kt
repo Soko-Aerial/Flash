@@ -18,12 +18,11 @@ public data class FlashConfig(
     public val displayName: String? = null,
 
     /**
-     * When true, outbound/inbound chunk progress is persisted so a transfer interrupted by a
-     * process restart resumes instead of restarting. When false, the transfer repository runs with
-     * no persistent store (still fully functional in-session).
-     *
-     * Desktop does not support this yet (no persistent transfer store, D5=C): it resumes within a
-     * session only and logs that once at creation.
+     * When true, outbound/inbound chunk progress is persisted in Room (`RoomTransferStore`) on both
+     * Android and Desktop (ADR-362) so a transfer interrupted by a process restart resumes instead
+     * of restarting (falling back to in-session only if the persistent database is unavailable).
+     * When false, the transfer repository runs with no persistent store (still fully functional
+     * in-session).
      */
     public val enableResume: Boolean = true,
 

@@ -8,7 +8,7 @@ The `:core:persistence` module manages relational database storage, encrypted ta
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-persistence:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:core-persistence:v2.3.0-beta.1")
 }
 ```
 
@@ -18,9 +18,9 @@ dependencies {
 
 The database is [`FlashDatabase`](../../../../core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/FlashDatabase.kt)
 (Room, **schema version 23**, schemas exported to `core/persistence/schemas/`). Opening it is platform code:
-`FlashDatabaseOpener` (Android, SQLCipher) and `JvmFlashDatabaseOpener` (desktop, `sqlite-jdbc-crypt` through `JdbcCipherSQLiteDriver`);
+`FlashDatabaseOpener` (Android, SQLCipher) and the top-level JVM functions in `JvmFlashDatabaseOpener.kt` (`openEncryptedFlashDatabase`, `openEncryptedFlashDatabaseWithRecovery`, `openFlashDatabase` using `sqlite-jdbc-crypt` through `JdbcCipherSQLiteDriver`);
 migrations are `FlashMigrations` / `FlashJvmMigrations`, built from the shared `FlashSchemaSteps`. The key is supplied by the host
-(on Android it is wrapped by the Keystore); a database that can no longer be opened fails loudly rather than being recreated.
+(on Android it is wrapped by the Keystore). On Android, an unreadable database fails loudly rather than being recreated; on JVM desktop, `openEncryptedFlashDatabaseWithRecovery` returns `JvmDatabaseOpenResult` (`Opened` or `UnavailablePreserved`), preserving intact stores on non-corruption errors, quarantining corrupt `-wal`/`-shm`/`-journal` sidecars when a WAL-less copy passes `PRAGMA integrity_check`, or quarantining an unrecoverable store before opening a fresh database.
 
 32 entities, grouped:
 
@@ -57,9 +57,15 @@ Most consumers never touch the DAOs: `core-messaging` and `core-transfer` define
 
 ```kotlin
 import com.transfer.flash.core.persistence.db.FlashDatabase
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 // Observing in-conversation messages reactively
-fun monitorConversation(db: FlashDatabase, conversationId: String) {
+fun monitorConversation(
+    db: FlashDatabase,
+    conversationId: String,
+    scope: CoroutineScope,
+) {
     scope.launch {
         db.messageDao().observeConversation(conversationId).collect { messages ->
             println("Thread $conversationId updated (${messages.size} messages):")

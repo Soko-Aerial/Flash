@@ -285,3 +285,16 @@ Registered before use, as `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md` H1 require
 Accessibility: the content description is the default; a call site that shows a count (for example the Hub tab badge) passes its own description ("Hub, 3 unread announcements").
 `Announcement` is registered now because the design doc names it; no screen in stream S3 phases H0–H5 uses it yet.
 Status of the glyph shapes: drawn from path data, **not yet seen on a screen** (no renderer ran in the S3 sandbox); the owner checks them in the Settings icon sheet / bottom bar (backlog `HUBT-15`).
+
+---
+
+## Addendum 2026-11-14 — Relay and Nearby icons redrawn (non-Wi-Fi silhouettes)
+
+Previously `flash_ic_relay` (an antenna mast with two upward signal arcs) and `flash_ic_nearby` (a center dot flanked by four radial arcs) both read visually like Wi-Fi symbols, including on the bottom navigation bar (`FlashShellTabs`) and Hub/Relay transport badges. Both drawables in `ui/theme/src/commonMain/composeResources/drawable/` were replaced using Flash's shared stroke grammar (`24 × 24` viewport, `1.75 dp` stroke, round caps and joins, `#FF000000` stroke, `#00000000` fill, tinted at runtime). `FlashIcons.Hub` (`flash_ic_hub`) was inspected and retained as the office building silhouette.
+
+| Icon | Drawable | Content description | Drawing |
+|---|---|---|---|
+| `FlashIcons.Relay` | `flash_ic_relay` | Relay | Hub relay bridge: a top-center rounded server node (`x 8.8–15.2`, `y 3.9–10.1`, corner radius `1.4`) with a centered status dot at `(12, 7.0)`, linked by symmetric rounded circuit arms (`y 7.0` → `x 5.8 / 18.2`, `y 15.9`) to two bottom peer endpoint circles (`r 2.0` at `(5.8, 17.9)` and `(18.2, 17.9)`). Distinct from `FlashIcons.Wifi`, `FlashIcons.WifiDirect`, `FlashIcons.Share`, `FlashIcons.Connection`, and `FlashIcons.Hub`. |
+| `FlashIcons.Nearby` | `flash_ic_nearby` | Nearby | Discovery compass: a full outer ring (`r 8.2` centered at `(12, 12)`) enclosing a tilted 4-point diamond needle (`(15.7, 8.3) → (13.8, 13.8) → (8.3, 15.7) → (10.2, 10.2) Z`). Replaces the broadcast waves in the bottom navigation bar, navigation rail, and Nearby headers with zero Wi-Fi similarity. |
+
+Status: XML path geometry verified mathematically and unit-tested for distinct `DrawableResource` specs in `FlashIconsTest`; Gradle compilation and visual device check remain for the post-integration verifier and owner pass.

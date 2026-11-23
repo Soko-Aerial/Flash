@@ -547,7 +547,7 @@ class AdminApiTest {
         val created = client.postJson("/invites", s, InviteCreateBody(role = "member", maxUses = 2, ttlMinutes = 60, note = "Sgt Mensah"))
         assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
         val dto = HubRestCodec.decode<InviteCreatedDto>(created.bodyAsText())
-        assertTrue(dto.link.startsWith("flash://enroll?"))
+        assertEquals(dto.token, com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(dto.link)?.token)
         assertTrue(dto.qrSvg.contains("<svg"))
         assertEquals(2, dto.invite.maxUses)
 
@@ -685,6 +685,27 @@ class AdminApiTest {
         val dto = HubRestCodec.decode<com.transfer.flash.core.hubprotocol.rest.FileStatsDto>(stats.bodyAsText())
         assertEquals(0, dto.ready)
         assertEquals(0L, dto.readyBytes)
+    }
+
+    @Test
+    fun groupPolicySettingsAreValidatedAndPersisted() = testApplication {
+        val r = Realm()
+        mount(r)
+        val s = client.signIn(r)
+
+        suspend fun put(key: String, value: String): HttpResponse = client.put("/admin/api/v1/settings") {
+            withSession(s, stepUp = client.stepUp(r, s, StepUpActions.SETTINGS_CHANGE, "$key=$value"))
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(SettingChangeBody(key, value)))
+        }
+
+        assertEquals(HttpStatusCode.BadRequest, put("allowPersonalHubLink", "maybe").status)
+        assertEquals(HttpStatusCode.BadRequest, put("groupE2eeMode", "PLAINTEXT").status)
+        assertEquals(HttpStatusCode.OK, put("allowPersonalHubLink", "false").status)
+        assertEquals(HttpStatusCode.OK, put("groupE2eeMode", "HUB_INSPECTABLE").status)
+        val updatedPolicy = HubRestCodec.decode<SettingsDto>(client.getA("/settings", s).bodyAsText())
+        assertFalse(updatedPolicy.allowPersonalHubLink)
+        assertEquals("HUB_INSPECTABLE", updatedPolicy.groupE2eeMode)
     }
 
     // ------------------------------------------------------------------------------------------------ accounts
@@ -873,6 +894,169 @@ class AdminApiTest {
         assertFalse(bad.bodyAsText().contains("Exception") || bad.bodyAsText().contains("kotlinx"))
         val missing = client.getA("/devices/nobody", s)
         assertEquals(HttpStatusCode.NotFound, missing.status)
+    }
+
+    @Test
+    fun metricsOnlineDevicesIsNotCappedAt500() = testApplication {
+        val onlineSet = HashSet<String>()
+        val db = ServerDatabase.inMemory()
+        val identities = IdentityStore.open(db)
+        val admins = AdminAuthService(printSetupTokenToConsole = false, db = db, passwordIterations = 1000, explicitSetupToken = SETUP_TOKEN)
+        val totpSecret = admins.generateTotpSecret()
+        admins.addAdminDirectlyForTesting(AdminUser("boss", admins.hashPassword(adminPassword), totpSecret))
+        val now = System.currentTimeMillis()
+        identities.createInvite("tok-bulk", null, "member", emptySet(), emptySet(), now + 100_000_000, 600, now)
+        val issuer = FlashCrypto.generateEcKeyPair()
+        val issuerPub = issuer.toBase64Spki()
+        for (i in 1..520) {
+            val id = "bulk-dev-%04d".format(i)
+            val key = FlashCrypto.generateEcKeyPair().toBase64Spki()
+            identities.enroll("tok-bulk", id, key, "Device $i", now, 1000, 1L) { serial, _ ->
+                DeviceCert.issue(issuer.private, issuerPub, id, key, "member", null, now - 1000, now + 100_000_000, serial)
+            }
+            onlineSet += id
+        }
+        val directory = OrganizationDirectory.open(
+            db,
+            presence = object : com.transfer.flash.server.observability.PresenceView {
+                override fun isOnline(deviceId: String): Boolean = deviceId in onlineSet
+                override fun onlineDeviceIds(): Set<String> = onlineSet
+            },
+        )
+        val deps = AdminApiDeps(
+            web = AdminWeb(admins, externalUrl = "http://localhost", policy = AdminListenerPolicy.Open),
+            admins = admins,
+            audit = AuditLogger(db),
+            directory = directory,
+            identities = identities,
+            stepUp = StepUpAuth(admins, identities),
+            config = ServerConfig(port = 8443, adminPort = 8444, host = "127.0.0.1", dataDir = "./test-data", tlsMode = "proxy"),
+            limits = HubRateLimits.unlimited(),
+        )
+        routing { adminApiRoutes(deps) }
+
+        val loginResp = client.post("/admin/api/v1/login") {
+            header("Origin", "http://localhost")
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(LoginBody("boss", adminPassword, admins.generateTotp(totpSecret, now / 1000))))
+        }
+        assertEquals(HttpStatusCode.OK, loginResp.status)
+        val cookie = loginResp.setCookie().first { it.name == "flash_admin_session" }.value
+        val csrf = HubRestCodec.decode<LoginDto>(loginResp.bodyAsText()).csrfToken
+        val metricsResp = client.get("/admin/api/v1/metrics") {
+            header("Cookie", "flash_admin_session=$cookie")
+            header("X-CSRF-Token", csrf)
+            header("Origin", "http://localhost")
+        }
+        assertEquals(HttpStatusCode.OK, metricsResp.status)
+        val dto = HubRestCodec.decode<MetricsDto>(metricsResp.bodyAsText())
+        assertEquals(520, dto.onlineDevices)
+    }
+
+    @Test
+    fun switchingGroupE2eeModeToRequiredRetiresOfflineReadableRows() = testApplication {
+        val r = Realm()
+        val mailbox = com.transfer.flash.server.mailbox.MailboxQueue(r.db)
+        r.directory.createDepartment("dept-gh", "Ghana", emptyList(), isOrgAdmin = true)
+        r.directory.createGroup(
+            "grp-1", "Signals", "dept-gh",
+            com.transfer.flash.server.directory.GroupVisibility.LISTED,
+            com.transfer.flash.server.directory.JoinMode.OPEN_IN_SCOPE,
+            emptyList(),
+            com.transfer.flash.server.directory.DirectoryActor.CONSOLE,
+        )
+        val router = com.transfer.flash.server.relay.RelayFrameRouter(
+            connectionPool = com.transfer.flash.server.relay.RelayConnectionPool(),
+            mailboxQueue = mailbox,
+            directory = r.directory,
+            groupE2eeMode = { effectiveGroupE2eeMode(r.admins, r.config) },
+        )
+        val deps = AdminApiDeps(
+            web = r.deps.web,
+            admins = r.admins,
+            audit = r.audit,
+            directory = r.directory,
+            identities = r.identities,
+            stepUp = r.stepUp,
+            config = r.config,
+            enrollment = r.enrollment,
+            revocations = r.revocations,
+            bearerTokens = r.tokens,
+            limits = r.limits,
+            clock = { r.now },
+            router = router,
+        )
+        routing { adminApiRoutes(deps) }
+        val s = client.signIn(r)
+
+        suspend fun putSetting(key: String, value: String): HttpResponse = client.put("/admin/api/v1/settings") {
+            withSession(s, stepUp = client.stepUp(r, s, StepUpActions.SETTINGS_CHANGE, "$key=$value"))
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(SettingChangeBody(key, value)))
+        }
+
+        assertEquals(HttpStatusCode.OK, putSetting("groupE2eeMode", "HUB_INSPECTABLE").status)
+        mailbox.enqueue(
+            com.transfer.flash.server.mailbox.MailboxMessage(
+                origin = "alice", target = "offline-bob", msgId = "plain-1",
+                type = com.transfer.flash.core.hubprotocol.HubContract.GROUP_FRAME_TYPE,
+                payload = "plaintext", sentAt = 1L, group = "grp-1",
+            ),
+        )
+        assertEquals(1, mailbox.pendingCount("offline-bob"))
+
+        // Switching to E2EE_REQUIRED retires the offline recipient's readable row immediately.
+        assertEquals(HttpStatusCode.OK, putSetting("groupE2eeMode", "E2EE_REQUIRED").status)
+        assertEquals(0, mailbox.pendingCount("offline-bob"))
+
+        // Switching back to HUB_INSPECTABLE cannot resurrect the retired row.
+        assertEquals(HttpStatusCode.OK, putSetting("groupE2eeMode", "HUB_INSPECTABLE").status)
+        assertTrue(mailbox.fetchPage("offline-bob", 0L, 100).isEmpty())
+    }
+
+    @Test
+    fun groupUpdateCanRevokeJoinLinks() = testApplication {
+        val r = Realm()
+        val joinLinks = com.transfer.flash.server.directory.HubGroupJoinLinks(
+            com.transfer.flash.server.auth.SecretBox.ofKey(ByteArray(32) { 9 }),
+            clock = { r.now },
+            database = r.db,
+        )
+        r.directory.createDepartment("dept-gh", "Ghana", emptyList(), isOrgAdmin = true)
+        val created = r.directory.createGroup(
+            "grp-1", "Signals", "dept-gh",
+            com.transfer.flash.server.directory.GroupVisibility.LISTED,
+            com.transfer.flash.server.directory.JoinMode.OPEN_IN_SCOPE,
+            emptyList(),
+            com.transfer.flash.server.directory.DirectoryActor.CONSOLE,
+        )
+        val token = joinLinks.issue(created, issuerDeviceId = ADMIN_DEVICE)
+        assertNotNull(joinLinks.resolve(token, r.directory))
+
+        val deps = AdminApiDeps(
+            web = r.deps.web,
+            admins = r.admins,
+            audit = r.audit,
+            directory = r.directory,
+            identities = r.identities,
+            stepUp = r.stepUp,
+            config = r.config,
+            limits = r.limits,
+            clock = { r.now },
+            groupJoinLinks = joinLinks,
+        )
+        routing { adminApiRoutes(deps) }
+        val s = client.signIn(r)
+
+        val resp = client.put("/admin/api/v1/groups/grp-1") {
+            withSession(s)
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(GroupBody(revokeJoinLinks = true)))
+        }
+        assertEquals(HttpStatusCode.OK, resp.status)
+        assertNull(joinLinks.resolve(token, r.directory))
+        val newToken = joinLinks.issue(r.directory.getGroup("grp-1")!!, issuerDeviceId = ADMIN_DEVICE)
+        assertNotNull(joinLinks.resolve(newToken, r.directory))
     }
 
     private companion object {

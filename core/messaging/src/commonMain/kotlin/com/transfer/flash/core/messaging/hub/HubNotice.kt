@@ -40,19 +40,35 @@ public object HubNoticeMath {
         peerOnline: Boolean,
         waiting: HubWaitReason?,
         changedKey: HubSealingPin?,
+        groupE2eeEnabled: Boolean = false,
+        groupE2eeStatus: GroupE2eeCompatStatus? = null,
     ): FlashHubNoticeUi? {
         if (isGroup) {
             if (!groupLinkedToHub) return null
+            if (groupE2eeEnabled) {
+                val kind = when (groupE2eeStatus) {
+                    GroupE2eeCompatStatus.LEGACY_MEMBERS_PRESENT,
+                    GroupE2eeCompatStatus.BLOCKED_KEY_CHANGED,
+                    GroupE2eeCompatStatus.BLOCKED_IDENTITY_MISMATCH,
+                    -> FlashHubNoticeKind.GROUP_E2EE_BLOCKED
+                    GroupE2eeCompatStatus.ENCRYPTED,
+                    GroupE2eeCompatStatus.NOT_ENROLLED_OR_UNAVAILABLE,
+                    null -> FlashHubNoticeKind.GROUP_ENCRYPTED
+                }
+                return FlashHubNoticeUi(kind, peerId = conversationId, peerName = "")
+            }
             val kind = if (contentViaHub) FlashHubNoticeKind.GROUP_READABLE else FlashHubNoticeKind.GROUP_HUB_OFF
             return FlashHubNoticeUi(kind, peerId = conversationId, peerName = "")
         }
-        if (changedKey != null && changedKey.blocked) {
+        val pendingFingerprint = changedKey?.pending
+        if (changedKey != null && pendingFingerprint != null) {
             return FlashHubNoticeUi(
                 kind = FlashHubNoticeKind.KEY_CHANGED,
                 peerId = conversationId,
                 peerName = peerName,
-                newCode = HubSealingFingerprint.short(changedKey.pending ?: changedKey.pinned),
+                newCode = HubSealingFingerprint.short(pendingFingerprint),
                 oldCode = HubSealingFingerprint.short(changedKey.pinned),
+                pendingFingerprint = pendingFingerprint,
             )
         }
         if (peerOnline) return null

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -55,7 +56,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -72,6 +75,24 @@ import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 import org.jetbrains.compose.ui.tooling.preview.Preview
+
+/** Pure composer input ergonomics helpers (JVM-testable). */
+object FlashComposerMath {
+    /**
+     * Determines whether an Enter/NumPadEnter key press should submit the draft.
+     * On desktop, bare Enter sends while Shift+Enter or Ctrl+Enter inserts a newline.
+     * On Android, bare Enter inserts a newline cleanly on soft keyboards; Ctrl+Enter sends.
+     */
+    fun shouldSendOnEnterKey(
+        isDesktop: Boolean,
+        isShiftPressed: Boolean,
+        isCtrlPressed: Boolean,
+    ): Boolean = if (isDesktop) {
+        !isShiftPressed && !isCtrlPressed
+    } else {
+        isCtrlPressed && !isShiftPressed
+    }
+}
 
 /**
  * UI-011 / UI-013 Flash Custom Message Composer & Send Button.
@@ -105,14 +126,20 @@ fun FlashComposer(
     onVoiceRecordCancel: () -> Unit = {},
     /** B9: real per-tick loudness (0..100) from the live recorder; null falls back to demo samples. */
     voiceAmplitudeProvider: (() -> Int)? = null,
+    /** Feedback callback when a touch press is released below [FlashVoiceRecordingMath.MIN_RECORD_MS]. */
+    onVoiceTapTooShort: () -> Unit = {},
+    /** Feedback callback when a locked voice recording is submitted below [FlashVoiceRecordingMath.MIN_RECORD_MS]. */
+    onVoiceRecordingTooShort: (() -> Unit)? = null,
     /** Task 3.2: pending attachments staged for sending. */
     stagedAttachments: List<FlashShareItemUi> = emptyList(),
     onRemoveStagedAttachment: (FlashShareItemUi) -> Unit = {},
+    onVoiceRecordPauseChanged: (Boolean) -> Boolean = { true },
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     val motion = FlashTheme.motion
     val density = androidx.compose.ui.platform.LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
     // OPT-O24-02: an attachment already marked isSending is waiting on its own send, so it must not
     // make the composer sendable again — a second tap would hand it to onSendFile a second time.
     val canSend = (draft.isNotBlank() || stagedAttachments.any { !it.isSending }) && enabled
@@ -123,19 +150,47 @@ fun FlashComposer(
     var recordElapsedMs by remember { mutableLongStateOf(0L) }
     var recordAmplitudes by remember { mutableStateOf(listOf<Int>()) }
     var recordPaused by remember { mutableStateOf(false) }
+    // True only after the host accepted the press. A refused start (permission prompt, call/PTT
+    // lease, busy encoder) must not let the same hold arm cancel or lock a recording that is not
+    // running — that produced a phantom locked panel with no audio behind it.
+    var voiceCaptureStarted by remember { mutableStateOf(false) }
+    // A locked recording whose hold gesture has ended. Only then does the trailing mic become the
+    // voice send key; swapping it while the finger is down would dispose the pointer stream that
+    // owns the hold (ERROR-010).
+    var voiceLockedHandsFree by remember { mutableStateOf(false) }
+    var showShortTapHint by remember { mutableStateOf(false) }
+    var shortHintText by remember { mutableStateOf("Hold to record") }
 
     val isRecording = recordingPhase != FlashRecordingPhase.Idle
+
+    LaunchedEffect(showShortTapHint) {
+        if (showShortTapHint) {
+            kotlinx.coroutines.delay(1_400L)
+            showShortTapHint = false
+        }
+    }
 
     fun resetRecording() {
         recordingPhase = FlashRecordingPhase.Idle
         recordElapsedMs = 0L
         recordAmplitudes = emptyList()
         recordPaused = false
+        voiceCaptureStarted = false
+        voiceLockedHandsFree = false
     }
 
     fun cancelRecording() {
         onVoiceRecordCancel()
         resetRecording()
+    }
+
+    fun toggleRecordingPause() {
+        val paused = !recordPaused
+        if (onVoiceRecordPauseChanged(paused)) {
+            recordPaused = paused
+        } else {
+            cancelRecording()
+        }
     }
 
     fun sendVoiceRecording() {
@@ -154,6 +209,13 @@ fun FlashComposer(
         } else {
             // Below the minimum length — discard the partial capture rather than sending noise.
             cancelRecording()
+            shortHintText = "Recording too short"
+            showShortTapHint = true
+            if (isDesktopChatPlatform) {
+                onVoiceTapTooShort()
+            } else {
+                onVoiceRecordingTooShort?.invoke()
+            }
         }
     }
 
@@ -166,7 +228,6 @@ fun FlashComposer(
             if (!recordPaused) {
                 recordElapsedMs += FlashVoiceRecordingMath.TICK_MS
                 val sample = voiceAmplitudeProvider?.invoke()
-                    ?.takeIf { it > 0 }
                     ?: FlashVoiceRecordingMath.nextDemoAmplitude(last).also { last = it }
                 recordAmplitudes = (recordAmplitudes + FlashVoiceRecordingMath.smoothAmplitude(recordAmplitudes.lastOrNull() ?: sample, sample))
                     .takeLast(FlashVoiceRecordingMath.STRIP_BAR_COUNT * 3)
@@ -218,6 +279,24 @@ fun FlashComposer(
         // the hold gesture across Idle/Holding/CancelArmed � swapping it mid-hold would
         // dispose its pointerInput stream and kill slide/release handling.
         val isRecordingActive = recordingPhase != FlashRecordingPhase.Idle
+        // Once a locked recording's hold has ended, the trailing slot becomes its send key.
+        val voiceSendVisible = FlashVoiceRecordingMath.showsVoiceSend(recordingPhase, voiceLockedHandsFree)
+        val showHoldLockHint = voiceCaptureStarted && recordingPhase == FlashRecordingPhase.Holding
+
+        // Floating/inline lock hint during hold, or "Hold to record" feedback after a <500ms touch tap.
+        AnimatedVisibility(
+            visible = showHoldLockHint || showShortTapHint,
+            enter = fadeIn(motion.tweenFastSpec()),
+            exit = fadeOut(motion.tweenFastSpec()),
+            modifier = Modifier
+                .align(Alignment.End)
+                .padding(end = FlashSpacing.space8, top = FlashSpacing.space4),
+        ) {
+            FlashVoiceHintPill(
+                text = if (showHoldLockHint) "↑ Slide up to lock" else shortHintText,
+                isError = false,
+            )
+        }
 
         Row(
             modifier = Modifier
@@ -242,11 +321,19 @@ fun FlashComposer(
                             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                         ) {
                             // Tactile Flash Attachment Button (UI-012)
-                            FlashAttachmentButton(
-                                onClick = onAttachmentClick,
-                                isExpanded = isAttachmentExpanded,
-                                enabled = enabled,
-                            )
+                            Box(
+                                modifier = Modifier.defaultMinSize(
+                                    minWidth = FlashDimensions.minTouchTarget,
+                                    minHeight = FlashDimensions.minTouchTarget,
+                                ),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                FlashAttachmentButton(
+                                    onClick = onAttachmentClick,
+                                    isExpanded = isAttachmentExpanded,
+                                    enabled = enabled,
+                                )
+                            }
 
                             // Expanding Input Pill
                             Box(
@@ -257,7 +344,7 @@ fun FlashComposer(
                                     .background(colors.composerInputBackground)
                                     .border(
                                         width = FlashDimensions.borderHairline,
-                                        color = if (isComposerFocused) colors.accentPrimary else Color.Transparent,
+                                        color = if (isComposerFocused) colors.accentFill else Color.Transparent,
                                         shape = FlashShapes.composerInput,
                                     )
                                     .heightIn(min = 44.dp)
@@ -286,15 +373,19 @@ fun FlashComposer(
                                             if (event.type == KeyEventType.KeyDown &&
                                                 (event.key == Key.Enter || event.key == Key.NumPadEnter)
                                             ) {
-                                                if (event.isShiftPressed || event.isCtrlPressed) {
-                                                    // Shift+Enter or Ctrl+Enter inserts newline
-                                                    false
-                                                } else {
-                                                    // Enter sends message
+                                                if (FlashComposerMath.shouldSendOnEnterKey(
+                                                        isDesktop = isDesktopChatPlatform,
+                                                        isShiftPressed = event.isShiftPressed,
+                                                        isCtrlPressed = event.isCtrlPressed,
+                                                    )
+                                                ) {
                                                     if (canSend) {
                                                         onSend()
                                                     }
                                                     true
+                                                } else {
+                                                    // Let Shift+Enter (desktop) or soft-keyboard Enter (Android) insert newline
+                                                    false
                                                 }
                                             } else {
                                                 false
@@ -304,7 +395,7 @@ fun FlashComposer(
                                     textStyle = typography.bodyDefault.copy(
                                         color = if (enabled) colors.textPrimary else colors.textTertiary,
                                     ),
-                                    cursorBrush = SolidColor(colors.accentPrimary),
+                                    cursorBrush = SolidColor(colors.accentFill),
                                     maxLines = 6,
                                     decorationBox = { innerTextField ->
                                         if (draft.isEmpty()) {
@@ -331,29 +422,30 @@ fun FlashComposer(
                             amplitudes = recordAmplitudes,
                             isPaused = recordPaused,
                             onCancel = { cancelRecording() },
-                            onTogglePause = { recordPaused = !recordPaused },
+                            onTogglePause = ::toggleRecordingPause,
                             onSend = { sendVoiceRecording() },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
 
                     FlashRecordingPhase.Locked -> {
-                        // Hands-free panel: full-width bar with trash / pause / send buttons.
+                        // Hands-free panel: full-width bar with trash / pause / (in-bar send only while finger is down).
                         FlashVoiceRecordingBar(
                             phase = phase,
                             elapsedMs = recordElapsedMs,
                             amplitudes = recordAmplitudes,
                             isPaused = recordPaused,
                             onCancel = { cancelRecording() },
-                            onTogglePause = { recordPaused = !recordPaused },
+                            onTogglePause = ::toggleRecordingPause,
                             onSend = { sendVoiceRecording() },
+                            showInBarSend = !voiceSendVisible,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
             }
 
-            // One 44dp slot for the mic and the send key. The mic stays composed (its hold gesture
+            // One 44dp slot for the mic and the send keys. The mic stays composed (its hold gesture
             // must survive Holding / CancelArmed) and the send key cross-fades over it: no width
             // animation, no second control appearing beside the pill.
             val sendProgress by animateFloatAsState(
@@ -362,39 +454,84 @@ fun FlashComposer(
                 label = "composer_trailing_progress",
             )
             Box(
-                modifier = Modifier.size(FlashSpacing.space44),
+                modifier = Modifier.defaultMinSize(
+                    minWidth = FlashDimensions.minTouchTarget,
+                    minHeight = FlashDimensions.minTouchTarget,
+                ),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
                     modifier = Modifier.then(
-                        if (sendProgress > 0.5f) Modifier.clearAndSetSemantics {} else Modifier,
+                        if (sendProgress > 0.5f || voiceSendVisible) Modifier.clearAndSetSemantics {} else Modifier,
                     ),
                 ) {
                     FlashMicButton(
                         isRecording = isRecordingActive,
-                        enabled = enabled && !canSend,
+                        enabled = enabled && !canSend && !voiceSendVisible,
                         onStartRecord = {
                             // Only enter the recording surface if the host actually started capture
-                            // (mic permission granted). Otherwise stay Idle — a permission prompt fired.
-                            if (onVoiceRecordStart()) {
+                            // (mic permission granted) and this gesture is the one allowed to start.
+                            // A refused start must not let the hold slide into a phantom recording.
+                            if (FlashVoiceRecordingMath.canStartCapture(recordingPhase, voiceCaptureStarted) &&
+                                onVoiceRecordStart()
+                            ) {
+                                voiceCaptureStarted = true
+                                showShortTapHint = false
                                 recordingPhase = FlashRecordingPhase.Holding
                             }
                         },
+                        onInterrupted = {
+                            if (voiceCaptureStarted && !voiceLockedHandsFree) cancelRecording()
+                        },
+                        onStartHandsFree = {
+                            if (FlashVoiceRecordingMath.canStartCapture(recordingPhase, voiceCaptureStarted) &&
+                                onVoiceRecordStart()
+                            ) {
+                                voiceCaptureStarted = true
+                                showShortTapHint = false
+                                recordingPhase = FlashRecordingPhase.Locked
+                                voiceLockedHandsFree = true
+                            }
+                        },
                         onSlideUpdate = { totalDx, totalDy ->
-                            val cancelPx = with(density) { FlashVoiceRecordingMath.CANCEL_SLIDE_DP.dp.toPx() }
-                            val lockPx = with(density) { FlashVoiceRecordingMath.LOCK_SLIDE_DP.dp.toPx() }
-                            recordingPhase = when (FlashVoiceRecordingMath.resolveHoldSlide(totalDx, totalDy, cancelPx, lockPx)) {
-                                FlashHoldSlideTarget.Cancel -> FlashRecordingPhase.CancelArmed
-                                FlashHoldSlideTarget.Lock -> FlashRecordingPhase.Locked
-                                FlashHoldSlideTarget.Stay ->
-                                    if (recordingPhase == FlashRecordingPhase.CancelArmed) FlashRecordingPhase.Holding else recordingPhase
+                            if (FlashVoiceRecordingMath.acceptsSlide(recordingPhase, voiceCaptureStarted)) {
+                                val cancelPx = with(density) { FlashVoiceRecordingMath.CANCEL_SLIDE_DP.dp.toPx() }
+                                val lockPx = with(density) { FlashVoiceRecordingMath.LOCK_SLIDE_DP.dp.toPx() }
+                                val isRtl = layoutDirection == LayoutDirection.Rtl
+                                recordingPhase = when (FlashVoiceRecordingMath.resolveHoldSlide(totalDx, totalDy, cancelPx, lockPx, isRtl = isRtl)) {
+                                    FlashHoldSlideTarget.Cancel -> FlashRecordingPhase.CancelArmed
+                                    FlashHoldSlideTarget.Lock -> FlashRecordingPhase.Locked
+                                    FlashHoldSlideTarget.Stay ->
+                                        if (recordingPhase == FlashRecordingPhase.CancelArmed) FlashRecordingPhase.Holding else recordingPhase
+                                }
                             }
                         },
                         onRecordEnd = {
-                            when (recordingPhase) {
-                                FlashRecordingPhase.CancelArmed -> cancelRecording()
-                                FlashRecordingPhase.Holding -> sendVoiceRecording()
-                                FlashRecordingPhase.Locked, FlashRecordingPhase.Idle -> Unit
+                            when (
+                                FlashVoiceRecordingMath.resolveReleaseAction(
+                                    phase = recordingPhase,
+                                    captureStarted = voiceCaptureStarted,
+                                    elapsedMs = recordElapsedMs,
+                                    isDesktop = isDesktopChatPlatform,
+                                )
+                            ) {
+                                FlashVoiceRecordingMath.ReleaseAction.Cancel -> cancelRecording()
+                                FlashVoiceRecordingMath.ReleaseAction.DiscardShortTap -> {
+                                    cancelRecording()
+                                    shortHintText = "Hold to record"
+                                    showShortTapHint = true
+                                    onVoiceTapTooShort()
+                                }
+                                FlashVoiceRecordingMath.ReleaseAction.LockHandsFree -> {
+                                    // Desktop click-to-record: lock into hands-free mode so user
+                                    // can stop & send via FlashVoiceTrailingSendButton or cancel.
+                                    recordingPhase = FlashRecordingPhase.Locked
+                                    voiceLockedHandsFree = true
+                                }
+                                // The lock gesture is over: from now on the trailing slot sends.
+                                FlashVoiceRecordingMath.ReleaseAction.FinishLockGesture -> voiceLockedHandsFree = true
+                                FlashVoiceRecordingMath.ReleaseAction.Send -> sendVoiceRecording()
+                                FlashVoiceRecordingMath.ReleaseAction.None -> Unit
                             }
                         },
                         modifier = Modifier.graphicsLayer {
@@ -404,20 +541,27 @@ fun FlashComposer(
                         },
                     )
                 }
-                Box(
-                    modifier = Modifier.then(
-                        if (sendProgress <= 0.5f) Modifier.clearAndSetSemantics {} else Modifier,
-                    ),
-                ) {
-                    FlashSendButton(
-                        canSend = canSend,
-                        onClick = onSend,
-                        enabled = enabled,
-                        modifier = Modifier.graphicsLayer {
-                            alpha = sendProgress
-                            scaleX = 0.7f + 0.3f * sendProgress
-                            scaleY = 0.7f + 0.3f * sendProgress
-                        },
+                if (sendProgress > 0.01f) {
+                    Box(
+                        modifier = Modifier.then(
+                            if (sendProgress <= 0.5f) Modifier.clearAndSetSemantics {} else Modifier,
+                        ),
+                    ) {
+                        FlashSendButton(
+                            canSend = canSend,
+                            onClick = onSend,
+                            enabled = enabled,
+                            modifier = Modifier.graphicsLayer {
+                                alpha = sendProgress
+                                scaleX = 0.7f + 0.3f * sendProgress
+                                scaleY = 0.7f + 0.3f * sendProgress
+                            },
+                        )
+                    }
+                }
+                if (voiceSendVisible) {
+                    FlashVoiceTrailingSendButton(
+                        onClick = { sendVoiceRecording() },
                     )
                 }
             }
@@ -545,7 +689,7 @@ fun FlashReplyDock(
                 .width(3.dp)
                 .heightIn(min = 30.dp)
                 .clip(RoundedCornerShape(1.5.dp))
-                .background(colors.accentPrimary),
+                .background(colors.accentFill),
         )
 
         Spacer(modifier = Modifier.width(FlashSpacing.space8))
@@ -558,12 +702,19 @@ fun FlashReplyDock(
             Text(
                 text = replyingTo.senderName,
                 style = typography.metadataEmphasis,
-                color = colors.accentPrimary,
+                color = colors.accentFill,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = replyingTo.text.ifBlank { "Attachment" },
+                text = replyingTo.text.ifBlank {
+                    when {
+                        replyingTo.voiceAttachments.isNotEmpty() -> "Voice message"
+                        replyingTo.images.isNotEmpty() -> "Photo"
+                        replyingTo.fileAttachments.isNotEmpty() -> replyingTo.fileAttachments.first().name.ifBlank { "File" }
+                        else -> "Attachment"
+                    }
+                },
                 style = typography.metadataDefault,
                 color = colors.textSecondary,
                 maxLines = 1,

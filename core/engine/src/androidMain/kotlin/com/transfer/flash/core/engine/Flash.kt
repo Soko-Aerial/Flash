@@ -10,6 +10,7 @@ import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
 import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
@@ -736,13 +737,26 @@ private class Wiring(
         }
         onPeerConnectionClosed = { peerId -> failInboundForPeer(peerId, "data channel closed") }
 
-        val sendXfer: (String, String, String) -> Unit = { peerId, action, transferId ->
+        // `reason` carries a refusal token or REASON_SENDER_INTERRUPTED; older peers ignore it.
+        val sendXferWithReason: (String, String, String, String?) -> Unit = { peerId, action, transferId, reason ->
             val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
             if (session != null) {
-                session.connection.sendText(FlashTextFraming.encodeFields(XFER_PREFIX, listOf("action" to action, "transferId" to transferId)))
+                session.connection.sendText(
+                    FlashTextFraming.encodeFields(
+                        XFER_PREFIX,
+                        listOfNotNull(
+                            "action" to action,
+                            "transferId" to transferId,
+                            reason?.let { "reason" to it },
+                        ),
+                    ),
+                )
             } else {
                 Log.w(TAG, "Cannot deliver XFER $action: no session for $peerId")
             }
+        }
+        val sendXfer: (String, String, String) -> Unit = { peerId, action, transferId ->
+            sendXferWithReason(peerId, action, transferId, null)
         }
         // C-11: a cancel that carries the reason the receiver refused the file (older peers ignore the extra field).
         val sendXferRefuseFrame: (String, String, String) -> Unit = { peerId, transferId, reason ->
@@ -794,13 +808,15 @@ private class Wiring(
                     RealFlashTransferRepository.ACTION_CANCEL -> cleanupInbound(control.transferId, "cancelled by peer")
                     RealFlashTransferRepository.ACTION_ACCEPT -> acceptOffer(control.transferId)
                     RealFlashTransferRepository.ACTION_DECLINE -> declineOffer(control.transferId)
+                    RealFlashTransferRepository.ACTION_RESET_ANNOUNCEMENT ->
+                        receivePipeline.resetResumeAnnouncement(control.transferId)
                 }
             }
         }
         scope.launch {
             transferImpl.outgoingControl.collect { control ->
                 val peerId = control.peerDeviceId ?: return@collect
-                sendXfer(peerId, control.action, control.transferId)
+                sendXferWithReason(peerId, control.action, control.transferId, control.reason)
             }
         }
 
@@ -861,7 +877,7 @@ private class Wiring(
                             launch {
                                 while (true) {
                                     pausedIntakeIds.first { it.isEmpty() }
-                                    val data = runCatching { session.awaitBinaryFrame() }.getOrElse { break }
+                                    val data = runSuspendCatching { session.awaitBinaryFrame() }.getOrElse { break }
                                     handleInboundBinary(
                                         transferImpl, receivePipeline, session.peer.friendlyName,
                                         session.peerDeviceId.value, data,
@@ -889,10 +905,10 @@ private class Wiring(
             val started = engine.startAll(serverPort, currentIdentity)
             if (!started.isSuccess) Log.e(TAG, "Discovery startAll failed: ${(started as? FlashResult.Failure)?.error}")
 
-            dataPort = runCatching { dcServer.start(preferredPort = serverPort + 1) }.getOrElse {
+            dataPort = runSuspendCatching { dcServer.start(preferredPort = serverPort + 1) }.getOrElse {
                 Log.w(TAG, "DataChannelServer failed to bind: ${it.message}"); 0
             }
-            runCatching { transferImpl.preloadReceiverProgress() }
+            runSuspendCatching { transferImpl.preloadReceiverProgress() }
 
             // PC2 (ADR-045): the same planner and driver as the app holder and the desktop engine.
             remembered.start()
@@ -929,7 +945,7 @@ private class Wiring(
                             Log.w(TAG, "PTT control dropped: no session for $peerId")
                             false
                         } else {
-                            runCatching { session.connection.sendText(text) }
+                            runSuspendCatching { session.connection.sendText(text) }
                                 .onFailure { Log.w(TAG, "PTT control send failed peer=$peerId", it) }
                                 .getOrDefault(false)
                         }
@@ -939,7 +955,7 @@ private class Wiring(
                         if (session == null) {
                             Log.w(TAG, "PTT audio dropped: no session for $peerId")
                         } else {
-                            runCatching { session.connection.sendBinary(bytes) }
+                            runSuspendCatching { session.connection.sendBinary(bytes) }
                                 .onFailure { Log.w(TAG, "PTT audio send failed peer=$peerId", it) }
                         }
                     },
@@ -955,7 +971,7 @@ private class Wiring(
                     currentFriendlyName = trimmed
                     networkImpl.localFriendlyName = trimmed
                     scope.launch {
-                        runCatching { chatImpl.updateLocalDisplayName(trimmed) }
+                        runSuspendCatching { chatImpl.updateLocalDisplayName(trimmed) }
                     }
                     val id = localId
                     val newIdentity = FlashAdvertisedIdentity(
@@ -1305,7 +1321,7 @@ private class Wiring(
         if (toResume.isEmpty()) return
         Log.i(TAG, "Session up for $peerDeviceId: auto-resuming ${toResume.size} failed send(s)")
         toResume.forEach { transferId ->
-            runCatching { transfers.resumeTransfer(transferId) }
+            runSuspendCatching { transfers.resumeTransfer(transferId) }
                 .onFailure { error -> Log.w(TAG, "Auto-resume threw for ${transferId.value}", error) }
         }
     }

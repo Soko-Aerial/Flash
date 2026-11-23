@@ -47,8 +47,10 @@ public object EncryptedDatabaseRecovery {
                     "Moved ${moved.size} file(s) aside: ${moved.joinToString { it.name }}",
             )
         }
-        check(!minted || !dbFile.exists()) {
-            "The unreadable database could not be moved aside; the stored passphrase was left untouched"
+        val remaining = SIDECAR_SUFFIXES.map { File(dbFile.path + it) }.filter { it.exists() }
+        check(!minted || remaining.isEmpty()) {
+            "The unreadable database or its sidecars (${remaining.joinToString { it.name }}) could not be moved aside; " +
+                "the stored passphrase was left untouched"
         }
         // A fresh copy per call: SQLCipher may clear the array it is handed.
         val db = FlashDatabaseOpener.openEncrypted(context, { passphrase.copyOf() }, *FlashMigrations.ALL)
@@ -61,17 +63,42 @@ public object EncryptedDatabaseRecovery {
     }
 
     /**
-     * Moves [dbFile] and its sidecars to `<name>.unrecoverable-<stamp><suffix>` when the passphrase
-     * was freshly minted but a database already exists. Returns the new locations (empty when nothing
-     * needed moving).
+     * Moves [dbFile] and all of its sidecars (`-wal`, `-shm`, `-journal`) to
+     * `<name>.unrecoverable-<stamp><suffix>` when the passphrase was freshly minted and any
+     * database or orphaned sidecar exists. If any sidecar rename fails, already-moved files are
+     * rolled back and an [IllegalStateException] is thrown so a fresh database is never opened
+     * beside stale encrypted WAL/SHM files.
      */
     internal fun quarantineIfUnreadable(dbFile: File, mintedNewPassphrase: Boolean, stamp: Long): List<File> {
-        if (!mintedNewPassphrase || !dbFile.exists()) return emptyList()
-        return SIDECAR_SUFFIXES.mapNotNull { suffix ->
+        if (!mintedNewPassphrase) return emptyList()
+        val existing = SIDECAR_SUFFIXES.mapNotNull { suffix ->
             val source = File(dbFile.path + suffix)
-            if (!source.exists()) return@mapNotNull null
-            val target = File(dbFile.parentFile, "${dbFile.name}.unrecoverable-$stamp$suffix")
-            if (source.renameTo(target)) target else null
+            if (source.exists()) suffix to source else null
         }
+        if (existing.isEmpty()) return emptyList()
+
+        val parent = dbFile.parentFile
+        var attempt = 0
+        var prefix = "${dbFile.name}.unrecoverable-$stamp"
+        while (existing.any { (suffix, _) -> File(parent, "$prefix$suffix").exists() }) {
+            attempt++
+            prefix = "${dbFile.name}.unrecoverable-$stamp-$attempt"
+        }
+
+        val movedPairs = ArrayList<Pair<File, File>>(existing.size)
+        for ((suffix, source) in existing) {
+            val target = File(parent, "$prefix$suffix")
+            if (!source.renameTo(target)) {
+                // Roll back already-moved files so the database and its sidecars stay consistent.
+                for ((orig, moved) in movedPairs.asReversed()) {
+                    moved.renameTo(orig)
+                }
+                throw IllegalStateException(
+                    "Could not quarantine unreadable database sidecar ${source.name} to ${target.name}",
+                )
+            }
+            movedPairs.add(source to target)
+        }
+        return movedPairs.map { it.second }
     }
 }

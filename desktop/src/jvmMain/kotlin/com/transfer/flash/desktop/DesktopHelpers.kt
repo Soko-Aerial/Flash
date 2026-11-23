@@ -56,45 +56,76 @@ internal object DesktopHelpers {
     }
 
     /**
+     * Builds the OS-native command to reveal [file] in its file manager.
+     * On Windows, paths without whitespace pass `/select,<path>` as a single token so Explorer does
+     * not misinterpret a space after the comma; paths with whitespace pass `/select,` and canonical path.
+     */
+    internal fun buildRevealCommand(osName: String, file: File): List<String>? {
+        val os = osName.lowercase()
+        val targetPath = runCatching { file.canonicalPath }.getOrDefault(file.absolutePath)
+        return when {
+            os.contains("win") -> {
+                if (targetPath.none { it.isWhitespace() }) {
+                    listOf("explorer.exe", "/select,$targetPath")
+                } else {
+                    listOf("explorer.exe", "/select,", targetPath)
+                }
+            }
+            os.contains("mac") -> listOf("open", "-R", targetPath)
+            else -> {
+                val dir = file.parentFile ?: file
+                val dirPath = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+                listOf("xdg-open", dirPath)
+            }
+        }
+    }
+
+    /**
      * Opens the system file manager with [file] selected and highlighted on Windows/macOS,
      * or opens the containing directory on Linux.
      */
     fun revealInFileManager(file: File) {
         if (!file.exists()) return
-        val os = System.getProperty("os.name", "").lowercase()
+        val os = System.getProperty("os.name", "")
+        if (os.lowercase().contains("linux")) {
+            val fileUri = file.toURI().toString()
+            val dbusSuccess = runCatching {
+                val process = ProcessBuilder(
+                    "dbus-send",
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "--type=method_call",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    "array:string:$fileUri",
+                    "string:"
+                ).start()
+                process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0
+            }.getOrDefault(false)
+            if (dbusSuccess) return
+        }
+        val command = buildRevealCommand(os, file)
         val success = runCatching {
             when {
-                os.contains("win") -> {
-                    Runtime.getRuntime().exec(arrayOf("explorer.exe", "/select,", file.absolutePath))
-                    true
-                }
-                os.contains("mac") -> {
-                    Runtime.getRuntime().exec(arrayOf("open", "-R", file.absolutePath))
-                    true
-                }
-                os.contains("linux") -> {
-                    val fileUri = file.toURI().toString()
-                    val dbusSuccess = runCatching {
-                        val process = ProcessBuilder(
-                            "dbus-send",
-                            "--session",
-                            "--dest=org.freedesktop.FileManager1",
-                            "--type=method_call",
-                            "/org/freedesktop/FileManager1",
-                            "org.freedesktop.FileManager1.ShowItems",
-                            "array:string:$fileUri",
-                            "string:"
-                        ).start()
-                        process.waitFor(2, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0
-                    }.getOrDefault(false)
-                    if (!dbusSuccess && Desktop.isDesktopSupported()) {
-                        Desktop.getDesktop().open(file.parentFile ?: file)
-                    }
-                    true
+                os.lowercase().contains("win") || os.lowercase().contains("mac") -> {
+                    if (command != null) {
+                        ProcessBuilder(command).start()
+                        true
+                    } else false
                 }
                 else -> {
                     if (Desktop.isDesktopSupported()) {
-                        Desktop.getDesktop().open(file.parentFile ?: file)
+                        runCatching {
+                            Desktop.getDesktop().open(file.parentFile ?: file)
+                            true
+                        }.getOrElse {
+                            if (command != null) {
+                                ProcessBuilder(command).start()
+                                true
+                            } else false
+                        }
+                    } else if (command != null) {
+                        ProcessBuilder(command).start()
                         true
                     } else false
                 }
@@ -150,22 +181,66 @@ internal object DesktopHelpers {
     }
 
     /**
+     * Resolves the target file extension for saving media into the downloads gallery folder,
+     * preserving video/audio/image extensions from [mimeType] (or [sourceFileName] when MIME is
+     * generic) instead of defaulting non-images to `.jpg`.
+     */
+    internal fun resolveGalleryExtension(
+        mimeType: String,
+        sourceFileName: String? = null,
+    ): String {
+        val normalized = mimeType.substringBefore(';').trim().lowercase()
+        val fromMime = when (normalized) {
+            "video/mp4", "video/m4v" -> "mp4"
+            "video/webm" -> "webm"
+            "video/quicktime" -> "mov"
+            "video/x-matroska" -> "mkv"
+            "video/3gpp" -> "3gp"
+            "video/x-msvideo" -> "avi"
+            "audio/mp4", "audio/m4a", "audio/aac" -> "m4a"
+            "audio/mpeg", "audio/mp3" -> "mp3"
+            "audio/wav", "audio/x-wav" -> "wav"
+            "audio/ogg" -> "ogg"
+            "audio/flac" -> "flac"
+            "audio/webm" -> "weba"
+            "image/jpeg", "image/jpg" -> "jpg"
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            "image/gif" -> "gif"
+            "image/heic" -> "heic"
+            "image/heif" -> "heif"
+            "image/bmp" -> "bmp"
+            "image/avif" -> "avif"
+            else -> null
+        }
+        if (fromMime != null) return fromMime
+        val fromName = sourceFileName
+            ?.substringAfterLast('.', "")
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotEmpty() && it.all(Char::isLetterOrDigit) }
+        if (fromName != null) return fromName
+        return when {
+            normalized.startsWith("video/") -> "mp4"
+            normalized.startsWith("audio/") -> "m4a"
+            else -> "jpg"
+        }
+    }
+
+    /**
      * Desktop "save to gallery" — copies the file to `~/Downloads/Flash/` (the closest
      * equivalent to Android's MediaStore; the phase's Do-NOT explicitly blesses this).
      */
-    fun saveImageToGallery(ref: String?, mimeType: String) {
+    fun saveImageToGallery(
+        ref: String?,
+        mimeType: String,
+        targetDir: File = File(System.getProperty("user.home"), "Downloads/Flash"),
+    ) {
         val source = resolveFile(ref) ?: return
         if (!source.exists()) return
 
-        val downloadsDir = File(System.getProperty("user.home"), "Downloads/Flash")
-        downloadsDir.mkdirs()
-        val ext = when (mimeType.substringAfter("/", "jpg")) {
-            "jpeg" -> "jpg"
-            "png" -> "png"
-            "gif" -> "gif"
-            "webp" -> "webp"
-            else -> "jpg"
-        }
+        targetDir.mkdirs()
+        val ext = resolveGalleryExtension(mimeType, source.name)
         // R-20: a millisecond name with REPLACE_EXISTING let two saves in one millisecond overwrite each other. Take the
         // first free name instead (CREATE_NEW never overwrites) and say in the log when the copy fails.
         val stamp = System.currentTimeMillis()
@@ -173,7 +248,7 @@ internal object DesktopHelpers {
             var attempt = 0
             while (true) {
                 val name = if (attempt == 0) "flash_$stamp.$ext" else "flash_${stamp}_$attempt.$ext"
-                val target = File(downloadsDir, name)
+                val target = File(targetDir, name)
                 try {
                     Files.copy(source.toPath(), target.toPath())
                     return
@@ -182,7 +257,7 @@ internal object DesktopHelpers {
                 }
             }
         }.onFailure { error ->
-            FlashLog.w("STORAGE", "save image to ${downloadsDir.path} failed (${error.message ?: error::class.java.simpleName})")
+            FlashLog.w("STORAGE", "save image to ${targetDir.path} failed (${error.message ?: error::class.java.simpleName})")
         }
     }
 
