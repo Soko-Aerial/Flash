@@ -1,5 +1,11 @@
 # Progress Log
 
+## 2026-11-23 — Flash 2.3.2 swarm Retry release refreshed
+
+Rebuilt the four signed APKs and both Windows installers with `d2a5936b`. The Windows refresh in `12507c9e` uses product code `{1DC2CC2A-C3E2-4346-B9C9-D0A149D43DC5}`. Both Windows packages carried the rebuilt engine and swarm JARs and selected this PC's prior 2.3.2 installation as an upgrade target in the same per-user context. All six checksums matched. The Android packages passed release lint, signer, version, alignment and payload checks. The previous candidate remains at `build/release-staging/3f36c2b4-b049-4a2b-85d3-b16ce70220de/previous`. See `build/reports/release-2.3.2-swarm-retry`.
+
+Installed the signed arm64 build in place on the Android 13 V760. The installed digest matched the release and the original install date was preserved. Cold launch and the foreground service stayed healthy in the same process for over 2 minutes and 45 seconds with no new crashes. WIN-UPGRADE-02 covers the Windows replacement and SWM-RETRY-01 covers pressing Retry on the saved failed receive.
+
 ## 2026-11-23 — Swarm receive finalization and Retry
 
 Diagnosed the failed desktop swarm from the 12:01 log and partial file. Its 63,728,423 advertised bytes reproduced the signed manifest root. The old whole-file check included an extra 16 KiB of zeros on disk. A separate copy was recovered and verified without editing the app's partial. Commit `d2a5936b` verifies the manifest's declared range, refetches identifiable bad pieces and makes Retry recheck stopped verification. All 693 swarm and engine tests and desktop compilation passed. Evidence is in `build/reports/swarm-retry`. SWM-RETRY-01 tracks the installed retest. See ERROR-1052.

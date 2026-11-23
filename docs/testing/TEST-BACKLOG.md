@@ -334,10 +334,10 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 
 ### WIN-UPGRADE-02 — Replace the earlier installed Windows 2.3.2
 
-- **Setup:** Flash 2.3.2 with Windows product code `{71E396C5-0367-38FF-825A-7C841BC98196}` installed under the current user.
+- **Setup:** Prior group voice Flash 2.3.2 with Windows product code `{8C805950-5360-4A1A-9E13-02462985BCD4}` installed under the current user.
 - **Steps:** Exit Flash from the tray and run the refreshed EXE from `dist/2.3.2`. Reopen Flash and verify existing chats and peers. Use a separate installation of the earlier build to repeat with the standalone MSI.
-- **Pass:** Windows registers only `{8C805950-5360-4A1A-9E13-02462985BCD4}` at the expected path. Flash reports 2.3.2 and shows its existing state.
-- **Source:** ERROR-1051. Upgrade detection and installer payloads passed locally for both packages.
+- **Pass:** Windows registers only `{1DC2CC2A-C3E2-4346-B9C9-D0A149D43DC5}` at the expected path. Flash reports 2.3.2 and shows its existing state.
+- **Source:** ERROR-1051. Upgrade detection and installer payloads passed locally for both refreshed packages. The earlier upgrade from `{71E396C5-0367-38FF-825A-7C841BC98196}` to `{8C805950-5360-4A1A-9E13-02462985BCD4}` was observed at the original install path.
 - **Status:** TODO.
 
 ### NEARBY-NET-02 — Linux package detects a late network connection
@@ -2160,7 +2160,7 @@ Record results in the Results log (AGENTS 35).
 
 ### SWM-RETRY-01 — Retry restores a failed swarm receive
 
-- **Setup:** A Windows receiver with the failed row and its saved partial, or a test profile with an equivalent failed row. Use a build containing `d2a5936b`. Run the same test profile on Android with a copy of the fixture when available.
+- **Setup:** A Windows receiver with the failed row and its saved partial, or a test profile with an equivalent failed row. Use the refreshed signed or Windows build in `dist/2.3.2` containing `d2a5936b`. Run the same test profile on Android with a copy of the fixture when available.
 - **Steps:** Open Transfers and press Retry. For a fixture with a corrupted piece inside the declared length, repeat while a holder is online.
 - **Pass:** The saved valid file verifies and completes without downloading again. For the corrupted fixture the missing or damaged pieces are requested and the completed file matches its signed digest. The published file length matches the manifest.
 - **Source:** [ERROR-1052](../../logs/errors.md#error-1052--swarm-receive-hashes-a-trailing-partial-file-suffix-and-retry-does-nothing).
@@ -3029,6 +3029,12 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 ## Results log
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
+
+### 2026-11-23 — Swarm Retry APK installed on the V760
+
+- **Build and device.** Release-signed arm64 Flash 2.3.2 with `d2a5936b`. V760 on Android 13.
+- **Verified.** In-place install, retained original install date, matching installed APK checksum, cold launch and more than 2 minutes and 45 seconds with the same process and foreground service. Zero new Flash crashes.
+- **Owed.** The actual failed-row Retry and published file check in SWM-RETRY-01. The current Windows refresh is ready for WIN-UPGRADE-02.
 
 ### 2026-11-23 — Refreshed group voice APK installed on the V760
 

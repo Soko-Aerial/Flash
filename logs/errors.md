@@ -18,7 +18,7 @@ Recovered a separate MP4 copy from the verified bytes and checked its SHA-256 an
 
 ### Status
 
-Source fix and recovery verified. Installed-app Retry remains under SWM-RETRY-01. The current release builds predate the source fix.
+Source fix and separate recovery verified. The refreshed 2.3.2 installers include the fix. Installed-app Retry on the saved row remains under SWM-RETRY-01.
 
 ## ERROR-1051 — Rebuilt Windows 2.3.2 must replace the earlier 2.3.2 installation
 
@@ -36,7 +36,7 @@ On this PC, the previous package's `FindRelatedProducts` skipped upgrade detecti
 
 ### Status
 
-Verified installer detection on the existing installation. The owner will run the actual replacement and the device audio test under WIN-UPGRADE-02 and GROUP-VOICE-01.
+Verified installer detection on the existing installation. The earlier refresh was subsequently observed registered at the original path as `{8C805950-5360-4A1A-9E13-02462985BCD4}`. Both swarm Retry refresh packages detect that product as an upgrade target and use `{1DC2CC2A-C3E2-4346-B9C9-D0A149D43DC5}` in the same upgrade family. See WIN-UPGRADE-02 for the remaining installed checks.
 
 ## ERROR-1050 — One group recipient gets a voice message without its audio
 
