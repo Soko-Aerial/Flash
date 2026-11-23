@@ -17,6 +17,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SwarmEngineStepTest {
@@ -273,6 +274,7 @@ class SwarmEngineStepTest {
         assertEquals(SwarmLifecycleState.ACTIVE, snap1.state, "Should return to ACTIVE to re-fetch bad pieces")
 
         // 2nd failure
+        engine.handle(SwarmEvent.PieceStored("g1", manifest.root, 0, 1150L))
         val failCmds = engine.handle(
             SwarmEvent.FinalizeResult("g1", manifest.root, ok = false, badPieces = listOf(0), nowMs = 1200L)
         )
@@ -286,7 +288,7 @@ class SwarmEngineStepTest {
 
     @Test
     fun `step 4i2 - finalize failure with empty badPieces marks FAILED instead of deadlocking in ACTIVE`() {
-        val (manifest, _) = createManifest()
+        val (manifest, _) = createManifest(pieceCount = 2)
         val engine = SwarmEngine(
             config = SwarmConfig(autoAcceptIncoming = true),
             localDeviceId = "rxNode",
@@ -327,11 +329,22 @@ class SwarmEngineStepTest {
         val persistCmd = failCmds.filterIsInstance<SwarmCommand.PersistRecord>().firstOrNull()
         assertNotNull(persistCmd)
         assertEquals(SwarmFailReason.DAMAGED.reasonCode, persistCmd.record.failReason)
+
+        val retry = engine.handle(SwarmEvent.LocalResume("g1", manifest.root, 1200L))
+        assertEquals(1, retry.filterIsInstance<SwarmCommand.Finalize>().size)
+        val retryRow = retry.filterIsInstance<SwarmCommand.PublishRow>().single()
+        assertEquals(SwarmLifecycleState.VERIFYING, retryRow.state)
+        assertEquals(manifest.totalSize, retryRow.bytesDone)
+        assertNull(retryRow.failReason)
+        assertTrue(engine.handle(SwarmEvent.LocalResume("g1", manifest.root, 1250L)).isEmpty())
+
+        engine.handle(SwarmEvent.FinalizeResult("g1", manifest.root, ok = true, nowMs = 1300L))
+        assertEquals(SwarmLifecycleState.COMPLETE, engine.snapshot().contents["g1" to manifest.root]?.state)
     }
 
     @Test
     fun `step 4i3 - a finalize the storage layer could not run fails the row as a storage problem, not as damage`() {
-        val (manifest, _) = createManifest()
+        val (manifest, _) = createManifest(pieceCount = 2)
         val engine = SwarmEngine(
             config = SwarmConfig(autoAcceptIncoming = true),
             localDeviceId = "rxNode",

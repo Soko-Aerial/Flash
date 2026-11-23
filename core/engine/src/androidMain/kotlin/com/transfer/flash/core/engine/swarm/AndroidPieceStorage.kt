@@ -4,13 +4,14 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
-import com.transfer.flash.core.engine.ReceivedFilePlacement
 import com.transfer.flash.core.engine.FlashPathSanitizer
 import com.transfer.flash.core.swarm.model.FileIdentity
+import com.transfer.flash.core.swarm.model.ManifestPieceStorage
 import com.transfer.flash.core.swarm.model.PartialHandle
 import com.transfer.flash.core.swarm.model.PieceStorage
 import com.transfer.flash.core.swarm.model.SourceHandle
 import com.transfer.flash.core.swarm.model.StorageFinalizeResult
+import com.transfer.flash.core.swarm.model.SwarmManifest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -18,7 +19,7 @@ import java.io.FileInputStream
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.security.MessageDigest
+import okio.Path.Companion.toPath
 
 /**
  * Android implementation of [PieceStorage] (§5.2, SW-7).
@@ -36,7 +37,7 @@ public class AndroidPieceStorage(
     private val context: Context,
     public val partialDir: File = File(context.filesDir, "swarm/partial"),
     public val destinationDir: File = File(context.getExternalFilesDir(null) ?: context.filesDir, "FlashReceived"),
-) : PieceStorage {
+) : ManifestPieceStorage {
 
     private fun partialFileForKey(key: String): File {
         require(!key.contains("..") && !key.contains('/') && !key.contains('\\')) {
@@ -241,48 +242,25 @@ public class AndroidPieceStorage(
         fileName: String,
         mime: String,
         expectedSha256: ByteArray,
+    ): StorageFinalizeResult = finalizeFile(key, fileName, mime, expectedSha256, null)
+
+    override suspend fun finalize(
+        key: String,
+        fileName: String,
+        mime: String,
+        manifest: SwarmManifest,
+    ): StorageFinalizeResult = finalizeFile(key, fileName, mime, manifest.fileSha256, manifest)
+
+    private suspend fun finalizeFile(
+        key: String,
+        fileName: String,
+        mime: String,
+        expectedSha256: ByteArray,
+        manifest: SwarmManifest?,
     ): StorageFinalizeResult = withContext(Dispatchers.IO) {
         val file = runCatching { partialFileForKey(key) }.getOrNull()
             ?: return@withContext StorageFinalizeResult(ok = false, errorMessage = "Invalid partial key: $key")
-
-        if (!file.exists()) {
-            return@withContext StorageFinalizeResult(ok = false, errorMessage = "Partial file not found for key: $key")
-        }
-
-        // 1. Whole-file SHA-256 pass
-        val md = MessageDigest.getInstance("SHA-256")
-        try {
-            FileInputStream(file).use { fis ->
-                val buf = ByteArray(65536)
-                var n: Int
-                while (fis.read(buf).also { n = it } != -1) {
-                    md.update(buf, 0, n)
-                }
-            }
-        } catch (e: Exception) {
-            return@withContext StorageFinalizeResult(ok = false, errorMessage = "Failed to hash partial file: ${e.message}")
-        }
-
-        val actualSha256 = md.digest()
-        if (!actualSha256.contentEquals(expectedSha256)) {
-            return@withContext StorageFinalizeResult(
-                ok = false,
-                errorMessage = "Whole-file SHA-256 mismatch",
-            )
-        }
-
-        val targetFile = try {
-            File(ReceivedFilePlacement.publish(file.path, destinationDir.path, fileName, mime))
-        } catch (e: java.io.IOException) {
-            return@withContext StorageFinalizeResult(ok = false, errorMessage = "Failed to place received file: ${e.message}")
-        }
-
-        val identity = FileIdentity(sizeBytes = targetFile.length(), lastModifiedMs = targetFile.lastModified())
-        StorageFinalizeResult(
-            ok = true,
-            finalPath = targetFile.absolutePath,
-            identity = identity,
-        )
+        finalizeSwarmFile(file.path.toPath(), destinationDir.path.toPath(), fileName, mime, expectedSha256, manifest)
     }
 
     public companion object {

@@ -5,6 +5,7 @@ import com.transfer.flash.core.swarm.codec.SwarmFrame
 import com.transfer.flash.core.swarm.model.Bitfield
 import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.SwarmContentRecord
+import com.transfer.flash.core.swarm.model.SwarmFailReason
 import com.transfer.flash.core.swarm.model.SwarmLifecycleState
 import com.transfer.flash.core.swarm.model.SwarmManifest
 import com.transfer.flash.core.swarm.model.SwarmRejectReason
@@ -128,6 +129,21 @@ class SwarmRestartRestoreTest {
         )
         assertTrue(cmds.any { it is SwarmCommand.Finalize })
         assertEquals(SwarmLifecycleState.VERIFYING, engine.snapshot().contents["g1" to m.root]!!.state)
+    }
+
+    @Test
+    fun `retry a restored damaged receive rechecks the saved file`() {
+        val m = manifest(pieceCount = 2)
+        val engine = SwarmEngine(SwarmConfig(), "rx", 1L)
+        val failed = record(m, SwarmRole.RECEIVER, SwarmLifecycleState.FAILED, setOf(0, 1))
+            .copy(failReason = SwarmFailReason.DAMAGED.reasonCode)
+
+        engine.handle(SwarmEvent.Restored(failed, 2000L))
+        val commands = engine.handle(SwarmEvent.LocalResume("g1", m.root, 2100L))
+
+        assertEquals(SwarmCommand.Finalize("g1", m.root), commands.filterIsInstance<SwarmCommand.Finalize>().single())
+        assertEquals(SwarmLifecycleState.VERIFYING, engine.snapshot().contents["g1" to m.root]?.state)
+        assertTrue(commands.filterIsInstance<SwarmCommand.Send>().none { it.frame is SwarmFrame.Request })
     }
 
     @Test

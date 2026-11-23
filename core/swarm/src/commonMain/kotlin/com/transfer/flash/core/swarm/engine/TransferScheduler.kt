@@ -268,6 +268,7 @@ internal class TransferScheduler(
         commands: MutableList<SwarmCommand>,
         onStateChanged: (ContentState) -> Unit,
     ) {
+        if (content.state != SwarmLifecycleState.VERIFYING) return
         if (e.ok) {
             content.state = SwarmLifecycleState.COMPLETE
             content.waitReason = null

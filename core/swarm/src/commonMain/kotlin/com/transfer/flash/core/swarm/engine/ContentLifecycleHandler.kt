@@ -6,6 +6,7 @@ import com.transfer.flash.core.swarm.codec.SourceState
 import com.transfer.flash.core.swarm.codec.SwarmFrame
 import com.transfer.flash.core.swarm.model.Bitfield
 import com.transfer.flash.core.swarm.model.ContentRoot
+import com.transfer.flash.core.swarm.model.SwarmFailReason
 import com.transfer.flash.core.swarm.model.SwarmLifecycleState
 import com.transfer.flash.core.swarm.model.SwarmRole
 import com.transfer.flash.core.swarm.model.SwarmTombstone
@@ -222,7 +223,20 @@ internal class ContentLifecycleHandler(
         commands: MutableList<SwarmCommand>,
         onResumed: (ContentState) -> Unit,
     ) {
-        if (content.state == SwarmLifecycleState.PAUSED_BY_USER) {
+        if (content.state == SwarmLifecycleState.FAILED && content.role == SwarmRole.RECEIVER &&
+            e.nowMs < content.expiresAtMs &&
+            (content.failReason == SwarmFailReason.DAMAGED.reasonCode ||
+                content.failReason == SwarmFailReason.STORAGE_FAILED.reasonCode)
+        ) {
+            content.failReason = null
+            content.verifyFailures = 0
+            content.storageUnavailable = false
+            val verifyLocalFile = content.isComplete && content.manifest != null
+            content.state = if (verifyLocalFile) SwarmLifecycleState.VERIFYING else SwarmLifecycleState.ACTIVE
+            commands.add(SwarmCommand.PersistRecord(content.toRecord(e.nowMs)))
+            if (verifyLocalFile) commands.add(SwarmCommand.Finalize(content.groupId, content.root))
+            onResumed(content)
+        } else if (content.state == SwarmLifecycleState.PAUSED_BY_USER) {
             content.state = SwarmLifecycleState.ACTIVE
             commands.add(SwarmCommand.PersistRecord(content.toRecord(e.nowMs)))
             onResumed(content)
