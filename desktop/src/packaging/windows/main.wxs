@@ -28,7 +28,7 @@
   <!-- The refreshed 2.3.2 carries new components and replaces the earlier 2.3.2
        within the same upgrade family. Both the standalone MSI and EXE use this code. -->
   <?if $(var.JpAppVersion) = "2.3.2" ?>
-    <?define FlashProductCode="{8C805950-5360-4A1A-9E13-02462985BCD4}"?>
+    <?define FlashProductCode="{1DC2CC2A-C3E2-4346-B9C9-D0A149D43DC5}"?>
     <?define FlashUpgradeIncludeMaximum="yes"?>
     <?define FlashDowngradeIncludeMinimum="no"?>
   <?else?>
