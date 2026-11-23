@@ -3022,6 +3022,12 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-23 — Refreshed group voice APK installed on the V760
+
+- **Build and device.** The release-signed arm64 2.3.2 build from `2457c0fa`, including group sender fix `54a69dcb`. V760 on Android 13.
+- **Verified.** In-place install, original install date, installed APK checksum, cold launch and more than 2 minutes and 45 seconds in the same process with the foreground service active and zero new Flash crashes.
+- **Owed.** Play a newly sent note on both recipients with the rebuilt senders under GROUP-VOICE-01.
+
 ### 2026-11-23 — Signed Flash 2.3.2 in-place update on V760
 
 - **Build and device.** `fa1a4118` on `dev`. V760 on Android 13, release-signed arm64 APK. Original install Flash 2.2.0 (5), release Flash 2.3.2 (7).

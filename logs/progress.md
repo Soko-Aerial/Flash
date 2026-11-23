@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2026-11-23 — Group voice 2.3.2 build installed on V760
+
+Installed the refreshed release-signed arm64 APK in place on the Android 13 V760. Flash reports 2.3.2 (version code 7), the installed SHA-256 matches `dist/2.3.2/SHA256SUMS.txt`, and Android retained the original install date. Flash cold-launched and its foreground service remained active in the original process for over 2 minutes and 45 seconds with no new crash entries. Evidence is in `build/reports/release-2.3.2-group-voice/v760-install.log` and `monitor.txt`. The three-device playback check remains under GROUP-VOICE-01.
+
 ## 2026-11-23 — Flash 2.3.2 group voice and Windows reinstall candidate
 
 Rebuilt all four signed APKs and both Windows installers with the group audio fix in `54a69dcb`. Commit `2457c0fa` scopes a new product code and an inclusive upgrade range to Windows 2.3.2. Both the MSI and the EXE's embedded package selected the earlier 2.3.2 registered on this PC as an upgrade target and matched its per-user installation context. Each package contains the rebuilt engine JAR. The full install is tracked under WIN-UPGRADE-02. See ERROR-1051.
