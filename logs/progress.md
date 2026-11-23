@@ -1,5 +1,17 @@
 # Progress Log
 
+## 2026-11-23 — Signed 2.3.2 update verified through the discovery service timeout window
+
+The first APK with the R8 startup fix cold-launched but hit a foreground-service promotion timeout after more than two minutes. Commit `fa1a4118` lets the visible activity request the service directly and keeps promotion in the service lifecycle. All 12 background notification and Quick Settings unit tests passed. The release build passed its lint gate, and all four signed APKs passed version, signer, alignment and DEX checks. The verified Windows installers and rebuilt APKs match the current `dist/2.3.2` manifest.
+
+The V760 accepted the latest arm64 APK in place with its original install date. Flash cold-launched and the discovery service was promoted. The original process and service remained active for 2 minutes and 55 seconds with no new Flash crashes. See ERROR-1049 and `build/reports/release-2.3.2-v760-service`. IFREV-02 still covers live Hub policy and the installed Windows steps.
+
+## 2026-11-23 — Signed Flash 2.3.2 installed and launched on Android 13
+
+The V760 had signed Flash 2.2.0 with the established release key. The in-place update exposed an ART `VerifyError` in the optimized conversation method during app startup. Commit `3289874a` applies a targeted R8 rule. The combined release script rebuilt and signed the four APKs and staged them with the previously verified Windows packages. All six checksums matched. The previous Android candidate is archived at `build/release-staging/3617fd21-9cec-4f68-ae61-bc714d4587c7/previous`.
+
+Reinstalled the corrected arm64 APK in place. Flash 2.3.2 (7) cold-launched, retained its original install date and matched the release SHA-256. The immediate startup check recorded zero new crashes. The delayed check exposed the separate service timeout recorded above. See ERROR-1048 and ERROR-1049.
+
 ## 2026-11-23 — Flash 2.3.2 releases refreshed with the Hub startup fix
 
 Rebuilt the four release-signed Android APKs and the Windows MSI and EXE from `4299921c`, which includes the Hub policy serializer fix in `692ebe5f`. The release build and Android release lint gate passed. All six new files in `dist/2.3.2` matched `SHA256SUMS.txt` and had new checksums. The previous set was archived and still matched its original manifest.

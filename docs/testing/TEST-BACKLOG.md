@@ -3006,6 +3006,12 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-23 — Signed Flash 2.3.2 in-place update on V760
+
+- **Build and device.** `fa1a4118` on `dev`. V760 on Android 13, release-signed arm64 APK. Original install Flash 2.2.0 (5), release Flash 2.3.2 (7).
+- **Verified.** Package upgrade, cold launch, original install date and installed SHA-256. The process remained alive and the foreground service stayed active for 2 minutes and 55 seconds with no new crashes. [ERROR-1048](../../logs/errors.md#error-1048--signed-android-release-crashes-during-startup-verification-on-android-13) · [ERROR-1049](../../logs/errors.md#error-1049--signed-android-update-can-leave-a-foreground-service-start-pending)
+- **Owed.** Live Hub policy and reconnect on signed Android, Quick Settings and foreground restart on API 34+, and the installed Windows steps in IFREV-02.
+
 ### 2026-11-23 — Hub policy startup smoke on Android debug
 
 - **Build and device.** `692ebe5f` on `dev`. Flash 2.3.2 debug (version code 7), arm64, Infinix X6882B on Android 14.
@@ -8877,10 +8883,10 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 
 ### IFREV-02 — Live group policy change and delayed refresh
 
-- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients from the refreshed `dist/2.3.2` candidate (`4299921c`, ERROR-1047).
+- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients from `dist/2.3.2`. Use Android `fa1a4118` and Windows `4299921c`.
 - **Steps:** Cold-launch both clients and observe the Hub connection through one 60-second policy refresh interval. Change to required while both clients are open. Delay the next policy response and exercise a reconnect and enrollment change against the test setup.
 - **Pass:** Both clients start and remain open through the refresh. Connected clients converge on current policy. Delayed responses cannot restore a superseded or wrong-enrollment policy. A refresh failure preserves confidentiality and shows an accurate state.
-- **Source:** ERROR-1032, ERROR-1047 and IF-02. The 2026-11-23 Android debug smoke passed startup with an existing enrollment.
+- **Source:** ERROR-1032, ERROR-1047, ERROR-1048 and IF-02. The 2026-11-23 Android debug smoke passed startup with an existing enrollment. The signed V760 build passed cold launch after the in-place update.
 - **Status:** TODO
 
 ### IFREV-03 — Partly successful member addition

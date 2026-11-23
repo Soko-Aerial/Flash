@@ -925,6 +925,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-23 — Signed Android 2.3.2 installed and verified on V760 (ERROR-1048/1049).** Commit `3289874a` works around invalid R8 output for the conversation screen and `fa1a4118` fixes the visible activity's delayed service timeout. The current arm64 APK in `dist/2.3.2` installed in place over signed Flash and stayed open with the foreground service active for 2 minutes and 55 seconds on Android 13. IFREV-02 tracks the remaining installed release checks.
+
 **2026-11-23 — Flash 2.3.2 release artifacts refreshed (ERROR-1047).** Commit `692ebe5f` generates the group-policy serializer. The debug APK installed in place on the enrolled Android 14 Infinix and stayed open through the next refresh interval. The refreshed Windows installers and signed Android APKs in `dist/2.3.2` contain the fix. Run IFREV-02 on signed Android and installed Windows.
 
 **2026-11-23 — Windows and Android 2.3.2 release candidate (ERROR-1046).** Hub key approval binds to the exact fingerprint, sealing uses a single directory snapshot, and persisted holds survive offline restart. Confirmation advances that peer's retry deadline. Nearby lists all LAN IPv4 endpoints. Android version code is 7 and Windows installers use the existing upgrade family. See the handoff and device backlog for the build and retest evidence.

@@ -1,5 +1,45 @@
 # Error Log
 
+## ERROR-1049 — Signed Android update can leave a foreground-service start pending
+
+### Date and environment
+
+2026-11-23, V760 on Android 13 (API 33), signed Flash 2.3.2 (version code 7). The APK with ERROR-1048 fixed cold-launched and showed its activity.
+
+### Symptoms and root cause
+
+After just over two minutes, Android reported `ForegroundServiceDidNotStartInTimeException` for `.debug.FlashBackgroundService`. The stack points to the activity's `startForegroundService()` call. The system logged that it was still waiting for foreground promotion, and the first process never logged the service's promotion attempt. Launch from the phone after the process exited promoted the service immediately. The visible activity was using a service-start API with a mandatory promotion deadline while Android could delay the service callback after replacement.
+
+### Fix
+
+The visible activity starts the service with `startService()`. The service still promotes immediately in `onCreate`, and retries on a new start request if an existing instance has not yet promoted. Background callers use their existing entry point. See the 2026-11-23 [platform note](../docs/android-platform-notes.md#2026-11-23--discovery-service-startup-after-a-signed-update).
+
+### Verification
+
+Commit `fa1a4118` built and signed all four APKs. All 12 background notification and Quick Settings unit tests passed. The arm64 package cold-launched on the V760 after an in-place update. The APK hash matched the release and the original install date was preserved. Android reported the discovery service foreground in the original app process throughout the 2 minute 55 second check, with zero new crashes. Build and device evidence is in `build/reports/release-2.3.2-v760-service`.
+
+### Status
+
+RESOLVED for the observed signed update on the V760. The corrected 2.3.2 APKs are in `dist/2.3.2`.
+
+## ERROR-1048 — Signed Android release crashes during startup verification on Android 13
+
+### Date and environment
+
+2026-11-23, V760 running Android 13 (API 33), arm64 Flash 2.3.2 release (version code 7), R8 9.3.16. The signed 2.2.0 installation had the matching Flash release certificate. The in-place installation completed successfully.
+
+### Symptoms and root cause
+
+The process crashed twice while AndroidX Startup initialized WorkManager. ART rejected `ua4.j` at `0x17CC` with `type Conflict unexpected as arg to if-eqz/if-nez`. The matching R8 map shows that the optimizer moved `FlashConversationScreen` into the merged class mapped as `kotlin.math.MathKt`. The release signature and APK checksum had passed. An on-device cold launch was needed to expose the invalid bytecode.
+
+### Fix and verification
+
+Commit `3289874a` prevents R8 from optimizing the conversation facade and screen method while allowing shrinking and renaming. Verified in the new R8 mapping and every release APK that the method has a separate facade. All four signed APKs contain the Hub policy serializer, match their manifest and signer, and pass the ZIP alignment check. The same-version `adb install -r` on the V760 preserved the original install date. Flash cold-launched in 623 ms, and its first follow-up showed the same process and zero new crash entries. Evidence is in `build/reports/release-2.3.2-v760-verifier`.
+
+### Status
+
+RESOLVED for the observed startup crash. The refreshed signed APKs are in `dist/2.3.2`. IFREV-02 tracks live Hub policy changes and reconnects on installed release builds.
+
 ## ERROR-1047 — Android crashes when reading Hub group policy
 
 ### Date and environment

@@ -1,5 +1,9 @@
 # Android Platform Notes
 
+## 2026-11-23 — Discovery service startup after a signed update
+
+On the Android 13 V760 (API 33, app target API 36), the first launch after an in-place update could receive a `ForegroundServiceDidNotStartInTimeException` before the discovery service logged its foreground promotion. A visible activity can use `startService()`, which starts the service without the deadline attached to a `startForegroundService()` request. The service promotes itself in `onCreate` and can retry promotion on a new start request if the instance was already running. The Quick Settings and background retry entry points use the foreground-service start API and its existing restrictions. [Background execution limits](https://developer.android.com/about/versions/oreo/background) · [Foreground-service troubleshooting](https://developer.android.com/develop/background-work/services/fgs/troubleshooting)
+
 ## 2026-11-22 — Refresh Nearby after a LAN address change
 
 On the app's supported API 24+ range, Nearby requests Wi-Fi and Ethernet callbacks and refreshes its address snapshot when link properties change. From Android 8.0 (API 26), the platform documents the initial link-properties callback immediately after availability and capability callbacks. Flash reads addresses asynchronously and also samples while Nearby is visible to cover hosted hotspot interfaces without a corresponding Android `Network`. The Wi-Fi radio toggle alone does not indicate that a LAN address is ready. [Android network state](https://developer.android.com/develop/connectivity/network-ops/reading-network-state) · [NetworkCallback](https://developer.android.com/reference/android/net/ConnectivityManager.NetworkCallback)
