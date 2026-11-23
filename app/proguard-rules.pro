@@ -10,3 +10,9 @@
     public static int v(...);
     public static int d(...);
 }
+
+# ERROR-1048: R8 9.3.16 moved this Compose method into a merged class and emitted
+# a branch Android 13 cannot verify. Keep the facade and this method out of optimization.
+-keep,allowshrinking,allowobfuscation class com.transfer.flash.ui.chat.FlashConversationScreenKt {
+    public static void FlashConversationScreen(...);
+}
