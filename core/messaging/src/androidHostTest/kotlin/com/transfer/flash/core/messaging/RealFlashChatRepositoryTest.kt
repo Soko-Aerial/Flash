@@ -372,6 +372,9 @@ class RealFlashChatRepositoryTest {
             }
         }
 
+        override suspend fun makePendingDueForPeer(peerId: String, senderId: String, now: Long) =
+            error("This outbox fake has no message store")
+
         override suspend fun delete(localId: String) {
             queue.remove(localId)
             countFlow.value = queue.size

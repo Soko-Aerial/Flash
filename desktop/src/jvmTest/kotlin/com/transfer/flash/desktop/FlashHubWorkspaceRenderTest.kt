@@ -48,6 +48,7 @@ class FlashHubWorkspaceRenderTest {
             "Amara Okafor",
             newCode = "0123 4567 89ab cdef",
             oldCode = "aaaa bbbb cccc dddd",
+            pendingFingerprint = "0123456789abcdef".repeat(4),
         )
         val sample = sampleFlashConversationState()
         val conversation = sample.copy(
@@ -72,7 +73,7 @@ class FlashHubWorkspaceRenderTest {
         val cases = listOf(KeyCase("desktop", 1100, 720, dark = true), KeyCase("phone", 390, 800), KeyCase("large-text", 320, 800, 2f))
         SwingUtilities.invokeAndWait {
             for (case in cases) {
-                var trustedPeer: String? = null
+                var trustedKey: Pair<String, String>? = null
                 val scene = ImageComposeScene(case.width, case.height, density = Density(1f, case.scale)) {
                     FlashTheme(darkTheme = case.dark, motion = rememberFlashMotion(reduceMotion = true)) {
                         FlashConversationScreen(
@@ -82,7 +83,7 @@ class FlashHubWorkspaceRenderTest {
                             onBack = {},
                             onSendText = {},
                             onAttachmentClick = {},
-                            onConfirmHubKeyChange = { trustedPeer = it },
+                            onConfirmHubKeyChange = { peer, key -> trustedKey = peer to key },
                         )
                     }
                 }
@@ -98,15 +99,16 @@ class FlashHubWorkspaceRenderTest {
                         scene.render(300_000_000).use { frame ->
                             frame.encodeToData()!!.use { File(directory, "key-verification-desktop.png").writeBytes(it.bytes) }
                         }
-                        assertNull(trustedPeer, "Opening the comparison must not trust the new key")
+                        assertNull(trustedKey, "Opening the comparison must not trust the new key")
                         scene.tap(Offset(612f, 456f)) // Cancel in the fixed-size desktop fixture.
                         scene.render(400_000_000).close()
-                        assertNull(trustedPeer, "Cancel must leave the key pending")
+                        assertNull(trustedKey, "Cancel must leave the key pending")
                         scene.tap(verify)
                         scene.render(500_000_000).close()
                         scene.tap(Offset(710f, 456f)) // Trust new key.
                         scene.render(600_000_000).close()
-                        assertEquals(peerId, trustedPeer)
+                        assertEquals(peerId, trustedKey?.first)
+                        assertEquals(notice.pendingFingerprint, trustedKey?.second)
                     }
                 } finally {
                     scene.close()

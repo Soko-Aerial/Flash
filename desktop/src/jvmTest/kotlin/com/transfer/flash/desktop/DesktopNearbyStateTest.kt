@@ -143,17 +143,18 @@ class DesktopNearbyStateTest {
 
     @Test
     fun lanAddressAppearingAndDisappearingUpdatesNearbyWithoutAnyPeers() {
-        fun state(address: String?) = stateOf(
+        fun state(addresses: List<String>) = stateOf(
             trusted = emptyList(),
             discovered = emptyList(),
-            localAddressLabel = address,
+            localAddresses = addresses,
         )
 
-        assertFalse(state(null).radiosAvailable)
-        val connected = state("192.168.1.25")
+        assertFalse(state(emptyList()).radiosAvailable)
+        val addresses = listOf("192.168.1.25", "192.168.43.1")
+        val connected = state(addresses)
         assertTrue(connected.radiosAvailable)
-        assertEquals("192.168.1.25", connected.identity.localAddressLabel)
-        assertFalse(state(null).radiosAvailable)
+        assertEquals(addresses, connected.identity.localAddresses)
+        assertFalse(state(emptyList()).radiosAvailable)
     }
 
     // ------------------------------------------------------------------ helpers
@@ -164,7 +165,7 @@ class DesktopNearbyStateTest {
         ui: FlashPairingCoordinator.PairingUi? = null,
         ready: Boolean = true,
         liveSessions: Int = 0,
-        localAddressLabel: String? = null,
+        localAddresses: List<String> = emptyList(),
     ) = nearbyUiStateOf(
         trusted = trusted,
         discovered = discovered,
@@ -174,7 +175,7 @@ class DesktopNearbyStateTest {
         localFriendlyName = "Flash Desktop",
         localDeviceId = LOCAL_ID,
         liveSessions = liveSessions,
-        localAddressLabel = localAddressLabel,
+        localAddresses = localAddresses,
     )
 
     /**

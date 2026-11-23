@@ -2,6 +2,8 @@
 
 > **2026-11-22 connection recovery:** Nearby updates its network state while the tab stays open. An empty connected page shows this device's IPv4 address and Flash port. **Connect by IP** is also available from the no-network panel and opens the same manual connection dialog.
 
+> **2026-11-23 multi-network addresses:** The identity card and empty connected panel list each distinct LAN IPv4 endpoint. This lets a peer on a hosted hotspot or a second adapter select the address for its network. Existing offline and manual connection states apply.
+
 > **2026-11-06 component refinement:** [Current refinement plan](transfers-nearby-refinement.md) preserves the existing screen design. The separate workspace redesign was rejected/rolled back. Historical demo-only wiring notes below are superseded by the Android/desktop host implementation.
 
 **Status:** IMPLEMENTED

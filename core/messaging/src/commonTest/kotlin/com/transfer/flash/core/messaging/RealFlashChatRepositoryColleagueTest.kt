@@ -208,6 +208,9 @@ class RealFlashChatRepositoryColleagueTest {
             outbox.replaceAll { _, v -> v.copy(attempts = 0, nextAttemptAt = now) }
         }
 
+        override suspend fun makePendingDueForPeer(peerId: String, senderId: String, now: Long) =
+            error("This outbox fake has no message store")
+
         override suspend fun incrementAttempts(localId: String) {
             outbox[localId]?.let { outbox[localId] = it.copy(attempts = it.attempts + 1) }
         }

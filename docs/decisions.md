@@ -5181,7 +5181,7 @@ An organisation asks for WebAuthn or SSO, a second language is needed, or the co
 - **Verify** opens the existing peer details; the notice itself shows the new and the old short codes so the two people can compare them out loud. A dedicated "compare sealing codes" screen is not built.
 - Pins are local to a device and are not part of any backup. Removing a colleague from the directory does not remove the pin.
 - The hub notice of a conversation is computed whenever the conversation state emits; a hub-linked group's notice can therefore be stale until the next emission after the "Messages through the hub" switch is flipped (accepted for now).
-- A message held for a changed key is retried at once when the user taps Continue (`confirmHubKeyChange` drains the outbox).
+- Key approval compares the prompt's full fingerprint under the pin lock. Sealing checks and uses one directory snapshot. The relay retry budget honors the persisted pending pin when the relay is unavailable, and confirmation makes that peer's unacknowledged rows due under the drain lock (2026-11-23).
 - Not built: group sealing, sealing keys for the Desktop `Rejected` handlers, a key-transparency log. The hub-delivery notes (`hubDeliveryNotes`) are still not rendered anywhere in the chat UI (pre-existing gap, now partly covered by the inline notice).
 - Not device-verified: all of it. Tests `HUBH-01`..`HUBH-08`, `HUBC-05`, `HUBC-06`, `HUBE-05` in `docs/testing/TEST-BACKLOG.md`.
 

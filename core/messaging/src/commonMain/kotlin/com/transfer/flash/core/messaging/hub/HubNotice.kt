@@ -60,13 +60,15 @@ public object HubNoticeMath {
             val kind = if (contentViaHub) FlashHubNoticeKind.GROUP_READABLE else FlashHubNoticeKind.GROUP_HUB_OFF
             return FlashHubNoticeUi(kind, peerId = conversationId, peerName = "")
         }
-        if (changedKey != null && changedKey.blocked) {
+        val pendingFingerprint = changedKey?.pending
+        if (changedKey != null && pendingFingerprint != null) {
             return FlashHubNoticeUi(
                 kind = FlashHubNoticeKind.KEY_CHANGED,
                 peerId = conversationId,
                 peerName = peerName,
-                newCode = HubSealingFingerprint.short(changedKey.pending ?: changedKey.pinned),
+                newCode = HubSealingFingerprint.short(pendingFingerprint),
                 oldCode = HubSealingFingerprint.short(changedKey.pinned),
+                pendingFingerprint = pendingFingerprint,
             )
         }
         if (peerOnline) return null

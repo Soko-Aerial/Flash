@@ -10,7 +10,12 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## Unreleased
 
+## [2.3.2] - 2026-11-23
+
 - **Hub chat** shows a security-key banner beside the composer. When outgoing messages are waiting, it prompts you to verify the new key. Compare the code with your contact before trusting it. Your own code appears in Hub connection details.
+- Hub approval applies to the exact key shown in the prompt. Queued messages stay eligible for relay delivery across an offline restart and become due when the key is approved.
+- Nearby lists the available LAN addresses and port on Android and Windows so peers can connect using the address for their network.
+- Android uses version code 7. The Windows 2.3.2 MSI and EXE use the existing upgrade family and supersede the earlier 2.3.0 and 2.3.1 test installers.
 
 ## [2.3.0] - 2026-11-21
 
@@ -27,7 +32,7 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 ### Upgrading the apps
 
 - **Android:** `versionName 2.3.0`, `versionCode 6`. Install over a release-signed `2.1.0` or `2.2.0` build using the same release signing key and APK ABI variant. Existing `v2.0.0-beta` debug-signed installs still require uninstall first (deleting local data).
-- **Windows:** Install `Flash-2.3.0.msi` or `Flash-2.3.0.exe` in place (not Authenticode-signed).
+- **Windows:** Use the 2.3.2 installers above. The rebuilt 2.3.0 packages failed a same-version update.
 - **Linux:** `.deb` and `.tar.gz` desktop packages are built and released separately from the permanent `linux` branch (`origin/linux`). See [Install Flash on Linux](docs/install-linux.md).
 
 ### KMP library 2.3.0-beta.1

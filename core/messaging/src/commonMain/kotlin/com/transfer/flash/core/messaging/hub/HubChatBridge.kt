@@ -93,7 +93,11 @@ public interface HubSealingPort {
         if (canSealFor(recipientDeviceId)) HubSealingStatus.AVAILABLE else HubSealingStatus.NOT_PUBLISHED
 
     /** The user chose to continue with the new key of [recipientDeviceId]. False when nothing was waiting. */
-    public suspend fun confirmKeyChange(recipientDeviceId: String): Boolean = false
+    public suspend fun confirmKeyChange(recipientDeviceId: String, expectedFingerprint: String): Boolean = false
+
+    /** Uses the stored pending pin even before the relay reconnects. */
+    public suspend fun hasPendingKeyChange(recipientDeviceId: String): Boolean =
+        pendingKeyChanges.value.containsKey(recipientDeviceId)
 
     /** Colleagues whose sealing key changed and waits for the user, with the old and the new key (ADR-126). */
     public val pendingKeyChanges: StateFlow<Map<String, HubSealingPin>>
@@ -292,8 +296,8 @@ public class HubChatBridge(
     }
 
     /** The user confirmed the new key of [recipientDeviceId]. True when a change was waiting; the hold is lifted at once. */
-    public suspend fun confirmKeyChange(recipientDeviceId: String): Boolean {
-        val confirmed = sealing?.confirmKeyChange(recipientDeviceId) == true
+    public suspend fun confirmKeyChange(recipientDeviceId: String, expectedFingerprint: String): Boolean {
+        val confirmed = sealing?.confirmKeyChange(recipientDeviceId, expectedFingerprint) == true
         if (confirmed) setWaiting(recipientDeviceId, null)
         return confirmed
     }
@@ -354,7 +358,7 @@ public class HubChatBridge(
         if (isHubAccepted(messageId)) return true
         if (canCarry(recipientDeviceId, group)) return true
         // A message that waits for the user's decision about a changed key is kept, not failed after the short budget.
-        return _waiting.value[recipientDeviceId] == HubWaitReason.KEY_CHANGED
+        return sealing?.hasPendingKeyChange(recipientDeviceId) == true
     }
 
     /**

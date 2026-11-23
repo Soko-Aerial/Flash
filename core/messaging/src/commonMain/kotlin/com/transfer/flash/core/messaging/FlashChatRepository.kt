@@ -165,7 +165,7 @@ public interface FlashChatRepository {
      * The user chose to continue sending to [peerDeviceId] through the hub after their sealing key changed (ADR-126).
      * Returns false when nothing was waiting. Messages held back for that colleague are sent right away.
      */
-    public suspend fun confirmHubKeyChange(peerDeviceId: String): Boolean = false
+    public suspend fun confirmHubKeyChange(peerDeviceId: String, expectedFingerprint: String): Boolean = false
 
     /** Approves a pending join request for [groupId] and issues a certificate (GM-4). Admin-only. */
     public suspend fun approveJoinRequest(groupId: String, subjectId: String): FlashResult<Unit> =

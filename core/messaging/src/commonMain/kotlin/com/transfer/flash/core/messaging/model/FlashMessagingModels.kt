@@ -669,6 +669,8 @@ public data class FlashHubNoticeUi(
     val peerName: String,
     val newCode: String? = null,
     val oldCode: String? = null,
+    /** Full fingerprint of the key displayed as [newCode], for exact confirmation. */
+    val pendingFingerprint: String? = null,
 )
 
 /**

@@ -27,8 +27,10 @@ wrapper, or `powershell -ExecutionPolicy Bypass -File tools\build-release.ps1 ..
 
 ## Output
 
-Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run it goes to
-`dist\desktop-<packageVersion>\`:
+Combined builds go to `dist\<versionName>\` (git-ignored). Desktop-only and Android-only runs
+use `dist\desktop-<packageVersion>\` and `dist\android-<versionName>\`. Each run stages a complete
+candidate under `build\release-staging\` and lists only the artifacts it produced in the checksum
+manifest. A previous candidate at the same destination is retained in that run's staging folder.
 
 | File | What it is |
 |---|---|
@@ -43,14 +45,14 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 
 | What | File | 2.3 release train |
 |---|---|---|
-| Android version name and code | `app/build.gradle.kts` | `2.3.0` / `6` |
-| Windows installer version | `desktop/build.gradle.kts` | `2.3.1` desktop-only installer fix |
+| Android version name and code | `app/build.gradle.kts` | `2.3.2` / `7` |
+| Windows installer version | `desktop/build.gradle.kts` | `2.3.2` |
 | KMP library and WebRTC fork | `gradle.properties` → `flashLibraryVersion` | `2.3.0-beta.1` |
 | Hub server distribution | `server/build.gradle.kts` | `2.3.0-beta.1` |
 | Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.3.0-beta.1` |
 | Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.3.0-beta.1` |
 
-The coordinated Android and Windows release tag is `v2.3.0`. The Windows installer fix is built separately.
+The coordinated Android and Windows release tag is `v2.3.2`.
 The JitPack tag is `v2.3.0-beta.1`, under
 `com.github.Soko-Aerial.Flash:<module>:v2.3.0-beta.1`. The independent Hub distribution tag is
 `server-v2.3.0-beta.1`. Use the release checklist in the changelog and test backlog before
@@ -154,7 +156,7 @@ uninstalled, which deletes its chats, trust list and identity, before a new buil
 
 ### Release key for in-place Android upgrades
 
-Sign 2.3.0 with the same key as 2.1.0 and 2.2.0 in `~/.flash-signing/flash-release.jks`
+Sign 2.3.2 with the same key as 2.1.0 and 2.2.0 in `~/.flash-signing/flash-release.jks`
 (`CN=Flash, OU=Release`). Verify that every signed APK has certificate SHA-256
 `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af` before uploading.
 
@@ -179,8 +181,8 @@ so SmartScreen shows "unknown publisher". Signing them needs a code-signing cert
 script doesn't do yet. The Linux `.deb` target in `desktop/build.gradle.kts` can only be built on Linux, so the
 script doesn't attempt it.
 
-These are the non-ProGuard `package*` tasks. The desktop-only `2.3.1` build produces
-`Flash-2.3.1.msi` and `Flash-2.3.1.exe` under `dist\desktop-2.3.1\`.
+These are the non-ProGuard `package*` tasks. The desktop-only build produces
+`Flash-2.3.2.msi` and `Flash-2.3.2.exe` under `dist\desktop-2.3.2\`.
 `packageRelease*` (ProGuard) has never been verified for this app.
 
 Use a higher Windows package version for an installable rebuild when the jpackage application files

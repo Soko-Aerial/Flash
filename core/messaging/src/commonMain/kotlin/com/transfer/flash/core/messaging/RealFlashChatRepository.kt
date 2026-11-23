@@ -798,10 +798,13 @@ public class RealFlashChatRepository(
     public suspend fun evaluateHubGroupE2ee(groupId: String): GroupE2eeGroupState? =
         hubBridge?.evaluateGroupE2ee(groupId)
 
-    override suspend fun confirmHubKeyChange(peerDeviceId: String): Boolean {
+    override suspend fun confirmHubKeyChange(peerDeviceId: String, expectedFingerprint: String): Boolean {
         val bridge = hubBridge ?: return false
-        if (!bridge.confirmKeyChange(peerDeviceId)) return false
-        // Messages held back for this colleague are due again now, not at the next backoff step.
+        // A drain already sending a row must finish before we change its retry deadline.
+        drainMutex.withLock {
+            if (!bridge.confirmKeyChange(peerDeviceId, expectedFingerprint)) return false
+            outboxDao.makePendingDueForPeer(peerDeviceId, localDeviceId, timeSource.nowMs())
+        }
         notifyOutboxDrain()
         return true
     }

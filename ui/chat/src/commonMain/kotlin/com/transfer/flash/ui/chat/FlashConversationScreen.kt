@@ -330,7 +330,7 @@ fun FlashConversationScreen(
     /** ADR-100 / UI-057: the join card's "Not now" / "OK". */
     onSkipGroupHistory: ((groupId: String) -> Unit)? = null,
     /** ADR-126: the user chose Continue on a changed colleague key; the host confirms the new sealing key. Null hides the choice. */
-    onConfirmHubKeyChange: ((peerDeviceId: String) -> Unit)? = null,
+    onConfirmHubKeyChange: ((peerDeviceId: String, fingerprint: String) -> Unit)? = null,
     /** ADR-100 / UI-057: "Load older messages" in the group settings sheet. */
     onLoadOlderGroupHistory: ((groupId: String, windowMs: Long) -> Unit)? = null,
     /** ADR-100 / UI-057: an admin changes the signed history ceiling (a `GroupHistoryCeiling` name). */
@@ -599,7 +599,8 @@ fun FlashConversationScreen(
     }
     val scrollableHubNotice = state.hubNotice?.takeUnless(FlashHubNoticeMath::needsDecision)
     val hasScrollableBanners = (state.groupHistory != null && conversationId != null) || scrollableHubNotice != null
-    var showHubKeyVerification by remember(conversationId, hubKeyNotice?.peerId, hubKeyNotice?.newCode, hubKeyNotice?.oldCode) {
+    val pendingHubFingerprint = hubKeyNotice?.pendingFingerprint
+    var showHubKeyVerification by remember(conversationId, hubKeyNotice?.peerId, pendingHubFingerprint) {
         mutableStateOf(false)
     }
     val menuItems = if (state.header.isGroup) {
@@ -998,7 +999,9 @@ fun FlashConversationScreen(
                     FlashHubKeyChangeBanner(
                         notice = notice,
                         message = remember(state.messages) { hubKeyBannerMessage(state.messages) },
-                        onVerify = if (onConfirmHubKeyChange != null) ({ showHubKeyVerification = true }) else null,
+                        onVerify = if (onConfirmHubKeyChange != null && pendingHubFingerprint != null) {
+                            { showHubKeyVerification = true }
+                        } else null,
                     )
                 }
                 // A direct chat set to Never looked exactly like an unreachable peer: the header drops
@@ -1315,8 +1318,8 @@ fun FlashConversationScreen(
                             scrollableHubNotice?.let { notice ->
                                 FlashHubNotice(
                                     notice = notice,
-                                    onContinue = { onConfirmHubKeyChange?.invoke(notice.peerId) },
-                                    onVerify = { showPeerDetails = true },
+                                    onContinue = {},
+                                    onVerify = {},
                                 )
                             }
                         }
@@ -1347,13 +1350,13 @@ fun FlashConversationScreen(
         }
     }
 
-    if (showHubKeyVerification && hubKeyNotice != null && onConfirmHubKeyChange != null) {
+    if (showHubKeyVerification && hubKeyNotice != null && pendingHubFingerprint != null && onConfirmHubKeyChange != null) {
         FlashHubKeyVerification(
             notice = hubKeyNotice,
             onDismiss = { showHubKeyVerification = false },
             onTrust = {
                 showHubKeyVerification = false
-                onConfirmHubKeyChange(hubKeyNotice.peerId)
+                onConfirmHubKeyChange(hubKeyNotice.peerId, pendingHubFingerprint)
             },
         )
     }

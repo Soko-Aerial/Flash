@@ -93,7 +93,7 @@ class HubSealingPairedIdentityTest {
         assertEquals(HubSealingStatus.IDENTITY_MISMATCH, s.statusFor("bob"))
         assertNull(s.seal("bob", "m1", 1L, "chat", "secret"))
         assertEquals(false, s.canSealFor("bob"))
-        assertEquals(false, s.confirmKeyChange("bob"))
+        assertEquals(false, s.confirmKeyChange("bob", "unconfirmed"))
     }
 
     @Test

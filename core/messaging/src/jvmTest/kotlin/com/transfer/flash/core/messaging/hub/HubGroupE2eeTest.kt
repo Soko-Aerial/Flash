@@ -305,7 +305,10 @@ class HubGroupE2eeTest {
         assertEquals(GroupE2eeCompatStatus.BLOCKED_KEY_CHANGED, aliceBridge.evaluateGroupE2ee("g-eng")?.status)
 
         // Confirm key change works, then simulate directory IDENTITY_MISMATCH via pinned fingerprint
-        assertTrue(aliceBridge.confirmKeyChange("bob"))
+        assertTrue(aliceBridge.confirmKeyChange(
+            "bob",
+            com.transfer.flash.core.security.enterprise.HubSealingFingerprint.of(legacyBob.sealingKey!!.publicKeyEncoded),
+        ))
         alice.pairedPins["bob"] = "DEADBEEF00000000000000000000000000000000000000000000000000000000"
         assertFalse(aliceBridge.sendGroup("bob", "m-mismatch", now + 3000L, msg("g-eng", "m-mismatch", "alice", "held")))
         assertEquals(GroupE2eeCompatStatus.BLOCKED_IDENTITY_MISMATCH, aliceBridge.evaluateGroupE2ee("g-eng")?.status)

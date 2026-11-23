@@ -300,6 +300,9 @@ internal class InMemoryOutboxDao : OutboxDao {
         }
     }
 
+    override suspend fun makePendingDueForPeer(peerId: String, senderId: String, now: Long) =
+        error("This outbox fake has no message store")
+
     override suspend fun incrementAttempts(localId: String) {
         queue[localId]?.let { queue[localId] = it.copy(attempts = it.attempts + 1) }
     }

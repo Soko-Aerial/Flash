@@ -21,8 +21,8 @@ take the whole engine or just the transport pieces you need. Supports **Android 
 
 ## Get the app
 
-Download the Android APK, Windows installers or Linux packages from the
-[Flash 2.3.0 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.0). Verify Android and
+Download the Android APK or Windows installers from the
+[Flash 2.3.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.2). Verify Android and
 Windows files against `SHA256SUMS.txt` and Linux files against `SHA256SUMS-linux.txt`.
 
 - **Android 7.0 (API 24) or newer.** Allow "install unknown apps" for your browser or file manager, then open the APK.
@@ -503,7 +503,7 @@ resolution against the published tree.
 
 On desktop, the `:desktop` module provides a complete Compose Desktop application shell bundling
 `DesktopEngine`, Room encrypted SQLite database (`sqlite-jdbc-crypt`), system tray, single-instance
-enforcement, and native Windows installers (`Flash-2.3.0.exe` and `Flash-2.3.0.msi`; Linux `.deb`/`.tar.gz` packages are built from the permanent `linux` branch). Voice and video
+enforcement, and native Windows installers (`Flash-2.3.2.exe` and `Flash-2.3.2.msi`; Linux `.deb`/`.tar.gz` packages are built from the permanent `linux` branch). Voice and video
 calling on JVM is enabled via vendored multiplatform WebRTC.
 
 ## License

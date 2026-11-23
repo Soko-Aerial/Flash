@@ -1948,7 +1948,7 @@ private fun FlashShell(
         )
     }
 
-    var localLanAddress by remember { mutableStateOf<String?>(null) }
+    var localLanAddresses by remember { mutableStateOf(emptyList<String>()) }
     val networkRefresh = remember { MutableStateFlow(0) }
     DisposableEffect(toastContext, networkRefresh) {
         val cm = toastContext.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -1993,11 +1993,11 @@ private fun FlashShell(
     }
     LaunchedEffect(toastContext, ready, discoveryState.advertisedPort, networkRefresh) {
         networkRefresh.collectLatest {
-            localLanAddress = withContext(Dispatchers.IO) {
+            localLanAddresses = withContext(Dispatchers.IO) {
                 runCatching {
                     com.transfer.flash.core.network.util.LocalNetworkAddresses(toastContext)
-                        .ipv4Addresses().firstOrNull()
-                }.getOrNull()
+                        .ipv4Addresses()
+                }.getOrDefault(emptyList())
             }
         }
     }
@@ -2320,10 +2320,10 @@ private fun FlashShell(
                     displayName = engine.localFriendlyName,
                     deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
                     port = discoveryState.advertisedPort,
-                    localAddressLabel = localLanAddress,
+                    localAddresses = localLanAddresses,
                 ),
                 isScanning = discoveryState.isDiscovering,
-                radiosAvailable = !ready || localLanAddress != null ||
+                radiosAvailable = !ready || localLanAddresses.isNotEmpty() ||
                     discoveredEndpoints.isNotEmpty() || activeSessions.isNotEmpty(),
                 // ERROR-034: the Nearby page has had a Loading branch all along and nothing reached it,
                 // so for the whole boot the tab rendered the first-run "no devices" panel under the
@@ -3103,7 +3103,9 @@ private fun FlashShell(
                     }
                 }
             },
-            onConfirmHubKeyChange = { peerId -> scope.launch { chatRepository.confirmHubKeyChange(peerId) } },
+            onConfirmHubKeyChange = { peerId, fingerprint ->
+                scope.launch { chatRepository.confirmHubKeyChange(peerId, fingerprint) }
+            },
             onSkipGroupHistory = { gid ->
                 scope.launch {
                     val res = chatRepository.skipGroupHistory(gid)

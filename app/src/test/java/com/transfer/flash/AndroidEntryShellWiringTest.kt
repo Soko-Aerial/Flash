@@ -195,8 +195,8 @@ class AndroidEntryShellWiringTest {
     fun `MainActivity wires Phase 4 nearby, transfers, pairing retry, and call dismiss`() {
         val main = repoFile("app/src/main/java/com/transfer/flash/MainActivity.kt")
         val nearbyState = main.substringAfter("val nearby by remember").substringBefore("val activeSessionPeerIds")
-        assertTrue(nearbyState.contains("localAddressLabel = localLanAddress"))
-        assertTrue(nearbyState.contains("radiosAvailable = !ready || localLanAddress != null"))
+        assertTrue(nearbyState.contains("localAddresses = localLanAddresses"))
+        assertTrue(nearbyState.contains("radiosAvailable = !ready || localLanAddresses.isNotEmpty()"))
         assertTrue(main.contains("override fun onLinkPropertiesChanged("))
         assertTrue(main.contains("onOpenWifiSettings ="))
         assertTrue(main.contains("onManualConnectSuspend ="))

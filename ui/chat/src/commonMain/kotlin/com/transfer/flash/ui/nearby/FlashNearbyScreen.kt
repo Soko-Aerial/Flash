@@ -94,6 +94,7 @@ data class NearbyIdentityUi(
     val deviceIdShort: String,
     val port: Int,
     val localAddressLabel: String? = null,
+    val localAddresses: List<String> = emptyList(),
 )
 
 data class NearbyPeerUi(
@@ -248,8 +249,12 @@ object FlashNearbyMath {
         "id ${identity.deviceIdShort.take(8)} · port ${identity.port}"
 
     fun identityAddressLine(identity: NearbyIdentityUi): String? {
-        val addr = identity.localAddressLabel?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        return if (identity.port > 0) "IP $addr · port ${identity.port}" else "IP $addr"
+        val addresses = identity.localAddresses.ifEmpty { listOfNotNull(identity.localAddressLabel) }
+            .map(String::trim).filter(String::isNotEmpty).distinct()
+        if (addresses.isEmpty()) return null
+        return addresses.joinToString("\n") { addr ->
+            if (identity.port > 0) "IP $addr · port ${identity.port}" else "IP $addr"
+        }
     }
 
     /**
@@ -817,8 +822,6 @@ private fun IdentityCard(identity: NearbyIdentityUi) {
                     text = addressLine,
                     style = FlashTheme.typography.captionDefault,
                     color = colors.accentFill,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
             FlashText(

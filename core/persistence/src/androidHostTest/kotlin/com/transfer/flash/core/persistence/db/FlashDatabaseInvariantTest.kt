@@ -142,6 +142,30 @@ class FlashDatabaseInvariantTest {
     }
 
     @Test
+    fun confirmingAHubKeyMakesOnlyThatPeersUnacknowledgedOutgoingRowsDue() = runTest {
+        conversation("bob")
+        conversation("carol")
+        val rows = listOf(
+            message("pending", "bob", 5L, "PENDING").copy(senderId = "alice"),
+            message("other-peer", "carol", 5L, "PENDING").copy(senderId = "alice"),
+            message("other-author", "bob", 5L, "PENDING"),
+            message("delivered", "bob", 5L, "DELIVERED").copy(senderId = "alice"),
+            message("deleted", "bob", 5L, "PENDING").copy(senderId = "alice", deletedAt = 10L),
+        )
+        val dao = db.outboxDao()
+        for (row in rows) {
+            db.messageDao().insert(row)
+            dao.enqueue(OutboxEntity(row.localId, attempts = 3, nextAttemptAt = 60L, payloadJson = "{}", createdAt = 5L))
+        }
+        dao.makePendingDueForPeer("bob", "alice", now = 10L)
+        val retried = dao.dueForDelivery(now = 10L, limit = 10).single()
+        assertEquals("pending", retried.localId)
+        assertEquals(3, retried.attempts)
+        assertEquals(5L, retried.createdAt)
+        assertEquals(rows.size, dao.dueForDelivery(now = 60L, limit = 10).size)
+    }
+
+    @Test
     fun clearLastReadCursorMakesAllInboundMessagesUnreadAndFlowReemits() = runTest {
         val conversationDao = db.conversationDao()
         val messageDao = db.messageDao()
