@@ -2158,6 +2158,14 @@ Record results in the Results log (AGENTS 35).
 - **Pass:** `SourceHandle`, `PartialHandle`, `StorageFinalizeResult`, `PieceStorage` interfaces defined in `:core:swarm`; `JvmPieceStorage` and `AndroidPieceStorage` implemented in `:core:engine`. Positional reads, writes, sync, identity change detection, whole-file SHA-256 validation, name collision handling, and path traversal guards verified in `JvmPieceStorageTest`. Android SAF picker updated with `isPersistable`.
 - **Source:** SW-7. **Status:** Unit & functional verified (2026-10-04). Device checks owed under SWM-13 (physical content-URI streaming and restart resumption on Android).
 
+### SWM-RETRY-01 — Retry restores a failed swarm receive
+
+- **Setup:** A Windows receiver with the failed row and its saved partial, or a test profile with an equivalent failed row. Use a build containing `d2a5936b`. Run the same test profile on Android with a copy of the fixture when available.
+- **Steps:** Open Transfers and press Retry. For a fixture with a corrupted piece inside the declared length, repeat while a holder is online.
+- **Pass:** The saved valid file verifies and completes without downloading again. For the corrupted fixture the missing or damaged pieces are requested and the completed file matches its signed digest. The published file length matches the manifest.
+- **Source:** [ERROR-1052](../../logs/errors.md#error-1052--swarm-receive-hashes-a-trailing-partial-file-suffix-and-retry-does-nothing).
+- **Status:** TODO. The Windows storage and persisted Retry regressions passed on the host.
+
 ### SW-8 Driver and Host Integration Verification (Unit & Interop Tests)
 - **Pass:** `SwarmDriver` actor, `FlashSwarm` facade, `SwarmHostBinding` with ports (`SwarmTransport`, `SwarmGroupContext`, `PieceStorage`, `SwarmStateStore`), `attachExternalRows` bridge in `RealFlashTransferRepository`, `attachSwarm` wiring in `FlashEngine`, `MagicFrameRouter` FSW1 routing, GM-5 `GroupGate` integration, `ZeroChangeProofTest` zero-overhead proof, and 3-peer multi-node swarm interop test in `SwarmInteropTest`.
 - **Source:** SW-8. **Status:** Unit & interop verified (2026-10-04). Device checks owed under SWM-09, SWM-10, SWM-16, SWM-20, SWM-21, SWM-23.

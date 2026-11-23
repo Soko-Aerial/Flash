@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2026-11-23 — Swarm receive finalization and Retry
+
+Diagnosed the failed desktop swarm from the 12:01 log and partial file. Its 63,728,423 advertised bytes reproduced the signed manifest root. The old whole-file check included an extra 16 KiB of zeros on disk. A separate copy was recovered and verified without editing the app's partial. Commit `d2a5936b` verifies the manifest's declared range, refetches identifiable bad pieces and makes Retry recheck stopped verification. All 693 swarm and engine tests and desktop compilation passed. Evidence is in `build/reports/swarm-retry`. SWM-RETRY-01 tracks the installed retest. See ERROR-1052.
+
 ## 2026-11-23 — Group voice 2.3.2 build installed on V760
 
 Installed the refreshed release-signed arm64 APK in place on the Android 13 V760. Flash reports 2.3.2 (version code 7), the installed SHA-256 matches `dist/2.3.2/SHA256SUMS.txt`, and Android retained the original install date. Flash cold-launched and its foreground service remained active in the original process for over 2 minutes and 45 seconds with no new crash entries. Evidence is in `build/reports/release-2.3.2-group-voice/v760-install.log` and `monitor.txt`. The three-device playback check remains under GROUP-VOICE-01.
