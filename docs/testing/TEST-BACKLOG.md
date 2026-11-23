@@ -3006,6 +3006,12 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-11-23 — Hub policy startup smoke on Android debug
+
+- **Build and device.** `692ebe5f` on `dev`. Flash 2.3.2 debug (version code 7), arm64, Infinix X6882B on Android 14.
+- **Verified.** In-place update, cold launch, existing Hub enrollment, successful directory sync and over 90 seconds in the original foreground process with no new Flash crash. [ERROR-1047](../../logs/errors.md#error-1047--android-crashes-when-reading-hub-group-policy)
+- **Owed.** IFREV-02 still needs rebuilt signed Android and installed Windows startup and the live policy changes and reconnect sequence.
+
 ### 2026-11-18 — Test Hub rollout and Android installation
 
 - **Build and device.** `d3c50b78` on `dev`. Infinix X6882B on Android 14 with Flash 2.2.0 debug, build code 5. The matching Hub distribution runs on `myserver`.
@@ -8871,10 +8877,10 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 
 ### IFREV-02 — Live group policy change and delayed refresh
 
-- **Setup:** An isolated Hub and enrolled Android and Windows clients connected in inspectable mode.
-- **Steps:** Change to required while both clients are open. Delay the next policy response and exercise a reconnect and enrollment change against the test setup.
-- **Pass:** Connected clients converge on current policy. Delayed responses cannot restore a superseded or wrong-enrollment policy. A refresh failure preserves confidentiality and shows an accurate state.
-- **Source:** ERROR-1032 and IF-02.
+- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients rebuilt with ERROR-1047.
+- **Steps:** Cold-launch both clients and observe the Hub connection through one 60-second policy refresh interval. Change to required while both clients are open. Delay the next policy response and exercise a reconnect and enrollment change against the test setup.
+- **Pass:** Both clients start and remain open through the refresh. Connected clients converge on current policy. Delayed responses cannot restore a superseded or wrong-enrollment policy. A refresh failure preserves confidentiality and shows an accurate state.
+- **Source:** ERROR-1032, ERROR-1047 and IF-02. The 2026-11-23 Android debug smoke passed startup with an existing enrollment.
 - **Status:** TODO
 
 ### IFREV-03 — Partly successful member addition

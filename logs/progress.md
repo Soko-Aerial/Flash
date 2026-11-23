@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-11-23 — Android crash during Hub policy refresh
+
+The Infinix X6882B on Android 14 crashed four times after launching Flash 2.3.2 debug (version code 7). The crash buffer traced the failure to the missing `HubGroupPolicy` serializer during the enrolled client's Hub policy request. Commit `692ebe5f` enables Kotlin serialization in `:core:enterprise` and references the generated serializer directly. The HTTP regression covers both a Hub that sends policy fields and an older reply that omits them.
+
+All 289 enterprise JVM tests and 175 Android host tests passed. Android debug lint reported 0 errors, 171 warnings and 1 hint. The debug APK built and its arm64 DEX contains the serializer. An in-place update preserved the phone's enrollment. On cold launch Flash reached the Hub and synced the directory. Flash was still the foreground activity at 95 seconds and kept the original process for over six minutes with no new Flash crashes. The installed APK's SHA-256 matches the build. The before and after evidence is in `build/reports/android-hub-policy-crash`.
+
+Rebuild the staged release artifacts from this commit before publication. Verify startup, reconnect and policy changes on signed Android and installed Windows under IFREV-02. See ERROR-1047.
+
 ## 2026-11-23 — Flash 2.3.2 Windows and Android release candidate
 
 Product commit `4240e388` addresses the release review in ERROR-1046. Hub confirmation binds to the full fingerprint shown in the dialog. Sealing checks and uses one directory snapshot. Persisted pins keep held messages eligible during an offline restart, and a successful confirmation advances only the affected peer's outbox rows. Nearby displays the host's distinct LAN IPv4 endpoints.

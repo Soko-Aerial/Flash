@@ -1,5 +1,25 @@
 # Error Log
 
+## ERROR-1047 — Android crashes when reading Hub group policy
+
+### Date and environment
+
+2026-11-23, Flash 2.3.2 debug (version code 7), Infinix X6882B, Android 14. The phone had an active Hub enrollment.
+
+### Symptoms and root cause
+
+Four fatal crashes after launch. The Android crash buffer reported `kotlinx.serialization.SerializationException: Serializer for class 'HubGroupPolicy' is not found.` in `EnterpriseDirectoryClient.fetchHubGroupPolicy`. The type was annotated `@Serializable` in `:core:enterprise`, which lacked the Kotlin serialization compiler plugin. The serializer lookup threw before the parser could return a policy error, and the exception escaped the background policy monitor.
+
+### Fix and verification
+
+Commit `692ebe5f` applies the plugin and calls `HubGroupPolicy.serializer()` directly so a missing serializer fails the build. The HTTP regression exercises decoding policy fields and loading safe defaults when an older Hub omits them. Enterprise JVM (289) and Android host (175) tests passed. Debug assembly succeeded, and the arm64 APK contains the generated serializer.
+
+Installed the debug APK in place on the same phone. A cold launch used the existing enrollment, came online on the Hub and synced the directory. Flash stayed in the same foreground process for over 90 seconds with no new Flash crashes in logcat. Evidence is under `build/reports/android-hub-policy-crash`. Signed Android and Windows release checks remain under IFREV-02.
+
+### Status
+
+RESOLVED on the affected Android debug installation. The staged 2.3.2 release assets predate the fix.
+
 ## ERROR-1046 — Release review found relay key races, retry gaps and stale artifacts
 
 ### Date and environment
