@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-11-23 — Flash 2.3.2 Windows and Android release candidate
+
+Product commit `4240e388` addresses the release review in ERROR-1046. Hub confirmation binds to the full fingerprint shown in the dialog. Sealing checks and uses one directory snapshot. Persisted pins keep held messages eligible during an offline restart, and a successful confirmation advances only the affected peer's outbox rows. Nearby displays the host's distinct LAN IPv4 endpoints.
+
+Built with `tools\build-release.ps1 -Apk signed -NoDaemon`. The clean `dist/2.3.2` candidate has four signed APKs and the Windows EXE and MSI. Android reports version code 7. All six checksums matched. Each APK contains the banner, uses the existing release signer and passes the applicable 16 KB native checks. The standalone and EXE-embedded MSI share the established upgrade family and sequence removal after InstallInitialize. Both earlier test manifests still match their files. A staging fixture also verified replacement preserves the earlier candidate separately.
+
+The targeted gate recorded 108 passed, one skipped and zero failures across security, persistence, Hub messaging, Nearby, Android wiring and desktop interaction and renders. Release lint reported 0 errors, 169 warnings and 1 hint. The narrow 200% Nearby render showed both addresses. Build and test logs are in `build/reports/release-2.3.2`.
+
+The owner can now run the installed-device checks in WIN-UPGRADE-01, HUB-02, HUBH-08/09 and NEARBY-NET-05. This session prepared local artifacts.
+
 ## 2026-11-22 — Hub key verification beside the composer
 
 Moved the direct-chat key-change warning out of the scrollable history. The fixed banner identifies pending outgoing messages. **Verify key** opens a comparison of the old and new codes. The peer can find their own published code in Hub connection details on Android and desktop. Cancel preserves the pending pin. Trust uses the existing confirmation and outbox retry flow.

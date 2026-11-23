@@ -327,8 +327,8 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 ### WIN-UPGRADE-01 — Upgrade from the Windows EXE wrapper
 
 - **Setup:** A spare Windows user or PC with the per-user Flash 2.3.0 package and existing Flash state. The standalone 2.3.1 MSI already passed the owner's installed-client check.
-- **Steps:** Exit Flash through the tray, launch `Flash-2.3.1.exe`, and reopen Flash after the installer finishes.
-- **Pass:** One Flash 2.3.1 registration remains at the original install path. The version shown in About is 2.3.1 and existing conversations and saved peers are present.
+- **Steps:** Exit Flash through the tray, launch `Flash-2.3.2.exe`, and reopen Flash after the installer finishes. Repeat from a 2.3.1 installation.
+- **Pass:** One Flash 2.3.2 registration remains at the original install path. The version shown in About is 2.3.2 and existing conversations and saved peers are present.
 - **Source:** ERROR-1044.
 - **Status:** TODO.
 
@@ -354,6 +354,12 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 - **Steps:** From Nearby's offline panel, open **Connect by IP**. Try an unreachable address and check the normal failure behavior. Then use the reachable peer's IP and port without waiting for discovery, and complete any pairing prompt.
 - **Pass:** The offline panel opens the manual dialog. An unreachable address does not hang the app. A reachable peer follows the normal authenticated connection and pairing flow.
 - **Source:** ERROR-1043.
+- **Status:** TODO.
+
+### NEARBY-NET-05 — Nearby displays multiple reachable interfaces
+
+- **Steps:** On Android, join Wi-Fi while hosting a hotspot. On Windows, connect Wi-Fi and Ethernet to different networks. Open Nearby with discovery quiet, then try manual pairing from each network using the listed address and port.
+- **Pass:** Both active IPv4 endpoints are visible. Leaving one network removes its address while the other remains available.
 - **Status:** TODO.
 
 ## 4. Older device checks still owed
@@ -4214,6 +4220,8 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Steps:** With a pending key change (HUBH-02) on A and the LAN path unavailable, send two messages to B. Force-stop A, reopen its chat, and use **Verify key** to compare the code with B. Tap **Trust new key**.
 - **Pass:** After restart, the banner says messages are waiting beside the composer. Both messages stay pending beyond 15 minutes. After confirmation, both arrive on B, sealed and in order.
 - **Source:** ADR-126, ERROR-362. **Status:** TODO
+
+- **Offline restart edge:** Leave a held message queued for more than 30 minutes. Restart the sender with the relay unavailable. Verify the message stays pending. Restore the relay and confirm the matching code. The sender retries before the previous backoff deadline.
 
 ### HUBH-09 - Key verification is visible and scoped to the current direct chat
 - **Steps:** On installed Windows, Linux and Android builds, open a direct Hub chat with a pending key. Keep a long history and test at the newest messages and after scrolling back. On Android open the keyboard and test with large text and TalkBack. Open verification, cancel, then switch to another chat. Compare the contact's code using the Hub status row in Settings.

@@ -925,6 +925,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-23 — Windows and Android 2.3.2 release candidate (ERROR-1046).** Hub key approval binds to the exact fingerprint, sealing uses a single directory snapshot, and persisted holds survive offline restart. Confirmation advances that peer's retry deadline. Nearby lists all LAN IPv4 endpoints. Android version code is 7 and Windows installers use the existing upgrade family. See the handoff and device backlog for the build and retest evidence.
+
 **2026-11-22 — Hub security-key confirmation banner (ERROR-1045).** Direct chats show the warning next to the composer and prompt for verification when outgoing messages are pending. The dialog compares old and new codes, and the peer can read their own code in Hub connection details. Added to Unreleased. Installed-device verification is tracked by HUBH-02 and HUBH-08/09.
 
 **2026-11-22 — Test Hub updated and desktop relay block diagnosed (ERROR-1045).** The isolated test Hub on `myserver` runs `2.3.0-beta.1` from `6def5ba1`. The live public relay challenge, Hub identity and enrolled reconnects verified. Windows held the reported sends for a pending peer sealing-key change and later sent them over LAN. The owner's key confirmation and relay-only retest remain under HUB-02 and HUBH-02. See `logs/handoff.md` for rollback evidence.

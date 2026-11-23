@@ -1,5 +1,29 @@
 # Error Log
 
+## ERROR-1046 — Release review found relay key races, retry gaps and stale artifacts
+
+### Date and environment
+
+2026-11-23, Android and Windows 2.3 release candidates and the shared Hub client.
+
+### Symptoms and root cause
+
+Two separate directory reads let sealing check one key and use another. The confirmation callback identified the peer without identifying the key shown to the user. Offline restart cleared the in-memory wait reason used to protect queued messages, and a confirmation wake kept the previous retry deadline. Nearby exposed one address even on hosts with multiple usable LAN interfaces. The release script generated its manifest from all the files in a reused output folder.
+
+### Fix
+
+Confirmation compares the full fingerprint under the pin lock. Sealing validates and uses one directory snapshot. Outbox retention reads the persisted pending pin, and the drain lock protects the retry deadline update for the confirmed peer. Nearby lists distinct IPv4 endpoints. The release script stages and verifies a fresh candidate and keeps any prior output separately. Android and Windows moved to 2.3.2, with Android version code 7.
+
+### Verification
+
+The persisted pin, single-snapshot sealing and scoped database retry tests passed. An isolated staging fixture confirmed that the candidate manifest excludes the previous installer and preserves the previous candidate separately. The first combined test run stopped on type inference in the desktop assertion. The fixture now checks the peer and fingerprint separately. Both addresses were visible in a 320 dp render at 200% text.
+
+All six files in `dist/2.3.2` matched the manifest. Every APK reports 2.3.2/7, verifies against the existing release certificate, contains the Hub banner, and passes the 64-bit native alignment check where applicable. The standalone and EXE-embedded MSI each contain the updated application libraries, report 2.3.2, share Flash's previous upgrade family and schedule removal after InstallInitialize.
+
+### Status
+
+OPEN for installed-client acceptance under WIN-UPGRADE-01, HUB-02, HUBH-08 and NEARBY-NET-05. Product commit `4240e388` passed 108 targeted tests with one skip and release lint with zero errors.
+
 ## ERROR-1045 — Hub chat failed while the peer appeared online in Relay mode
 
 ### Date and environment
