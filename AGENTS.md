@@ -925,7 +925,7 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**2026-11-23 — Android Hub policy startup crash fixed (ERROR-1047).** Commit `692ebe5f` generates the group-policy serializer. The debug APK installed in place on the enrolled Android 14 Infinix and stayed open through the next refresh interval. The staged 2.3.2 releases predate this fix. Rebuild them before publication, then run IFREV-02 on signed Android and installed Windows.
+**2026-11-23 — Flash 2.3.2 release artifacts refreshed (ERROR-1047).** Commit `692ebe5f` generates the group-policy serializer. The debug APK installed in place on the enrolled Android 14 Infinix and stayed open through the next refresh interval. The refreshed Windows installers and signed Android APKs in `dist/2.3.2` contain the fix. Run IFREV-02 on signed Android and installed Windows.
 
 **2026-11-23 — Windows and Android 2.3.2 release candidate (ERROR-1046).** Hub key approval binds to the exact fingerprint, sealing uses a single directory snapshot, and persisted holds survive offline restart. Confirmation advances that peer's retry deadline. Nearby lists all LAN IPv4 endpoints. Android version code is 7 and Windows installers use the existing upgrade family. See the handoff and device backlog for the build and retest evidence.
 

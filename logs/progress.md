@@ -1,12 +1,20 @@
 # Progress Log
 
+## 2026-11-23 — Flash 2.3.2 releases refreshed with the Hub startup fix
+
+Rebuilt the four release-signed Android APKs and the Windows MSI and EXE from `4299921c`, which includes the Hub policy serializer fix in `692ebe5f`. The release build and Android release lint gate passed. All six new files in `dist/2.3.2` matched `SHA256SUMS.txt` and had new checksums. The previous set was archived and still matched its original manifest.
+
+Every signed APK reports 2.3.2 with version code 7, matches the existing release certificate, passes the ZIP alignment check and defines the generated serializer in its optimized DEX. The standalone MSI and the MSI embedded in the EXE contain the rebuilt enterprise JAR. Both retain version 2.3.2, the existing upgrade family and `RemoveExistingProducts` after `InstallInitialize`.
+
+The Windows installation on this PC already registers the same 2.3.2 product code. An in-place reinstall may hit the same-version conflict documented in ERROR-1044. WIN-UPGRADE-01 covers upgrades from older installers. IFREV-02 covers startup and live Hub policy on the signed Android and installed Windows builds. Build, checksum and payload evidence is in `build/reports/release-2.3.2-hub-policy`.
+
 ## 2026-11-23 — Android crash during Hub policy refresh
 
 The Infinix X6882B on Android 14 crashed four times after launching Flash 2.3.2 debug (version code 7). The crash buffer traced the failure to the missing `HubGroupPolicy` serializer during the enrolled client's Hub policy request. Commit `692ebe5f` enables Kotlin serialization in `:core:enterprise` and references the generated serializer directly. The HTTP regression covers both a Hub that sends policy fields and an older reply that omits them.
 
 All 289 enterprise JVM tests and 175 Android host tests passed. Android debug lint reported 0 errors, 171 warnings and 1 hint. The debug APK built and its arm64 DEX contains the serializer. An in-place update preserved the phone's enrollment. On cold launch Flash reached the Hub and synced the directory. Flash was still the foreground activity at 95 seconds and kept the original process for over six minutes with no new Flash crashes. The installed APK's SHA-256 matches the build. The before and after evidence is in `build/reports/android-hub-policy-crash`.
 
-Rebuild the staged release artifacts from this commit before publication. Verify startup, reconnect and policy changes on signed Android and installed Windows under IFREV-02. See ERROR-1047.
+The release rebuild is recorded above. Verify startup, reconnect and policy changes on signed Android and installed Windows under IFREV-02. See ERROR-1047.
 
 ## 2026-11-23 — Flash 2.3.2 Windows and Android release candidate
 

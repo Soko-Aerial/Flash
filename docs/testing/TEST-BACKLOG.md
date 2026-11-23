@@ -326,7 +326,7 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 
 ### WIN-UPGRADE-01 — Upgrade from the Windows EXE wrapper
 
-- **Setup:** A spare Windows user or PC with the per-user Flash 2.3.0 package and existing Flash state. The standalone 2.3.1 MSI already passed the owner's installed-client check.
+- **Setup:** A spare Windows user or PC with the per-user Flash 2.3.0 package and existing Flash state. The standalone 2.3.1 MSI already passed the owner's installed-client check. Use the refreshed `dist/2.3.2` installer from `4299921c`. This PC's earlier 2.3.2 uses the same product code and is a same-version reinstall case.
 - **Steps:** Exit Flash through the tray, launch `Flash-2.3.2.exe`, and reopen Flash after the installer finishes. Repeat from a 2.3.1 installation.
 - **Pass:** One Flash 2.3.2 registration remains at the original install path. The version shown in About is 2.3.2 and existing conversations and saved peers are present.
 - **Source:** ERROR-1044.
@@ -8877,7 +8877,7 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 
 ### IFREV-02 — Live group policy change and delayed refresh
 
-- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients rebuilt with ERROR-1047.
+- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients from the refreshed `dist/2.3.2` candidate (`4299921c`, ERROR-1047).
 - **Steps:** Cold-launch both clients and observe the Hub connection through one 60-second policy refresh interval. Change to required while both clients are open. Delay the next policy response and exercise a reconnect and enrollment change against the test setup.
 - **Pass:** Both clients start and remain open through the refresh. Connected clients converge on current policy. Delayed responses cannot restore a superseded or wrong-enrollment policy. A refresh failure preserves confidentiality and shows an accurate state.
 - **Source:** ERROR-1032, ERROR-1047 and IF-02. The 2026-11-23 Android debug smoke passed startup with an existing enrollment.

@@ -18,7 +18,7 @@ Installed the debug APK in place on the same phone. A cold launch used the exist
 
 ### Status
 
-RESOLVED on the affected Android debug installation. The staged 2.3.2 release assets predate the fix.
+RESOLVED on the affected Android debug installation. The staged 2.3.2 releases now contain the fix. Verified the generated serializer in all four signed APKs and both Windows installer payloads. IFREV-02 tracks the installed release smoke tests.
 
 ## ERROR-1046 — Release review found relay key races, retry gaps and stale artifacts
 
