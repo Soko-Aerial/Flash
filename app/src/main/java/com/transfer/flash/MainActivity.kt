@@ -479,7 +479,7 @@ class MainActivity : ComponentActivity() {
         // service starts from the background, so engine startup must not launch this asynchronously.
         // onStop does not stop the service outright: it only lets an idle mesh (no peer, no transfer, no hub relay,
         // and no "Keep listening in the background" opt-in) do so after a grace period — ADR-232.
-        FlashBackgroundService.start(this)
+        FlashBackgroundService.start(this, fromVisibleActivity = true)
         // Bug 7: notifications must be suppressed only while we're genuinely on screen — not
         // merely while the process lives (the service keeps the process alive across onStop).
         FlashNotificationManager.appForeground = true

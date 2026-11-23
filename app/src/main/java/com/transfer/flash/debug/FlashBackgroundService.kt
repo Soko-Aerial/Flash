@@ -119,6 +119,10 @@ class FlashBackgroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A started service can receive a new request after foreground promotion was refused in onCreate.
+        if (intent != null && !isForeground && startAsForeground()) {
+            promotionRefused.set(false)
+        }
         // C-02: a transfer the platform paused (foreground-service time limit) continues once the service runs again.
         if (isForeground) {
             scope.launch { runCatching { DiscoveryEngineHolder.currentTransfers()?.resumeSystemPaused() } }
@@ -540,10 +544,16 @@ class FlashBackgroundService : Service() {
         /** True while a service instance exists — i.e. something else owns the engine's lifetime. */
         fun isActive(): Boolean = activeInstance != null
 
-        fun start(context: Context) {
+        fun start(context: Context, fromVisibleActivity: Boolean = false) {
             val intent = Intent(context.applicationContext, FlashBackgroundService::class.java)
             runCatching {
-                ContextCompat.startForegroundService(context.applicationContext, intent)
+                if (fromVisibleActivity) {
+                    // The visible activity can start the service directly. Promotion stays inside the service,
+                    // so a delayed onCreate on an installed-app restart cannot trip the foreground-start watchdog.
+                    context.startService(intent)
+                } else {
+                    ContextCompat.startForegroundService(context.applicationContext, intent)
+                }
             }.onFailure { error ->
                 Log.e(TAG, "Unable to start background mesh foreground service", error)
             }
