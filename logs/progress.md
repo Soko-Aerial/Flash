@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2026-11-23 — Group voice note audio reaches each whole-file recipient
+
+Windows and V760 logs showed two successful message announcements, one completed audio transfer and one refused audio transfer for each of two group sends. The recipient-independent wire ID collided in the LAN route coordinator. Commit `54a69dcb` allocates a wire ID per whole-file recipient and preserves the single chat entry. The regression verifies the real continuity claim for both recipients. The 326 engine tests and Android and desktop compile checks passed. Rebuild both sender apps and run GROUP-VOICE-01 against the three-device group. See ERROR-1050.
+
 ## 2026-11-23 — Signed 2.3.2 update verified through the discovery service timeout window
 
 The first APK with the R8 startup fix cold-launched but hit a foreground-service promotion timeout after more than two minutes. Commit `fa1a4118` lets the visible activity request the service directly and keeps promotion in the service lifecycle. All 12 background notification and Quick Settings unit tests passed. The release build passed its lint gate, and all four signed APKs passed version, signer, alignment and DEX checks. The verified Windows installers and rebuilt APKs match the current `dist/2.3.2` manifest.

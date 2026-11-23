@@ -1,5 +1,23 @@
 # Error Log
 
+## ERROR-1050 — One group recipient gets a voice message without its audio
+
+### Date and environment
+
+2026-11-23, group of three on LAN, installed Windows Flash 2.3.2 and release-signed Flash 2.3.2 on an Android 13 V760.
+
+### Symptoms and root cause
+
+The V760 at 11:03:21 and Windows at 11:03:33 announced a whole-file voice note to two members. Each sender completed one audio transfer and refused the other with `Transfer is already active or finished on another route`. The receiving V760 verified the Windows audio that reached it. Both announcements shared a chat message ID and had distinct transfer IDs. The wire file ID was shared across recipients, so the continuity coordinator treated two recipient-specific transfers as conflicting claims on one route identity.
+
+### Fix and verification
+
+Commit `54a69dcb` assigns a separate wire file ID to each whole-file recipient, carrying it from the announcement through the file push. The message ID still identifies one chat entry. Swarm uses its signed content root. The regression runs fan-out through the production LAN continuity port and verifies both announced recipients hold independent routes while an unannounced member is skipped. The first test compile required the existing internal API opt-in on the test fixture. All 194 JVM and 132 Android host engine tests then passed. Android debug and desktop Kotlin compile checks passed. Evidence is in `build/reports/group-voice-v760`.
+
+### Status
+
+Source fix verified by host tests. GROUP-VOICE-01 tracks the installed-build retest. The signed V760 and staged Windows builds were built before this fix.
+
 ## ERROR-1049 — Signed Android update can leave a foreground-service start pending
 
 ### Date and environment

@@ -2683,6 +2683,14 @@ UIP-02 says a caption is sent together with the files: **obsolete in part**, cap
 - **Pass:** C shows the voice note row after catch-up and the log has no `SyncPush message dropped, no valid signature`.
 - **Source:** ERROR-117 (a). **Status:** TODO
 
+### GROUP-VOICE-01 — All online group recipients receive playable audio
+
+- **Setup:** Three paired clients in the same group on LAN. Use Android and Windows senders built with `54a69dcb`.
+- **Steps:** Send a short voice note from each host with both recipients connected. Open and play each received note. Repeat in a larger group when available.
+- **Pass:** Each recipient sees one chat entry and receives verified, playable audio. The sender shows one entry, completes a distinct transfer for every recipient and logs no conflicting route claim.
+- **Source:** [ERROR-1050](../../logs/errors.md#error-1050--one-group-recipient-gets-a-voice-message-without-its-audio).
+- **Status:** TODO
+
 ### SWM-44 - Catch-up of a message from a faster clock
 - **Setup:** v2 group of 3; set B's clock 3 to 4 s ahead of C's (manual time, automatic time off).
 - **Steps:** B sends a text; C relays it to D (D offline when B sent, then back).
