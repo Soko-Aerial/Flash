@@ -25,8 +25,20 @@
     <?define JpUpgradeVersionOnlyDetectDowngrade="yes"?>
   <?endif?>
 
+  <!-- The refreshed 2.3.2 carries new components and replaces the earlier 2.3.2
+       within the same upgrade family. Both the standalone MSI and EXE use this code. -->
+  <?if $(var.JpAppVersion) = "2.3.2" ?>
+    <?define FlashProductCode="{8C805950-5360-4A1A-9E13-02462985BCD4}"?>
+    <?define FlashUpgradeIncludeMaximum="yes"?>
+    <?define FlashDowngradeIncludeMinimum="no"?>
+  <?else?>
+    <?define FlashProductCode="$(var.JpProductCode)"?>
+    <?define FlashUpgradeIncludeMaximum="$(var.JpUpgradeVersionOnlyDetectUpgrade)"?>
+    <?define FlashDowngradeIncludeMinimum="$(var.JpUpgradeVersionOnlyDetectDowngrade)"?>
+  <?endif?>
+
   <Product
-    Id="$(var.JpProductCode)"
+    Id="$(var.FlashProductCode)"
     Name="$(var.JpAppName)"
     Language="$(var.JpProductLanguage)"
     Version="$(var.JpAppVersion)"
@@ -49,13 +61,13 @@
         Property="JP_UPGRADABLE_FOUND"
         Maximum="$(var.JpAppVersion)"
         MigrateFeatures="yes"
-        IncludeMaximum="$(var.JpUpgradeVersionOnlyDetectUpgrade)" />
+        IncludeMaximum="$(var.FlashUpgradeIncludeMaximum)" />
       <UpgradeVersion
         OnlyDetect="$(var.JpUpgradeVersionOnlyDetectDowngrade)"
         Property="JP_DOWNGRADABLE_FOUND"
         Minimum="$(var.JpAppVersion)"
         MigrateFeatures="yes"
-        IncludeMinimum="$(var.JpUpgradeVersionOnlyDetectDowngrade)" />
+        IncludeMinimum="$(var.FlashDowngradeIncludeMinimum)" />
     </Upgrade>
 
     <?ifndef JpAllowUpgrades ?>
