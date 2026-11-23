@@ -1,8 +1,14 @@
 # Progress Log
 
+## 2026-11-23 — Flash 2.3.2 group voice and Windows reinstall candidate
+
+Rebuilt all four signed APKs and both Windows installers with the group audio fix in `54a69dcb`. Commit `2457c0fa` scopes a new product code and an inclusive upgrade range to Windows 2.3.2. Both the MSI and the EXE's embedded package selected the earlier 2.3.2 registered on this PC as an upgrade target and matched its per-user installation context. Each package contains the rebuilt engine JAR. The full install is tracked under WIN-UPGRADE-02. See ERROR-1051.
+
+Release assembly and Android release lint passed. All six files match `dist/2.3.2/SHA256SUMS.txt`. The APK signer, version and ZIP alignment verified, and all four APKs contain the group sender and both Android startup fixes. The prior candidate is preserved under `build/release-staging/8cc87740-ad4a-4527-8046-abff9840043b/previous`. Evidence is in `build/reports/release-2.3.2-group-voice`. The next device check is GROUP-VOICE-01 with rebuilt senders.
+
 ## 2026-11-23 — Group voice note audio reaches each whole-file recipient
 
-Windows and V760 logs showed two successful message announcements, one completed audio transfer and one refused audio transfer for each of two group sends. The recipient-independent wire ID collided in the LAN route coordinator. Commit `54a69dcb` allocates a wire ID per whole-file recipient and preserves the single chat entry. The regression verifies the real continuity claim for both recipients. The 326 engine tests and Android and desktop compile checks passed. Rebuild both sender apps and run GROUP-VOICE-01 against the three-device group. See ERROR-1050.
+Windows and V760 logs showed two successful message announcements, one completed audio transfer and one refused audio transfer for each of two group sends. The recipient-independent wire ID collided in the LAN route coordinator. Commit `54a69dcb` allocates a wire ID per whole-file recipient and preserves the single chat entry. The regression verifies the real continuity claim for both recipients. The 326 engine tests and Android and desktop compile checks passed. GROUP-VOICE-01 covers the three-device retest with the rebuilt senders. See ERROR-1050.
 
 ## 2026-11-23 — Signed 2.3.2 update verified through the discovery service timeout window
 

@@ -1,5 +1,23 @@
 # Error Log
 
+## ERROR-1051 — Rebuilt Windows 2.3.2 must replace the earlier 2.3.2 installation
+
+### Date and environment
+
+2026-11-23, Windows, Flash 2.3.2 registered in the per-user MSI context. The earlier EXE and MSI install product `{71E396C5-0367-38FF-825A-7C841BC98196}`.
+
+### Root cause and fix
+
+The installed product and a rebuilt installer would normally get the same jpackage identity, sending the changed JAR components through maintenance mode. This caused errors 1638 and 1603 in the earlier 2.3.0 rebuild documented as ERROR-1044. Commit `2457c0fa` gives the refreshed 2.3.2 the product code `{8C805950-5360-4A1A-9E13-02462985BCD4}` under the same Flash upgrade code. The 2.3.2 upgrade range includes the same version. The downgrade detector still blocks newer versions. Removal of the earlier product stays inside the install transaction. [Windows Installer upgrade table](https://learn.microsoft.com/en-us/windows/win32/msi/upgrade-table) · [WiX same-version upgrades](https://docs.firegiant.com/wix3/xsd/wix/majorupgrade/)
+
+### Verification
+
+On this PC, the previous package's `FindRelatedProducts` skipped upgrade detection for the already installed product. The Windows Installer and jpackage detection actions selected that registered product for removal in both rebuilt packages and confirmed that both packages use its per-user context. Both payloads carry the rebuilt engine JAR. The EXE's product-code resource matches the new MSI. All six release artifacts match the new SHA-256 manifest. Evidence is in `build/reports/release-2.3.2-group-voice`.
+
+### Status
+
+Verified installer detection on the existing installation. The owner will run the actual replacement and the device audio test under WIN-UPGRADE-02 and GROUP-VOICE-01.
+
 ## ERROR-1050 — One group recipient gets a voice message without its audio
 
 ### Date and environment
@@ -16,7 +34,7 @@ Commit `54a69dcb` assigns a separate wire file ID to each whole-file recipient, 
 
 ### Status
 
-Source fix verified by host tests. GROUP-VOICE-01 tracks the installed-build retest. The signed V760 and staged Windows builds were built before this fix.
+Source fix verified by host tests. The refreshed signed APKs and Windows installers in `dist/2.3.2` contain the fix. GROUP-VOICE-01 tracks the installed-build retest.
 
 ## ERROR-1049 — Signed Android update can leave a foreground-service start pending
 

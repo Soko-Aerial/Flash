@@ -326,10 +326,18 @@ merge added `CHATUI-01..16` after that snapshot: 2 PASS, 1 PARTIAL, 13 TODO; liv
 
 ### WIN-UPGRADE-01 — Upgrade from the Windows EXE wrapper
 
-- **Setup:** A spare Windows user or PC with the per-user Flash 2.3.0 package and existing Flash state. The standalone 2.3.1 MSI already passed the owner's installed-client check. Use the refreshed `dist/2.3.2` installer from `4299921c`. This PC's earlier 2.3.2 uses the same product code and is a same-version reinstall case.
+- **Setup:** A spare Windows user or PC with the per-user Flash 2.3.0 package and existing Flash state. The standalone 2.3.1 MSI already passed the owner's installed-client check. Use the refreshed `dist/2.3.2` installer from `2457c0fa`. This PC's earlier 2.3.2 is covered by WIN-UPGRADE-02.
 - **Steps:** Exit Flash through the tray, launch `Flash-2.3.2.exe`, and reopen Flash after the installer finishes. Repeat from a 2.3.1 installation.
 - **Pass:** One Flash 2.3.2 registration remains at the original install path. The version shown in About is 2.3.2 and existing conversations and saved peers are present.
 - **Source:** ERROR-1044.
+- **Status:** TODO.
+
+### WIN-UPGRADE-02 — Replace the earlier installed Windows 2.3.2
+
+- **Setup:** Flash 2.3.2 with Windows product code `{71E396C5-0367-38FF-825A-7C841BC98196}` installed under the current user.
+- **Steps:** Exit Flash from the tray and run the refreshed EXE from `dist/2.3.2`. Reopen Flash and verify existing chats and peers. Use a separate installation of the earlier build to repeat with the standalone MSI.
+- **Pass:** Windows registers only `{8C805950-5360-4A1A-9E13-02462985BCD4}` at the expected path. Flash reports 2.3.2 and shows its existing state.
+- **Source:** ERROR-1051. Upgrade detection and installer payloads passed locally for both packages.
 - **Status:** TODO.
 
 ### NEARBY-NET-02 — Linux package detects a late network connection
@@ -2685,7 +2693,7 @@ UIP-02 says a caption is sent together with the files: **obsolete in part**, cap
 
 ### GROUP-VOICE-01 — All online group recipients receive playable audio
 
-- **Setup:** Three paired clients in the same group on LAN. Use Android and Windows senders built with `54a69dcb`.
+- **Setup:** Three paired clients in the same group on LAN. Install the refreshed `dist/2.3.2` sender apps with `54a69dcb` and Windows installer fix `2457c0fa`.
 - **Steps:** Send a short voice note from each host with both recipients connected. Open and play each received note. Repeat in a larger group when available.
 - **Pass:** Each recipient sees one chat entry and receives verified, playable audio. The sender shows one entry, completes a distinct transfer for every recipient and logs no conflicting route claim.
 - **Source:** [ERROR-1050](../../logs/errors.md#error-1050--one-group-recipient-gets-a-voice-message-without-its-audio).

@@ -925,7 +925,7 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**2026-11-23 — Group voice note fan-out fixed in source (ERROR-1050).** Commit `54a69dcb` gives each whole-file group send a recipient-specific wire file ID. The Windows and V760 logs showed a shared ID blocking the second recipient's audio. The updated source passed 326 engine tests. Rebuild the sender apps and run GROUP-VOICE-01 for installed acceptance.
+**2026-11-23 — Flash 2.3.2 rebuilt with group audio and Windows reinstall fixes (ERROR-1050/1051).** Commit `54a69dcb` gives each whole-file group send a recipient-specific wire file ID. Commit `2457c0fa` lets the refreshed Windows installers in `dist/2.3.2` replace the earlier 2.3.2 in the same upgrade family. Both packages detected the existing installation. WIN-UPGRADE-02 and GROUP-VOICE-01 track installed acceptance.
 
 **2026-11-23 — Signed Android 2.3.2 installed and verified on V760 (ERROR-1048/1049).** Commit `3289874a` works around invalid R8 output for the conversation screen and `fa1a4118` fixes the visible activity's delayed service timeout. The current arm64 APK in `dist/2.3.2` installed in place over signed Flash and stayed open with the foreground service active for 2 minutes and 55 seconds on Android 13. IFREV-02 tracks the remaining installed release checks.
 
