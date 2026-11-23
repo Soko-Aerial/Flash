@@ -142,7 +142,6 @@ public class GroupFileSender(
         voiceAmplitudes: List<Int> = emptyList(),
     ) {
         val sharedMessageId = idFactory()
-        val sharedWireFileId = idFactory()
         val myId = localDeviceId()
         val members = groupMembers(groupId).filter { it.id != myId }
 
@@ -156,6 +155,7 @@ public class GroupFileSender(
         } else {
             null
         }
+        val swarmWireFileId = swarmOrigin?.let { idFactory() }
 
         // PROBE group.file.fanout: who got a swarm offer, who got the whole file, who got nothing and why (the owner's
         // ERROR-117 test could not tell "peer did not advertise sw1" from "peer was not connected"; both read as noFeatures).
@@ -168,6 +168,8 @@ public class GroupFileSender(
             val recipientTransferId = idFactory()
             val features = peerFeatures?.invoke(member.id).orEmpty()
             val useSwarmForPeer = swarmOrigin != null && "sw1" in features
+            // Whole-file route ownership binds the wire ID to one recipient.
+            val wireFileId = swarmWireFileId?.takeIf { useSwarmForPeer } ?: idFactory()
             if (features.isEmpty()) noFeatures++
 
             val announced = if (useSwarmForPeer) {
@@ -177,7 +179,7 @@ public class GroupFileSender(
                     member.id,
                     sharedMessageId,
                     recipientTransferId,
-                    sharedWireFileId,
+                    wireFileId,
                     displayName,
                     mimeType,
                     sizeBytes,
@@ -192,7 +194,7 @@ public class GroupFileSender(
                     member.id,
                     sharedMessageId,
                     recipientTransferId,
-                    sharedWireFileId,
+                    wireFileId,
                     displayName,
                     mimeType,
                     sizeBytes,
@@ -219,7 +221,7 @@ public class GroupFileSender(
                     displayName,
                     sizeBytes,
                     recipientTransferId,
-                    sharedWireFileId,
+                    wireFileId,
                 )
             }
         }

@@ -976,8 +976,7 @@ FLASH_GMEDIA groupId=… msgId=… transferId=… wireFileId=… from=… name=�
 ```
 
 - The origin adds the four fields only for members whose HELLO had `sw1`. Every other member gets today's frame, unchanged, and today's push.
-- `transferId` stays per recipient: it is the receiver's row id, as today. `wireFileId` keeps today's value and is not used by the swarm (no
-  FILE_START follows).
+- `transferId` is the receiver's row id and is unique per recipient. A whole-file push uses a recipient-specific `wireFileId` in both the announcement and `FILE_START`, so route ownership binds it to that recipient. The swarm announcement can share a `wireFileId` because swarm uses the signed content root and no `FILE_START` follows.
 - `sig` (today's v2 message signature) stays. `rootSig` signs the announce statement above.
 - A receiver drops a `swarm=1` announcement, and creates no bubble, when `rootSig` does not verify against the origin's roster key, `root` is
   not 64 hex characters, `pieceSize` is outside the limits, or `size` is 0 or more than 16,384 × `pieceSize`.
