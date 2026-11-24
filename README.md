@@ -8,11 +8,11 @@
 
 # Flash
 
-**Offline, LAN peer-to-peer file transfer, messaging and calling for Android, Windows and Linux desktop — no server, no
-internet, no account.** Flash discovers nearby devices over your local network
-(Wi-Fi, or a phone hotspot), opens a direct encrypted channel between them, and
-streams files, chat and voice/video calls straight across. Nothing leaves the local network; there
-is no backend to run and nothing to sign up for. Free and open source under Apache-2.0.
+**Peer-to-peer file transfer, messaging and calling for Android, Windows and Linux desktop.** Flash
+discovers nearby devices over your local network (Wi-Fi, Ethernet or a phone hotspot) and opens a
+direct encrypted channel for files, chat and calls. Direct LAN use works offline without an account
+or server. Independent organisations can opt into a self-hosted Flash Hub for enrolled devices that
+need off-LAN messaging, file delivery or call signalling. Free and open source under Apache-2.0.
 
 Built as a set of small Kotlin Multiplatform library modules (Android and desktop JVM targets) so you can
 take the whole engine or just the transport pieces you need. Supports **Android 7.0 (API 24) and up**.
@@ -21,26 +21,27 @@ take the whole engine or just the transport pieces you need. Supports **Android 
 
 ## Get the app
 
-Download the Android APK or Windows installers from the
-[Flash 2.3.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.2). Verify Android and
-Windows files against `SHA256SUMS.txt` and Linux files against `SHA256SUMS-linux.txt`.
+Download Flash for Android, Windows, or Linux from the
+[Flash 2.3.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.2).
+Use `Flash-2.3.2.apk` as the default Android download and choose the EXE or MSI on Windows.
+Verify Android and Windows files against `SHA256SUMS.txt` and Linux files against `SHA256SUMS-linux.txt`.
 
-- **Android 7.0 (API 24) or newer.** Allow "install unknown apps" for your browser or file manager, then open the APK.
+- **Android 7.0 (API 24) or newer.** Allow app installation from your download source, then open the APK.
   **If you have `v2.0.0-beta` installed, uninstall it first** (this deletes its chats and pairings): that build was signed with a
   debug key and Android will not update it with the release-signed 2.1.0+ builds. Updates after 2.1.0 install in place.
-- **Windows 10/11.** Per-user install, no administrator rights. The installers are not code-signed yet, so SmartScreen shows
-  "unknown publisher": choose *More info*, then *Run anyway*.
+- **Windows 10/11 x64.** Per-user install, no administrator rights. Exit Flash from the tray before upgrading.
+  The installers are unsigned. If SmartScreen blocks the verified download, choose *More info*, then *Run anyway*.
 - **Linux x86-64.** Use the `.deb` on Debian or Ubuntu, or extract the `.tar.gz` for a per-user setup. Linux desktop
   packages are built from the permanent `linux` branch (`origin/linux`), separate from `dev` and `main`.
   See [Install Flash on Linux](docs/install-linux.md) for the commands.
-- Both devices must be on the same Wi-Fi network (or one phone's hotspot) to find each other.
+- For Nearby discovery, connect both devices to the same LAN. When discovery misses a reachable peer, use **Connect by IP** with the address and port shown in the peer's Nearby screen.
 - The Flash Hub ships on a separate experimental server beta line. The Radio gateway and Android screen presenter are experimental. See
   [CHANGELOG.md](CHANGELOG.md).
 
 ## Install the library
 
-Flash is distributed via [JitPack](https://jitpack.io). Add the repository, then the
-one umbrella artifact (`core-engine`) that wires everything together:
+Flash is distributed via [JitPack](https://jitpack.io). Add the repository and the umbrella artifact (`core-engine`).
+The example uses the published `v2.2.0-beta.3` tag.
 
 ```kotlin
 // settings.gradle.kts
@@ -56,14 +57,13 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.3.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 
-The SDK beta `v2.3.0-beta.1` is published on JitPack (previous tag `v2.2.0-beta.3` was compiled by independent Android and JVM projects; see [REL22-04](docs/testing/TEST-BACKLOG.md#rel22-04--published-beta-resolves-from-the-current-jitpack-coordinate)).
-For direct Maven repository downloads or checksums, check the [2.3.0-beta.1 SDK release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.0-beta.1)
-and `com.transfer.flash` artifact coordinates.
-See [the changelog](CHANGELOG.md) for upgrade notes and [published modules](#published-modules) for smaller dependencies.
+This branch documents the upcoming SDK beta `v2.3.0-beta.1`. Use that version once its JitPack build is
+available to consume the API described here. The [release build guide](docs/release-build.md#publishing-the-library-jitpack-and-the-webrtc-fork)
+covers local Maven builds under `com.transfer.flash`. See [published modules](#published-modules) for smaller dependencies.
 
 ## Quick start
 
@@ -114,7 +114,7 @@ is done with it, after any transfers you want to finish.
 | `displayName` | `null` | Friendly name advertised to peers; falls back to the stored device name. |
 | `enableResume` | `true` | Both Android (`Flash.create`) and desktop (`DesktopEngine`) persist transfer state in the encrypted Room database to resume direct transfers across restarts (ADR-362); a custom JVM factory controls its own persistence. |
 | `autoAcceptIncoming` | `false` | `true` = accept inbound offers automatically; `false` (default) = gate each with `engine.transfers.acceptIncoming(id)` / `declineIncoming(id)`. |
-| `receivedFilesPath` (Android also accepts the legacy `receivedFilesDir: File`) | `null` | Directory for received files; defaults to app-internal storage. |
+| `receivedFilesPath` | `null` | Absolute destination directory. The Android factory defaults to its app-specific receive directory. The legacy Android `FlashConfig` overload takes `receivedFilesDir: File?`. |
 
 
 ### Pairing (`engine.pairing`)
@@ -146,7 +146,7 @@ pairing.revoke(peerId)     // forget a pairing
 ## Lifecycle
 
 `Flash.create(...)` owns a shared `CoroutineScope` plus the network, discovery, and
-database resources, so the returned `FlashEngine` is a `Closeable`. **Always pair it
+database resources, so the returned `FlashEngine` is an `AutoCloseable`. **Always pair it
 with `engine.close()`** — from `Activity.onDestroy`, `ViewModel.onCleared`, or a DI
 scope teardown. `close()` cancels the scope, stops discovery/network, and closes the
 encrypted database. It is idempotent, so calling it twice is safe.
@@ -169,17 +169,16 @@ Flash includes a comprehensive, modular documentation suite located in [`docs/de
 
 Flash avoids hardcoded flagship assumptions by grading CPU, memory, radio airtime, and UI complexity through `FlashPerformanceMode` and `FlashTransferProfile`:
 
-| Profile Tier | Target Hardware | Streams | Base Chunk | Queue Depths | Video Calls | Voice / PTT | Media Previews |
+| Profile tier | Target hardware | Streams | Base / max chunk | Worker / shared queue | 1:1 video capture | Voice call Opus | Preview profile |
 |---|---|---|---|---|---|---|---|
-| **`ULTRA_LOW`** | Severely constrained handsets, slow storage, 2.4 GHz only | **1 stream** | 16 KB / 32 KB | 2 / 2 frames | 240p @ 10fps (320x240) | 60ms Opus DTX | 256px, no video thumbnails |
-| **`LOW`** | <512MB RAM, IoT, POS, 2.4GHz radio | **1 stream** | 32 KB / 64 KB | 2 / 4 frames (<250 KB heap) | 360p @ 15fps (480x360) | 60ms Opus DTX | File icons (skip heavy video thumbs) |
-| **`MEDIUM`** | Mid-tier phones, older laptops | **2 streams** | 64 KB | 8 / 16 frames | 540p @ 24fps | 20ms Opus | 512px downsampled |
-| **`HIGH`** | Flagships, desktop workstations | **4 streams** | 64 KB (adaptive to 1MB) | 16 / 64 frames (pipe saturation) | 1080p @ 30fps | 20ms Opus | Full 1024px + video keyframes |
+| **`ULTRA_LOW`** | Severely constrained handsets, slow storage, 2.4 GHz only | 1 | 16 / 32 KiB | 2 / 2 frames | 240p at 10 fps | 60 ms, DTX | 256 px, video thumbnails off |
+| **`LOW`** | Constrained phones and embedded hosts | 1 | 32 / 64 KiB | 2 / 4 frames | 360p at 15 fps | 60 ms, DTX | 256 px, video thumbnails off |
+| **`MEDIUM`** | Mid-tier phones, older laptops | 2 | 64 / 256 KiB | 8 / 16 frames | 540p at 24 fps | 20 ms, DTX | 512 px, video thumbnails on |
+| **`HIGH`** | Flagships, desktop workstations | 4 | 64 / 1024 KiB | 16 / 64 frames | 1080p at 30 fps | 20 ms, DTX | 1024 px, video thumbnails on |
 
-The Video Calls column is the **1:1 call** capture profile (`FlashVideoProfile`). **Group** video calls cap what a
-member sends lower (ADR-098: `HIGH` 540p, other tiers 360p), and a **screen share** uses its own ladder
-(ADR-102). Chunk sizes and stream counts are `FlashTransferProfile`; the table's queue depths and voice/preview
-columns were not re-derived on 2026-10-09.
+These are configured values from `FlashTransferProfile`, `FlashVideoProfile` and `FlashVoiceProfile`.
+The UI also sets preview sizes for individual surfaces. Group video caps the outbound picture at
+540p in `HIGH` and 360p in other tiers (ADR-098). Screen sharing has a separate profile (ADR-102).
 
 ## Voice & video calls
 
@@ -192,8 +191,8 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.3.0-beta.1")
-    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.3.0-beta.1")   // optional in-call screen
+    implementation("com.github.Soko-Aerial.Flash:core-calling:v2.2.0-beta.3")
+    implementation("com.github.Soko-Aerial.Flash:ui-callui:v2.2.0-beta.3")   // optional in-call screen
 }
 ```
 
@@ -308,9 +307,8 @@ it never reaches the chat handlers. See
 
 ## Permissions
 
-Flash's library modules ship **no `AndroidManifest.xml` at all** — nothing is force-merged into
-your app, and there is no permission you did not write yourself. The consuming app declares what
-it needs.
+The consuming app owns its permissions and service declarations. Inspect Android's merged manifest
+for any entries supplied by transitive dependencies.
 
 **Required** (discovery + transport will not work without these):
 
@@ -323,7 +321,7 @@ it needs.
 
 | Permission | Why |
 |---|---|
-| `INTERNET` | Open TCP/WebSocket sockets on the local network (no internet egress is used). |
+| `INTERNET` | Open TCP/WebSocket sockets for LAN transport and, when configured, the Hub. |
 | `ACCESS_NETWORK_STATE` | Detect connectivity/interface changes to (re)bind discovery. |
 | `ACCESS_WIFI_STATE` | Read Wi-Fi/hotspot state to pick the right interface to advertise on. |
 | `CHANGE_WIFI_MULTICAST_STATE` | Acquire a multicast lock so NSD/mDNS discovery packets arrive. |
@@ -343,7 +341,7 @@ that match the service types you use:
 |---|---|
 | `WAKE_LOCK` | Keep the CPU awake so a transfer completes with the screen off. |
 | `FOREGROUND_SERVICE` | Base foreground-service permission. |
-| `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Required when using the `connectedDevice` type on apps targeting API 34+. |
+| `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Declare it for the `connectedDevice` type when targeting API 34+. The `CHANGE_WIFI_MULTICAST_STATE` declaration above satisfies a runtime prerequisite for this type. |
 | `FOREGROUND_SERVICE_DATA_SYNC` | Required when using the [`dataSync` type](https://developer.android.com/develop/background-work/services/fgs/service-types#data-sync) on apps targeting API 34+. |
 | `POST_NOTIFICATIONS` | Show transfer-progress notifications (runtime-requested on API 33+). |
 
@@ -351,6 +349,7 @@ that match the service types you use:
 survives the screen turning off, and control of the platform audio route:
 
 ```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
 <uses-permission android:name="android.permission.CAMERA" />
 <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -399,20 +398,22 @@ audio while listening, and it must survive the screen turning off:
 | Permission | Why |
 |---|---|
 | `RECORD_AUDIO` | Capture the talker's microphone. Runtime-requested; the host reads it through the `hasMicPermission` lambda so a refusal becomes `PttPressOutcome.NO_MIC` instead of a silent session. |
-| `FOREGROUND_SERVICE` | Run the live session as a foreground service (required on API 26+). |
+| `FOREGROUND_SERVICE` | Base permission for foreground services on API 28+ when targeting API 28 or higher. |
 | `FOREGROUND_SERVICE_MICROPHONE` | FGS type the talker claims (API 34+); without it a `microphone` promotion is refused. |
 | `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | FGS type a listener claims (API 34+). A listener needs no runtime grant. |
 
 Like calling, PTT ships **no manifest of its own** — the permission declarations and the service
 entry above are yours. The module deliberately does not start that service: `FlashPtt` exposes the
 session state and the host decides how to keep the process alive (the sample app starts its service
-on the Idle→session edge and stops it on return to Idle). `POST_NOTIFICATIONS` is required only if
-you post a session notification, and the platform must be able to promote the service on API 31+ —
-a press that happens while the app is backgrounded cannot promote a `microphone` service there, so
-hosts surface the app and let the user complete the press.
+on the Idle→session edge and stops it on return to Idle). Supply a notification to promote the
+service. On API 33+ the notification permission controls whether users see it in the notification
+drawer. Android also restricts background launches and microphone access, so hosts surface the
+app for the user to complete a pending press. [Android foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types) · [Notification permission](https://developer.android.com/develop/ui/views/notifications/notification-permission)
 
-LAN peer discovery uses Android NSD (mDNS) and does not require a location permission.
-If you add the optional Bluetooth radio gateway, see the [radio permissions](docs/developer-guide/modules/core/core-radio.md#android-bluetooth-permissions).
+Flash 2.3.2 targets API 36. Consumer apps targeting API 37 or higher must account for Android's
+LAN access rules for NSD and local sockets. [Android local network permission](https://developer.android.com/privacy-and-security/local-network-permission)
+
+If you add the optional Bluetooth radio gateway, see the [radio permissions](docs/developer-guide/modules/core/core-radio.md#4-android-bluetooth-permissions).
 
 ## Compatibility
 
@@ -420,15 +421,12 @@ If you add the optional Bluetooth radio gateway, see the [radio permissions](doc
 |---|---|
 | **minSdk** | 24 (Android 7.0) |
 | **compileSdk (Android consumer)** | At least 35 for `core-*`; use 37 if you add `ui-*`. |
-| **AGP (your app)** | 9.3+ |
-| **Gradle** | 9.5+ |
-| **Kotlin** | 2.2+ |
+| **Verified Android build toolchain** | AGP 9.3.1, Gradle 9.5.0, Kotlin 2.2.10 |
 | **JDK (to run the build)** | 17+ |
 | **Language/bytecode target** | Java 11 |
 
-> **Adoption ceiling:** the AGP 9.3 / Gradle 9.5 floor is the real gate — apps on the
-> AGP 8.x line cannot currently build against these artifacts. The `compileSdk` was
-> lowered to 35 for wider reach; a lower AGP floor would require a separate downgrade.
+The AAR metadata declares the minimum `compileSdk` for each variant. The build toolchain above is
+the combination exercised by the consumer checks.
 
 The `core-engine` and `core-persistence` artifacts bundle **SQLCipher** for the
 encrypted database, which ships native `.so` libraries for four ABIs (`arm64-v8a`,
@@ -475,11 +473,10 @@ modules stay on 35.
 
 **Dependency shape:** `core-engine` exports its discovery, network, security, messaging, transfer,
 persistence, enterprise, swarm and PTT libraries on Android and JVM, along with `core-common`.
-Calling is `compileOnly`, so add `core-calling` when you use calls. The engine has no dependency
-on `core-radio` and exposes no radio gateway. A host that uses radio adds the module and supplies
-the hardware and chat routing. Separately, `ui-chat` has runtime dependencies on `ui-platform-shims`
-and `core-radio` for its UI adapters. On JVM that also brings in jSerialComm and JNA. This does not
-configure a radio link or enable fallback.
+Calling is `compileOnly`, so add `core-calling` when you use calls. `core-radio` is a runtime
+dependency through `core-messaging` and through `ui-chat` when selected. On JVM it brings in
+jSerialComm and JNA. A radio host adds the module explicitly to use its API and supplies the
+hardware and chat routing. `ui-chat` also uses `ui-platform-shims` at runtime.
 
 ### Desktop JVM consumers (KMP, since the migration)
 
@@ -492,14 +489,15 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.3.0-beta.1")
+    implementation("com.github.Soko-Aerial.Flash:core-engine:v2.2.0-beta.3")
 }
 ```
 
 Gradle then resolves `core-engine-jvm` (and `core-common-jvm`, coroutines-jvm, …) from that root
 coordinate's module metadata. This is proven in-repo by `sample/consumer-desktop`, a plain
 `kotlin("jvm")` module with zero project dependencies whose compile gate is exactly this
-resolution against the published tree.
+resolution against a local Maven publication. `FlashDesktop.create` requires a host factory in a
+standalone JVM consumer. See the [JVM setup example](docs/developer-guide/getting-started/beginner-guide.md#step-1-initialize-flash-engine).
 
 On desktop, the `:desktop` module provides a complete Compose Desktop application shell bundling
 `DesktopEngine`, Room encrypted SQLite database (`sqlite-jdbc-crypt`), system tray, single-instance

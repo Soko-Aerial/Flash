@@ -3,21 +3,24 @@
 All notable changes to Flash are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Flash is a beta: the library API (`core-*`, `ui-*`) may still change between beta tags.
 
-**How to read the status marks.** Flash is developed feature-first and tested on devices later (see `docs/testing/TEST-BACKLOG.md`).
-Unless an entry says *device-verified*, it was built, unit-tested and compiled, and **has not yet been run on real phones or
-laptops**. The only things the owner has device-verified so far are pairing, chat, 1:1 calls, file transfers and upgrading an
-install that has v1 pairings (2026-09-23, `logs/handoff.md`).
+Installed-device results and outstanding checks are recorded in the [test backlog](docs/testing/TEST-BACKLOG.md).
 
 ## Unreleased
 
-## [2.3.2] - 2026-11-23
+## [2.3.2] - 2026-11-24
 
 - **Hub chat** shows a security-key banner beside the composer. When outgoing messages are waiting, it prompts you to verify the new key. Compare the code with your contact before trusting it. Your own code appears in Hub connection details.
 - Hub approval applies to the exact key shown in the prompt. Queued messages stay eligible for relay delivery across an offline restart and become due when the key is approved.
 - Nearby lists the available LAN addresses and port on Android and Windows so peers can connect using the address for their network.
-- Android uses version code 7. The Windows 2.3.2 MSI and EXE use the existing upgrade family and supersede the earlier 2.3.0 and 2.3.1 test installers.
+- Group voice notes and other whole-file group attachments use a separate transfer identity per recipient so each recipient can receive the file.
+- Swarm receives verify the announced file length. **Retry** can recheck a failed receive after damage or a storage failure while its record is retained and fetch damaged pieces again.
+- Fixed Hub policy decoding and two Android release startup crashes involving the conversation screen and foreground-service startup.
+- Android uses version code 7. The Windows 2.3.2 MSI and EXE use the existing upgrade family and target earlier Flash installations, including prior 2.3.2 candidates.
+- Linux x86-64 is available as an `amd64` Debian package and a portable archive with a bundled Java runtime. [Linux installation guide](docs/install-linux.md)
 
-## [2.3.0] - 2026-11-21
+The signed arm64 APK upgraded the Android 13 V760 in place and passed startup. All eight binaries match their checksum manifests. Windows installer upgrade detection and Linux package inspection passed. The installed Windows upgrade, group voice playback for both recipients and swarm Retry are tracked under WIN-UPGRADE-02, GROUP-VOICE-01 and SWM-RETRY-01.
+
+## [2.3.0] - 2026-11-21 (app candidate, superseded by 2.3.2)
 
 ### Flash for Android and Desktop 2.3.0
 
@@ -31,7 +34,7 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ### Upgrading the apps
 
-- **Android:** `versionName 2.3.0`, `versionCode 6`. Install over a release-signed `2.1.0` or `2.2.0` build using the same release signing key and APK ABI variant. Existing `v2.0.0-beta` debug-signed installs still require uninstall first (deleting local data).
+- **Android:** Use the signed 2.3.2 APK. The superseded 2.3.0 candidate used version code 6. An in-place upgrade requires the same release signing key and an APK compatible with the device. Existing `v2.0.0-beta` debug-signed installs still require uninstall first (deleting local data).
 - **Windows:** Use the 2.3.2 installers above. The rebuilt 2.3.0 packages failed a same-version update.
 - **Linux:** `.deb` and `.tar.gz` desktop packages are built and released separately from the permanent `linux` branch (`origin/linux`). See [Install Flash on Linux](docs/install-linux.md).
 
@@ -50,7 +53,7 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 ### Verification status
 
 - Host automated verification on `dev` (`9e2123ba`) passed **9,409 automated tests (9,404 passed, 0 failed, 5 pre-existing/opt-in skips)**: 9,320 Gradle tests across 1,056 suites + 89 Admin UI Node tests, plus `:app:assembleDebug` and `:app:lintDebug` (0 errors).
-- Signed release artifacts, physical-device checks (`MODREV-01..07`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `IFREV-01..06`, `INVITE-LINK-01..02`), and live test-Hub acceptance remain owed in `docs/testing/TEST-BACKLOG.md`.
+- The test Hub runs `2.3.0-beta.1` with relay wire v2 and REST API v1. See the [test backlog](docs/testing/TEST-BACKLOG.md) for remaining live and installed-device checks, including `MODREV-01..07`, `DESK-RESUME-01`, `MEDIA-PLAY-01..04`, `IFREV-01..06`, and `INVITE-LINK-01..02`.
 
 ## SDK 2.2.0-beta.3 - 2026-11-08
 

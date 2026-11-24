@@ -2,6 +2,11 @@
 
 Hub invites use the issuing Hub's public HTTPS address. Local group invites use the Flash link hostname configured into the Android and desktop builds. The invite payload is in the URL fragment. The browser requests a static landing page without sending the group secret, Hub token, or root fingerprint to the page server. The app still validates the original invite and asks the user to confirm.
 
+The signed Android 2.3.2 candidate in `dist/2.3.2` uses the placeholder `invite.flash.invalid`
+in both HTTPS intent filters. For a public Hub invite, open the landing page and choose **Open in Flash**,
+or copy the invite into Flash. Direct opening of a public HTTPS link requires a build configured for
+that hostname and a verified association. [Android App Link verification](https://developer.android.com/training/app-links/verify-applinks)
+
 ## Hub invites
 
 Set `FLASH_EXTERNAL_URL` to the Hub's public HTTPS URL. New invites and their console QR codes use `https://<hub>/invite/enroll#<payload>`. The reverse proxy must forward `/invite/enroll` and `/invite/assets/`. Self-hosted Hubs can serve the page and its **Open in Flash**, **Copy invite link**, and **Download Flash** actions. Existing `flash://enroll` invites and the older `/enroll?token=...` page remain supported. Local HTTP development keeps the legacy link format.

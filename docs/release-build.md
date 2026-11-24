@@ -5,7 +5,8 @@ One script builds everything a release needs: `tools/build-release.ps1` (Windows
 
 ```powershell
 .\tools\build-release.ps1                            # unsigned + signed APK, MSI, EXE
-.\tools\build-release.ps1 -Target android            # both APKs only
+.\tools\build-release.ps1 -Apk signed                # signed Android variants plus MSI and EXE
+.\tools\build-release.ps1 -Target android            # signed and unsigned Android variants only
 .\tools\build-release.ps1 -Target android -Apk unsigned
 .\tools\build-release.ps1 -Target android -Apk signed
 .\tools\build-release.ps1 -Target desktop            # MSI + EXE only
@@ -34,12 +35,17 @@ manifest. A previous candidate at the same destination is retained in that run's
 
 | File | What it is |
 |---|---|
-| `Flash-<ver>.apk` | Universal APK: R8-optimised, zip-aligned (16 KB pages) and signed with APK Signature Scheme v2 + v3 (`apksigner` leaves out v1 because `minSdk` is 24). Runs on every ABI; this is the default file to install or share. |
-| `Flash-<ver>-arm64-v8a.apk`, `-armeabi-v7a.apk`, `-x86_64.apk` | The same app restricted to one ABI, roughly a third of the universal size (EXP-80). Same alignment and signature. Android keeps the last split installed, so a device that got one only updates with the same one. |
+| `Flash-<ver>.apk` | Universal APK: R8-optimised, zip-aligned (16 KB pages) and signed with APK Signature Scheme v2 + v3 (`minSdk` is 24). The default download for supported devices. |
+| `Flash-<ver>-arm64-v8a.apk`, `-armeabi-v7a.apk`, `-x86_64.apk` | Smaller standalone APKs for the named CPU architecture, with the same version code, alignment and signing key as the universal APK. Choose a compatible APK for installation or upgrade. |
 | `Flash-<ver>-unsigned.apk`, `Flash-<ver>-<abi>-unsigned.apk` | Unsigned copies of the above (one per variant). Android will not install them until they are signed; they are for signing elsewhere or for stores that sign for you. |
 | `Flash-<ver>.msi`, `Flash-<ver>.exe` | Windows installers with a bundled Java runtime. Per-user install; no admin rights needed. |
 | `Flash-windows-x64-<ver>.jar` | Only with `-UberJar`. It needs Java 21 installed to run. |
 | `SHA256SUMS.txt` | Checksums for every file in the folder. |
+
+The signed Android and Windows build in `dist\2.3.2\` has four signed APKs, the EXE,
+the MSI and their checksum manifest. Verify against the manifest from that same build.
+The staged APKs use the placeholder invite hostname. See [invite links](deploy/INVITE-LINKS.md)
+for browser handoff and for building with verified public Android App Links.
 
 ## Where versions live
 
@@ -52,9 +58,9 @@ manifest. A previous candidate at the same destination is retained in that run's
 | Sample Maven consumer | `sample/consumer-desktop/build.gradle.kts` | `2.3.0-beta.1` |
 | Vendored WebRTC notice | `config/aboutlibraries/libraries/webrtc-kmp-fork.json` | `2.3.0-beta.1` |
 
-The coordinated Android and Windows release tag is `v2.3.2`.
-The JitPack tag is `v2.3.0-beta.1`, under
-`com.github.Soko-Aerial.Flash:<module>:v2.3.0-beta.1`. The independent Hub distribution tag is
+The app release tag for Android, Windows, and Linux is `v2.3.2`.
+The planned JitPack tag is `v2.3.0-beta.1`, under
+`com.github.Soko-Aerial.Flash:<module>:v2.3.0-beta.1`. The planned Hub distribution tag is
 `server-v2.3.0-beta.1`. Use the release checklist in the changelog and test backlog before
 publishing each artifact. Never reuse a tag. Keep the Android release signing key and increase
 `versionCode` for each upgrade.
@@ -98,6 +104,10 @@ the AAPT2 classifier. After tagging, repeat the external consumer compiles again
 If JitPack fails, preserve the tag and record the failure on its release page. For direct downloads
 (such as the historical [SDK 2.2.0-beta.2 release](https://github.com/Soko-Aerial/Flash/releases/tag/v2.2.0-beta.2)
 or a `v2.3.0-beta.1` release attachment), publish a local Maven repository ZIP with its checksum and setup instructions.
+
+The JitPack Linux build of `ui-platform-shims-jvm` skips the Windows Media Foundation DLL. The
+published JVM UI can use the system-player fallback. The Windows app installers and Windows-built
+Maven artifacts bundle the DLL. See the [platform shims guide](developer-guide/modules/ui/ui-platform-shims.md).
 
 The `RadioLinkTest*` classes (the serial-radio tester, ADR-101) are excluded from the desktop jar and installers. The
 tester runs only through `:desktop:radioLinkTest` / `:desktop:radioLinkTestCli`, which use the compiled output
@@ -185,15 +195,16 @@ These are the non-ProGuard `package*` tasks. The desktop-only build produces
 `Flash-2.3.2.msi` and `Flash-2.3.2.exe` under `dist\desktop-2.3.2\`.
 `packageRelease*` (ProGuard) has never been verified for this app.
 
-Use a higher Windows package version for an installable rebuild when the jpackage application files
-change. jpackage's content-hashed JAR filenames can change the MSI component table. Windows Installer
-rejected the rebuilt `2.3.0` as a same-version update in ERROR-1044. The newer package has its own
-product ID and uses the existing upgrade group. The WiX template removes the previous package
-inside the installation transaction. [Windows Installer major upgrades](https://learn.microsoft.com/en-us/windows/win32/msi/major-upgrades) · [Removal sequencing](https://learn.microsoft.com/en-us/windows/win32/msi/removeexistingproducts-action)
+Increment the Windows package version for public releases. The WiX template has a 2.3.2-specific
+exception for local candidates. The current candidate has its own product code in the existing
+upgrade family, includes earlier 2.3.2 products in the upgrade range and still blocks downgrades
+from newer versions. The same MSI upgrade rules apply to the EXE. Exit Flash from the tray before
+running either installer. Windows Installer removes the prior package inside the install transaction.
+[Windows Installer major upgrades](https://learn.microsoft.com/en-us/windows/win32/msi/major-upgrades) · [Removal sequencing](https://learn.microsoft.com/en-us/windows/win32/msi/removeexistingproducts-action)
 
 ## Linux release packages
 
-Flash 2.3.0 has two Linux x86-64 assets: `flash_2.3.0_amd64.deb` and `flash-2.3.0-linux-x64.tar.gz`.
+Flash 2.3.2 includes `flash_2.3.2_amd64.deb` and `flash-2.3.2-linux-x64.tar.gz` for Linux x86-64.
 The Linux build is separate from `tools/build-release.ps1` and builds from the permanent `linux`
 branch (`origin/linux`), not from `dev` or `main`. Publish the packages with
 `SHA256SUMS-linux.txt`; keep the original Android and Windows checksum manifest alongside it.
@@ -218,10 +229,11 @@ See [Install Flash on Linux](install-linux.md) for install, launch and verificat
   XML results and run the console Node suite. Use `:app:lintRelease` for the Android artifact.
 - For the app, verify the signed APK and Windows installers and complete `REL-01`–`07`,
   `MIG-01`/`02`, `DESK-RESUME-01`, `MEDIA-PLAY-01`–`04`, `MODREV-01`–`07`, and `INVITE-LINK-01`/`02`.
+  For the 2.3.2 refresh, also check `WIN-UPGRADE-02`, `GROUP-VOICE-01` and `SWM-RETRY-01`.
   Use a release-signed `2.1.0` or `2.2.0` install with existing data for the
   in-place upgrade check. Use a disposable install for the older debug-key check.
 - For the library beta (`v2.3.0-beta.1`), verify the JDK 17 install line and isolated Android/JVM consumers
-  before tagging. After tagging, repeat the consumer proof from JitPack (`REL22-04`)
+  before tagging. After tagging, repeat the consumer proof from the public JitPack coordinates
   and exercise the Android pairing facade (`PAIRLIB-01`).
 - For the Hub beta (`server-v2.3.0-beta.1`), deploy the candidate to the isolated test Hub with its prior backups
   preserved, verify the build version and complete `HUBREADY-01`–`05`, `IFREV-01`–`06`, and `REL22-02`/`03`. See the

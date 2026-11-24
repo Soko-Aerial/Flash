@@ -167,11 +167,19 @@ class E2eHostSealingLifecycleTest {
         a.client.enroll(hub.invite()).also { assertTrue(it is EnrollmentOutcome.Enrolled, "re-enrol: $it") }
         assertTrue(eventually(10_000L) { a.client.sealingKeys!!.state.value == HubSealingKeyState.PUBLISHED }, "the new key is published")
 
-        val secondKey = Base64.getDecoder().decode(assertNotNull(eventuallyEntry(b, "dev-a") { it != null && it.sealingPublicKey != null }?.sealingPublicKey))
-        assertNotEquals(HubSealingFingerprint.of(firstKey), HubSealingFingerprint.of(secondKey), "a fresh key, never the retired one")
-        assertEquals(HubKeyVerdict.CHANGED, pins.check("dev-a", HubSealingFingerprint.of(secondKey)))
+        val previousKey = Base64.getEncoder().encodeToString(firstKey)
+        val updatedEntry = eventuallyEntry(b, "dev-a") { entry ->
+            val publishedKey = entry?.sealingPublicKey
+            publishedKey != null && publishedKey != previousKey
+        }
+        val secondKey = Base64.getDecoder().decode(assertNotNull(updatedEntry?.sealingPublicKey))
+        val newFingerprint = HubSealingFingerprint.of(secondKey)
+        assertNotEquals(HubSealingFingerprint.of(firstKey), newFingerprint, "a fresh key, never the retired one")
+        assertEquals(HubKeyVerdict.CHANGED, pins.check("dev-a", newFingerprint))
         assertTrue(pins.isBlocked("dev-a"), "nothing is sent to dev-a until the user continues")
-        assertTrue(pins.confirm("dev-a"))
+        assertTrue(!pins.confirm("dev-a", HubSealingFingerprint.of(firstKey)), "the retired code cannot approve the change")
+        assertTrue(pins.isBlocked("dev-a"))
+        assertTrue(pins.confirm("dev-a", newFingerprint))
         assertTrue(!pins.isBlocked("dev-a"))
     }
 
