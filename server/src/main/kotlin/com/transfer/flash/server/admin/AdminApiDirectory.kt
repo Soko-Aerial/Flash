@@ -149,6 +149,13 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
             call.guarded {
                 val existing = d.directory.getGroup(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
                 if (!scope.allowsGroup(existing)) return@guarded call.notFound()
+                val revokeLinkId = b.revokeLinkId?.trim()?.takeIf { it.isNotEmpty() }
+                if (!b.revokeJoinLinks && revokeLinkId != null) {
+                    val links = d.groupJoinLinks
+                    if (links == null || !links.belongsToGroup(id, revokeLinkId)) {
+                        return@guarded call.notFound()
+                    }
+                }
                 var updated = d.directory.updateGroup(id, b.name, visibility, joinMode, CONSOLE)
                 if (updated.visibility != existing.visibility || updated.joinMode != existing.joinMode) {
                     d.groupJoinLinks?.revokeAllForGroup(id, session.username)
@@ -158,9 +165,10 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
                     updated = d.directory.rotateJoinLinkRevision(id, CONSOLE)
                     d.groupJoinLinks?.revokeAllForGroup(id, session.username)
                     d.audit.log(session.username, "group.join_links.revoke", "group=$id")
-                } else if (!b.revokeLinkId.isNullOrBlank()) {
-                    d.groupJoinLinks?.revokeLink(b.revokeLinkId, session.username)
-                    d.audit.log(session.username, "group.join_link.revoke", "group=$id link=${b.revokeLinkId}")
+                } else if (revokeLinkId != null) {
+                    if (d.groupJoinLinks?.revokeLink(id, revokeLinkId, session.username) == true) {
+                        d.audit.log(session.username, "group.join_link.revoke", "group=$id link=$revokeLinkId")
+                    }
                 }
                 d.audit.log(session.username, "group.update", "group=$id")
                 call.respondJson(updated.toAdminDto(d))

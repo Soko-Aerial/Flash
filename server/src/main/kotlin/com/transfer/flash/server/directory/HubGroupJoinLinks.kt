@@ -92,29 +92,47 @@ class HubGroupJoinLinks(
         }
     }
 
-    fun revokeLink(linkId: String, actorDeviceId: String = ""): Boolean {
-        if (linkId.isBlank()) return false
+    fun belongsToGroup(groupId: String, linkId: String): Boolean {
+        if (groupId.isBlank() || linkId.isBlank()) return false
+        val db = database
+        if (db != null) {
+            return db.withConnection { conn ->
+                conn.query(
+                    "SELECT 1 FROM dir_group_join_links WHERE link_id = ? AND group_id = ? LIMIT 1",
+                    linkId, groupId,
+                ) { true }.isNotEmpty()
+            }
+        }
+        synchronized(memoryLock) {
+            return memoryLinks[linkId]?.groupId == groupId
+        }
+    }
+
+    fun revokeLink(groupId: String, linkId: String, actorDeviceId: String = ""): Boolean {
+        if (groupId.isBlank() || linkId.isBlank()) return false
         val now = clock()
         val db = database
         if (db != null) {
             return db.withConnection { conn ->
                 conn.update(
-                    "UPDATE dir_group_join_links SET revoked_at = ?, revoked_by = ? WHERE link_id = ? AND revoked_at IS NULL",
-                    now, actorDeviceId, linkId,
+                    "UPDATE dir_group_join_links SET revoked_at = ?, revoked_by = ? WHERE link_id = ? AND group_id = ? AND revoked_at IS NULL",
+                    now, actorDeviceId, linkId, groupId,
                 ) > 0
             }
         }
         synchronized(memoryLock) {
             val cur = memoryLinks[linkId] ?: return false
-            if (cur.revokedAt != null) return false
+            if (cur.groupId != groupId || cur.revokedAt != null) return false
             memoryLinks[linkId] = cur.copy(revokedAt = now, revokedBy = actorDeviceId)
             return true
         }
     }
 
-    fun revokeToken(token: String, actorDeviceId: String = ""): Boolean {
-        val linkId = linkIdOf(token) ?: return false
-        return revokeLink(linkId, actorDeviceId)
+    fun revokeToken(groupId: String, token: String, actorDeviceId: String = ""): Boolean {
+        val opened = openToken(token) ?: return false
+        if (opened.version != TokenFormat.V3 || opened.groupId != groupId) return false
+        val linkId = opened.linkId ?: return false
+        return revokeLink(groupId, linkId, actorDeviceId)
     }
 
     fun revokeAllForGroup(groupId: String, actorDeviceId: String = ""): Int {
@@ -140,7 +158,11 @@ class HubGroupJoinLinks(
         }
     }
 
-    fun resolve(token: String, directory: OrganizationDirectory): GroupCharter? {
+    fun resolve(
+        token: String,
+        directory: OrganizationDirectory,
+        canResolve: (GroupCharter) -> Boolean = { true },
+    ): GroupCharter? {
         val opened = openToken(token) ?: return null
         val now = clock()
         if (opened.expiresAt <= now || opened.expiresAt - now > TTL_MS) return null
@@ -148,7 +170,8 @@ class HubGroupJoinLinks(
             val expectedRev = if (opened.version == TokenFormat.V1) it.version else it.joinLinkRevision
             expectedRev == opened.revision &&
                 it.visibility != GroupVisibility.HIDDEN &&
-                it.joinMode != JoinMode.ADMIN_ONLY
+                it.joinMode != JoinMode.ADMIN_ONLY &&
+                canResolve(it)
         } ?: return null
 
         if (opened.version == TokenFormat.V3) {

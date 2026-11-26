@@ -1059,6 +1059,99 @@ class AdminApiTest {
         assertNotNull(joinLinks.resolve(newToken, r.directory))
     }
 
+    @Test
+    fun adminGroupUpdateBindsIndividualJoinLinkRevocationToAuthorisedGroup() = testApplication {
+        val r = Realm()
+        val joinLinks = com.transfer.flash.server.directory.HubGroupJoinLinks(
+            com.transfer.flash.server.auth.SecretBox.ofKey(ByteArray(32) { 12 }),
+            clock = { r.now },
+            database = r.db,
+        )
+        r.directory.createDepartment("dept-gh", "Ghana", emptyList(), isOrgAdmin = true)
+        r.directory.createDepartment("dept-ng", "Nigeria", emptyList(), isOrgAdmin = true)
+        val ghGroup = r.directory.createGroup(
+            "grp-gh", "Ghana Signals", "dept-gh",
+            com.transfer.flash.server.directory.GroupVisibility.LISTED,
+            com.transfer.flash.server.directory.JoinMode.OPEN_IN_SCOPE,
+            emptyList(),
+            com.transfer.flash.server.directory.DirectoryActor.CONSOLE,
+        )
+        val ngGroup = r.directory.createGroup(
+            "grp-ng", "Nigeria Signals", "dept-ng",
+            com.transfer.flash.server.directory.GroupVisibility.LISTED,
+            com.transfer.flash.server.directory.JoinMode.OPEN_IN_SCOPE,
+            emptyList(),
+            com.transfer.flash.server.directory.DirectoryActor.CONSOLE,
+        )
+        val ghToken = joinLinks.issue(ghGroup, issuerDeviceId = ADMIN_DEVICE, maxUses = 1)
+        val ngToken = joinLinks.issue(ngGroup, issuerDeviceId = ADMIN_DEVICE, maxUses = 1)
+        val ghLinkId = joinLinks.linkIdOf(ghToken)!!
+        val ngLinkId = joinLinks.linkIdOf(ngToken)!!
+
+        val headPassword = "HeadPassword123!"
+        val headCreated = r.admins.createHead("head-gh", headPassword, "boss", "Ghana Head", listOf("dept-gh"), null)
+
+        val deps = AdminApiDeps(
+            web = r.deps.web,
+            admins = r.admins,
+            audit = r.audit,
+            directory = r.directory,
+            identities = r.identities,
+            stepUp = r.stepUp,
+            config = r.config,
+            limits = r.limits,
+            clock = { r.now },
+            groupJoinLinks = joinLinks,
+        )
+        routing { adminApiRoutes(deps) }
+
+        val bossSession = client.signIn(r)
+        r.now += 31_000
+        val headLogin = client.post("/admin/api/v1/login") {
+            header("Origin", "http://localhost")
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(LoginBody("head-gh", headPassword, r.admins.generateTotp(headCreated.totpSecret, r.now / 1000))))
+        }
+        assertEquals(HttpStatusCode.OK, headLogin.status, headLogin.bodyAsText())
+        val headSession = Sess(
+            headLogin.setCookie().first { it.name == "flash_admin_session" }.value,
+            HubRestCodec.decode<LoginDto>(headLogin.bodyAsText()).csrfToken,
+        )
+
+        // Scoped department head cannot revoke Nigeria's link via their authorised Ghana group URL.
+        val crossScope = client.put("/admin/api/v1/groups/grp-gh") {
+            withSession(headSession)
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(GroupBody(name = "ShouldNotChange", revokeLinkId = ngLinkId)))
+        }
+        assertEquals(HttpStatusCode.NotFound, crossScope.status)
+        assertEquals("Ghana Signals", r.directory.getGroup("grp-gh")!!.name)
+        assertNull(joinLinks.listLinks("grp-ng").single { it.linkId == ngLinkId }.revokedAt)
+        assertEquals(0, joinLinks.listLinks("grp-ng").single { it.linkId == ngLinkId }.useCount)
+
+        // Org admin also gets 404 when revoking a link under the wrong group URL.
+        val wrongGroupOrg = client.put("/admin/api/v1/groups/grp-gh") {
+            withSession(bossSession)
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(GroupBody(revokeLinkId = ngLinkId)))
+        }
+        assertEquals(HttpStatusCode.NotFound, wrongGroupOrg.status)
+        assertNull(joinLinks.listLinks("grp-ng").single { it.linkId == ngLinkId }.revokedAt)
+        assertTrue(r.audit.query(AuditFilter(actionPrefix = "group.join_link.revoke")).isEmpty())
+
+        // Scoped department head CAN revoke Ghana's own link, leaving Nigeria's link active and untouched.
+        val ownRevoke = client.put("/admin/api/v1/groups/grp-gh") {
+            withSession(headSession)
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(GroupBody(revokeLinkId = ghLinkId)))
+        }
+        assertEquals(HttpStatusCode.OK, ownRevoke.status)
+        assertNotNull(joinLinks.listLinks("grp-gh").single { it.linkId == ghLinkId }.revokedAt)
+        assertNull(joinLinks.resolve(ghToken, r.directory))
+        assertEquals(1, r.audit.query(AuditFilter(actionPrefix = "group.join_link.revoke")).size)
+        assertNotNull(joinLinks.resolve(ngToken, r.directory))
+    }
+
     private companion object {
         const val SETUP_TOKEN = "test-setup-token-0123456789abcdef"
         const val ADMIN_DEVICE = "dev-boss"

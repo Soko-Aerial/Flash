@@ -376,16 +376,26 @@ fun Route.directoryRoutes(
                 call.guarded {
                     val actor = principal.toActor()
                     hideFromStrangers(directory, id, actor)
-                    val before = directory.getGroup(id)
+                    val before = directory.getGroup(id) ?: throw DirectoryNotFoundException("group")
+                    if (!directory.canManage(before, actor)) throw SecurityException("You may not change this group.")
+                    val revokeLinkId = body.revokeLinkId?.trim()?.takeIf { it.isNotEmpty() }
+                    if (!body.revokeJoinLinks && revokeLinkId != null) {
+                        val links = groupJoinLinks
+                        if (links == null || !links.belongsToGroup(id, revokeLinkId)) {
+                            throw DirectoryNotFoundException("join link")
+                        }
+                    }
                     var group = directory.updateGroup(id, body.name, visibility, joinMode, actor)
-                    if (before != null && (group.visibility != before.visibility || group.joinMode != before.joinMode)) {
+                    if (group.visibility != before.visibility || group.joinMode != before.joinMode) {
                         groupJoinLinks?.revokeAllForGroup(id, principal.deviceId)
                     }
                     if (body.revokeJoinLinks) {
                         group = directory.rotateJoinLinkRevision(id, actor)
                         groupJoinLinks?.revokeAllForGroup(id, principal.deviceId)
-                    } else if (!body.revokeLinkId.isNullOrBlank()) {
-                        groupJoinLinks?.revokeLink(body.revokeLinkId!!, principal.deviceId)
+                    } else if (revokeLinkId != null) {
+                        if (groupJoinLinks?.revokeLink(id, revokeLinkId, principal.deviceId) == true) {
+                            audit.record(principal.deviceId, "directory.group.join_link.revoke", "group=$id link=$revokeLinkId")
+                        }
                     }
                     audit.record(principal.deviceId, "directory.group.update", "id=$id")
                     call.respondJson(group.toDto(actor, directory, isOnline))
@@ -459,8 +469,11 @@ fun Route.directoryRoutes(
                     HttpStatusCode.ServiceUnavailable, HubErrorCodes.ERR_INTERNAL, "Group join links are unavailable.",
                 )
                 val body = call.receiveBody<GroupJoinLinkToken>() ?: return@post
-                val group = links.resolve(body.token, directory)
-                if (group == null || group.visibility == GroupVisibility.HIDDEN || group.joinMode == JoinMode.ADMIN_ONLY || !directory.canSee(group, principal.toActor())) {
+                val actor = principal.toActor()
+                val group = links.resolve(body.token, directory) { candidate ->
+                    directory.canSee(candidate, actor) && DirectoryVisibility.canSeeGroup(candidate, actor, directory)
+                }
+                if (group == null) {
                     return@post call.respondNotFound()
                 }
                 call.respondJson(GroupJoinLinkTarget(group.id, group.name))

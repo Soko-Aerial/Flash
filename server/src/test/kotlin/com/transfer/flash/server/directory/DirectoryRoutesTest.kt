@@ -410,4 +410,101 @@ class DirectoryRoutesTest {
         assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-links/resolve", member1, singleUse).status)
         assertEquals(HttpStatusCode.NotFound, client.postAs("/api/v1/groups/join-links/resolve", member2, singleUse).status)
     }
+
+    @Test
+    fun joinLinkRevocationIsScopedToAuthorisedGroupAndDeniedResolvePreservesUseCount() = testApplication {
+        val w = World()
+        val now = 1_000L
+        val dbLinks = HubGroupJoinLinks(
+            secrets = SecretBox.ofKey(ByteArray(32) { 11 }),
+            clock = { now },
+            database = w.db,
+        )
+        mount(w, dbLinks)
+
+        val ghAdmin = w.token("dadmin-01", DeviceCert.ROLE_DEPT_ADMIN, dept = "dept-gh")
+        val orgAdmin = w.token("root-admin", DeviceCert.ROLE_ADMIN, dept = null)
+        val ghMember1 = w.token("member-01", dept = "dept-gh")
+        val ghMember2 = w.token("member-02", dept = "dept-gh")
+        val ngOutsider = w.token("outsider-01", dept = "dept-ng")
+
+        val ghToken = HubRestCodec.decode<GroupJoinLinkToken>(
+            client.postAs("/api/v1/groups/join-links", ghAdmin, CreateGroupJoinLinkBody("grp-public", maxUses = 1)).bodyAsText(),
+        )
+        val orgToken = HubRestCodec.decode<GroupJoinLinkToken>(
+            client.postAs("/api/v1/groups/join-links", orgAdmin, CreateGroupJoinLinkBody("grp-org", maxUses = 1)).bodyAsText(),
+        )
+        val approvalToken = HubRestCodec.decode<GroupJoinLinkToken>(
+            client.postAs("/api/v1/groups/join-links", ghAdmin, CreateGroupJoinLinkBody("grp-approval")).bodyAsText(),
+        )
+        val ghLinkId = dbLinks.linkIdOf(ghToken.token)!!
+        val orgLinkId = dbLinks.linkIdOf(orgToken.token)!!
+        val approvalLinkId = dbLinks.linkIdOf(approvalToken.token)!!
+
+        // 1. Denied resolution by an out-of-scope outsider returns 404 and does NOT consume the single use.
+        assertEquals(HttpStatusCode.NotFound, client.postAs("/api/v1/groups/join-links/resolve", ngOutsider, ghToken).status)
+        assertEquals(0, dbLinks.listLinks("grp-public").single { it.linkId == ghLinkId }.useCount)
+
+        // 2. Cross-group revocation via an authorised group fails 404 without mutating either group or the target link.
+        assertEquals(
+            HttpStatusCode.NotFound,
+            client.put("/api/v1/groups/grp-public") {
+                header("Authorization", "Bearer $ghAdmin"); contentType(ContentType.Application.Json)
+                setBody(HubRestCodec.encode(UpdateGroupBody(name = "ShouldNotRename", revokeLinkId = orgLinkId)))
+            }.status,
+        )
+        assertEquals("Public", w.dir.getGroup("grp-public")!!.name)
+        assertNull(dbLinks.listLinks("grp-org").single { it.linkId == orgLinkId }.revokedAt)
+        assertEquals(0, dbLinks.listLinks("grp-org").single { it.linkId == orgLinkId }.useCount)
+
+        // Even a second group the same caller manages cannot revoke a link belonging to another group.
+        assertEquals(
+            HttpStatusCode.NotFound,
+            client.put("/api/v1/groups/grp-public") {
+                header("Authorization", "Bearer $ghAdmin"); contentType(ContentType.Application.Json)
+                setBody(HubRestCodec.encode(UpdateGroupBody(revokeLinkId = approvalLinkId)))
+            }.status,
+        )
+        assertNull(dbLinks.listLinks("grp-approval").single { it.linkId == approvalLinkId }.revokedAt)
+
+        // 3. Direct store revocation also enforces group binding on both persistent and in-memory implementations.
+        assertFalse(dbLinks.revokeLink("grp-public", orgLinkId, "dadmin-01"))
+        assertFalse(dbLinks.revokeToken("grp-public", orgToken.token, "dadmin-01"))
+        assertNull(dbLinks.listLinks("grp-org").single { it.linkId == orgLinkId }.revokedAt)
+
+        val memLinks = HubGroupJoinLinks(SecretBox.ofKey(ByteArray(32) { 13 }), clock = { now })
+        val memOrgToken = memLinks.issue(w.dir.getGroup("grp-org")!!, issuerDeviceId = "root-admin", maxUses = 1)
+        val memOrgLinkId = memLinks.linkIdOf(memOrgToken)!!
+        assertFalse(memLinks.belongsToGroup("grp-public", memOrgLinkId))
+        assertFalse(memLinks.revokeLink("grp-public", memOrgLinkId, "dadmin-01"))
+        assertFalse(memLinks.revokeToken("grp-public", memOrgToken, "dadmin-01"))
+        assertNull(memLinks.resolve(memOrgToken, w.dir) { false })
+        assertEquals(0, memLinks.listLinks("grp-org").single { it.linkId == memOrgLinkId }.useCount)
+        assertNotNull(memLinks.resolve(memOrgToken, w.dir) { true })
+
+        // 4. Authorised member still consumes the preserved single use on grp-public; second member then gets 404.
+        assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-links/resolve", ghMember1, ghToken).status)
+        assertEquals(1, dbLinks.listLinks("grp-public").single { it.linkId == ghLinkId }.useCount)
+        assertEquals(HttpStatusCode.NotFound, client.postAs("/api/v1/groups/join-links/resolve", ghMember2, ghToken).status)
+
+        // 5. Authorised caller can revoke grp-approval's own link (and retry idempotently), while grp-org stays active.
+        assertEquals(
+            HttpStatusCode.OK,
+            client.put("/api/v1/groups/grp-approval") {
+                header("Authorization", "Bearer $ghAdmin"); contentType(ContentType.Application.Json)
+                setBody(HubRestCodec.encode(UpdateGroupBody(revokeLinkId = approvalLinkId)))
+            }.status,
+        )
+        assertNotNull(dbLinks.listLinks("grp-approval").single { it.linkId == approvalLinkId }.revokedAt)
+        assertEquals(
+            HttpStatusCode.OK,
+            client.put("/api/v1/groups/grp-approval") {
+                header("Authorization", "Bearer $ghAdmin"); contentType(ContentType.Application.Json)
+                setBody(HubRestCodec.encode(UpdateGroupBody(revokeLinkId = approvalLinkId)))
+            }.status,
+        )
+        assertEquals(1, w.audit.count { it == "dadmin-01|directory.group.join_link.revoke|group=grp-approval link=$approvalLinkId" })
+        assertEquals(HttpStatusCode.NotFound, client.postAs("/api/v1/groups/join-links/resolve", ghMember1, approvalToken).status)
+        assertEquals(HttpStatusCode.OK, client.postAs("/api/v1/groups/join-links/resolve", ngOutsider, orgToken).status)
+    }
 }
