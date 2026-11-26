@@ -1,5 +1,75 @@
 # Progress Log
 
+## 2026-11-26 — Hub join-link revocation scope and visibility-before-consume fix (ERROR-1054)
+
+Resolved the Hub `2.3.0-beta.1` blocker recorded in `ERROR-1054` (product commit `bb2166b6`):
+- Updated `HubGroupJoinLinks` (`belongsToGroup`, group-scoped `revokeLink(groupId, linkId, actor)`
+  and `revokeToken(groupId, token, actor)`) across both SQLite and in-memory stores.
+- Updated `PUT /api/v1/groups/{id}` (`DirectoryRoutes.kt`) and `PUT /admin/api/v1/groups/{id}`
+  (`AdminApiDirectory.kt`) to verify authorisation and `belongsToGroup` before mutating group state,
+  answering `404` on unknown or cross-group link IDs and auditing revocations only when a link in the
+  authorised group is actually revoked.
+- Added a `canResolve` predicate to `HubGroupJoinLinks.resolve` evaluated before `consumeLink`, and
+  wired `POST /api/v1/groups/join-links/resolve` to check caller group visibility first so denied
+  resolutions leave `use_count` unchanged.
+- Updated `docs/protocol.md` to match the fixed join-link contract.
+
+### Verification
+- Added regression tests in `DirectoryRoutesTest` (device API + persistent and in-memory stores +
+  outsider denied resolve preserving `maxUses = 1`) and `AdminApiTest` (scoped department-head and
+  org-admin cross-group revocation refusal + own-group revocation).
+- Ran `tools\flash-gradle.cmd :server:test --no-daemon --max-workers=2` (with `FLASH_JDK` pointing
+  to the Android Studio JBR): **77 suites, 729 tests — 729 passed, 0 failed, 0 errors, 0 skipped**.
+
+### Remaining
+- Live isolated-Hub verification under `REL23-02`, public SDK tag verification under `REL23-01`,
+  and existing app installed-device checks (`REL23-LINUX-01`, `WIN-UPGRADE-02`, `GROUP-VOICE-01`,
+  `SWM-RETRY-01`).
+
+## 2026-11-24 — Flash 2.3.2 app release published
+
+Published [Flash v2.3.2](https://github.com/Soko-Aerial/Flash/releases/tag/v2.3.2) as the latest
+GitHub app release at 17:17 UTC. Its annotated tag points to `c532d1af`. This commit gives the tag
+the current release notes and install guides and includes the already verified server test fixture
+correction. The app's production source is identical to `aea4772a`. The `dev` remote ref remains
+at `aea4772a`.
+
+Verified all eight source and staging checksums. The owner supplied the Linux packages. Their
+DEB metadata says `flash`, `2.3.2`, `amd64`. Both Linux packages have an x86-64 launcher, a bundled
+runtime and matching desktop, engine and swarm JARs. The group sender, swarm finalizer and swarm
+Retry class files also match the verified Windows payload byte for byte. The supplied Linux checksum
+file is published as `SHA256SUMS-linux.txt`. All ten GitHub asset sizes and SHA-256 digests matched
+before and after publication. Evidence is in `build/reports/publish-2.3.2`.
+
+Remaining installed checks include REL23-LINUX-01, WIN-UPGRADE-02, GROUP-VOICE-01 and SWM-RETRY-01.
+The SDK and Hub betas have their own release checks.
+
+## 2026-11-24 — Flash 2.3.2 release documentation parity review
+
+Checked the app, SDK and Hub release documentation against `dev` at `aea4772a`, the staged
+installers, Kotlin declarations and Ktor routing. Updated the release notes, packaging and invite
+instructions, consumer guides, and public API and protocol references. GitHub still lists `v2.2.0`
+as the current app release and JitPack reports `v2.2.0-beta.3` as available. The three proposed 2.3
+tags were absent when checked.
+
+Rechecked all six SHA-256 sums and the Android manifest variants. Each APK has version code 7,
+targets API 36 and carries the placeholder invite hostname. Both Windows installers contain the
+Media Foundation bridge. The running Ktor route inventory matched all 135 entries. All 727 server,
+10 Android umbrella and 89 Admin UI tests passed, and the granular Android consumer compiled.
+Updated the server lifecycle test to confirm the actual pending fingerprint (ERROR-1053).
+
+Ran all 19 JitPack publication tasks on a JDK 17 Gradle daemon in an isolated Windows worktree.
+The scratch Maven repository contains 57 root and platform artifacts. Selected Android and JVM
+examples compiled against those artifacts with strict dependency verification and included-build
+substitution disabled for the consumers. Both variants exposed the WebRTC and enterprise types.
+The built enterprise artifacts contain the `HubGroupPolicy` serializer. On this PC set `FLASH_JDK`
+for the lock wrapper to select JDK 17. Checked 162 local Markdown links and 82 Kotlin imports.
+
+ERROR-1054 records the Hub group join-link revocation scope gap found during route review. Resolve
+it and retest on both Hub API surfaces under REL23-02 before publishing the Hub beta. App device
+acceptance still includes WIN-UPGRADE-02, GROUP-VOICE-01 and SWM-RETRY-01. Verify the SDK from the
+public tag under REL23-01 once available. Local evidence is in `build/reports/doc-parity-2.3.2`.
+
 ## 2026-11-23 — Flash 2.3.2 swarm Retry release refreshed
 
 Rebuilt the four signed APKs and both Windows installers with `d2a5936b`. The Windows refresh in `12507c9e` uses product code `{1DC2CC2A-C3E2-4346-B9C9-D0A149D43DC5}`. Both Windows packages carried the rebuilt engine and swarm JARs and selected this PC's prior 2.3.2 installation as an upgrade target in the same per-user context. All six checksums matched. The Android packages passed release lint, signer, version, alignment and payload checks. The previous candidate remains at `build/release-staging/3f36c2b4-b049-4a2b-85d3-b16ce70220de/previous`. See `build/reports/release-2.3.2-swarm-retry`.

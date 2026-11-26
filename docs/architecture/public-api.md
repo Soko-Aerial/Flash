@@ -1,10 +1,8 @@
 # Flash Public API Specification
 
-This reference describes the Android and JVM library surface. The common, messaging, calling,
-persistence, engine, and PTT sections were checked against the `2.3.0-beta.1` source on
-2026-11-21. Earlier sections retain their original scope. Follow the linked Kotlin
-declarations for exact signatures and overloads. APIs marked `@FlashInternalApi` are
-implementation seams and can change between builds.
+This reference describes the Android and JVM `2.3.0-beta.1` SDK candidate. Follow the linked
+Kotlin declarations for exact signatures, defaults and overloads. APIs marked `@FlashInternalApi`
+are implementation seams that can change between builds.
 
 ## 1. Design Rules & Stability Annotations
 
@@ -19,17 +17,15 @@ implementation seams and can change between builds.
    `DefaultFlashPairingProtocol` (§8, every constructor argument is a host decision). Room forces
    a fourth, `FlashDatabase`, whose DAOs are public only because a public accessor cannot return
    an `internal` type — see §9 for why they are still off-limits.
-2. **Information hiding.** No socket, stream, codec, Room, or platform implementation type
-   appears in a public signature. The single sanctioned third-party leak is webrtc-kmp's
-   `VideoTrack` in §7 (ADR-025) — a video renderer has to be handed the real track, and any
-   wrapper would have to expose it again to be useful.
+2. **Information hiding.** The common engine contracts expose Flash domain types and
+   coroutine flows. Platform factories, the optional persistence module and the call renderer
+   also expose platform or dependency types such as Android `Context`, Room and WebRTC `VideoStreamTrack`.
 3. **Immutability.** Public data models are `data class`es with `val` properties only. Derived
    values are computed `get()` properties, never mutable state.
 4. **Reactive state.** Retained state is exposed as `StateFlow`; event streams as `Flow`.
-5. **Result type, not exceptions.** Fallible operations return `FlashResult<T>`. `FlashError` is
-   a **sealed interface, not a `Throwable`** — Flash defines no exception type of its own, and
-   nothing documented here throws one. (`FlashResult.runCatching` wraps a thrown platform
-   exception into `FlashError.Unknown`.)
+5. **Operation results.** Discovery, network and transfer operations generally return `FlashResult<T>`.
+   A failure carries a `FlashError`. `Flash.create` can throw `TransportSecurityUnavailableException`
+   during TLS setup. The JVM factory and `awaitReady()` can throw `IllegalStateException` during startup.
 6. **Stability annotations** (declared in `:core:common`):
    - `@FlashInternalApi` — opt-in level `ERROR`. Public across Gradle modules for internal
      wiring, forbidden for third-party consumers.
@@ -114,7 +110,7 @@ other module depends on it, usually transitively.
 
 ### `FlashResult<T>` & `FlashError`
 - **Stability:** Stable
-- **Purpose:** Return type of every fallible operation in the public API.
+- **Purpose:** Typed success and failure for operations such as connecting, sending and accepting offers.
 - **Definition:**
   ```kotlin
   public sealed interface FlashResult<out T> {
@@ -167,9 +163,12 @@ this document listed them as public.
 ## 3. Core Discovery Module (`:core:discovery`)
 
 ### `FlashDiscovery`
+
+[Interface declaration](../../core/discovery/src/commonMain/kotlin/com/transfer/flash/core/discovery/FlashDiscovery.kt)
+
 - **Stability:** Stable
-- **Purpose:** Headless discovery contract. Controls advertising and browsing over LAN
-  mDNS/NSD, with a Wi-Fi Direct transport behind the same interface.
+- **Purpose:** Headless discovery contract for advertising and browsing. The supplied transports
+  use LAN mDNS/NSD and a multicast fallback. Wi-Fi Direct remains postponed (ADR-056).
 - **Definition:**
   ```kotlin
   public interface FlashDiscovery {
@@ -181,6 +180,7 @@ this document listed them as public.
       public suspend fun startAdvertising(listenPort: Int): FlashResult<Unit>
       public suspend fun stopAdvertising(): FlashResult<Unit>
       public suspend fun stopAll(): FlashResult<Unit>
+      public fun setScreenActive(active: Boolean) {}
   }
   ```
 
@@ -191,6 +191,7 @@ this document listed them as public.
       val hostAddress: String,
       val port: Int,
       val serviceName: String,
+      val deviceKind: FlashDeviceKind = FlashDeviceKind.UNKNOWN,
   ) {
       public val deviceId: FlashDeviceId get() = device.id
       public val friendlyName: String get() = device.friendlyName
@@ -207,15 +208,18 @@ this document listed them as public.
 - **Why an endpoint, not a device:** a peer is only connectable with an address and port, which
   a `FlashDevice` does not carry. `discoveredEndpoints` is therefore the flow to collect;
   `endpoint.device` is the identity inside it.
-- **Lifecycle & threading:** suspend functions execute on `Dispatchers.IO`. Flow emissions are
-  thread-safe and state-retaining. `stopAll()` is the single teardown call — it stops browsing
-  and advertising on every transport.
+- **Lifecycle:** `stopAll()` stops browsing and advertising. Hosts may report screen power through
+  `setScreenActive`. The composite implementation can temporarily switch the discovery and idle
+  connection policy to ECO. The shipped Android host avoids that switch during active calls and transfers.
 
 ---
 
 ## 4. Core Network Module (`:core:network`)
 
 ### `FlashNetwork`
+
+[Interface declaration](../../core/network/src/commonMain/kotlin/com/transfer/flash/core/network/FlashNetwork.kt)
+
 - **Stability:** Stable
 - **Purpose:** Listens, dials, and owns the live peer sessions. WebSocket mesh in the shipped
   implementation; the interface says nothing about the transport.
@@ -234,10 +238,18 @@ this document listed them as public.
       public fun retryConnection(): Boolean = false
   }
   ```
-  `start(0)` binds an ephemeral port and returns the port actually bound — that value is what
-  gets passed to `FlashDiscovery.startAdvertising`.
+  The supplied WebSocket implementations try port `45822` for `start(0)`, or the requested port
+  for a positive argument. If binding it fails, they try an ephemeral port. Pass the returned port
+  to `FlashDiscovery.startAdvertising`.
+
+  `connectManual(host, port)` dials an address directly. Android and Windows enumerate their LAN
+  IPv4 addresses in the app host for Nearby and show the listener port alongside them. That list
+  is separate from discovery's `discoveredEndpoints`, which lists other devices.
 
 ### `FlashSession`
+
+[Interface declaration](../../core/network/src/commonMain/kotlin/com/transfer/flash/core/network/FlashSession.kt)
+
 - **Stability:** Stable
 - **Purpose:** One live duplex connection to one peer.
 - **Definition:**
@@ -250,7 +262,7 @@ this document listed them as public.
       public val frameAcks: Flow<FrameAck> get() = emptyFlow()
 
       public suspend fun send(message: ByteArray): FlashResult<Unit>
-      public suspend fun sendText(text: String): FlashResult<Unit>   // default: send(text.toByteArray())
+      public suspend fun sendText(text: String): FlashResult<Unit>   // default: send(text.encodeToByteArray())
       public fun disconnect(reason: String = "Normal disconnect")
   }
   ```
@@ -308,9 +320,12 @@ this document listed them as public.
 ## 5. Core Transfer Module (`:core:transfer`)
 
 ### `FlashTransferRepository`
+
+[Interface declaration](../../core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/FlashTransferRepository.kt)
+
 - **Stability:** Stable
 - **Purpose:** Chunked file transfer: offers, resume, checksum verification, progress.
-- **Definition:**
+- **Basic consumer operations:**
   ```kotlin
   public interface FlashTransferRepository {
       public val activeTransfers: StateFlow<List<FlashTransfer>>
@@ -331,6 +346,11 @@ this document listed them as public.
       public suspend fun declineIncoming(transferId: FlashTransferId): FlashResult<Unit>
   }
   ```
+
+  The interface also offers explicit wire identities for host-managed sends, system pause/resume,
+  external-row detection and history controls. The model excerpt below shows the main transfer
+  fields. For transport flags, wait reasons, swarm telemetry and the shared `canRetry` predicate,
+  see the [model declaration](../../core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/model/FlashTransfer.kt).
 
 - **Host-driven inbound hooks** — same interface, but called *by* the host's transport rather
   than by application code. Every one has a no-op/`false` default, so a consumer that only
@@ -365,7 +385,7 @@ this document listed them as public.
   destination sink immediately when it returns true; skipping that check re-opens the offer gate on
   a transfer the user already accepted, leaving the sink deferred and every chunk dropped.
   `Cancelled` is excluded — a declined offer is never auto-accepted because the sender tried again,
-  which is also why `FlashTransferItemUi.retryable` is false for those rows (§12).
+  which is also why `FlashTransfer.canRetry` is false for those rows.
 - **Models:**
   ```kotlin
   public data class FlashTransfer(
@@ -412,7 +432,7 @@ reactive state. A UI renders the snapshots and passes user actions back to the r
 | User state | `saveDraft`, `setTyping`, `toggleReaction`, `setMessagePinned`, `observeMessageInfo`, deletion, list selection, archive, mute, pin and read-state actions |
 | Search | `searchChats`, `searchConversationMessages`, `searchMessageBodies`, `observeRecentSearches`, `recordRecentSearch`, `clearRecentSearches` |
 | Groups | Create and invite, join approval, membership and admin actions, group settings, history selection, group attachment and swarm linkage |
-| Hub | Directory colleagues and groups, linked groups, joins, announcements, `hubState`, people/departments/groups flows, `hubDeliveryNotes` and `hubDropped` |
+| Hub | Directory colleagues and groups, linked groups, joins, announcements, `hubState`, people/departments/groups flows, `hubDeliveryNotes`, `hubDropped` and `confirmHubKeyChange(peerDeviceId, expectedFingerprint)` |
 | Radio | `setRadioPolicy`, `radioDeliveryNotes`, `stopRadioRetry` |
 
 ### UI state models (what the flows carry)
@@ -428,6 +448,11 @@ repository's persistence and transport seams. Enterprise directory and join resu
 compile-time dependencies of the Hub methods, so `core-messaging` exports `core-enterprise`.
 A standalone repository can leave Hub and radio integration unwired. Check the operation's
 result before presenting it as available.
+
+For a key change, display the short comparison codes from `FlashHubNoticeUi` and pass its full
+`pendingFingerprint` to `suspend fun confirmHubKeyChange(peerDeviceId: String, expectedFingerprint: String): Boolean`
+only after the user confirms the displayed code. A matching approval makes the held outbox rows
+for that peer due. A stale fingerprint returns `false` and preserves the pending confirmation.
 
 ---
 
@@ -962,6 +987,9 @@ consent flow.
 | Attach a custom swarm | Use `attachSwarm(swarm)` or supply `swarmFactory` when constructing `DefaultFlashEngine`, then call `attachSwarm(config)`. |
 | Attach calling or PTT | Use the corresponding attach method. Forward calling text and session-edge events when the host owns the transport. |
 
+See the [swarm module guide](../developer-guide/modules/core/core-swarm.md) for `FlashSwarm.resume(transferId)`
+and the optional `ManifestPieceStorage` finalization contract.
+
 ### `DefaultFlashEngine`
 
 The common aggregate takes the repositories, discovery, network and trust store from the
@@ -1288,7 +1316,7 @@ full-screen call UI and no internal seams to hold wrong.
 
 ### `FlashCallScreen`
 - **Stability:** Experimental
-- **Definition:**
+- **Required parameters:**
   ```kotlin
   @Composable
   public fun FlashCallScreen(
@@ -1306,15 +1334,13 @@ full-screen call UI and no internal seams to hold wrong.
   ```
 - **It takes the two `:core:calling` abstractions and nothing else.** `state` drives every visual;
   `session` is the read-only `FlashCallMedia` view (§7). Controls are lambdas the host wires to
-  `FlashCalling`, so the screen cannot mutate a call and never sees the concrete session type.
-- **No parameter defaults, deliberately.** A silently-defaulted `onHangUp` would compile into a
-  call the user cannot end.
-- **`session` is nullable** because media starts asynchronously — roughly 130 ms after the screen
-  appears. Tracks are *observed* from the flows, never sampled once, which is what lets a video
-  tile fill in after the first frame instead of staying black.
-- **Back behaviour:** decline while `RINGING`, otherwise `onDismiss`. A host with no minimize UI
-  should pass an empty `onDismiss` for a live call — the call outlives this screen either way,
-  because call state is owned by `FlashCalling`, not by composition.
+  `FlashCalling`, which owns the call lifecycle.
+- Optional controls include audio routing, video focus, picture-in-picture, reactions, data saver,
+  video upgrade and screen sharing. See the [composable declaration](../../ui/callui/src/commonMain/kotlin/com/transfer/flash/ui/calling/FlashCallScreen.kt) for defaults.
+- **`session` is nullable** while media starts. The renderer observes the tracks as they become available.
+- **Back behaviour:** Back declines a ringing call. After the call ends it dismisses the overlay.
+  For a live call the host handles `onDismiss`, for example by minimising the overlay or showing a
+  confirmation before hanging up.
 - Audio calls render the peer avatar with the Flash pulse; video calls render remote-full with a
   local picture-in-picture, and fall back to the avatar block once the call has ENDED.
 

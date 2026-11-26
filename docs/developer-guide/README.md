@@ -1,6 +1,12 @@
 # Flash Developer Guide & Architecture Manual
 
-Welcome to the comprehensive Flash developer documentation. This guide covers the complete Kotlin Multiplatform architecture (**18 Flash library modules** — `14` `:core:*` and `4` `:ui:*` — plus the vendored `webrtc-kmp` fork = **19 published artifacts**), individual module contracts, setup instructions, integration examples, extreme low-resource device deployment, custom platform extensions, and the open peer-to-peer wire protocol.
+This guide covers the Kotlin Multiplatform architecture, module contracts, setup and integration
+examples, custom platform extensions and the peer-to-peer wire protocol. Flash publishes 19 root
+coordinates with Android and JVM variants for each. Those roots cover 14 core modules, four UI
+modules and the vendored `webrtc-kmp` fork.
+
+The module guides show the `2.3.0-beta.1` SDK candidate coordinates. For the currently published JitPack
+version and the local Maven build instructions, see the [installation guide](../../README.md#install-the-library).
 
 ---
 

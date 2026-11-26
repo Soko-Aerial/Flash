@@ -1,9 +1,21 @@
 # Flash Transfer Protocol
 
 ## Version
-Protocol version: `1`
+
+Flash 2.3.2 uses LAN WebSocket protocol `2`. The Hub uses relay wire `2` and
+REST API `1`. Group swarm frames use `FSW1` version `1`.
 
 ## Current LAN Session
+
+The Android and Windows apps use the TLS WebSocket mesh. It prefers port `45822`
+and advertises the bound port if it falls back to a dynamic port. After the
+`GET /flash-ws` upgrade, both peers exchange `FLASH_WS_HELLO version=2` with
+their `deviceId` and `name`. The current senders also include `ping` and `gv`,
+and can advertise feature tokens in `caps`. The peer identity is bound to the
+TLS pin. See [`WsFlashNetwork`](../core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsFlashNetwork.kt)
+and [`JvmWsFlashNetwork`](../core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/JvmWsFlashNetwork.kt).
+
+## Historical TCP probe session (v1)
 
 The initial LAN milestone does not yet transfer files. It implements a persistent TCP session after NSD discovery so two devices can verify that the advertised address and port are connectable and keep that connection alive.
 
@@ -440,9 +452,15 @@ FLASH_GACT action=delete groupId=<uuid> msgId=<uuid> from=<author-id> keyEpoch=0
 - Group send fans out only to active trusted members excluding self. v1 grants no owner/admin
   override: only the original author can delete for everyone.
 
-- Attachments are rejected with a logged `unsupported` in Phase 1; group media is Phase 3.
+- Group media uses a separate `FLASH_GMEDIA` announcement. A whole-file push uses a
+  separate `transferId` and `wireFileId` for each recipient, with the same `msgId` across
+  the group. Swarm announcements identify the shared content by its signed manifest root.
 
-### Offline catch-up (`FLASH_GSYNC`, Phase 1B — wire reserved, not yet sent)
+### Offline catch-up (`FLASH_GSYNC`)
+
+Clients send history requests, claims, pushes, acknowledgments and page markers. The frame
+examples below show the initial field set. See [`GroupFrameCodec`](../core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/GroupFrameCodec.kt)
+for the full current version and [v2 groups](#v2-groups-adr-044-v1-2026-09-30) for roster and signature rules.
 
 ```text
 FLASH_GSYNC op=request groupId=<uuid> syncId=<uuid> from=<id> sinceAt=<ms> sinceId=<msgId> tier=<low|medium|high> maxPerSec=<n> maxTotal=<n> keyEpoch=0
@@ -982,6 +1000,11 @@ FLASH_GMEDIA groupId=… msgId=… transferId=… wireFileId=… from=… name=�
 - A receiver drops a `swarm=1` announcement, and creates no bubble, when `rootSig` does not verify against the origin's roster key, `root` is
   not 64 hex characters, `pieceSize` is outside the limits, or `size` is 0 or more than 16,384 × `pieceSize`.
 
+On completion the built-in receivers hash the exact `totalSize` bytes authenticated by the
+manifest. They remove any stale tail only after the declared bytes verify. A failed receive can
+be retried before retention expiry when storage failed or the file was damaged. The receiver can
+recheck a complete partial and request the missing or damaged pieces identified by the manifest.
+
 ### Version and compatibility
 
 - An unknown `type` is ignored and not counted as malformed. An unknown envelope `version` gets `REJECT(UNSUPPORTED)`.
@@ -1390,6 +1413,8 @@ JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDto
 | `GET /health` | none | none | `HealthLite` (status only) | served (Phase 2 SERVER-B) |
 | `GET /health/detail`, `GET /metrics` | management guard | none | operational JSON / Prometheus text (see above) | served |
 | `GET /enroll` | none (rate limited) | `token` query (a `server` query is ignored) | browser landing page; unknown, expired, used and revoked tokens answer identically (SEC-17) | served |
+| `GET /invite/enroll`, `GET /invite/group`, `GET /invite/assets/invite.css`, `GET /invite/assets/invite.js` | none | invite page reads the URL fragment in the browser | HTTPS invite landing pages and their shared assets | served |
+| `GET /.well-known/assetlinks.json` | none | none | Android Digital Asset Links for the configured APK fingerprints | registered when `FLASH_INVITE_ANDROID_FINGERPRINTS` is set |
 | `GET /api/v1/hub` | none | none | `HubInfo` | served (Phase 2 SERVER-A) |
 | `GET` or `POST /api/v1/auth/challenge` | none | none | `AuthChallengeResponse {serverId, serverNonce, issuedAt, ttlSeconds}` (TTL 60 s) | served |
 | `POST /api/v1/auth/verify` | signature | `AuthVerifyRequest {serverNonce, clientNonce, deviceId, deviceCert, delegationChain, signature}` | `AuthVerifyResponse {status, token, expiresAt, ttlSeconds, principal}` (token TTL 15 min) | served |
@@ -1410,11 +1435,11 @@ JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDto
 | `DELETE /api/v1/device/sealing-key` | bearer (the device itself) | none | `OkResponse`; the key is also removed when the device is revoked, unenrolled or deleted | served (ADR-124) |
 | `POST /api/v1/departments` | bearer (organisation admin) | `CreateDepartmentBody {id, name, adminDeviceIds}` | `201` `DepartmentDto`; `400 ERR_BAD_REQUEST` for an invalid id; audited as `directory.department.create` | served (REV docs round) |
 | `POST /api/v1/groups` | bearer (organisation or department admin) | `CreateGroupBody {id, name, departmentId, visibility, joinMode, adminDeviceIds}` | `201` `GroupDto`; `400` for an invalid id, visibility or join mode; `403` outside the caller's scope | served |
-| `PUT /api/v1/groups/{id}` | bearer (group admin) | `UpdateGroupBody {name?, visibility?, joinMode?, revokeJoinLinks?, revokeLinkId?}` | `GroupDto`; a group the caller may not see answers `404` exactly like a missing one | served |
+| `PUT /api/v1/groups/{id}` | bearer (group admin) | `UpdateGroupBody {name?, visibility?, joinMode?, revokeJoinLinks?, revokeLinkId?}` | `GroupDto`; a group the caller may not see answers `404` exactly like a missing one, and `revokeLinkId` must belong to `{id}` (otherwise `404` with no changes) | served |
 | `DELETE /api/v1/groups/{id}` | bearer (group admin) | none | `OkResponse`; same `404` rule | served |
 | `POST /api/v1/groups/create-with-members` | bearer (organisation or department admin) | `CreateGroupWithMembersBody {id, name, departmentId, memberDeviceIds}` | `201` with `GroupDto` after the full initial roster is persisted. An identical retry with the same id and creator returns the existing group. Invalid roster creation makes no group, and a conflicting retry returns `409`. | served |
-| `POST /api/v1/groups/join-links` | bearer (group manager) | `CreateGroupJoinLinkBody {groupId, maxUses?}` | `201` with an opaque, authenticated token for a listed group that supports self-service joining. | served |
-| `POST /api/v1/groups/join-links/resolve` | bearer | `GroupJoinLinkToken {token}` | `200` with `{groupId, name}` for an unexpired token and a group currently visible to this device. Joining still uses `/groups/join-request`. | served |
+| `POST /api/v1/groups/join-links` | bearer (group manager) | `CreateGroupJoinLinkBody {groupId, maxUses?}`; `maxUses`, if supplied, is positive | `201` with `GroupJoinLinkToken {token}` for a listed group that supports self-service joining. | served |
+| `POST /api/v1/groups/join-links/resolve` | bearer | `GroupJoinLinkToken {token}` | `200` with `GroupJoinLinkTarget {groupId, name}` for a valid token and a visible group. Caller-specific group visibility is verified before consuming a limited use, so denied resolutions answer `404` and preserve the link's remaining uses. Joining still uses `/groups/join-request`. | served |
 | `POST /api/v1/groups/members` | bearer (group admin) | `GroupMemberBody {groupId, deviceId, add}` (`add` false removes) | `GroupDto`; audited `directory.group.member.add` / `.remove` | served |
 
 #### Directory privacy v1 (Plan A2, option C, ADR-137; owner D2 + D9)
@@ -1587,7 +1612,8 @@ Step-up actions (the `action` of a challenge): `device.revoke`, `device.unrevoke
 --username NAME` (console only, prints a new password, authenticator secret and recovery codes once). Exit codes: 0 ok, 1 refused to start or
 failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keytool pass-phrase non-interactively.
 
-**Configuration** (each is also a `--kebab-case=value` argument; a malformed value is an error naming the variable, never a default):
+**Configuration.** See the [operator configuration reference](deploy/HUB-SERVER-DEPLOYMENT.md#6-configuration-reference)
+for environment variables, CLI flags and accepted values.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -1660,10 +1686,11 @@ What a phone or desktop does with the relay wire above. Unit-tested, not device-
 - **Relay link.** One connection per device. A failure is typed (`RelayFailure`): `REVOKED`, `SERVER_MISMATCH` and `CERT_EXPIRED` are not retried; the others use jittered, capped exponential backoff that resets only after a connection that stayed up. Deliveries reach the collector through a bounded channel; overflow closes the connection and the hub replays unacknowledged deliveries. `FLASH_REVOKED` is believed only when the root-signed revocation list (`GET /api/v1/revocations`) names this certificate. The certificate is renewed through `POST /api/v1/enroll/renew` inside the renewal window.
 - **Inbound.** Order is fixed: dedupe by delivery id (LRU 2048) -> sender trust (paired, or directory standing MEMBER; directory unreachable means retry later without acknowledging) -> decode -> the message author must equal the hub-stamped `from` -> durable store -> `RECV_ACK`. A rejected or untrusted delivery is acknowledged so the hub does not replay it for ever.
 - **Outbound.** LAN first; the hub path starts after `HUB_FALLBACK_GRACE_MS` (2 s) or at once when LAN fails. The hub is used only for recipients whose directory standing is MEMBER. `FLASH_ACK` / `FLASH_QUEUE_STATE` drive the outbox: `DELIVERED` / `HELD` keep the message SENT (give-up 8 days, `HUB_GIVE_UP_AFTER_MS`; resend 15 min); `UNDELIVERABLE`, `QUOTA`, `REFUSED`, `EXPIRED`, `DROPPED` fail it.
-- **Sealed envelope `SEALED_V1`** (ADR-121), used for `payloadJson` of a hub message: `SEALED_V1.<epk>.<nonce>.<ciphertext>.<signature>`, each part Base64. `epk` is a fresh P-256 public key; the key is `HKDF(ECDH(epk, recipient sealing key), info = canon(epk, recipient sealing key))`; the cipher is AES-GCM with AAD = canon(`RELAY_WIRE_VERSION`, sender device id, recipient device id, message id, sentAt). The signature is the sender's identity-key signature over canon(AAD, epk, nonce, ciphertext). A receiver opens it only after the signature verifies. Sealing public keys are published with a binding signature by the device identity key over (deviceId, sealing key). **The hub serves sealing keys since ADR-124**: a device publishes with `PUT /api/v1/device/sealing-key` (the hub verifies the binding before it stores anything, see the endpoint table), and `GET /api/v1/directory/members` returns `sealingPublicKey` / `sealingSignature` on `MemberDto` to authenticated callers in scope of the member, null until the member published. The client MUST verify the binding against the member's `subjectPublicKey` itself. Binding bytes: tag `flash-hub-sealkey-v1`, then the device id, then the raw SPKI bytes (golden vector `SEALING_BINDING_HEX` in `CertGoldenVectorTest`). No version or serial is signed (ADR-121): a rotation is a new key, and the hub refuses to take back a key the device retired. The host apps do not publish a key yet, so plaintext through the hub is still sent only when the user turned "Messages through the hub" on.
+- **Sealed envelope `SEALED_V1`** (ADR-121), used for `payloadJson` of a hub message: `SEALED_V1.<epk>.<nonce>.<ciphertext>.<signature>`, each part Base64. `epk` is a fresh P-256 public key; the key is `HKDF(ECDH(epk, recipient sealing key), info = canon(epk, recipient sealing key))`; the cipher is AES-GCM with AAD = canon(`RELAY_WIRE_VERSION`, sender device id, recipient device id, message id, sentAt). The signature is the sender's identity-key signature over canon(AAD, epk, nonce, ciphertext). A receiver opens it only after the signature verifies. Sealing public keys are published with a binding signature by the device identity key over (deviceId, sealing key). Enrolled Android and desktop hosts publish with `PUT /api/v1/device/sealing-key`. The hub verifies the binding before storing the key, and `GET /api/v1/directory/members` returns `sealingPublicKey` / `sealingSignature` on `MemberDto` to authenticated callers in scope. The client verifies the binding against the member's `subjectPublicKey`. Binding bytes: tag `flash-hub-sealkey-v1`, then the device id, then the raw SPKI bytes (golden vector `SEALING_BINDING_HEX` in `CertGoldenVectorTest`). A rotation publishes a new key. The hub rejects keys already retired for that device.
+- **Direct chat key changes.** A verified change holds Hub sends to that peer until the user confirms the comparison code in the chat. Approval is bound to the full pending fingerprint shown by the prompt. The device retains the hold across restarts and makes that peer's held outbox rows due after successful approval.
 - **Frame limits.** A WebSocket frame over 256 KiB is closed by the WebSocket layer (close code 1009) with no error frame; a frame under that whose payload is over 64 KiB gets `FLASH_ERROR ERR_TOO_LARGE` and then the close; more than the frame budget (burst 120, 60 per second) per session gets `FLASH_ERROR ERR_RATE_LIMIT` for the excess frames (ADR-124 contract tests).
 - **Group encryption policy.** When the mode requires E2EE, the relay refuses readable group frames with `ERR_FORBIDDEN` before fanout or mailbox insertion. It also skips earlier readable group frames when replaying or spilling buffered messages under required mode. A group policy write broadcasts a server-only `FLASH_META` action `GROUP_POLICY_CHANGED`. Android and desktop invalidate the cached policy on receipt, refresh while connected and apply only responses bound to the current enrollment. Without a current policy, clients require encryption and pause Hub use for personal groups. Existing personal links resume if the organization allows them again.
-- **Hub group links.** An authenticated manager can issue a 24-hour join link for a visible, self-service Hub group. The token is sealed with the issuing Hub's data key and bound to the current group version. It stops resolving when the roster or group settings change. The receiving app resolves the token against its own enrolled Hub and runs that group's ordinary join or approval flow.
+- **Hub group links.** An authenticated manager can issue a 24-hour join link for a visible, self-service Hub group. New tokens are sealed with the Hub's dedicated `join-links.key` and bound to the group's join-link revision. Changing visibility or join mode or revoking all links invalidates that revision. Current tokens can also expire, be individually revoked or exhaust their optional use limit. The receiving app resolves the token against its enrolled Hub and runs that group's ordinary join or approval flow. The server can still read legacy tokens through its configured fallback keys.
 - **Group join.** `POST /api/v1/groups/join-request` answers `JOINED`, `PENDING` or `REJECTED`; a repeated request answers `PENDING` until decided; after an admin REJECTED the request, the NEXT request from that device answers `REJECTED` once (status `REJECTED_SEEN` in the hub) and a request after that starts a new `PENDING` row (ADR-124, ERROR-332). Admins list with `GET /api/v1/groups/join-requests` and decide with `POST /api/v1/groups/join-requests/decision`. The client polls pending joins every 60 s.
 - **Unenrol.** `POST /api/v1/device/unenroll` with the bearer (`404` counts as already done); when the hub cannot be reached the intention is stored and retried.
 
@@ -1701,7 +1728,7 @@ and passes it on to at most 24 `hrs1` members. Offers are also sent when a peer 
 and peer are members, and the peer is ORG. Legacy and `g2-` groups use their own gates, unchanged. ORG-only members never get PTT, group
 creation or administration. "Add member" is disabled for hub groups. Roster rows are written with `operationId = "hub-roster-v<version>"`.
 
-## Hub files API (ADR-215, 2026-10-20; P1 server and P2 client transport built and unit-tested, P3–P4 pending, nothing deployed)
+## Hub files API (ADR-215)
 
 **What it is.** A file crosses the hub as a **client-sealed blob** in numbered chunks. The hub stores opaque bytes and never
 receives a key. Contract constants and DTOs live in `:core:hub-protocol` (`HubContract.PATH_FILES`, `MAX_CHUNK_BYTES`,
@@ -1814,7 +1841,7 @@ cut on Wi-Fi continues on mobile data, through another access point or after the
 send files needs none of it. A hub with `maxFileBytes == 0`, or an older hub that does not answer the field at all, makes the
 client show its existing "not available over the hub" path rather than a new failure.
 
-### Hub file message (P3, ADR-216, 2026-10-20; built and unit-tested, NOT deployed, NOT device-verified)
+### Hub file message (P3, ADR-216)
 
 The ticket that hands a recipient a sealed hub file is a 1:1 hub chat message with inner type `HUB_FILE`. It is accepted
 **only inside a sealed envelope** (`HubSealing`): a readable `HUB_FILE` is rejected, and the readable-content opt-in never
@@ -1828,7 +1855,7 @@ a replay is stored once and receipted every time; the recipient fetches from its
 ticket only after the upload is complete (hub only, never over the LAN, deviation D17) and retires it on the recipient's
 `DeliveryReceipt`.
 
-### Hub file ticket for a group (P4, ADR-217, 2026-10-20; built and unit-tested, NOT deployed, NOT device-verified)
+### Hub file ticket for a group (P4, ADR-217)
 
 A file for a group is uploaded **once**, with `groupId` on `POST /api/v1/files` (the hub checks the group's roster on every
 read, so only a group linked to the hub works), and each member the direct pipeline could not reach is sent the same

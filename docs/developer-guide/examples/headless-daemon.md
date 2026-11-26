@@ -1,6 +1,6 @@
 # Practical Examples: Headless Daemon & Background Service
 
-Flash is not tied to a graphical user interface. You can run Flash in headless mode as a Linux systemd daemon, Windows service, or headless container to act as an automated file transfer agent, backup receiver, or relay.
+This example shows how a JVM host with its own Flash engine factory can observe completed incoming files in a background process.
 
 ---
 
@@ -24,8 +24,8 @@ import com.transfer.flash.core.transfer.model.FlashTransferState
 import kotlinx.coroutines.*
 import java.io.File
 
-fun main(args: Array<String>) = runBlocking {
-    val receiveDir = File(args.getOrNull(0) ?: "./received_files").apply { mkdirs() }
+suspend fun runReceiver(receiveDir: File) {
+    check(receiveDir.isDirectory || receiveDir.mkdirs())
     println("Destination directory: ${receiveDir.absolutePath}")
 
     val engine = FlashDesktop.create(
@@ -35,20 +35,17 @@ fun main(args: Array<String>) = runBlocking {
             autoAcceptIncoming = true,      // paired peers only
         )
     )
-    engine.awaitReady()                      // throws if the engine could not boot
-
-    val seen = mutableSetOf<String>()
-    launch {
+    try {
+        engine.awaitReady()
+        val seen = mutableSetOf<String>()
         engine.transfers.activeTransfers.collect { rows ->
             rows.filter { it.direction == FlashTransferDirection.Receiving && it.state == FlashTransferState.Completed }
                 .filter { seen.add(it.id.value) }
                 .forEach { println("[STORED] '${it.fileName}' (${it.bytesTotal} bytes)") }
         }
+    } finally {
+        engine.close()
     }
-
-    Runtime.getRuntime().addShutdownHook(Thread { engine.close() })   // close() is idempotent
-    println("Daemon running. Press Ctrl+C to stop.")
-    awaitCancellation()
 }
 ```
 

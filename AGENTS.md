@@ -925,6 +925,12 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-26 — Hub join-link blocker fixed (`ERROR-1054`, `bb2166b6`) and 2.3.2 docs parity committed.** Individual join-link revocation on both `/api/v1/groups/{id}` and `/admin/api/v1/groups/{id}` is bound to the authorised group in SQLite and in-memory stores, and `/api/v1/groups/join-links/resolve` checks caller visibility before consuming limited uses. All 729 `:server:test` tests (77 suites) passed. Live isolated-Hub verification remains in `REL23-02` before publishing the Hub beta.
+
+**2026-11-24 — Flash 2.3.2 published for Android, Windows and Linux.** GitHub marks `v2.3.2` at `c532d1af` as the latest app release. It contains four signed APKs, two Windows installers, two Linux x86-64 packages and two checksum manifests. All ten GitHub asset digests match the staged files. See REL23-LINUX-01 and the existing app backlog for installed-device checks.
+
+**2026-11-24 — Android and Windows 2.3.2 documentation parity.** The release docs, SDK samples and protocol reference were updated against the candidate source and staged installers. The staged APKs use browser handoff for public invite links. The Hub route inventory and all 727 server tests passed. Hub link revocation scope remains open in ERROR-1054. The SDK public artifact check is REL23-01.
+
 **2026-11-23 — Flash 2.3.2 rebuilt with the swarm Retry fix (ERROR-1052).** Commit `d2a5936b` verifies the declared range before publishing and rechecks failed receives on Retry. The affected desktop video was recovered separately. All 693 affected tests passed. The refreshed Windows packages detected the existing 2.3.2 as an upgrade, and the signed arm64 APK installed in place on the V760 and passed the startup check. SWM-RETRY-01 tracks the installed Retry test.
 
 **2026-11-23 — Flash 2.3.2 rebuilt with group audio and Windows reinstall fixes (ERROR-1050/1051).** Commit `54a69dcb` gives each whole-file group send a recipient-specific wire file ID. Commit `2457c0fa` lets the refreshed Windows installers in `dist/2.3.2` replace the earlier 2.3.2 in the same upgrade family. Both packages detected the existing installation. WIN-UPGRADE-02 and GROUP-VOICE-01 track installed acceptance.

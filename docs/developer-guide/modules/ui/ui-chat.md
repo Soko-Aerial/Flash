@@ -57,10 +57,11 @@ fun ConversationRoute(
 
     FlashConversationScreen(
         state = state,
+        conversationId = conversationId,
         onBack = onBack,
-        onSendText = chatRepository::sendText,
+        onSendText = { text -> chatRepository.sendTextTo(conversationId, text) },
         onSendReply = chatRepository::sendReply,
-        onPersistDraft = chatRepository::saveDraft,
+        onPersistDraft = { text -> chatRepository.saveDraft(conversationId, text) },
         onAttachmentClick = chatRepository::openAttachmentPicker,
         onStartCall = onPlaceVoiceCall,
         onStartVideoCall = onPlaceVideoCall,
@@ -69,3 +70,7 @@ fun ConversationRoute(
 ```
 
 Wrap it in `FlashTheme { ... }` ([ui-theme](ui-theme.md)).
+
+Hub-enabled hosts wire `onConfirmHubKeyChange(peerDeviceId, fingerprint)` to the repository's
+suspending `confirmHubKeyChange(peerDeviceId, expectedFingerprint)` in their coroutine scope.
+The screen supplies the full fingerprint after the user confirms the displayed comparison code.

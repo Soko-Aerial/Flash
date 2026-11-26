@@ -10,18 +10,20 @@ To compile or consume Flash modules, ensure your environment meets the following
 
 | Tool / Runtime | Required Version | Purpose |
 |---|---|---|
-| **JDK** | JDK 17 (JitPack / AGP floor), JDK 21 (runtime / desktop sample), or local JDK 25 | Host Java runtime and Gradle build execution. Local builds pin JDK 25 in `gradle/gradle-daemon-jvm.properties`; JitPack removes that file (`jitpack.yml`) and builds on `openjdk17`. |
+| **JDK** | JDK 17 for the JitPack Gradle daemon, JDK 21 for the desktop sample toolchain and Hub runtime, JDK 25 for the default local Gradle daemon | Local builds pin the daemon JVM in `gradle/gradle-daemon-jvm.properties`. JitPack removes that file and starts Gradle with `openjdk17`. |
 | **Android SDK** | `compileSdk 35` (`:core:*`) / `37` (`:ui:*`, `:app`), `minSdk 24` (`:app` `targetSdk 36`) | Android platform libraries |
 | **Kotlin** | `2.2.10` | Language compiler with KMP multiplatform support |
 | **Gradle / AGP** | Gradle `9.5.0` (the repo wrapper), AGP `9.3.1` | Build system (a consumer only needs a Gradle version its own AGP supports) |
-| **Android Studio / IntelliJ** | Ladybug / 2024.2+ | Recommended IDE with Compose preview support |
+| **Android Studio** | A version with AGP 9.3 support | IDE for Android development and Compose previews |
 
 ---
 
 ## 2. Project Setup & Dependency Configuration
 
 Flash libraries are Kotlin Multiplatform modules with Android and desktop JVM variants. The same root
-coordinate selects the right variant for each consumer.
+coordinate selects the right variant for each consumer. The coordinates below target the SDK
+candidate documented on this branch. For the published tag and local Maven instructions, see
+the [installation guide](../../../README.md#install-the-library).
 
 ### 2.1 Repository Setup
 
@@ -111,7 +113,7 @@ import com.transfer.flash.core.engine.awaitReady
 
 FlashDesktop.registerFactory { config -> MyEngine(config) } // your FlashEngine implementation
 val engine = FlashDesktop.create(FlashConfig(displayName = "Workstation-Alpha"))
-engine.awaitReady() // suspends until FlashReadiness.ready is true, or throws if boot failed
+engine.awaitReady() // waits for a host that implements FlashReadiness, or throws if its boot failed
 ```
 
 > **What the shipped apps do.** Neither app calls `Flash.create` for its own engine: the Android app builds it in
@@ -159,6 +161,10 @@ a display name and the size, and returns `FlashResult<FlashTransferId>`. On Andr
 from your file picker; a desktop host supplies the local path or URI its engine accepts:
 
 ```kotlin
+import com.transfer.flash.core.common.result.onFailure
+import com.transfer.flash.core.common.result.onSuccess
+import kotlinx.coroutines.launch
+
 scope.launch {
     engine.transfers.sendFile(
         targetDevice = endpoint.device,
@@ -189,6 +195,6 @@ same list with `errorMessage` set.
 
 ## 4. Next Steps
 
-* Read the [Architecture Overview](architecture-overview.md) to understand how the 18 Flash modules (plus vendored `webrtc-kmp` = 19 published artifacts) interact without circular dependencies.
+* Read the [Architecture Overview](architecture-overview.md) for the module graph and platform variants.
 * Review the [Core Modules Guides](../modules/core/) to understand each subsystem in depth.
 * Explore [Scenarios](../scenarios/) for specialized deployments like ultra-low RAM devices, custom BLE/LoRa transports, or the open wire protocol specification and interop requirements (including an untested Python handshake sketch; no runnable third-party clients ship in-repo).

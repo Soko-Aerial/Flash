@@ -56,6 +56,7 @@ public interface FlashDiscovery {
     public suspend fun startAdvertising(listenPort: Int): FlashResult<Unit>
     public suspend fun stopAdvertising(): FlashResult<Unit>
     public suspend fun stopAll(): FlashResult<Unit>
+    public fun setScreenActive(active: Boolean) {}
 }
 
 public data class FlashDiscoveredEndpoint(
@@ -73,6 +74,9 @@ public data class FlashDiscoveredEndpoint(
 
 There is no `refresh()`; the engine restarts browsing itself after a network change. `EmptyFlashDiscovery` is a no-op
 implementation for hosts and tests that have no radio.
+
+Call `setScreenActive(false)` only when the host can let idle links park. The composite
+implementation switches to ECO and restores the selected discovery mode when the screen wakes.
 
 ---
 

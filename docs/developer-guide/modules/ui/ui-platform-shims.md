@@ -28,7 +28,12 @@ Each capability is a small common interface (or `expect` composable) with an And
 | **Clipboard** | `FlashClipboard.copy(text)`, `rememberFlashClipboard()` | Compose `LocalClipboardManager` | same (common code) |
 | **System back** | `FlashBackHandler(enabled, onBack)` | AndroidX back handling | Intentional no-op (`enabled` and `onBack` unused; keyboard/window dismissal belongs to the desktop shell) |
 | **Permissions** | `FlashPermission` (`Microphone`, `Camera`), `FlashPermissionRequester`, `rememberFlashPermissionRequester()` | runtime permissions | always granted |
-| **Video surface** | `FlashVideoSurface(uri, isPlaying, isMuted = false, seekToMs = null, onPlaybackStateChanged, onError, onSeekHandled, modifier, onFirstFrame, onBuffering, onHostPaused)` | platform player surface (`MediaPlayer` + `SurfaceView`) | Windows Media Foundation JNI bridge (`WindowsVideoPlayer`, ADR-364); Linux/macOS report unavailable so the viewer offers "Open in system player" |
+| **Video surface** | [`FlashVideoSurface`](../../../../ui/platform-shims/src/commonMain/kotlin/com/transfer/flash/ui/shims/FlashVideoSurface.kt) | Media3 ExoPlayer attached to a `TextureView` | Media Foundation via JNA on Windows when the bridge DLL is present. The viewer offers **Open in system player** when inline playback is unavailable. |
+
+Windows builds of `ui-platform-shims-jvm` compile and bundle the Media Foundation bridge DLL with
+CMake and MSBuild. This includes the Windows app installers. A JitPack Linux build skips that step,
+so Windows SDK consumers of that build get the system-player fallback. For inline playback, use
+a Windows-built local Maven artifact with the bridge bundled.
 
 ---
 

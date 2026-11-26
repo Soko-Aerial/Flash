@@ -1,5 +1,60 @@
 # Error Log
 
+## ERROR-1054 — Hub link revocation does not bind the link to the authorised group
+
+### Date and area
+
+2026-11-23. Hub `2.3.0-beta.1` candidate, individual group join-link revocation.
+
+### Finding
+
+The device and admin-console group update handlers authorise the group in the URL. Both call
+`HubGroupJoinLinks.revokeLink` with a link ID and actor but no group ID. The persistent and
+in-memory implementations select the link by ID alone. The authorised group therefore does not
+constrain the revocation. The current server tests passed and do not exercise this boundary.
+
+In the same flow, link resolution can consume a limited use before the route applies the caller's
+group visibility check. The API reference states when the use is consumed.
+
+### Fix and verification
+
+2026-11-26 (`bb2166b6`): Bound `HubGroupJoinLinks.revokeLink` and `revokeToken` to an explicit `groupId` in both
+the SQLite (`AND group_id = ?`) and in-memory implementations, and added `belongsToGroup(groupId, linkId)`.
+Both `PUT /api/v1/groups/{id}` (`DirectoryRoutes.kt`) and `PUT /admin/api/v1/groups/{id}`
+(`AdminApiDirectory.kt`) verify group management/scope and `belongsToGroup(id, revokeLinkId)` before
+mutating group state, returning `404` on cross-group or unknown link IDs without modifying the target
+link or emitting a revoke audit entry. `HubGroupJoinLinks.resolve` now accepts a `canResolve` predicate
+evaluated before `consumeLink`, and `POST /api/v1/groups/join-links/resolve` checks caller group
+visibility (`directory.canSee` and `DirectoryVisibility.canSeeGroup`) inside that predicate so denied
+resolutions preserve remaining uses.
+
+Added host regressions on both API surfaces and both storage backends (`DirectoryRoutesTest` and
+`AdminApiTest`). Full `:server:test` passed (77 suites, 729/729 tests, 0 failures, 0 skips).
+
+### Status
+
+FIXED IN CODE (host-verified 2026-11-26; 729/729 `:server:test`). Live isolated-Hub verification
+remains tracked under `REL23-02` before publishing the Hub beta. The Android and Windows binaries do
+not contain the Hub server.
+
+## ERROR-1053 — Server regression test calls the old Hub key confirmation API
+
+### Date and area
+
+2026-11-23. `:server:compileTestKotlin`, Hub sealing lifecycle.
+
+### Error and fix
+
+`E2eHostSealingLifecycleTest` called `pins.confirm("dev-a")` after the API began requiring
+`expectedFingerprint`. The compiler reported `No value passed for parameter 'expectedFingerprint'`.
+The test now waits for the changed directory key, verifies the old fingerprint leaves the hold in
+place, and confirms with the new fingerprint. The full server suite passed all 727 tests, including
+both route contract checks and the sealing lifecycle suite.
+
+### Status
+
+RESOLVED. Production code and release binaries are unchanged by this test correction.
+
 ## ERROR-1052 — Swarm receive hashes a trailing partial-file suffix and Retry does nothing
 
 ### Date and environment

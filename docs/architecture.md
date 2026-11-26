@@ -41,8 +41,9 @@ Core Engine Libraries (Headless / Zero-UI, Android compileSdk 35 + JVM):
 
 Dependency direction is strictly downward, with two deliberate exceptions:
 
-- **`:core:engine` is the only module that knows the wiring.** It `api()`s the core modules
-  below it (common, security, discovery, network, transfer, messaging, persistence, swarm, ptt), so a consumer adds one artifact and sees every published type.
+- **`:core:engine` provides the library facade.** It exports common, security, discovery,
+  network, transfer, messaging, persistence, enterprise, swarm and PTT. The two app hosts
+  assemble their own runtime graphs. A standalone JVM SDK consumer registers a factory.
 - **`:core:calling` reaches the facade through a `compileOnly` seam (ADR-033).** `:core:engine`
   compiles against `FlashCalling` and exposes it (`FlashEngine.calls`, `attachCalling`,
   `onInboundCallText`, `onCallSignalingLost`/`Restored`) but does **not** publish the dependency, so
@@ -53,16 +54,16 @@ Dependency direction is strictly downward, with two deliberate exceptions:
   dependency, since it carries no native payload. It is Kotlin Multiplatform since ADR-058 (Android +
   JVM, the audio hardware behind `PttAudioPlatform`), so the Windows desktop app runs the same push-to-talk
   engine, and `:ui:callui` (which shares the session card) `api`s it.
-- **`:core:swarm` (ADR-070..075; built SW-0..SW-11, switch off by default, not device-verified) follows the PTT pattern, not the calling one.** `:core:engine`
-  `api()`s it and wires it in one place (`SwarmHostBinding`); nothing runs until the host calls `attachSwarm`. It depends only on
+- **`:core:swarm` (ADR-070..075)** is exported by `:core:engine` and wired through `SwarmHostBinding`.
+  The apps enable it by default. An SDK host attaches it explicitly. It depends on
   `:core:common`, `:core:transfer` (model and `Sha256`) and coroutines, and no lower module imports it (`core/swarm/src/jvmTest/.../LayeringTest.kt` enforces both).
   The lower layers gain two generic seams that never name it: a `caps` list in the WebSocket HELLO (`FlashDevice.features`) and a router
   for binary frames by 4-byte magic in `:core:engine`. Group membership by group id + secret (ADR-073) is **not** a module: it extends the
   group code in `:core:messaging` (package `...messaging.group`, with the `GroupGate` of ADR-075) and `:core:security` (package
   `...security.group`). Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` sections 2 and 2.6.
-- **Persistence is inverted, not depended on.** `:core:messaging` and `:core:transfer` define
-  storage ports; the Room-backed adapters live in `:core:engine` (ADR-024), so neither domain module
-  depends on `:core:persistence` and no Room type reaches a public signature.
+- **Storage ports.** `:core:messaging` and `:core:transfer` define storage interfaces. The Room-backed
+  chat and transfer adapters live in `:core:engine` (ADR-024). Messaging also consumes persistence for
+  shared retention policy and settings types.
 
 ## Architectural Invariants
 
@@ -70,5 +71,5 @@ Dependency direction is strictly downward, with two deliberate exceptions:
 2. **Backend-Agnostic UI:** `:ui:chat` depends on repository abstractions (`FlashChatRepository`), not low-level sockets; `:ui:callui` depends on `FlashCalling`/`FlashCallMedia`, never on a concrete session.
 3. **Standalone KMP Publishability (Android + JVM):** Every library module is a Kotlin Multiplatform library configuring `maven-publish` to publish the root Gradle module metadata (`.module`/POM), the Android AAR variant (`-android`), the JVM JAR variant (`-jvm`), sources, and docs — including `:ui:callui`, which builds without `:app`, `:core:engine`, or `:ui:chat`. Variant-aware Gradle resolution lets both Android and Desktop JVM consumers depend on the same root coordinate.
 4. **Transport Abstraction:** Transfer engines operate over an abstract connection layer regardless of the connection underneath. Today that covers the WebSocket mesh and the Hub relay, plus an optional host-wired `:core:radio` packet-radio gateway (KISS/AX.25 over Bluetooth/serial); Wi-Fi Direct remains postponed (ADR-056). Call signaling is plain text, so any duplex text transport carries it.
-5. **Abstractions at the boundary:** every module's entry point is an interface, and no socket, stream, codec, Room or platform type appears in a public signature. The single sanctioned exception is webrtc-kmp's `VideoTrack`, which a renderer has to be handed directly (ADR-025).
+5. **Abstractions at the boundary:** the common engine contracts expose domain types and coroutine flows. Platform factories, persistence APIs and media renderers also expose their platform and dependency types.
 6. **Explicit API:** every `:core:*` module compiles with `explicitApi()` in strict mode (ADR-023). Published surface is enumerated in [`docs/architecture/public-api.md`](architecture/public-api.md).

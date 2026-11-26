@@ -12,7 +12,7 @@ Two companions:
 - `docs/security.md` — the threat model this guide refers to (SEC-04, SEC-06, SEC-16,
   REV-10, REV-12, REV-16).
 
-The `2.3.0-beta.1` Hub has a separate release tag, `server-v2.3.0-beta.1`. Use disposable
+The `2.3.0-beta.1` Hub candidate will use the separate tag `server-v2.3.0-beta.1`. Use disposable
 data for the operator beta. The production profile describes the hardening required for
 a future rollout. See the [readiness plan](../plans/HUB-READINESS-REMEDIATION.md) for open gates.
 
@@ -27,7 +27,7 @@ public port:
 |---|---|---|
 | Relay (device-to-device chat, files, presence, calls signalling) | `/flash-relay` | WebSocket |
 | Client REST API (enrol, directory, announcements, groups) | `/api/v1/...` | bearer token after authentication |
-| Enrolment landing page | `/enroll` | the page a phone opens from an invite link |
+| Invite landing pages | `/invite/enroll`, `/invite/group` | HTTPS links carry the invite in the URL fragment. `/enroll?token=…` serves legacy links. |
 | Liveness | `/health` | public, status only |
 
 and, on a **second** listener (loopback by default), the **admin console** at `/admin/`
@@ -190,10 +190,10 @@ newer schema (downgrade protection).
 
 ## 6. Configuration reference
 
-Precedence: **command-line argument > environment variable > default**. A malformed value
-is a startup error — the hub never silently falls back to a default for something you
-tried to set. Every setting can be given as `--kebab-case` on the command line or as its
-`FLASH_*` environment variable.
+Command-line values take precedence over environment variables and defaults. Use the spelling
+shown for each setting. In particular, set the root-pin requirement to `true` and use `false`
+to disable personal group linking. See [`ServerConfig`](../../server/src/main/kotlin/com/transfer/flash/server/config/ServerConfig.kt)
+for supported values and validation.
 
 | Env var | CLI | Default | Meaning |
 |---|---|---|---|
@@ -211,14 +211,14 @@ tried to set. Every setting can be given as `--kebab-case` on the command line o
 | `FLASH_DEV_EMBEDDED_ROOT` | `--dev-embedded-root` | `false` | **Development only**: the hub mints its own root key and delegation. Needs `FLASH_ALLOW_INSECURE` |
 | `FLASH_DELEGATION_FILE` | `--delegation-file` | `<dataDir>/delegation.cert` | The root-signed delegation |
 | `FLASH_ROOT_FINGERPRINT` | `--root-fingerprint` | unset | 64 hex chars: pin the organisation root key |
-| `FLASH_REQUIRE_ROOT_PIN` | `--require-root-pin` | `false` (image: `true`) | Refuse the first delegation unless the fingerprint is set and matches |
+| `FLASH_REQUIRE_ROOT_PIN` | `--require-root-pin` | `false` (image: `true`) | `true` requires a configured fingerprint that matches the first delegation. This setting recognises the literal `true` case-insensitively. |
 | `FLASH_TLS_KEYSTORE` | `--tls-keystore` | unset | Keystore for `tlsMode=self` (else a self-signed certificate is generated in the data directory) |
 | `FLASH_TLS_KEYSTORE_PASSWORD` | `--tls-keystore-password` | unset | Its password |
 | `FLASH_SETUP_TOKEN` | `--setup-token` | unset | The one-time first-admin token (≥16 chars). Else the hub creates `<dataDir>/setup-token.txt`, owner-only, and never logs it |
 | `FLASH_MANAGEMENT_TOKEN` | `--management-token` | unset | Bearer token (≥16 chars) for `/health/detail` and `/metrics`. Without it only a direct loopback caller (no proxy headers) may read them |
 | `FLASH_HUB_NAME` | `--hub-name` | `Flash Hub` | The name devices show in Settings |
 | `FLASH_DEVICE_QUOTA` | `--device-quota` | `1000` | Maximum enrolled devices |
-| `FLASH_DEVICE_CERT_VALIDITY_DAYS` | `--device-cert-validity-days` | `30` | How long a device certificate lives (1..365). A device renews inside a window derived from it (3 days before / 3 days after for 30 days). The delegation (`keytool delegate --valid-days`, default 90) must outlive lifetime + grace; the hub logs a warning at start when it does not |
+| `FLASH_DEVICE_CERT_VALIDITY_DAYS` | `--device-cert-validity-days` | `30` | How long a device certificate lives (1..365). A device renews inside a window derived from it (3 days before / 3 days after for 30 days). The delegation (`keytool issue-delegation --valid-days`, default 90) must outlive lifetime + grace. The Hub logs a warning at startup when it does not. |
 | `FLASH_RENEW_EARLY_DAYS`, `FLASH_RENEW_GRACE_DAYS` | `--renew-early-days`, `--renew-grace-days` | derived | Optional fixed renewal window before and after expiry (1..365 days) |
 | `FLASH_MAILBOX_TTL_DAYS` | `--mailbox-ttl-days` | `7` | How long the hub holds mail for an absent device |
 | `FLASH_CHALLENGE_TIMEOUT_MS` | `--challenge-timeout-ms` | `60000` | Auth challenge validity |

@@ -3,7 +3,8 @@
 > **Written 2026-10-09 from the code.** Until then this published module had no guide. Verified against
 > `core/swarm/src`, `core/engine/.../FlashEngine.kt`, and how the two real hosts attach it. Design and ADRs:
 > `docs/transfer/GROUP-SWARM-DESIGN.md`, `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`, ADR-070..075 (all
-> status as recorded in `docs/decisions.md`). **Not device-verified** (`SWM-07`..`SWM-29` in `docs/testing/TEST-BACKLOG.md`).
+> status as recorded in `docs/decisions.md`). Installed-build checks are tracked in
+> `SWM-07`–`SWM-29` and `SWM-RETRY-01` in the [test backlog](../../../testing/TEST-BACKLOG.md).
 
 `:core:swarm` sends one file to the members of a group the way a torrent would: every member that already holds
 pieces serves them to the others, so the sender does not upload the whole file once per member. It is a **sans-IO**
@@ -39,7 +40,7 @@ or attach a host-built `FlashSwarm` with `attachSwarm(swarm)`.
 | `rows: StateFlow<List<FlashTransfer>>` | The transfer rows the swarm manages (shown next to normal transfers). |
 | `status(transferId): StateFlow<FlashSwarmStatus?>` | Live detail for one row. |
 | `accept(id)` / `decline(id)` | Receiver answers an offered swarm transfer (decline = local cancel). |
-| `pause(id)` / `resume(id)` | User pause and resume. |
+| `pause(id)` / `resume(id)` | User pause and resume. `resume` also retries a failed receive due to damage or storage failure before the record expires. A complete partial is reverified and missing or damaged pieces can be fetched again. |
 | `cancelLocal(id)` | Receiver removes its own partial copy; others are unaffected. |
 | `cancelAsOrigin(id, reason = USER)` | Origin cancels for everyone: signs and broadcasts a tombstone (`SwarmTombstoneReason`). |
 | `pauseForSystem(id, reason)` | Marks the row `WAITING_FOR_SYSTEM` (for example an Android 15 foreground-service timeout). |
@@ -100,7 +101,8 @@ The driver talks to the world only through these interfaces, which is what makes
 |---|---|
 | `SwarmTransport` | `send(peerId, frame: ByteArray): Boolean`, `requestSession(peerId)`, and `connectedPeers: StateFlow<Map<String, Set<String>>>` (peer to the features it advertised in HELLO). |
 | `SwarmGroupContext` | Group rules: `isPeerAllowed`, `isServeAllowed`, `isLocalActiveMember`, plus `signStatement` / `verifyStatement` / `authorKey` for signed tombstones. |
-| `PieceStorage` | Reads and writes pieces (`SourceHandle`, `PartialHandle`) and finalizes a finished file. Android's is `AndroidPieceStorage`. |
+| `PieceStorage` | Reads and writes pieces (`SourceHandle`, `PartialHandle`) and finalizes a finished file against an expected SHA-256. Existing custom implementations use this contract. |
+| `ManifestPieceStorage` | Optional `PieceStorage` extension with `finalize(key, fileName, mime, manifest)`. The Android and JVM implementations verify the manifest's declared byte range and trim stale trailing bytes after it verifies. On a mismatch they can return the bad piece indices in `StorageFinalizeResult.badPieces`. |
 | `SwarmStateStore` | Persists `SwarmContentRecord`s and `SwarmTombstone`s (the Room adapter is `RoomSwarmStateStore` in `:core:engine`; the tables and DAO are in `:core:persistence`). |
 
 `core:engine` ships the glue, `SwarmHostBinding` (package `...core.engine.swarm`), which connects the driver to the
@@ -129,4 +131,4 @@ deterministic.
 - Needs a group: membership and signing come from the group layer (`SwarmGroupContext`), so a 1:1 chat does not use it.
 - Vouched members receive swarm offers (ERROR-117 / ADR-086); a removed member is excluded.
 - Retention and cancel propagation use signed tombstones; cancel-for-everyone only works while members can still be reached.
-- Everything here is unit, property and host-lifecycle tested; none of it is device-verified.
+- The retained-partial recovery is covered by Android host and JVM tests. `SWM-RETRY-01` tracks Retry on the installed Windows build.

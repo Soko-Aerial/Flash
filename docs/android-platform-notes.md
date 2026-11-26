@@ -1,5 +1,19 @@
 # Android Platform Notes
 
+## 2026-11-23 — LAN and foreground-service requirements for SDK hosts
+
+The Flash 2.3.2 APK targets API 36. Starting on Android 17 (API 37), consumer apps targeting API 37
+or higher must obtain LAN access through the runtime permission or use the supported system-mediated
+discovery flow as applicable. Direct local sockets and NSD are covered by the new rules.
+[Android local network permission](https://developer.android.com/privacy-and-security/local-network-permission)
+
+For hosts targeting API 34 or later, `connectedDevice` needs the corresponding foreground-service
+permission and a runtime prerequisite. Declaring `CHANGE_WIFI_MULTICAST_STATE`, as Flash does,
+satisfies one of the platform's listed conditions. On API 33 and later `POST_NOTIFICATIONS` controls
+whether a foreground service notification appears in the notification drawer. The service still
+supplies a notification when it goes foreground.
+[Foreground-service types](https://developer.android.com/develop/background-work/services/fgs/service-types) · [Notification permission](https://developer.android.com/develop/ui/compose/notifications/notification-permission)
+
 ## 2026-11-23 — Discovery service startup after a signed update
 
 On the Android 13 V760 (API 33, app target API 36), the first launch after an in-place update could receive a `ForegroundServiceDidNotStartInTimeException` before the discovery service logged its foreground promotion. A visible activity can use `startService()`, which starts the service without the deadline attached to a `startForegroundService()` request. The service promotes itself in `onCreate` and can retry promotion on a new start request if the instance was already running. The Quick Settings and background retry entry points use the foreground-service start API and its existing restrictions. [Background execution limits](https://developer.android.com/about/versions/oreo/background) · [Foreground-service troubleshooting](https://developer.android.com/develop/background-work/services/fgs/troubleshooting)

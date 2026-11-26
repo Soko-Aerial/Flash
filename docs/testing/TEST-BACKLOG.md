@@ -8919,7 +8919,7 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 
 ### IFREV-02 — Live group policy change and delayed refresh
 
-- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients from `dist/2.3.2`. Use Android `fa1a4118` and Windows `4299921c`.
+- **Setup:** An isolated Hub in inspectable mode and enrolled signed Android and installed Windows clients from the same current `dist/2.3.2` checksum manifest.
 - **Steps:** Cold-launch both clients and observe the Hub connection through one 60-second policy refresh interval. Change to required while both clients are open. Delay the next policy response and exercise a reconnect and enrollment change against the test setup.
 - **Pass:** Both clients start and remain open through the refresh. Connected clients converge on current policy. Delayed responses cannot restore a superseded or wrong-enrollment policy. A refresh failure preserves confidentiality and shows an accurate state.
 - **Source:** ERROR-1032, ERROR-1047, ERROR-1048 and IF-02. The 2026-11-23 Android debug smoke passed startup with an existing enrollment. The signed V760 build passed cold launch after the in-place update.
@@ -8952,9 +8952,9 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 ### IFREV-06 — Hub directory invite browser and app handoff
 
 - **Setup:** A matching test Hub, Android build and installed Windows build. Have one listed Open group, one listed Request approval group, a different Hub enrollment and a device without enrollment.
-- **Steps:** Share the group link from a manager device and open it from a browser and from chat. Confirm on the enrolled device. Exercise the wrong enrollment, an expired link and a link after a roster change.
-- **Pass:** The landing page exposes Open in Flash. Flash opens confirmation and follows current group visibility, scope and approval policy. Wrong, expired and outdated tokens cannot resolve. Local peer invites still open and join through the peer flow.
-- **Source:** IF-03 and ADR-365. Android and Windows association checks are INVITE-LINK-01/02.
+- **Steps:** Share the group link from a manager device and open it from a browser and from chat. Confirm on the enrolled device. Exercise the wrong enrollment and an expired link. Check a current link after a routine roster change, then change group visibility or join mode and try it again.
+- **Pass:** The landing page exposes Open in Flash. Flash opens confirmation and follows current group visibility, scope and approval policy. A routine roster change preserves a current link. Wrong-Hub, expired and policy-invalidated tokens cannot resolve. Local peer invites still open and join through the peer flow.
+- **Source:** IF-03 and ADR-365–367. Android and Windows association checks are INVITE-LINK-01/02.
 - **Status:** TODO
 
 ### HUBWORK-06 — Hub entry, refresh, and retry on Android and Windows
@@ -8972,3 +8972,32 @@ Added for commits `508dbee6`, `953cdeb6`, `4d53d5dc`, and `26924567`. Host unit,
 - **Pass:** In the split layout, the active chat, draft, message position and divider stay in place when Hub opens. Hub stays selected when a chat opens from it. In a narrow window Back returns to Hub. Resizing never shows the wrong chat or silently loses the draft.
 - **Source:** The [desktop conversation pane refinement](../ui/hub-workspace-redesign.md#desktop-conversation-pane).
 - **Status:** TODO
+
+## 2026-11-24 — Release documentation and API parity follow-up
+
+### REL23-LINUX-01 — Install and launch the published Linux 2.3.2 packages
+
+- **Setup:** An x86-64 Linux desktop, the two Linux files from the Flash `v2.3.2` app release,
+  and `SHA256SUMS-linux.txt`. Use a spare user or backed-up Flash state for the upgrade check.
+- **Steps:** Verify the downloads. Install the DEB on Debian or Ubuntu and launch from the app menu.
+  Launch the portable archive from a user-owned directory. Repeat the upgrade on an existing install.
+- **Pass:** Both packages launch and report 2.3.2. A DEB upgrade preserves the existing identity,
+  chats and transfer history. The portable launcher uses its bundled Java runtime.
+- **Status:** TODO. Package metadata, launchers, payloads and GitHub SHA-256 digests passed inspection.
+
+### REL23-01 — SDK beta resolves from the public JitPack tag
+
+- **Setup:** Isolated Android and JVM consumers using JDK 17 and a fresh cache for Flash modules.
+- **Steps:** After `v2.3.0-beta.1` is tagged, resolve `com.github.Soko-Aerial.Flash` from JitPack
+  with Google and Maven Central. Compile using the umbrella engine, calling UI and a messaging
+  API that returns an enterprise type. Confirm JitPack built the intended commit.
+- **Pass:** The Android and JVM variants resolve, and both consumers compile against the published artifacts.
+- **Status:** TODO. The public tag and JitPack build were absent as of 2026-11-24.
+
+### REL23-02 — Hub join-link authorisation and use counts
+
+- **Setup:** An isolated Hub with a scoped console administrator, an enrolled group manager, and two groups in different scopes.
+- **Steps:** After the server fix, verify link issuance, permitted resolution and authorised link revocation on both API surfaces. Verify that denied resolution and revocation preserve the other group's link and its remaining uses.
+- **Pass:** Revocation applies to a link in the authorised group. Only authorised resolutions consume uses. The normal join and approval flows still work.
+- **Source:** ERROR-1054.
+- **Status:** TODO (server fix and host regressions passed 2026-11-26 across 77 suites / 729 `:server:test` cases; live isolated-Hub verification owed before publishing the Hub beta).

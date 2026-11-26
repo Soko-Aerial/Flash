@@ -24,104 +24,68 @@ This guide demonstrates how to integrate the complete Flash stack—combining di
 
 ---
 
-> **Verified against the code 2026-10-09.** The earlier sample constructed `DesktopEngine(scope, peerId, displayName)`, called
-> `engine.start()` and passed a repository into the screens; none of that exists. The screens take **state and callbacks**, and the
-> supported factory for a third-party host is `Flash.create` (Android) or `FlashDesktop.create` (JVM, see below). The sample below is an
-> illustration (not compiled by CI); the real hosts are `app/.../MainActivity.kt` with `DiscoveryEngineHolder`, and `desktop/.../DesktopMain.kt` with `DesktopEngine`.
+The host creates and closes the engine as shown in the [beginner guide](../getting-started/beginner-guide.md).
+Pass the live engine to this Compose adapter. The host supplies file routing for the selected conversation.
+The consumer needs `core-engine`, `ui-chat`, `ui-theme`, the Compose runtime and the Kotlin Compose compiler plugin.
 
-## 2. End-to-End Kotlin Code Sample (Android, Compose)
+## 2. Binding chat state to Compose
 
 ```kotlin
-import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Surface
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import com.transfer.flash.core.common.model.FlashDevice
-import com.transfer.flash.core.common.model.FlashDeviceId
-import com.transfer.flash.core.common.model.FlashTransportType
-import com.transfer.flash.core.engine.Flash
-import com.transfer.flash.core.engine.FlashConfig
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.transfer.flash.core.engine.FlashEngine
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.theme.FlashTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-
-class MainActivity : ComponentActivity() {
-    private var engine: FlashEngine? = null
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContent {
-            // 1. Build the engine off the main thread (it opens the encrypted database).
-            var ready by remember { mutableStateOf<FlashEngine?>(null) }
-            LaunchedEffect(Unit) {
-                ready = withContext(Dispatchers.IO) {
-                    Flash.create(applicationContext, FlashConfig(displayName = "Pixel-Alpha")).also { engine = it }
-                }
-            }
-            val e = ready ?: return@setContent
-
-            // 2. Render the stateless screens from the engine's state.
-            FlashTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    var openId by remember { mutableStateOf<String?>(null) }
-                    val chats = e.chats
-                    val scope = rememberCoroutineScope()
-
-                    if (openId == null) {
-                        val list by chats.chatListState.collectAsState()
-                        FlashChatListScreen(
-                            state = list,
-                            onConversationClick = { id -> chats.openConversation(id); openId = id },
-                        )
-                    } else {
-                        val conversation by chats.conversationState.collectAsState()
-                        FlashConversationScreen(
-                            state = conversation,
-                            onBack = { chats.closeConversation(); openId = null },
-                            onSendText = chats::sendText,
-                            onSendReply = chats::sendReply,
-                            onPersistDraft = chats::saveDraft,
-                            onAttachmentClick = chats::openAttachmentPicker,
-                            onSendFile = { uri, displayName, size ->
-                                val peerId = openId ?: return@FlashConversationScreen
-                                scope.launch(Dispatchers.IO) {
-                                    e.transfers.sendFile(
-                                        targetDevice = FlashDevice(
-                                            id = FlashDeviceId(peerId),
-                                            friendlyName = conversation.header.title,
-                                            transportType = FlashTransportType.LAN,
-                                        ),
-                                        fileUri = uri,
-                                        displayName = displayName,
-                                        fileSize = size,
-                                    )
-                                }
-                            },
-                        )
-                    }
-                }
-            }
+@Composable
+fun FlashChatHost(
+    engine: FlashEngine,
+    sendPickedFile: (conversationId: String, uri: String, displayName: String, size: Long) -> Unit,
+) {
+    val chats = engine.chats
+    var openId by remember(engine) { mutableStateOf<String?>(null) }
+    val conversationId = openId
+    FlashTheme {
+        if (conversationId == null) {
+            val list by chats.chatListState.collectAsState()
+            FlashChatListScreen(
+                state = list,
+                onConversationClick = { id ->
+                    chats.openConversation(id)
+                    openId = id
+                },
+            )
+        } else {
+            val conversation by chats.conversationState.collectAsState()
+            FlashConversationScreen(
+                state = conversation,
+                conversationId = conversationId,
+                onBack = {
+                    chats.closeConversation()
+                    openId = null
+                },
+                onSendText = { text -> chats.sendTextTo(conversationId, text) },
+                onSendReply = chats::sendReply,
+                onPersistDraft = { text -> chats.saveDraft(conversationId, text) },
+                onAttachmentClick = chats::openAttachmentPicker,
+                onSendFile = { uri, name, size -> sendPickedFile(conversationId, uri, name, size) },
+            )
         }
-    }
-
-    override fun onDestroy() {
-        engine?.close()          // cancels the shared scope and releases NSD / sockets / database
-        super.onDestroy()
     }
 }
 ```
 
 > **Note on `onAttachmentClick` vs `onSendFile`:** `FlashConversationScreen` wires the platform file picker shim (`rememberFlashFilePickerLauncher`) internally and invokes `onSendFile(uri, displayName, size)` once the user picks a file; `RealFlashChatRepository.openAttachmentPicker()` is a no-op host hook (required parameter `onAttachmentClick`).
 
-Sending a file to a *discovered* device is a repository call, not a screen callback:
-`engine.transfers.sendFile(targetDevice = endpoint.device, fileUri, displayName, fileSize)` (see the [beginner guide](../getting-started/beginner-guide.md)).
+For a direct chat, resolve the paired peer and call
+`engine.transfers.sendFile(targetDevice = endpoint.device, fileUri, displayName, fileSize)` as shown in
+the [beginner guide](../getting-started/beginner-guide.md). On success, call `engine.chats.sendAttachment`
+with the returned transfer ID to display the local attachment bubble. For a group, use the host's
+group file sender so the announcement and per-recipient transfer stay linked.
 The host owns the pairing consent UI, notifications, foreground service and call integration. To add pairing,
 take `engine.pairing`, call `beginPair(peerId, peerName)`, collect the comparison code and pass the user's
 decision back with `acceptLocal()` or `declineLocal()`. `Flash.create` handles the wire exchange and trust
