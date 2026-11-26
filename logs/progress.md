@@ -1,5 +1,27 @@
 # Progress Log
 
+## 2026-11-26 — Test Hub updated on `myserver` (`bb2166b6` / `0956d26d`)
+
+Built `:server:installDist` (`2.3.0-beta.1`, `server-2.3.0-beta.1.jar` SHA-256
+`f766f66dd5db2421f78f05da562789ba4203c3959b89a5eae6b88045c2bba098`) from `0956d26d` (latest
+server-affecting commit `bb2166b6` with the `ERROR-1054` join-link scope & visibility fix) and
+deployed it to the isolated test Hub on `myserver` (`~/flash-hub`).
+
+- Backed up matching pre-upgrade app, `data/`, `.env`, and `docker-compose.yml` under
+  `~/flash-hub/deployments/dev-0956d26d5b8e-ScGnxz`.
+- Recreated only `flash-hub-hub-1` (`docker compose up -d --no-deps --force-recreate hub`);
+  `flash-hub-tunnel-1` remained untouched (`e1204c0329b80410cf239a7dd7b4501cf2dc44010b379f8200d6dfc1861d1ad2`,
+  started `2026-10-19T10:34:55Z`).
+- Verified deployed JAR SHA-256 match, Docker `healthy` status, clean startup logs, loopback
+  `/health` (`200`), `/api/v1/hub` (`serverId` `B674836F7519EB64154977FA44272F3352A01B3833B35FDB61498DACD72B776F`,
+  `serverVersion` `2.3.0-beta.1`, `relayWireVersion` `2`, `restApiVersion` `1`, `groupE2eeMode` `E2EE_REQUIRED`),
+  loopback `/admin/` (`200`), public HTTPS `/health` (`200`) and `/api/v1/hub` (`200`), public `/admin/` (`404`),
+  and unauthenticated `POST /api/v1/groups/join-links/resolve` (`401`).
+- Note: startup log warns that test Hub delegation `#1` has 9 days remaining; renew before expiry
+  if the test deployment stays active past 2026-12-05.
+- Remaining: live `REL23-02` verification against this updated test Hub (scoped admin & enrolled
+  group manager join-link checks).
+
 ## 2026-11-26 — Hub join-link revocation scope and visibility-before-consume fix (ERROR-1054)
 
 Resolved the Hub `2.3.0-beta.1` blocker recorded in `ERROR-1054` (product commit `bb2166b6`):

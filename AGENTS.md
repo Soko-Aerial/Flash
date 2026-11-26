@@ -925,6 +925,8 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**2026-11-26 — Test Hub on `myserver` updated (`bb2166b6` / `0956d26d`, `ERROR-1054`).** Deployed `2.3.0-beta.1` with the join-link scope & visibility fix; recreated only `flash-hub-hub-1`, preserving the live tunnel and Hub identity. JAR digest, Docker health, and public HTTPS checks passed; rollback backup is in `~/flash-hub/deployments/dev-0956d26d5b8e-ScGnxz`. Test Hub delegation `#1` expires in 9 days. Live `REL23-02` check remains before publishing the Hub beta.
+
 **2026-11-26 — Hub join-link blocker fixed (`ERROR-1054`, `bb2166b6`) and 2.3.2 docs parity committed.** Individual join-link revocation on both `/api/v1/groups/{id}` and `/admin/api/v1/groups/{id}` is bound to the authorised group in SQLite and in-memory stores, and `/api/v1/groups/join-links/resolve` checks caller visibility before consuming limited uses. All 729 `:server:test` tests (77 suites) passed. Live isolated-Hub verification remains in `REL23-02` before publishing the Hub beta.
 
 **2026-11-24 — Flash 2.3.2 published for Android, Windows and Linux.** GitHub marks `v2.3.2` at `c532d1af` as the latest app release. It contains four signed APKs, two Windows installers, two Linux x86-64 packages and two checksum manifests. All ten GitHub asset digests match the staged files. See REL23-LINUX-01 and the existing app backlog for installed-device checks.
